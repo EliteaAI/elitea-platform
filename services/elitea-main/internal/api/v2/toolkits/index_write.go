@@ -49,6 +49,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 // defaultScheduleUserID is legacy's "this schedule applies to every user"
@@ -68,18 +69,16 @@ var cancellableIndexStatuses = map[string]bool{
 	"running":     true,
 }
 
-// tenantSchemaName resolves the tenant schema for a project id.
+// tenantSchemaName resolves the tenant schema for a project id and returns it
+// as a QUOTED PostgreSQL identifier, ready to interpolate with %s.
 //
-// The read handlers in handler.go interpolate `fmt.Sprintf("p_%s", projectID)`
-// straight from the URL. Every write below goes through this instead, so a
-// project id that is not a positive integer is rejected as a bad request
-// before it can reach a `%q`-quoted identifier at all.
+// Every read and write in this package goes through the same quoting now. A
+// project id that is not a plain decimal number is refused before it reaches a
+// statement, and the identifier is quoted with SQL rules rather than with %q,
+// which quotes with Go rules and lets an embedded quote end the identifier
+// (issue #543).
 func tenantSchemaName(projectID string) (string, error) {
-	ownerID, err := strconv.Atoi(projectID)
-	if err != nil || ownerID <= 0 {
-		return "", fmt.Errorf("%q is not a project id", projectID)
-	}
-	return fmt.Sprintf("p_%d", ownerID), nil
+	return tenantschema.Quote(projectID)
 }
 
 func toolkitRowID(toolkitID string) (int64, error) {
@@ -168,7 +167,7 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 	// so a caller can only ever delete indexes of the toolkit it named.
 	var indexName string
 	err = tx.QueryRow(ctx,
-		fmt.Sprintf(`SELECT name FROM %q.index_meta WHERE id = $1 AND toolkit_id = $2`, target.schema),
+		fmt.Sprintf(`SELECT name FROM %s.index_meta WHERE id = $1 AND toolkit_id = $2`, target.schema),
 		indexMetaID, target.toolkitID,
 	).Scan(&indexName)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -183,7 +182,7 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(ctx,
-		fmt.Sprintf(`DELETE FROM %q.index_meta WHERE toolkit_id = $1 AND name = $2`, target.schema),
+		fmt.Sprintf(`DELETE FROM %s.index_meta WHERE toolkit_id = $1 AND name = $2`, target.schema),
 		target.toolkitID, indexName,
 	); err != nil {
 		writeIndexInternalError(w, r, "index_meta_delete", "failed to delete the index", err)
@@ -193,7 +192,7 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 	// `- $2` deletes the key from the indexes_meta object. COALESCE covers a
 	// toolkit that has never had a schedule (meta NULL, or no indexes_meta).
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`
-		UPDATE %q.elitea_tools
+		UPDATE %s.elitea_tools
 		   SET meta = jsonb_set(
 		           COALESCE(meta, '{}'::jsonb),
 		           '{indexes_meta}',
@@ -300,7 +299,7 @@ func (h *Handler) writeIndexSchedule(
 
 	var rawMeta []byte
 	if err := tx.QueryRow(ctx,
-		fmt.Sprintf(`SELECT COALESCE(meta, '{}'::jsonb) FROM %q.elitea_tools WHERE id = $1 FOR UPDATE`, target.schema),
+		fmt.Sprintf(`SELECT COALESCE(meta, '{}'::jsonb) FROM %s.elitea_tools WHERE id = $1 FOR UPDATE`, target.schema),
 		target.toolkitID,
 	).Scan(&rawMeta); err != nil {
 		return nil, err
@@ -360,7 +359,7 @@ func (h *Handler) writeIndexSchedule(
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx,
-		fmt.Sprintf(`UPDATE %q.elitea_tools SET meta = $2::jsonb WHERE id = $1`, target.schema),
+		fmt.Sprintf(`UPDATE %s.elitea_tools SET meta = $2::jsonb WHERE id = $1`, target.schema),
 		target.toolkitID, string(encoded),
 	); err != nil {
 		return nil, err
@@ -437,7 +436,7 @@ func (h *Handler) IndexCancel(w http.ResponseWriter, r *http.Request) {
 	var storedTaskID string
 	err = tx.QueryRow(ctx, fmt.Sprintf(`
 		SELECT id, status, COALESCE(meta->>'task_id', '')
-		  FROM %q.index_meta
+		  FROM %s.index_meta
 		 WHERE toolkit_id = $1 AND name = $2
 		 ORDER BY created_at DESC, id DESC
 		 LIMIT 1
@@ -472,7 +471,7 @@ func (h *Handler) IndexCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(ctx,
-		fmt.Sprintf(`UPDATE %q.index_meta SET status = 'cancelled' WHERE id = $1`, target.schema),
+		fmt.Sprintf(`UPDATE %s.index_meta SET status = 'cancelled' WHERE id = $1`, target.schema),
 		rowID,
 	); err != nil {
 		writeIndexInternalError(w, r, "index_cancel", "failed to cancel the index run", err)

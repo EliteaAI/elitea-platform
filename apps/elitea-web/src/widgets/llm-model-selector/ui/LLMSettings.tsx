@@ -20,6 +20,7 @@ import { MaxTokensSection } from './settings/MaxTokensSection';
 import { ReasoningSlider } from './settings/ReasoningSlider';
 import { StepsLimitInput } from './settings/StepsLimitInput';
 import { SecretField } from '@/shared/ui/SecretField';
+import { useSecretFieldOptions } from '@/entities/secret';
 
 interface LLMSettingsProps {
   llmSettings?: Record<string, unknown>;
@@ -130,6 +131,33 @@ function deriveDisplaySettings(
     supportsVision: (model.supports_vision as boolean) ?? false,
     supportsReasoning: (model.supports_reasoning as boolean) ?? false,
   };
+}
+
+/**
+ * The webhook-secret field.
+ *
+ * #441: `secrets` was never supplied to `SecretField` here, so the field
+ * rendered as a plain masked text box — no mode toggle, no saved-secret
+ * picker, and no "Create new secret" entry for any user, an administrator
+ * included. `useSecretFieldOptions()` supplies the caller half.
+ *
+ * Split into its own component, not inlined in `LLMSettings`: the hook
+ * queries, and `showWebhookSecret` is `false` on most of the many screens
+ * that mount `LLMSettings`. A component keeps both requests on the one
+ * screen that shows the field.
+ */
+function WebhookSecretField({ value, onChange }: { readonly value: string; readonly onChange: (next: string) => void }) {
+  const secrets = useSecretFieldOptions();
+  return (
+    <SecretField
+      label={t('widgets.llmModelSelector.llmSettings.webhookSecretLabel', 'Webhook secret')}
+      value={value}
+      onChange={onChange}
+      passwordVisibilityToggle={false}
+      required={false}
+      secrets={secrets}
+    />
+  );
 }
 
 /**
@@ -246,12 +274,9 @@ export const LLMSettings = memo(
           />
         )}
         {showWebhookSecret && (
-          <SecretField
-            label={t('widgets.llmModelSelector.llmSettings.webhookSecretLabel', 'Webhook secret')}
+          <WebhookSecretField
             value={derived.webhookSecret}
             onChange={onChangeWebhookSecret}
-            passwordVisibilityToggle={false}
-            required={false}
           />
         )}
         <CapabilitySection

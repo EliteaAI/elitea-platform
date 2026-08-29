@@ -566,12 +566,12 @@ func TestIndexTypes_StaticResponse(t *testing.T) {
 
 	// Verify expected loader types are present via the "type" field.
 	expected := map[string]bool{
-		"file_loader":        false,
-		"web_loader":         false,
-		"confluence_loader":  false,
-		"github_loader":      false,
-		"jira_loader":        false,
-		"s3_loader":          false,
+		"file_loader":       false,
+		"web_loader":        false,
+		"confluence_loader": false,
+		"github_loader":     false,
+		"jira_loader":       false,
+		"s3_loader":         false,
 	}
 	for _, item := range indexTypes {
 		entry, ok := item.(map[string]any)

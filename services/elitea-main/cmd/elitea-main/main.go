@@ -107,9 +107,19 @@ func developmentFlagsFromEnv(getenv func(string) string) (bootstrapLegacySchema 
 		// Production shared/tenant histories are owned by elitea-migrate. A
 		// deployment that has configured any real authentication mode is not a
 		// developer machine, and must never bootstrap the legacy schema.
+		//
+		// The refusal NAMES THE SUPPORTED PATH (#556). An operator installing
+		// onto an empty database used to read this message as "the only thing
+		// that can build my schema will not run", and then applied
+		// 001_initial.sql by hand against a production database. That is no
+		// longer necessary: elitea-migrate embeds the same schema and applies
+		// it itself when the database does not carry it, as the migrating role,
+		// which is also what the histories need in order to ALTER those objects.
 		for _, configured := range []string{"APPLICATION_SECRET_KEY", "OIDC_ISSUER_URL", "ELITEA_AUTH_CONFIG_FILE"} {
 			if getenv(configured) != "" {
-				return false, fmt.Errorf("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA is a local-development flag and must not be set when %s is configured", configured)
+				return false, fmt.Errorf("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA is a local-development flag and must not be set when %s is configured. "+
+					"To build a schema on a deployment, run elitea-migrate: it applies the pylon-era schema to an empty database itself, "+
+					"then the shared and tenant histories. Remove this variable", configured)
 			}
 		}
 	}
@@ -245,6 +255,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("bootstrap local legacy database schema: %w", err)
 		}
 	}
+
+	backfillProjectSecretsHeaderValues(ctx, pool, logger)
 
 	var productionAuth *api.ProductionAuthRoutes
 	var currentProjectList *v2projects.CurrentProjectListRoute
@@ -1719,4 +1731,49 @@ type poolChecker struct {
 
 func (p *poolChecker) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
+}
+
+// backfillProjectSecretsHeaderValues gives every existing project an `X-SECRET`
+// value, and logs how many it wrote (#408).
+//
+// WHY IT RUNS HERE. The value is sealed with the project's Fernet key, which
+// this process wraps with SECRETS_MASTER_KEY, so no SQL migration can write it
+// — a migration could only store material the readers cannot open. This is the
+// first point after the pool and the master key are both settled, and it is
+// before the listeners accept a request, so no project serves a request with
+// the guessable default while the pass is still running.
+//
+// IT NEVER STOPS THE SERVICE. A project that keeps the default `secret` value
+// is the state every project is in today, so a failed pass is no worse than no
+// pass. It is logged at error level with the counts it reached, because a
+// silent pass is exactly how the operator would come to believe work happened
+// that did not.
+//
+// IT IS CHEAP TO RE-RUN. Every project that holds a value is counted and left
+// alone, so the second start reads the vaults and writes nothing.
+func backfillProjectSecretsHeaderValues(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
+	if pool == nil {
+		return
+	}
+	report, err := v2secrets.NewHandler(pool).BackfillProjectSecretsHeaderValues(ctx)
+	if err != nil {
+		logger.ErrorContext(ctx, "the project X-SECRET backfill did not finish; "+
+			"the projects it did not reach still accept the default value",
+			"vaults", report.Vaults,
+			"written", report.Written,
+			"already_set", report.AlreadySet,
+			"skipped", report.Skipped,
+			"error", err)
+		return
+	}
+	if report.Written == 0 && report.Skipped == 0 {
+		logger.InfoContext(ctx, "every project vault already holds an X-SECRET value",
+			"vaults", report.Vaults)
+		return
+	}
+	logger.InfoContext(ctx, "wrote an X-SECRET value into the project vaults that had none",
+		"vaults", report.Vaults,
+		"written", report.Written,
+		"already_set", report.AlreadySet,
+		"skipped", report.Skipped)
 }

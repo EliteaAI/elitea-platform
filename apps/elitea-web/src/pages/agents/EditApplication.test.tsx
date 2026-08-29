@@ -58,6 +58,22 @@ function detail(overrides: { versions?: { id: string; name: string; status: stri
   };
 }
 
+/**
+ * `detail()` plus one stored tag (#345). The version-detail read emits
+ * `{id, name, data}` per tag — the shape `versionTags` builds in
+ * services/elitea-main/internal/api/v2/applications/handler.go.
+ */
+function detailWithTags() {
+  const base = detail();
+  return {
+    ...base,
+    version_details: {
+      ...base.version_details,
+      tags: [{ id: 4, name: 'finance', data: null }],
+    },
+  };
+}
+
 /** `detail()` plus one attached toolkit — `id` (the mapping row) and `tool_id` (the toolkit instance) differ on purpose, see `features/agents/lib/toolRelation.ts`. */
 function detailWithTools() {
   const base = detail();
@@ -218,10 +234,22 @@ describe('EditApplication', () => {
     await user.click(await screen.findByTestId('version-selector-trigger', {}, { timeout: 5_000 }));
 
     const items = await screen.findAllByRole('menuitem');
-    expect(items.map((item) => item.textContent)).toEqual([
+    // #147 put one COMMAND item ("Set as default") in the same menu; excluded
+    // by test id so this stays an assertion about the version rows.
+    const versionRows = items.filter((item) => item.dataset['testid'] !== 'agent-version-set-default');
+    expect(versionRows.map((item) => item.textContent)).toEqual([
       expect.stringContaining('base'),
       expect.stringContaining('v1'),
     ]);
+
+    /*
+     * #147 — and the set-default item must be reachable FROM THIS PAGE, not
+     * merely exported. JRNY-015's middle step had a route, a handler, a repo
+     * write and a generated client, and no mount point; asserting it only in
+     * `features/agents`' own test would have gone green against exactly the
+     * gap the issue reports.
+     */
+    expect(screen.getByTestId('agent-version-set-default')).toBeInTheDocument();
   }, 15_000);
 
   it('mounts "Save As Version" for an owner and withholds it from a read-only viewer', async () => {
@@ -504,6 +532,63 @@ describe('EditApplication', () => {
     expect(screen.getByText('Github')).toBeVisible();
     expect(screen.getByTestId('edit-application-configuration-tab-panel')).toContainElement(card);
     expect(screen.getByTestId('agent-add-toolkit-button')).toBeVisible();
+  }, 15_000);
+
+  /*
+   * #345 — the tag control, asserted from the page's REAL composition root.
+   *
+   * `AgentTagEditor` was fully written and reachable by nobody: an
+   * unexported local of `features/agents/ui/ApplicationEditForm.tsx`, a file
+   * no page renders. `CreateAgentForm` had declared the `tagsSlot` prop for
+   * it all along and this page passed nothing into it, so a stored tag was
+   * invisible and a tag edit was impossible. These two tests fail the moment
+   * the slot stops being supplied — a component test of `AgentTagEditor`
+   * alone would keep passing, which is exactly how it shipped unmounted.
+   */
+  it('mounts the tag editor in the configuration panel with the version\'s stored tags on screen', async () => {
+    server.use(getGetApplicationMockHandler(detailWithTags()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    const panel = await screen.findByTestId('edit-application-configuration-tab-panel', {}, { timeout: 5_000 });
+    // The label proves the control itself is mounted; the chip proves it is
+    // bound to the version's stored tags rather than rendering empty.
+    expect(await screen.findByLabelText('Tags', {}, { timeout: 5_000 })).toBeInTheDocument();
+    const chip = await screen.findByText('finance', {}, { timeout: 5_000 });
+    expect(chip).toBeVisible();
+    expect(panel).toContainElement(chip);
+  }, 15_000);
+
+  it('sends a typed tag to the version PUT body, alongside the stored one', async () => {
+    server.use(getGetApplicationMockHandler(detailWithTags()));
+    const versionBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        versionBodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+      http.put('*/elitea_core/application/prompt_lib/:projectId/:id', () =>
+        HttpResponse.json({ id: '42' }, { status: 201 }),
+      ),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    const tagsInput = await screen.findByLabelText('Tags', {}, { timeout: 5_000 });
+    // Same "wait for a field the response populates" gate the welcome-message
+    // test documents: the whole form is `disabled` until the detail settles.
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await user.type(tagsInput, 'newtag{Enter}');
+
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(versionBodies).toHaveLength(1));
+    // The whole list reaches the wire, not just the edit: the handler
+    // REPLACES the association rows, so a body carrying only the new name
+    // would silently delete the stored one.
+    expect(versionBodies[0]?.['tags']).toEqual([
+      { id: 4, name: 'finance' },
+      { name: 'newtag' },
+    ]);
   }, 15_000);
 
   it('offers a read-only viewer neither tool control (no attach menu, remove disabled)', async () => {

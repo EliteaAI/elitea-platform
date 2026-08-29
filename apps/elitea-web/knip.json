@@ -281,27 +281,6 @@
     "src/features/chat-messages/ui/chat-box/ChatMessageList.tsx",
     "src/features/chat-messages/ui/chat-continue/ChatContinue.tsx",
     "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx",
-    // [#71] The AI-configuration `ModelConfiguration` layer. The baseline's
-    // `pages/settings/AIConfiguration.jsx` renders
-    // `ai-configuration/Configuration/ModelConfiguration.jsx`, which this app
-    // never ported — its two leaf children were ported and stranded instead
-    // (`ProjectAIConfiguration`/`FieldWithCopy`, now wired into
-    // `pages/settings/AIConfiguration.tsx` by this change;
-    // `ModelCapabilitiesSection`, still blocked, see `ignoreFiles` below).
-    // These three exports are the same layer's helpers, each with a real
-    // baseline caller inside the un-ported component or hook:
-    //   `getModelCapabilities`   <- ModelConfiguration.jsx:158
-    //   `buildConfigurationData` <- useModelConfiguration.hooks.jsx:237
-    //   `createOptions`          <- useModelConfiguration.hooks.jsx:159 (the
-    //                               `useModelOptions` option-builder; the
-    //                               baseline keeps it as an internal
-    //                               `useCallback`, this port hoisted it to a
-    //                               module-level export)
-    // They are correct ported code waiting on the composition layer, not dead
-    // code, and deleting them would throw away the port. Tracked in #80.
-    // REMOVE these two entries when that layer lands.
-    "src/features/settings/lib/ai-configuration/modelConfiguration.helpers.ts",
-    "src/features/settings/lib/ai-configuration/useModelConfiguration.ts",
     // [#71] `profileUtils.ts`'s `parseModelValue` splits a `name$$$projectId`
     // select value (via this unit's own `SEPARATOR`). Its baseline caller is
     // `pages/UserSettings/components/ProfileSummarization.jsx:61` — the
@@ -365,20 +344,7 @@
     "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
     // `DropdownFooter.tsx` moved to `entry` above — see the note there.
     "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
-    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx",
-    // [#71] A correct, complete port of the baseline's
-    // `ai-configuration/Configuration/ModelCapabilitiesSection.jsx`, held back
-    // by a genuine missing dependency rather than by being dead. Its sibling
-    // `ProjectAIConfiguration.tsx`/`FieldWithCopy.tsx` WERE wired into
-    // `pages/settings/AIConfiguration.tsx` by this same change; this one could
-    // not be, because the baseline feeds it
-    // `getModelCapabilities(options, model.configuration_uid, model.model_name)`
-    // and `options` comes from `useModelOptions` — a hook this app never
-    // ported, along with the per-model selection state
-    // (`ModelConfiguration.jsx`'s own selector) that supplies `model`.
-    // Porting that is real feature work, tracked in #80. REMOVE this entry
-    // when `useModelOptions` lands and the chips are rendered.
-    "src/features/settings/ui/ai-configuration/ModelCapabilitiesSection.tsx"
+    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't

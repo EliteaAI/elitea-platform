@@ -81,10 +81,14 @@ because it passes a manifest the binary then rejects.
 {{- end -}}
 
 {{/*
-  Same refusal again, for the two capabilities that stay dark. They are forced
-  "false" in values.yaml, so these checks fire only for an operator who edits
-  that. Read the comment beside them in values.yaml first: the contract work in
-  issues #394 and #395 has to land before either may be turned on.
+  Same refusal again, for two more capabilities that need production
+  authentication.
+  Issues #394 and #395 landed the contract work, so neither capability is dark
+  any more. values-standalone.yaml turns both on, together with
+  fileConfig.authConfig.enabled. values.yaml keeps both "false", because the
+  default install builds no production authentication.
+  Keep this refusal. It is what makes an operator's edit fail while the chart
+  renders, instead of at pod start.
 */}}
 {{- range $name := list "ELITEA_INDEX_TYPES_ENABLED" "ELITEA_APPLICATION_SKILLS_ENABLED" -}}
 {{- if eq (get $env $name | toString) "true" -}}

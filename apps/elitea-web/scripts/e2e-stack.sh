@@ -394,6 +394,22 @@ WHERE name LIKE 'e2e_schedule_probe_%';
 -- Authored by the MEMBER persona, not the admin one: an operator answering
 -- their own request would not exercise the join that resolves the requester's
 -- address, and that column is the whole point of the queue.
+-- Remove what earlier runs left behind (issue #544).
+--
+-- Journey 34 files a run-unique row per decision it proves
+-- (`e2e_app_request_probe_<engine>_<action>_<run>`), and NOTHING can remove
+-- one: `moderation_status` has a POST, a GET and a decision PUT, and no DELETE
+-- at any mode. So the table grows by three rows per browser project per run on
+-- a stack that is not re-created. Measured: 20 runs left 111 rows, and the
+-- UPDATE below then returned every one of them to `pending`, which fills the
+-- operator's Pending tab with a hundred dead probes.
+--
+-- The two SEEDED rows are named exactly and kept: they are the read-only rows
+-- journeys 34 and 34c assert against.
+DELETE FROM centry.moderation_state
+WHERE entity_id LIKE 'e2e_app_request_probe%'
+  AND entity_id NOT IN ('e2e_app_request_probe_chromium', 'e2e_app_request_probe_webkit');
+
 INSERT INTO centry.moderation_state
     (user_id, project_id, issue_type, entity_id, description, status)
 SELECT u.id, 1, p.label, p.entity, 'E2E probe: please enable this catalogue entry.', 'pending'

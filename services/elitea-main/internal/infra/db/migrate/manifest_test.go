@@ -208,8 +208,22 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// attachment was conversation-scoped only, with no association to the
 	// message it was sent with: it never rendered inline in the transcript, and
 	// pylon's per-message attachment cleanup had nothing to iterate.
-	require.EqualValues(t, 127, Head(tenant))
+	//
+	// 128: tenant/0128_owner_id_column_meanings.sql, which writes what
+	// `owner_id` and `author_id` mean onto the columns themselves (#533). The
+	// one name holds a PROJECT in `elitea_tools` and a USER in
+	// `chat_conversation_folders`, and no foreign key catches either, so a join
+	// written on the wrong assumption returns rows that look valid. The file
+	// adds no constraint: a project column would reference `centry.project`,
+	// which shared/0071, 0073 and 0098 each refuse for the same reason, and a
+	// user column would reference a pylon table that a corpus-only database
+	// does not have. It records the disagreement over `applications.owner_id`
+	// rather than hiding it.
+	require.EqualValues(t, 128, Head(tenant))
 
+	// The agentstate scope is this branch's, and it is counted separately: the
+	// native runtime's ADK sessions and graph checkpoints live in their own
+	// database, so its ledger advances independently of the tenant one.
 	agentState, err := LoadManifest(platformmigrations.Files, ScopeAgentState)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, Head(agentState))

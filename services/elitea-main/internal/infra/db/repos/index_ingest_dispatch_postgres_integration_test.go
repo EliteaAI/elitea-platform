@@ -115,22 +115,7 @@ func TestPostgresServiceBackedIndexIngestDispatch(t *testing.T) {
 		}
 		publishers := make([]*executionapp.OutboxPublisher, 0, 2)
 		for _, signer := range signers {
-			producer := newPostgresIndexProducer(t, policy, signer, appender)
-			dispatcher, err := indexingapp.NewIndexIngestDispatcher(outbox, producer)
-			if err != nil {
-				t.Fatal(err)
-			}
-			publisher, err := indexingapp.NewIndexIngestOutboxPublisher(outbox, dispatcher, executionapp.OutboxPublisherConfig{
-				PollInterval:      time.Second,
-				VisibilityTimeout: time.Minute,
-				BatchSize:         1,
-				MaxConcurrent:     1,
-				ReportFailure:     func(error) {},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			publishers = append(publishers, publisher)
+			publishers = append(publishers, newPostgresIndexPublisher(t, policy, outbox, signer, appender))
 		}
 
 		results := make(chan error, 2)
@@ -156,6 +141,58 @@ func TestPostgresServiceBackedIndexIngestDispatch(t *testing.T) {
 		prepared := assertPostgresIndexDispatchState(t, ctx, pool, outcome.ExecutionID, true, "DISPATCHED", 2)
 		if appender.callCount() != 2 || !bytes.Equal(appender.callBytes(0), prepared) || !bytes.Equal(appender.callBytes(1), prepared) || signers[0].callCount() != 1 || signers[1].callCount() != 1 {
 			t.Fatal("competing publishers did not append the one durable CAS winner")
+		}
+	})
+
+	// The competing subtest above releases both signers together, so the loser
+	// usually reaches the envelope CAS while the job is still PENDING. A
+	// saturated machine can delay the loser until the winner has published and
+	// moved the job to DISPATCHED. This subtest makes that order deterministic:
+	// it holds the loser at the signing barrier until the winner has finished.
+	// The loser must still receive the durable winner, append it, and count its
+	// publish attempt. A refusal there is reported as success and silently
+	// drops one publish attempt.
+	t.Run("a publisher held past the winner still appends the durable winner", func(t *testing.T) {
+		outcome, _ := admitPostgresIndexDispatch(t, ctx, jobs, "held")
+		started := make(chan struct{}, 1)
+		release := make(chan struct{})
+		appender := &postgresIndexDispatchAppender{}
+		heldSigner := &postgresIndexDispatchSigner{keyID: "held-loser", started: started, release: release}
+		winnerSigner := &postgresIndexDispatchSigner{keyID: "held-winner"}
+		heldPublisher := newPostgresIndexPublisher(t, policy, outbox, heldSigner, appender)
+		winnerPublisher := newPostgresIndexPublisher(t, policy, outbox, winnerSigner, appender)
+
+		heldResult := make(chan error, 1)
+		go func() {
+			heldResult <- heldPublisher.RunOnce(ctx)
+		}()
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatalf("held publisher did not reach the signing barrier: %v", ctx.Err())
+		}
+
+		if err := winnerPublisher.RunOnce(ctx); err != nil {
+			t.Fatalf("winning publisher: %v", err)
+		}
+		assertPostgresIndexDispatchState(t, ctx, pool, outcome.ExecutionID, true, "DISPATCHED", 1)
+
+		close(release)
+		select {
+		case err := <-heldResult:
+			if err != nil {
+				t.Fatalf("held publisher: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("held publisher did not return: %v", ctx.Err())
+		}
+
+		prepared := assertPostgresIndexDispatchState(t, ctx, pool, outcome.ExecutionID, true, "DISPATCHED", 2)
+		if appender.callCount() != 2 || !bytes.Equal(appender.callBytes(0), prepared) || !bytes.Equal(appender.callBytes(1), prepared) {
+			t.Fatalf("held publisher dropped its append of the durable winner: appends=%d", appender.callCount())
+		}
+		if winnerSigner.callCount() != 1 || heldSigner.callCount() != 1 {
+			t.Fatal("held publisher race re-signed the durable index envelope")
 		}
 	})
 
@@ -261,6 +298,35 @@ func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIn
 		t.Fatalf("initialize %s index metadata: %v", prefix, err)
 	}
 	return outcome, prefix + "-outbox"
+}
+
+// newPostgresIndexPublisher builds one bounded single-item publisher over the
+// shared outbox repository. Each publisher owns its own signer, so a test can
+// hold one publisher at the signing barrier.
+func newPostgresIndexPublisher(
+	t *testing.T,
+	policy IndexIngestDispatchPolicy,
+	outbox *CommandOutboxRepository,
+	signer redisdispatch.CommandSigner,
+	appender redisdispatch.StreamAppender,
+) *executionapp.OutboxPublisher {
+	t.Helper()
+	producer := newPostgresIndexProducer(t, policy, signer, appender)
+	dispatcher, err := indexingapp.NewIndexIngestDispatcher(outbox, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := indexingapp.NewIndexIngestOutboxPublisher(outbox, dispatcher, executionapp.OutboxPublisherConfig{
+		PollInterval:      time.Second,
+		VisibilityTimeout: time.Minute,
+		BatchSize:         1,
+		MaxConcurrent:     1,
+		ReportFailure:     func(error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publisher
 }
 
 func newPostgresIndexProducer(t *testing.T, policy IndexIngestDispatchPolicy, signer redisdispatch.CommandSigner, appender redisdispatch.StreamAppender) *redisdispatch.IndexIngestProducer {

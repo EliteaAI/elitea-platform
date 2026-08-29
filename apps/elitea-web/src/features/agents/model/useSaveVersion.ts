@@ -39,16 +39,10 @@ import { useApplicationsStore } from './applicationsStore';
  * `useUpdateApplicationVersion`/`VersionWriteRequest`) — confirmed field-by-
  * field against that handler's SQL `setClauses` construction.
  *
- * **`variables` is a real, backend-side no-op on UPDATE — this frontend
- * cannot fix it.** `UpdateVersion`'s `setClauses` construction
- * (handler.go:838-877) reads `name`, `instructions`, `llm_settings`,
- * `conversation_starters`, `welcome_message`, `agent_type`, and `meta` off
- * the request body — there is no `variables` branch at all. Only
- * `CreateVersion` persists `variables` (at version-creation time).
- * Sending `input.version.variables` through `updateApplicationVersion`
- * here is accepted (201) and silently discarded — the column is never
- * touched on UPDATE. There is currently no working endpoint for a caller
- * to change an existing version's `variables` after creation.
+ * **`variables` used to be a backend-side no-op on UPDATE. It no longer
+ * is (#307).** `UpdateVersion` now has a `variables` branch and replaces
+ * the version's `application_variables` rows, so what this hook sends is
+ * what the editor reads back.
  *
  * So this hook issues the two real calls the one baseline call used to
  * fake: `updateApplicationVersion` for the version's mutable fields, and
@@ -60,9 +54,15 @@ import { useApplicationsStore } from './applicationsStore';
  * `updateApplicationVersion` already carries the real version update).
  *
  * **Real, disclosed gaps, not invented fields:**
- * - `tags` has no field on `VersionWriteRequest` at all (checked directly)
- *   — same gap `entities/application-form/model/mutations.ts`'s
- *   `useSaveApplicationVersion` already discloses for its own narrower call.
+ * - `tags` USED to have no field on `VersionWriteRequest` at all, which is
+ *   why the agent editor's tag control could not be mounted. Closed (#345):
+ *   the field exists, `UpdateVersion` writes the
+ *   `application_version_tag_association` rows, and both read paths return
+ *   them. A caller sends the whole list; an absent key leaves the stored
+ *   set alone and an empty array clears it.
+ *   `entities/application-form/model/mutations.ts`'s
+ *   `useSaveApplicationVersion` still discloses the old gap for its own
+ *   narrower call — that file is outside this change's scope.
  * - `webhook_secret` has no field on `ApplicationUpdateRequest` — same gap
  *   `entities/application-form/model/mutations.ts`'s `useCreateApplicationDraft`
  *   discloses for CREATE; confirmed here it is equally absent on UPDATE.
@@ -110,7 +110,7 @@ export interface SaveVersionInput {
   readonly projectId: string;
   readonly applicationId: number;
   readonly versionId: number;
-  /** Version fields — mirrors `VersionWriteRequest` exactly (see module doc for the fields that have no wire representation: `tags`, `pipeline_settings`). */
+  /** Version fields — mirrors `VersionWriteRequest` exactly (see the module doc for `pipeline_settings`, the one field this agents-domain hook has no state to send). */
   readonly version: VersionWriteRequest;
   /** Application-shell fields — omit any of these to leave that field alone (no `editApplication` call fires at all when all three are omitted). */
   readonly applicationName?: string;

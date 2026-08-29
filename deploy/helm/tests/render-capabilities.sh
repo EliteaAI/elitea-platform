@@ -123,28 +123,25 @@ ELITEA_CONFIGURATIONS_ENABLED true
 ELITEA_PROJECT_INFO_ENABLED true
 ELITEA_CONFIGURATIONS_MUTATION_ENABLED false
 ELITEA_AI_PROJECT_ID 1
+ELITEA_APPLICATION_SKILLS_ENABLED true
+ELITEA_INDEX_TYPES_ENABLED true
 EXPECTED
 
-# The two capabilities that must stay dark. Their routes answer a shape the
-# published contract and the generated client both reject, so turning either on
-# breaks the web client — issues #394 and #395 track the contract work that has
-# to land first. Assert the DEFAULT values too: this is the pair most likely to
-# be flipped by accident.
-for file in "$WORK/default.yaml" "$WORK/standalone.yaml"; do
-  for key in ELITEA_INDEX_TYPES_ENABLED ELITEA_APPLICATION_SKILLS_ENABLED; do
-    actual="$(data "$key" "$file")"
-    if [ "$actual" = "false" ]; then
-      pass "$key stays dark in $(basename "$file")"
-    else
-      fail "$key is \"$actual\" in $(basename "$file"), and it must be \"false\" until issues #394 and #395 land"
-    fi
-  done
-done
+# No capability is held dark by this suite any more.
+#
+# The loop that stood here asserted "false" in BOTH renders for the flags whose
+# routes answered a shape the published contract rejects.
+# ELITEA_APPLICATION_SKILLS_ENABLED left it when #395 landed, and
+# ELITEA_INDEX_TYPES_ENABLED left it when #394 landed. Each route now answers
+# the published envelope keys beside the Pylon keys, so both shipped clients
+# accept one body, and both flags are asserted ON in the standalone list above
+# instead. Re-add a loop here, with an issue reference, the next time a route
+# has to ship dark.
 
 # The default install must not turn on a capability that needs production
 # authentication, because fileConfig.authConfig is off by default and the
 # binary refuses to start on that pair.
-for key in ELITEA_CONFIGURATIONS_ENABLED ELITEA_PROJECT_INFO_ENABLED; do
+for key in ELITEA_CONFIGURATIONS_ENABLED ELITEA_PROJECT_INFO_ENABLED ELITEA_APPLICATION_SKILLS_ENABLED ELITEA_INDEX_TYPES_ENABLED; do
   actual="$(data "$key" "$WORK/default.yaml")"
   if [ "$actual" = "false" ]; then
     pass "$key is off in a default install"

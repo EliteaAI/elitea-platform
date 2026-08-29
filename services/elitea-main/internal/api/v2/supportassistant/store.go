@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +31,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 // supportSource is the `chat_conversations.source` value that marks a row as
@@ -333,8 +334,20 @@ type Conversation struct {
 	MessageGroupCount int            `json:"message_groups_count"`
 }
 
+// tenantSchema returns the project's schema QUOTED as a PostgreSQL identifier,
+// ready to interpolate with %s.
+//
+// The id comes from centry.platform_config and not from a caller, but the name
+// still becomes an identifier in a statement, so it is quoted by the rule that
+// applies to identifiers rather than with %q, which quotes with Go rules
+// (issue #543). A value that is not a project id gives a schema that cannot
+// exist, so the statement fails closed instead of reading another tenant.
 func tenantSchema(projectID int64) string {
-	return "p_" + strconv.FormatInt(projectID, 10)
+	quoted, err := tenantschema.QuoteInt(projectID)
+	if err != nil {
+		return `"p_!invalid"`
+	}
+	return quoted
 }
 
 // listConversations returns the CALLER'S support conversations, newest first.
@@ -345,7 +358,7 @@ func (s *store) listConversations(
 
 	var total int
 	countStatement := fmt.Sprintf(`
-SELECT COUNT(*) FROM %q.chat_conversations c
+SELECT COUNT(*) FROM %s.chat_conversations c
 WHERE c.author_id = $1 AND c.source = $2
   AND ($3 = '' OR c.name ILIKE '%%' || $3 || '%%' ESCAPE '\')`, schema)
 	if err := s.pool.QueryRow(ctx, countStatement, userID, supportSource, escapeLikePattern(query)).Scan(&total); err != nil {
@@ -355,8 +368,8 @@ WHERE c.author_id = $1 AND c.source = $2
 	statement := fmt.Sprintf(`
 SELECT c.id, c.uuid::text, c.name, c.is_private, c.author_id, c.source, c.meta,
        c.created_at, COALESCE(c.updated_at, c.created_at),
-       (SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-FROM %q.chat_conversations c
+       (SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
+FROM %s.chat_conversations c
 WHERE c.author_id = $1 AND c.source = $2
   AND ($3 = '' OR c.name ILIKE '%%' || $3 || '%%' ESCAPE '\')
 ORDER BY COALESCE(c.updated_at, c.created_at) DESC, c.id DESC
@@ -425,7 +438,7 @@ func (s *store) createConversation(
 	}
 
 	statement := fmt.Sprintf(`
-INSERT INTO %q.chat_conversations (uuid, name, is_private, author_id, meta, source)
+INSERT INTO %s.chat_conversations (uuid, name, is_private, author_id, meta, source)
 VALUES (gen_random_uuid(), $1, TRUE, $2, $3::jsonb, $4)
 RETURNING id, uuid::text, name, is_private, author_id, source, meta,
           created_at, COALESCE(updated_at, created_at), 0`, schema)
@@ -447,7 +460,7 @@ func (s *store) conversationOwnedByCaller(
 ) (int64, error) {
 	schema := tenantSchema(projectID)
 	statement := fmt.Sprintf(`
-SELECT c.id FROM %q.chat_conversations c
+SELECT c.id FROM %s.chat_conversations c
 WHERE c.uuid = $1::uuid AND c.author_id = $2 AND c.source = $3`, schema)
 
 	var conversationID int64
@@ -473,8 +486,8 @@ func (s *store) conversationByID(ctx context.Context, projectID, conversationID 
 	statement := fmt.Sprintf(`
 SELECT c.id, c.uuid::text, c.name, c.is_private, c.author_id, c.source, c.meta,
        c.created_at, COALESCE(c.updated_at, c.created_at),
-       (SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-FROM %q.chat_conversations c WHERE c.id = $1`, schema, schema)
+       (SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
+FROM %s.chat_conversations c WHERE c.id = $1`, schema, schema)
 	return scanConversation(s.pool.QueryRow(ctx, statement, conversationID))
 }
 

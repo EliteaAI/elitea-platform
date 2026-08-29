@@ -15,11 +15,20 @@
  * §5.4) — which also means these keys are swept by `clearNamespace()` on
  * logout, fixing a real old-app leak (MCP OAuth tokens were NOT among the 2
  * keys the old logout cleared; see `shared/api/auth/logout.ts`'s header).
+ *
+ * ONE field never reaches that storage: `client_secret` (issue #177). It
+ * authenticates the application rather than one session and it does not
+ * expire, so it is held for the life of the document by
+ * `clientSecretVault.ts` and stripped from every record on its way to disk.
+ * Read that file before changing anything below that touches the field.
  */
 import { createStorage } from '@/shared/lib/storage';
 
+import { forgetClientSecret, recallClientSecret, rememberClientSecret, stripClientSecrets, withRecalledSecret } from './clientSecretVault';
 import { MC_TOKENS_STORAGE_KEY, MCP_CONNECTION_VERIFIED, MCP_CREDENTIALS_STORAGE_KEY, MCP_IGNORED_SERVERS_STORAGE_KEY, MCP_PREBUILD_PREFIX, MCP_TOKEN_CHANGE_EVENT } from './constants';
-import type { IgnoredServerMap, StoredMcpCredential, StoredMcpCredentialMap, StoredMcpToken, StoredMcpTokenMap } from './types';
+import type { IgnoredServerMap, SetAccessTokenOAuthMeta, StoredMcpCredential, StoredMcpCredentialMap, StoredMcpToken, StoredMcpTokenMap } from './types';
+
+export type { SetAccessTokenOAuthMeta };
 
 const PROACTIVE_REFRESH_THRESHOLD = 0.75; // Refresh at 75% of token lifetime.
 
@@ -97,13 +106,13 @@ function loadTokens(): StoredMcpTokenMap {
   return sessionStore().getJSON<StoredMcpTokenMap>(MC_TOKENS_STORAGE_KEY) ?? {};
 }
 function saveTokens(tokens: StoredMcpTokenMap): void {
-  sessionStore().setJSON(MC_TOKENS_STORAGE_KEY, tokens);
+  sessionStore().setJSON(MC_TOKENS_STORAGE_KEY, stripClientSecrets(tokens));
 }
 function loadCredentials(): StoredMcpCredentialMap {
   return sessionStore().getJSON<StoredMcpCredentialMap>(MCP_CREDENTIALS_STORAGE_KEY) ?? {};
 }
 function saveCredentials(credentials: StoredMcpCredentialMap): void {
-  sessionStore().setJSON(MCP_CREDENTIALS_STORAGE_KEY, credentials);
+  sessionStore().setJSON(MCP_CREDENTIALS_STORAGE_KEY, stripClientSecrets(credentials));
 }
 function loadIgnoredServers(): IgnoredServerMap {
   return sessionStore().getJSON<IgnoredServerMap>(MCP_IGNORED_SERVERS_STORAGE_KEY) ?? {};
@@ -133,13 +142,13 @@ export function needsProactiveRefresh(tokenInfo: StoredMcpToken | null | undefin
 export function getTokenInfo(serverUrl?: string, toolkitType?: string): StoredMcpToken | null {
   const key = getStorageKey({ serverUrl, toolkitType });
   if (!key) return null;
-  return loadTokens()[key] ?? null;
+  return withRecalledSecret('token', key, loadTokens()[key] ?? null);
 }
 
 export function getSavedCredentials(serverUrl?: string, toolkitType?: string): StoredMcpCredential | null {
   const key = getStorageKey({ serverUrl, toolkitType });
   if (!key) return null;
-  return loadCredentials()[key] ?? null;
+  return withRecalledSecret('credential', key, loadCredentials()[key] ?? null);
 }
 
 export interface SetSavedCredentialsParams {
@@ -153,13 +162,15 @@ export function setSavedCredentials({ serverUrl, clientId, clientSecret, toolkit
   const key = getStorageKey({ serverUrl, toolkitType });
   if (!key) return;
   const credentials = loadCredentials();
-  credentials[key] = { client_id: clientId, client_secret: clientSecret };
+  credentials[key] = { client_id: clientId };
   saveCredentials(credentials);
+  rememberClientSecret('credential', key, clientSecret);
 }
 
 export function removeSavedCredentials(serverUrl?: string, toolkitType?: string): void {
   const key = getStorageKey({ serverUrl, toolkitType });
   if (!key) return;
+  forgetClientSecret('credential', key);
   const credentials = loadCredentials();
   if (credentials[key]) {
     delete credentials[key];
@@ -201,28 +212,6 @@ export function setSessionId(serverUrl: string | undefined, sessionId: string, t
   }
 }
 
-/**
- * OAuth metadata carried alongside a new access token, used to seed/preserve
- * refresh-time fields. `T | undefined` throughout (`exactOptionalPropertyTypes`)
- * — callers construct this from computed, possibly-absent values (a form
- * field, a prior token's cached metadata).
- */
-export interface SetAccessTokenOAuthMeta {
-  issued_at?: number | undefined;
-  token_endpoint?: string | undefined;
-  client_id?: string | undefined;
-  client_secret?: string | undefined;
-  project_id?: string | undefined;
-  toolkit_id?: string | undefined;
-  authorization_endpoint?: string | undefined;
-  revocation_endpoint?: string | undefined;
-  registration_endpoint?: string | undefined;
-  issuer?: string | undefined;
-  grant_types_supported?: readonly string[] | undefined;
-  code_challenge_methods_supported?: readonly string[] | undefined;
-  used_dcr?: boolean | undefined;
-}
-
 export function setAccessToken(
   serverUrl: string | undefined,
   accessToken: string,
@@ -245,6 +234,10 @@ export function setAccessToken(
     return (oauthMeta[field] as StoredMcpToken[K] | undefined) ?? existingToken[field];
   }
 
+  // NOT a record field, and not routed through `getOrExisting`: the held
+  // secret is what "carry the existing value forward" now means for it.
+  rememberClientSecret('token', key, oauthMeta.client_secret ?? recallClientSecret('token', key));
+
   tokens[key] = {
     access_token: accessToken,
     issued_at: oauthMeta.issued_at ?? now,
@@ -254,7 +247,6 @@ export function setAccessToken(
     ...(refreshToken ? { refresh_token: refreshToken } : {}),
     token_endpoint: getOrExisting('token_endpoint'),
     client_id: getOrExisting('client_id'),
-    client_secret: getOrExisting('client_secret'),
     project_id: getOrExisting('project_id'),
     toolkit_id: getOrExisting('toolkit_id'),
     // Not routed through getOrExisting: toolkitType is a positional
@@ -282,6 +274,7 @@ export function setAccessToken(
 export function logout(serverUrl?: string, toolkitType?: string): void {
   const key = getStorageKey({ serverUrl, toolkitType });
   if (!key) return;
+  forgetClientSecret('token', key);
   const tokens = loadTokens();
   if (tokens[key]) {
     delete tokens[key];

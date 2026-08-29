@@ -410,7 +410,7 @@ func TestTrySoftAlert_NotCrossed(t *testing.T) {
 		SoftThresholdNear: false,
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 1, "1", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 1, budgetScopeProject, "1", 0, 500_000, preDec)
 
 	if checker.alertCalled.Load() != 0 {
 		t.Errorf("TryAlertCooldown called %d times, want 0 (threshold not crossed)", checker.alertCalled.Load())
@@ -438,7 +438,7 @@ func TestTrySoftAlert_CrossedNATSHealthy(t *testing.T) {
 		SoftThresholdNear: false, // was below threshold before this billing increment
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 2, "2", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 2, budgetScopeProject, "2", 0, 500_000, preDec)
 
 	if checker.alertCalled.Load() == 0 {
 		t.Error("TryAlertCooldown must be called when NATS_HEALTHY crosses SoftThresholdNear")
@@ -459,7 +459,7 @@ func TestTrySoftAlert_CrossedBlock402(t *testing.T) {
 
 	preDec := failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 3, "3", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 3, budgetScopeProject, "3", 0, 500_000, preDec)
 
 	if checker.alertCalled.Load() == 0 {
 		t.Error("TryAlertCooldown must be called when post-increment Block402 is detected")
@@ -480,7 +480,7 @@ func TestTrySoftAlert_CrossedDownPGFreshNear(t *testing.T) {
 
 	preDec := failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 4, "4", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 4, budgetScopeProject, "4", 0, 500_000, preDec)
 
 	if checker.alertCalled.Load() == 0 {
 		t.Error("TryAlertCooldown must be called for StateDownPGFreshNear")
@@ -507,7 +507,7 @@ func TestTrySoftAlert_CooldownSuppresses(t *testing.T) {
 		SoftThresholdNear: false,
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 5, "5", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 5, budgetScopeProject, "5", 0, 500_000, preDec)
 
 	// TryAlertCooldown IS reached (crossing detected) even though it returns false.
 	if checker.alertCalled.Load() == 0 {
@@ -529,7 +529,7 @@ func TestTrySoftAlert_PostCheckError(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Must not panic; error is logged and the function returns early.
-	h.trySoftAlert(ctx, 6, "6", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 6, budgetScopeProject, "6", 0, 500_000, preDec)
 
 	if checker.alertCalled.Load() != 0 {
 		t.Error("TryAlertCooldown must not be called when post-increment CheckBudget errors")
@@ -558,7 +558,7 @@ func TestTrySoftAlert_AlertCooldownError(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Must not panic.
-	h.trySoftAlert(ctx, 7, "7", 0, 500_000, preDec)
+	h.trySoftAlert(ctx, h.budget(), 7, budgetScopeProject, "7", 0, 500_000, preDec)
 
 	if checker.alertCalled.Load() == 0 {
 		t.Error("TryAlertCooldown must be called even when it returns an error")

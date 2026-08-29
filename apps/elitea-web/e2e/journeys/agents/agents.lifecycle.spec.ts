@@ -119,23 +119,21 @@ test('J14: create agent, save, and persist it', async ({ page }) => {
 // Journey 15: Create a new version, set default, delete old
 // ─────────────────────────────────────────────────────────────────────────────
 /*
- * NARROWED, disclosed. JRNY-015 names "set default" and "delete old version".
- * Both were wrapped in `if (await x.isVisible().catch(() => false))`, so the
- * test passed whether or not those menu items existed. Rather than keep
- * assertions that cannot fail, this hard-asserts the part that is real — the
- * version selector exists and lists the saved agent's version — and stops
- * claiming the rest.
+ * COVERED IN FULL as of #147. JRNY-015 names "create a new version -> set
+ * default -> delete old", and all three steps were once wrapped in
+ * `if (await x.isVisible().catch(() => false))`, so the test passed whether
+ * or not those controls existed. Every assertion below is unconditional:
  *
- * STILL NOT COVERED after #134, and still a real product gap, not a test one:
- * the mounted menu lists versions and switches between them, but carries no
- * per-version "set as default" or "delete" item. The baseline reaches those
- * through `entities/version`'s `VersionSelect` (`useSetDefaultVersion` +
- * a delete dialog); this app has the endpoints generated
- * (`useDeleteApplicationVersion`, `setDefaultVersionRequest`) and
- * `features/agents` even exports `useDeleteVersion`, but no UI reaches them.
- * Deliberately NOT asserted here with an `if (visible)` block — that shape is
- * exactly what made the absence invisible in the first place. Tracked as #147,
- * to be covered by its own journey rather than smuggled into this one.
+ *  - create a new version: #134 mounted `AgentVersionControls`; the Save-As-
+ *    Version round trip is asserted end to end (dialog -> POST -> navigate
+ *    onto the new version -> both versions listed).
+ *  - set default: #147 put the command item in the version menu. Asserted
+ *    through the real PATCH and through the menu's own "Default" marker
+ *    afterwards, NOT merely as an item on screen — an item wired to nothing
+ *    would satisfy a presence-only check.
+ *  - delete old: #307 mounted `DeleteVersionButton` beside the selector. Its
+ *    presence is asserted here; the delete round trip itself stays out of
+ *    this journey, which still has to reach `checkA11y` on a live agent.
  */
 test('J15: a saved agent exposes a version selector listing its versions', async ({ page }) => {
   /*
@@ -162,48 +160,6 @@ test('J15: a saved agent exposes a version selector listing its versions', async
   // Hard: the save must land on a real agent URL carrying an id.
   await page.waitForURL(/\/agents\/[^/]+\/[^/]+/, { timeout: 15_000 });
 
-  /*
-   * NOT COVERED — set-default-version and delete-version (#147). JRNY-015's
-   * §8.5 text is "create a new version -> set default -> delete old"; this
-   * journey covers the FIRST of those three and nothing else. Recorded here
-   * so a green run never implies otherwise.
-   *
-   * MEASURED 2026-08-09 — the backend supports BOTH, so this is a UI gap, not
-   * a capability gap:
-   *   PATCH /api/v2/elitea_core/default_version/prompt_lib/{p}/{app}/{ver}
-   *         services/elitea-main/internal/api/router.go:643 ->
-   *         applications/handler.go:878 -> repos/applications.go:650
-   *         (`UPDATE ... SET meta = jsonb_set(..., '{default_version_id}')`);
-   *         integration-tested at handler_postgres_integration_test.go:372.
-   *   DELETE /api/v2/elitea_core/version/prompt_lib/{p}/{app}/{ver}
-   *         router.go:641 -> handler.go:846 (guards published/embedded with
-   *         400 "Unpublish first", else 204) -> repos/applications.go:619.
-   *
-   * Client state differs between the two: `useDeleteApplicationVersion` IS
-   * already consumed by a real ported hook
-   * (`src/features/agents/model/useDeleteVersion.ts`) which has no UI caller,
-   * while `setApplicationDefaultVersion` has NO consumer at all outside
-   * `shared/api/generated`. The menu those two items belong in is
-   * `features/agents/ui/AgentPipelineVersionSelector.tsx`, which today renders
-   * only version rows.
-   *
-   * Two things must be settled before wiring either, and neither is a
-   * five-minute decision — which is why this is recorded rather than
-   * half-built:
-   *   1. Set-default's path shape CHANGED. The legacy UI PATCHes the 3-segment
-   *      form with `{version_id}` in the body; Go registers only the 4-segment
-   *      form, so a legacy-shaped call gets 405. (A stale comment at
-   *      `internal/api/generated/api.gen.go:1588` still claims the opposite.)
-   *   2. Delete's `?replacement_version_id=` is accepted by the spec and the
-   *      generated client but NEVER READ by the Go handler — a silent no-op.
-   *      The real "repoint references then delete" route is
-   *      `POST /batch_replace_version/.../{old}/{new}?delete_old=true`
-   *      (router.go:825), and it repoints `entity_tool_mapping` only, not
-   *      `entity_skill_mapping`. A delete menu item wired to the obvious
-   *      endpoint would orphan skill references without warning.
-   *
-   * Tracked in #147 with the evidence above.
-   */
   // The version selector is the subject of this journey. It must exist — a
   // `test.skip('Version selector not found in this build')` here turned a
   // missing feature into a green run.
@@ -247,7 +203,68 @@ test('J15: a saved agent exposes a version selector listing its versions', async
   await expect(page.getByRole('menuitem', { name: /v2/i })).toBeVisible({ timeout: 10_000 });
   expect(await page.getByRole('menuitem').count()).toBeGreaterThan(1);
 
+  /*
+   * JRNY-015 step 2 — SET DEFAULT (#147). Unconditional, and deliberately
+   * not `if (await item.isVisible().catch(() => false))`: that shape is what
+   * hid this gap for three rounds, and the endpoint it reaches
+   * (PATCH /api/v2/elitea_core/default_version/prompt_lib/{p}/{app}/{ver},
+   * router.go:1778 -> applications/handler.go:1202 -> repos/applications.go:650)
+   * had a full backend and no caller anywhere in the app.
+   *
+   * The page is on v2 (the version just created), so the item is enabled:
+   * the baseline's eligibility rule only refuses the version that already IS
+   * the default, the "base" fallback while no default is recorded, and a
+   * published version.
+   */
+  const setDefaultItem = page.getByTestId('agent-version-set-default');
+  await expect(setDefaultItem).toBeVisible({ timeout: 10_000 });
+  await expect(setDefaultItem).not.toHaveAttribute('aria-disabled', 'true');
+
+  // The REQUEST is the assertion. An item that opens a dialog and sends
+  // nothing would satisfy every DOM check above and change no default.
+  const setDefaultStatuses: number[] = [];
+  const onDefaultResponse = (response: import('@playwright/test').Response): void => {
+    if (response.request().method() === 'PATCH' && response.url().includes('/elitea_core/default_version/')) {
+      setDefaultStatuses.push(response.status());
+    }
+  };
+  page.on('response', onDefaultResponse);
+
+  await setDefaultItem.click();
+  const setDefaultDialog = page.getByTestId('agent-version-set-default-dialog');
+  await expect(setDefaultDialog).toBeVisible({ timeout: 5_000 });
+  await expect(setDefaultDialog.getByTestId('agent-version-set-default-name')).toHaveText('v2');
+  await setDefaultDialog.getByRole('button', { name: /set as a default/i }).click();
+
+  // The LAST response, not the first, and not an exact count: the app's query
+  // client retries once on a non-final error (app/providers/queryClient.ts:157),
+  // so a transient 5xx legitimately produces two responses for one click.
+  await expect(() => expect(setDefaultStatuses.length).toBeGreaterThanOrEqual(1)).toPass({ timeout: 15_000 });
+  page.off('response', onDefaultResponse);
+  expect(
+    setDefaultStatuses.at(-1),
+    `set-default PATCH must succeed, got ${setDefaultStatuses.join(',')}`,
+  ).toBeLessThan(400);
+
+  // A successful PATCH closes the dialog, and the menu then marks the version
+  // it just pinned. Both are the app's own read-back: the server reports the
+  // default on no documented response (see `AgentVersionControls`' disclosed
+  // gap), so this is what a user actually sees.
+  await expect(setDefaultDialog).toBeHidden({ timeout: 10_000 });
+  await versionTrigger.click();
+  await expect(page.getByTestId('agent-version-default-marker')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByTestId('agent-version-set-default')).toHaveAttribute('aria-disabled', 'true');
+
   await page.keyboard.press('Escape');
+
+  /*
+   * JRNY-015 step 3 — DELETE OLD VERSION (#307 mounted the control). Only its
+   * presence is asserted: the delete round trip would leave this journey
+   * without the agent the `checkA11y` pass below runs against, and #307 owns
+   * that behaviour's own coverage.
+   */
+  await expect(page.getByTestId('agent-version-delete')).toBeVisible({ timeout: 10_000 });
+
   await checkA11y(page);
 });
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 
+	secretsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/jackc/pgx/v5"
@@ -103,9 +104,42 @@ func (a *currentProjectPgvectorDatabaseProvisioner) Provision(
 //
 // The port also does NOT create a vault. The project_secrets provisioning step
 // is the one creator, and it runs before project_pgvector.
+//
+// LookupProjectSecret reports an absent secret with secretsapi.ErrSecretNotFound
+// and NOT with a `found bool` (#416). The port carries the secrets package's one
+// idiom rather than a second one of its own, so the three answers stay separable
+// on this side of the boundary too — see lookupOptionalProjectSecret.
 type ProjectVaultSecrets interface {
-	LookupProjectSecret(ctx context.Context, projectID string, name string) (string, bool, error)
+	LookupProjectSecret(ctx context.Context, projectID string, name string) (string, error)
 	StoreProjectSecrets(ctx context.Context, projectID string, values map[string]string) error
+}
+
+// lookupOptionalProjectSecret separates the three answers a vault read gives.
+//
+// found is true only for a value the vault holds. It is false only for
+// ErrSecretNotFound — the vault opened and holds no such name. EVERY other
+// error is returned, including secretsapi.ErrVaultAbsent: a project with no
+// vault, and a vault that will not open, are both faults the caller must see.
+//
+// This is the whole point of the sentinel. A read failure that reached the
+// caller as `found == false, err == nil` would look exactly like a project that
+// has never been indexed, and the provisioner would then mint a SECOND password
+// over material it simply could not read.
+func lookupOptionalProjectSecret(
+	ctx context.Context,
+	secrets ProjectVaultSecrets,
+	projectID string,
+	name string,
+) (string, bool, error) {
+	value, err := secrets.LookupProjectSecret(ctx, projectID, name)
+	switch {
+	case err == nil:
+		return value, true, nil
+	case errors.Is(err, secretsapi.ErrSecretNotFound):
+		return "", false, nil
+	default:
+		return "", false, err
+	}
 }
 
 type currentProjectPgvectorMaterialRepository struct {
@@ -133,16 +167,18 @@ func (r *currentProjectPgvectorMaterialRepository) LoadProjectPgvectorMaterial(
 	}
 	vaultProjectID := strconv.FormatInt(projectID, 10)
 
-	password, passwordFound, err := r.secrets.LookupProjectSecret(
+	password, passwordFound, err := lookupOptionalProjectSecret(
 		ctx,
+		r.secrets,
 		vaultProjectID,
 		vectorstoreapp.ProjectPgvectorPasswordKey,
 	)
 	if err != nil {
 		return vectorstoreapp.ProjectMaterial{}, currentProjectPgvectorAdapterError(ctx, err)
 	}
-	connectionString, connectionStringFound, err := r.secrets.LookupProjectSecret(
+	connectionString, connectionStringFound, err := lookupOptionalProjectSecret(
 		ctx,
+		r.secrets,
 		vaultProjectID,
 		vectorstoreapp.ProjectPgvectorConnstrKey,
 	)

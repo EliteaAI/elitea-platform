@@ -61,6 +61,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // globalModelSections are the (type → section) pairs the gateway dispatches.
@@ -128,7 +130,7 @@ type GlobalModel struct {
 const listGlobalModelsSQL = `
 	SELECT c.id, COALESCE(c.uuid::text, ''), COALESCE(c.elitea_title, ''), c.type, c.section,
 	       c.data, c.status_ok, COALESCE(c.status_logs, ''), c.created_at, c.updated_at
-	  FROM %q.configuration AS c
+	  FROM %s.configuration AS c
 	  JOIN unnest($1::text[], $2::text[]) AS s(section, type)
 	    ON c.section = s.section AND c.type = s.type
 	 WHERE c.shared = true
@@ -162,7 +164,7 @@ func (h *Handler) ListGlobalModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	schema := fmt.Sprintf("p_%d", h.publicProjectID)
+	schema := pgx.Identifier{fmt.Sprintf("p_%d", h.publicProjectID)}.Sanitize()
 
 	// The credential names are read FIRST, so every row can be reported with
 	// whether its link resolves. Reading them per row would be one query per
@@ -217,7 +219,7 @@ func (h *Handler) ListGlobalModels(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) globalCredentialTitles(ctx context.Context, schema string) ([]string, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT COALESCE(elitea_title, '')
-		  FROM %q.configuration
+		  FROM %s.configuration
 		 WHERE section = '`+GlobalProviderSection+`' AND shared = true
 		 ORDER BY elitea_title`, schema))
 	if err != nil {
@@ -442,7 +444,7 @@ func (h *Handler) admitGlobalModelCredential(
 		return false
 	}
 
-	schema := fmt.Sprintf("p_%d", h.publicProjectID)
+	schema := pgx.Identifier{fmt.Sprintf("p_%d", h.publicProjectID)}.Sanitize()
 	credentials, err := h.globalCredentialTitles(r.Context(), schema)
 	if err != nil {
 		// NOT permissive. Admitting the link because the check could not run

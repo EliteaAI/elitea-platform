@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 type Tool struct {
@@ -641,13 +642,16 @@ func (h *Handler) ExportToolkit(w http.ResponseWriter, r *http.Request) {
 	toolkitID := chi.URLParam(r, "toolkitID")
 	ctx := r.Context()
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	var name, toolType, desc string
 	var settings, envVars, meta []byte
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT name, type, COALESCE(description, ''), COALESCE(settings::text, '{}'),
 			COALESCE(env_vars::text, '[]'), COALESCE(meta::text, '{}')
-		FROM %q.elitea_tools WHERE id = $1`, s), toolkitID).Scan(
+		FROM %s.elitea_tools WHERE id = $1`, s), toolkitID).Scan(
 		&name, &toolType, &desc, &settings, &envVars, &meta)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "toolkit not found"})
@@ -679,8 +683,11 @@ func (h *Handler) IndexMeta(w http.ResponseWriter, r *http.Request) {
 	toolkitID := chi.URLParam(r, "toolkitID")
 	ctx := r.Context()
 
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT id, name, status, progress, created_at FROM %q.index_meta WHERE toolkit_id = $1 ORDER BY created_at DESC`, s)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	q := fmt.Sprintf(`SELECT id, name, status, progress, created_at FROM %s.index_meta WHERE toolkit_id = $1 ORDER BY created_at DESC`, s)
 	rows, err := h.pool.Query(ctx, q, toolkitID)
 	if err != nil {
 		// Was: `writeJSON(w, http.StatusOK, map[string]any{"items": []any{},
@@ -732,8 +739,11 @@ func (h *Handler) IndexMetaGet(w http.ResponseWriter, r *http.Request) {
 	indexMetaID := chi.URLParam(r, "indexMetaID")
 	ctx := r.Context()
 
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT id, name, status, progress, created_at FROM %q.index_meta WHERE id = $1`, s)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	q := fmt.Sprintf(`SELECT id, name, status, progress, created_at FROM %s.index_meta WHERE id = $1`, s)
 	var id, name, status string
 	var progress float64
 	var createdAt any
@@ -918,7 +928,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, projectID, toolID string, body map[string]any) {
 	ctx := r.Context()
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	entityVersionID, _ := body["entity_version_id"].(string)
 	if entityVersionID == "" {
 		if f, ok := body["entity_version_id"].(float64); ok {
@@ -940,7 +953,7 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 	// Guard: block changes to published/embedded versions
 	var verStatus string
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT status FROM %q.application_versions WHERE id = $1`, s), entityVersionID).Scan(&verStatus)
+		`SELECT status FROM %s.application_versions WHERE id = $1`, s), entityVersionID).Scan(&verStatus)
 	if err == nil && (verStatus == "published" || verStatus == "embedded") {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": "Cannot change tools on a published version. Unpublish first.",
@@ -964,7 +977,7 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 			return
 		}
 	} else {
-		q := fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1 AND tool_id = $2`, s)
+		q := fmt.Sprintf(`DELETE FROM %s.entity_tool_mapping WHERE entity_version_id = $1 AND tool_id = $2`, s)
 		_, err := h.pool.Exec(ctx, q, entityVersionID, toolID)
 		if err != nil {
 			writeToolkitInternalError(w, r, "update_tool_relation", "failed to remove the tool relation", err)
@@ -1030,9 +1043,9 @@ func selectedToolsPayload(body map[string]any) ([]byte, bool, error) {
 // `DO NOTHING` and never named `selected_tools` at all.
 func selectedToolsRelationInsertSQL(schema string, withSelectedTools bool) string {
 	if !withSelectedTools {
-		return fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, schema)
+		return fmt.Sprintf(`INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, schema)
 	}
-	return fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools) VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT (entity_version_id, tool_id, entity_type) DO UPDATE SET selected_tools = EXCLUDED.selected_tools, updated_at = now()`, schema)
+	return fmt.Sprintf(`INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools) VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT (entity_version_id, tool_id, entity_type) DO UPDATE SET selected_tools = EXCLUDED.selected_tools, updated_at = now()`, schema)
 }
 
 // Delete removes a toolkit instance.
@@ -1059,8 +1072,11 @@ type pgRepo struct {
 // to stay usable. The difference is that the handler now records the
 // degradation. See the ListTypes handler above.
 func (r *pgRepo) ListTypes(ctx context.Context, projectID string) ([]string, error) {
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT DISTINCT type FROM %q.elitea_tools WHERE type != '' ORDER BY type`, s)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf(`SELECT DISTINCT type FROM %s.elitea_tools WHERE type != '' ORDER BY type`, s)
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("query toolkit types in %q: %w", s, err)
@@ -1095,11 +1111,14 @@ func (r *pgRepo) ListTypes(ctx context.Context, projectID string) ([]string, err
 // All three now produce an error. Only a real empty result produces an empty
 // list, and the empty list is non-nil so that the response encodes as `[]`.
 func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string) ([]Tool, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
 	q := fmt.Sprintf(`
 		SELECT t.id, t.name, t.type, COALESCE(t.description, '')
-		FROM %q.entity_tool_mapping etm
-		JOIN %q.elitea_tools t ON t.id = etm.tool_id
+		FROM %s.entity_tool_mapping etm
+		JOIN %s.elitea_tools t ON t.id = etm.tool_id
 		WHERE etm.entity_version_id = $1`, s, s)
 	rows, err := r.pool.Query(ctx, q, toolkitID)
 	if err != nil {
@@ -1111,8 +1130,11 @@ func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string
 // DiscoverTools reads the tools that one toolkit type offers. It returns every
 // read fault for the same reason that AvailableTools does (#381).
 func (r *pgRepo) DiscoverTools(ctx context.Context, projectID, toolkitType string) ([]Tool, error) {
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT id, name, type, COALESCE(description, '') FROM %q.elitea_tools WHERE type = $1 ORDER BY name`, s)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf(`SELECT id, name, type, COALESCE(description, '') FROM %s.elitea_tools WHERE type = $1 ORDER BY name`, s)
 	rows, err := r.pool.Query(ctx, q, toolkitType)
 	if err != nil {
 		return nil, fmt.Errorf("query discoverable tools of type %q in %q: %w", toolkitType, s, err)
@@ -1140,11 +1162,14 @@ func scanTools(rows pgx.Rows, subject string) ([]Tool, error) {
 }
 
 func (r *pgRepo) ValidateToolkit(ctx context.Context, projectID, toolkitID string) (bool, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return false, err
+	}
 
 	var settingsStr *string
-	q := fmt.Sprintf(`SELECT settings::text FROM %q.elitea_tools WHERE id = $1`, s)
-	err := r.pool.QueryRow(ctx, q, toolkitID).Scan(&settingsStr)
+	q := fmt.Sprintf(`SELECT settings::text FROM %s.elitea_tools WHERE id = $1`, s)
+	err = r.pool.QueryRow(ctx, q, toolkitID).Scan(&settingsStr)
 	if err != nil {
 		return false, fmt.Errorf("toolkit not found")
 	}
@@ -1162,7 +1187,7 @@ func (r *pgRepo) ValidateToolkit(ctx context.Context, projectID, toolkitID strin
 		if embName != "" {
 			var configExists bool
 			cq := fmt.Sprintf(`SELECT EXISTS(
-				SELECT 1 FROM %q.configuration
+				SELECT 1 FROM %s.configuration
 				WHERE type = 'embedding_model' AND data->>'name' = $1
 			)`, s)
 			if err := r.pool.QueryRow(ctx, cq, embName).Scan(&configExists); err != nil {
@@ -1178,15 +1203,18 @@ func (r *pgRepo) ValidateToolkit(ctx context.Context, projectID, toolkitID strin
 }
 
 func (r *pgRepo) ForkToolkit(ctx context.Context, projectID string, body map[string]any) (Tool, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return Tool{}, err
+	}
 	sourceID, _ := body["source_id"].(string)
 	q := fmt.Sprintf(`
-		INSERT INTO %q.elitea_tools (name, type, description, owner_id, settings, env_vars, meta)
+		INSERT INTO %s.elitea_tools (name, type, description, owner_id, settings, env_vars, meta)
 		SELECT name || ' (copy)', type, description, owner_id, settings, env_vars, meta
-		FROM %q.elitea_tools WHERE id = $1
+		FROM %s.elitea_tools WHERE id = $1
 		RETURNING id, name, type, COALESCE(description, '')`, s, s)
 	var t Tool
-	err := r.pool.QueryRow(ctx, q, sourceID).Scan(&t.ID, &t.Name, &t.Type, &t.Description)
+	err = r.pool.QueryRow(ctx, q, sourceID).Scan(&t.ID, &t.Name, &t.Type, &t.Description)
 	if err != nil {
 		return Tool{}, fmt.Errorf("fork toolkit: %w", err)
 	}
@@ -1194,11 +1222,14 @@ func (r *pgRepo) ForkToolkit(ctx context.Context, projectID string, body map[str
 }
 
 func (r *pgRepo) ListToolkits(ctx context.Context, projectID string, page, pageSize int) ([]map[string]any, int, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, 0, err
+	}
 	offset := (page - 1) * pageSize
 
 	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools`, s)
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s.elitea_tools`, s)
 	if err := r.pool.QueryRow(ctx, countQ).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -1207,7 +1238,7 @@ func (r *pgRepo) ListToolkits(ctx context.Context, projectID string, page, pageS
 		SELECT id, type, name, COALESCE(description,''),
 		       COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
 		       created_at, author_id
-		FROM %q.elitea_tools
+		FROM %s.elitea_tools
 		ORDER BY name LIMIT $1 OFFSET $2`, s)
 	rows, err := r.pool.Query(ctx, q, pageSize, offset)
 	if err != nil {
@@ -1304,7 +1335,7 @@ func tenantOwnerID(projectID string) (int, error) {
 //     project id (utils/fork.py:143-146 uses it as parent_project_id), and
 //     owner_id is the same name without the "shared" qualifier.
 //   - ForkToolkit already carries owner_id across a same-schema copy
-//     (handler.go, `SELECT ... owner_id ... FROM %q.elitea_tools`), which is
+//     (handler.go, `SELECT ... owner_id ... FROM %s.elitea_tools`), which is
 //     only coherent if the value is a property of the project, not of the
 //     user who happens to be forking.
 //
@@ -1313,15 +1344,19 @@ func tenantOwnerID(projectID string) (int, error) {
 // matches the tenant table that is actually deployed.
 func createToolkitInsertSQL(schema string, includeOwnerID bool) string {
 	if !includeOwnerID {
+		// %s, not %q: `schema` arrives ALREADY quoted from tenantSchema
+		// (tenant_schema.go), which uses tenantschema.Quote rather than Go's
+		// own quoting — %q here would wrap the quotes in quotes and every
+		// create against a current pylon table would name no such schema.
 		return fmt.Sprintf(`
-		INSERT INTO %q.elitea_tools (name, type, description, settings, meta, author_id)
+		INSERT INTO %s.elitea_tools (name, type, description, settings, meta, author_id)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
 		       created_at, author_id`, schema)
 	}
 	return fmt.Sprintf(`
-		INSERT INTO %q.elitea_tools (name, type, description, settings, meta, owner_id, author_id)
+		INSERT INTO %s.elitea_tools (name, type, description, settings, meta, owner_id, author_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
@@ -1345,7 +1380,10 @@ SELECT EXISTS (
 }
 
 func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
 	name, _ := body["name"].(string)
 	typ, _ := body["type"].(string)
 	desc, _ := body["description"].(string)
@@ -1407,13 +1445,16 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 }
 
 func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (map[string]any, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
 	q := fmt.Sprintf(`
 		SELECT t.id, t.type, t.name, COALESCE(t.description,''),
 		       COALESCE(t.settings::text,'{}'), COALESCE(t.meta::text,'{}'),
 		       t.created_at, t.author_id,
 		       COALESCE(u.id, 0), COALESCE(u.email, ''), COALESCE(u.name, '')
-		FROM %q.elitea_tools t
+		FROM %s.elitea_tools t
 		LEFT JOIN public.auth_core__user u ON u.id = t.author_id
 		WHERE t.id = $1`, s)
 	var id, typ, name, desc string
@@ -1455,7 +1496,10 @@ func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (m
 }
 
 func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string, body map[string]any) (map[string]any, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
 	// Build partial update from provided fields.
 	var setClauses []string
 	var args []any
@@ -1492,7 +1536,7 @@ func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string,
 	}
 	args = append(args, toolkitID)
 	q := fmt.Sprintf(`
-		UPDATE %q.elitea_tools SET %s WHERE id = $%d
+		UPDATE %s.elitea_tools SET %s WHERE id = $%d
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
 		          created_at, author_id`,
@@ -1522,9 +1566,12 @@ func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string,
 }
 
 func (r *pgRepo) DeleteToolkit(ctx context.Context, projectID, toolkitID string) error {
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.elitea_tools WHERE id = $1`, s)
-	_, err := r.pool.Exec(ctx, q, toolkitID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return err
+	}
+	q := fmt.Sprintf(`DELETE FROM %s.elitea_tools WHERE id = $1`, s)
+	_, err = r.pool.Exec(ctx, q, toolkitID)
 	return err
 }
 

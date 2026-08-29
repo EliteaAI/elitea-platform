@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 const postgresIntegrationDatabaseURL = "ELITEA_TEST_DATABASE_URL"
@@ -99,7 +100,13 @@ func TestTenantOwnerIDRejectsNonProjectIdentifiers(t *testing.T) {
 func TestCreateToolkitInsertSQLBindsOwnerID(t *testing.T) {
 	t.Parallel()
 
-	statement := createToolkitInsertSQL("p_1", true)
+	// createToolkitInsertSQL takes an ALREADY-QUOTED identifier, so the test
+	// builds it the way the repository does rather than restating the quoting.
+	schema, err := tenantschema.Quote("1")
+	if err != nil {
+		t.Fatalf("Quote(1) failed: %v", err)
+	}
+	statement := createToolkitInsertSQL(schema, true)
 
 	columns := regexp.MustCompile(`INSERT INTO "p_1"\.elitea_tools \(([^)]*)\)`).FindStringSubmatch(statement)
 	if columns == nil {
@@ -132,7 +139,13 @@ func TestCreateToolkitInsertSQLBindsOwnerID(t *testing.T) {
 func TestCreateToolkitInsertSQLOmitsOwnerIDForTheCurrentPylonTable(t *testing.T) {
 	t.Parallel()
 
-	statement := createToolkitInsertSQL("p_1", false)
+	// The same already-quoted identifier the repository passes; see the sibling
+	// case above for why the test builds it rather than restating the quoting.
+	schema, err := tenantschema.Quote("1")
+	if err != nil {
+		t.Fatalf("Quote(1) failed: %v", err)
+	}
+	statement := createToolkitInsertSQL(schema, false)
 	columns := regexp.MustCompile(`INSERT INTO "p_1"\.elitea_tools \(([^)]*)\)`).FindStringSubmatch(statement)
 	if columns == nil {
 		t.Fatalf("createToolkitInsertSQL produced an unrecognisable INSERT:\n%s", statement)

@@ -65,13 +65,14 @@ EXEMPT_WORKFLOWS = {
         "It has no push arm at all. It is a weekly cadence job plus manual "
         "dispatch, not a per-merge gate."
     ),
-    # A time-limited entry. ISSUE #526 owns it. Remove this entry with the
-    # change that adds the arm.
-    "ci-web.yml": (
-        "Issue #483 owns this file in the current wave, so the staging arm "
-        "belongs to that change and not to #518. Issue #526 tracks the arm and "
-        "the removal of this entry."
-    ),
+    # Issue #526 removed the time-limited `ci-web.yml` entry. Commit 98fb8cff
+    # (#549) retired the release staging branch: it deleted
+    # `.github/staging-branch.txt`, and origin holds no branch of that name any
+    # more. So the entry excused a coverage rule that state 2 already switches
+    # off, and it kept `ci-web.yml` — the largest gate set here — silent in the
+    # one state where the rule speaks again. Do NOT add a staging arm to
+    # `ci-web.yml`: with the branch retired, the stale-name rule below rejects
+    # it.
 }
 
 PUSH_BLOCK = re.compile(

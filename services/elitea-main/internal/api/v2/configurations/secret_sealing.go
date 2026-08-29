@@ -209,7 +209,7 @@ func (h *Handler) updatedConfigurationType(
 		return "", nil
 	}
 	query := fmt.Sprintf(
-		`SELECT type FROM %q.configuration WHERE %s = $1 FOR UPDATE`,
+		`SELECT type FROM %s.configuration WHERE %s = $1 FOR UPDATE`,
 		schema, configurationIDColumn(configID))
 	var storedType string
 	if err := tx.QueryRow(ctx, query, configID).Scan(&storedType); err != nil {

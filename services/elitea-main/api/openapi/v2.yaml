@@ -1365,6 +1365,16 @@ components:
     VersionTag:
       type: object
       properties:
+        id:
+          type: integer
+          description: >
+            NOTE(#345): the `tags` row this association points at. The
+            applications handler emits it on every version-detail read
+            (versionTags, internal/api/v2/applications/handler.go). The
+            export and fork echoes project name and data only, so it is
+            optional. A write ignores it: the handler matches a tag by name,
+            the same way pylon does
+            (legacy/plugins/elitea_core/utils/application_utils.py:219-226).
         name:
           type: string
           nullable: true
@@ -1379,6 +1389,9 @@ components:
         there) and Fork's response echo (:2431-2438), which builds entries
         from unvalidated client maps: a fork payload tag without a name
         yields {"name": null, ...}. Hence name is nullable and not required.
+        NOTE(#345): the same shape is now also the WRITE shape — `tags` on
+        VersionWriteRequest refs this schema, matching pylon's own
+        PromptTagUpdateModel (name, optional data, optional id).
 
     ApplicationVersionDetail:
       type: object
@@ -1602,6 +1615,16 @@ components:
         variables:
           type: array
           items: { $ref: '#/components/schemas/VersionVariable' }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/VersionTag' }
+          description: >
+            NOTE(#345): the version's topical tags. Send the key to replace
+            the stored set; an empty array removes every association row.
+            Omit the key to leave the stored set alone. Each entry is matched
+            by `name`: an existing `tags` row is reused, a new name creates
+            one. Only the PUT (UpdateVersion) writes them — the two create
+            paths still ignore the key, exactly as they ignore `meta`.
         meta:
           allOf: [{ $ref: '#/components/schemas/VersionMeta' }]
         pipeline_settings:
@@ -1615,8 +1638,9 @@ components:
       x-elitea-passthrough: >-
         NOTE(W2): decoded into map[string]any; the handlers read
         name/agent_type/instructions/welcome_message/llm_settings/
-        conversation_starters/variables/meta/pipeline_settings and ignore the
-        rest (internal/api/v2/applications/handler.go:700-781, 828-887).
+        conversation_starters/variables/tags/meta/pipeline_settings and
+        ignore the rest (internal/api/v2/applications/handler.go:700-781,
+        828-887).
 
     SetDefaultVersionRequest:
       type: object
@@ -2820,16 +2844,38 @@ components:
         tags:
           type: array
           items: { $ref: '#/components/schemas/VersionTag' }
+        skills:
+          type: array
+          items: { $ref: '#/components/schemas/SkillReferenceInput' }
+          description: >
+            The skill attachments to give the forked version. Each entry names
+            an entry of the request's own top-level `skills` array by
+            `import_uuid`
+            (internal/api/v2/eliteacore/import_skills.go:470-473). An absent
+            key, and an empty array, both leave the forked version with no
+            attachment. The fork copied no attachment at all before
+            issue #611, so a forked agent lost every skill it had.
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): decoded into map[string]any; only the keys above are read
-        (internal/api/v2/eliteacore/handler.go:2296-2393).
+        (internal/api/v2/eliteacore/handler.go:3136-3305).
 
     ForkApplicationInput:
       type: object
       properties:
-        id: { type: string }
-        owner_id: { type: string }
+        id:
+          type: string
+          description: >
+            The SOURCE application id. The fork writes it into the new
+            version's `meta.parent_entity_id`, which is what makes the read
+            path report the copy as forked
+            (internal/api/v2/eliteacore/handler.go:3194-3196).
+        owner_id:
+          type: string
+          description: >
+            The SOURCE project id, and not a user id. It is written into
+            `meta.parent_project_id`
+            (internal/api/v2/eliteacore/handler.go:3195-3197).
         name: { type: string }
         description: { type: string }
         versions:
@@ -2839,19 +2885,127 @@ components:
       x-elitea-passthrough: >-
         NOTE(W2): decoded into map[string]any; only
         id/owner_id/name/description/versions are read
-        (internal/api/v2/eliteacore/handler.go:2273-2291, 2339-2341).
+        (internal/api/v2/eliteacore/handler.go:3105-3106, 3122, 3194-3195).
+
+    SkillForkInput:
+      type: object
+      required: [import_uuid, name, versions]
+      properties:
+        import_uuid:
+          type: string
+          description: >
+            The key that every `skills` reference of a forked version names,
+            and the key that makes a repeated fork of one document converge on
+            one skill. An entry that carries none is REFUSED before anything
+            is written: it is reported on `errors.skills`, and it never
+            appears in `result.skills`
+            (internal/api/v2/eliteacore/import_skills.go:151-157). The
+            remainder of the request still runs, so such a body answers 207
+            and not 400.
+        name:
+          type: string
+          description: >
+            An entry with no name is refused the same way, and for the same
+            reason: nothing is written and the entry is reported on
+            `errors.skills`
+            (internal/api/v2/eliteacore/import_skills.go:139-141).
+        description:
+          type: string
+          description: >
+            The name is written into the column when this value is empty,
+            because `skills.description` is NOT NULL
+            (internal/api/v2/eliteacore/import_skills.go:143-148).
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): copied into the `skills.meta` jsonb column, with
+            `import_uuid` added to the copy
+            (internal/api/v2/eliteacore/import_skills.go:278-292), and written
+            at :213-217.
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: >
+                  An empty or absent name is written as "base"
+                  (internal/api/v2/eliteacore/import_skills.go:229-232).
+              instructions: { type: string }
+              meta:
+                type: object
+                additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): written verbatim into the `skill_versions.meta`
+                  jsonb column
+                  (internal/api/v2/eliteacore/import_skills.go:234-237), and
+                  written at :251-257.
+              tags:
+                type: array
+                items:
+                  x-elitea-passthrough: >-
+                    NOTE(W2): a tag is a plain string, or an object with a
+                    `name` key. Only the name is read, and any other shape is
+                    skipped
+                    (internal/api/v2/eliteacore/import_skills.go:338-346).
+                    The two branches are not modelled as a `oneOf`, because
+                    the generated mock for a map-shaped `oneOf` branch does
+                    not type-check.
+                  description: A tag name, as a string or as an object with a `name` key.
+            additionalProperties: true
+            x-elitea-passthrough: >-
+              NOTE(W2): decoded into map[string]any; only
+              name/instructions/meta/tags are read, and `status` is never
+              read — every imported version is written as a draft
+              (internal/api/v2/eliteacore/import_skills.go:224-268).
+          description: >
+            An entry with no version is refused, because a skill with no
+            version has no instructions
+            (internal/api/v2/eliteacore/import_skills.go:164-167). A `base`
+            clone of the first entry is added when no entry is named `base`
+            (:304-326).
+      additionalProperties: true
+      x-elitea-passthrough: >-
+        NOTE(W2): decoded into map[string]any; only
+        import_uuid/name/description/meta/versions are read
+        (internal/api/v2/eliteacore/handler.go:3045-3093;
+        internal/api/v2/eliteacore/import_skills.go:135-269). It is the
+        SkillExport object the export document carries, so an exported
+        document can be forked unchanged; the extra export keys
+        (entity, id, owner_id) are ignored.
 
     ForkRequest:
       type: object
+      required: [applications]
       properties:
         applications:
           type: array
           items: { $ref: '#/components/schemas/ForkApplicationInput' }
+          description: >
+            Required. A body with no `applications` key, or one whose value is
+            not an array, is refused with 400
+            (internal/api/v2/eliteacore/handler.go:2970-2973). An array that
+            IS present and IS empty takes the fast path and answers 201 with
+            the empty envelope (:2975-2980).
+        skills:
+          type: array
+          items: { $ref: '#/components/schemas/SkillForkInput' }
+          description: >
+            The content of every skill the forked versions are attached to.
+            The fork reads this array and not the source project, because a
+            skill id belongs to the project the file came from and
+            `entity_skill_mapping.skill_id` has a foreign key into the SAME
+            schema's `skills` table
+            (internal/api/v2/eliteacore/handler.go:3042-3045). The key is
+            optional. A version that references a skill while the body carries
+            no `skills` key at all is reported on `errors.skills`, and the
+            answer is then 207 (:3306-3315).
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2254 — NOT required:
-        a body without the key (or a non-array) decodes to nil, len==0, and
-        takes the fast path returning 201 with the empty envelope
-        (:2255-2260); the handler never enforces presence.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2960-3045 — the body
+        is decoded into map[string]any and only `applications` and `skills`
+        are read.
 
     ForkAgentResult:
       type: object
@@ -2868,9 +3022,9 @@ components:
           nullable: true
           x-elitea-passthrough: >-
             NOTE(W2): hardwired nil in the fork result
-            (internal/api/v2/eliteacore/handler.go:2465) — always null today,
+            (internal/api/v2/eliteacore/handler.go:3380) — always null today,
             future shape unknown on the Go side.
-          description: Always null today (handler.go:2465).
+          description: Always null today (handler.go:3380).
         versions:
           type: array
           items:
@@ -2886,12 +3040,12 @@ components:
           nullable: true
           description: >
             Key ALWAYS present (null when no versions were created) —
-            unconditionally set in the agentResult map (handler.go:2459-2467).
+            unconditionally set in the agentResult map (handler.go:3375-3383).
         version_id: { type: string }
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2459-2472 —
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:3375-3387 —
         version_details is required+nullable (always marshaled); only
-        version_id is genuinely conditional (:2468-2470).
+        version_id is genuinely conditional (:3384-3386).
 
     ForkResponse:
       type: object
@@ -2899,66 +3053,88 @@ components:
       properties:
         result:
           type: object
-          required: [agents]
+          required: [agents, toolkits, skills]
           properties:
             agents:
               type: array
               items: { $ref: '#/components/schemas/ForkAgentResult' }
-            datasources:
+            toolkits:
               type: array
-              items:
-                type: object
-                x-elitea-passthrough: >-
-                  NOTE(W2): only ever the empty array, on the fast path
-                  gated by len(apps)==0 || h.pool==nil
-                  (internal/api/v2/eliteacore/handler.go:2255-2260) —
-                  element shape undefined on the Go side.
+              items: { $ref: '#/components/schemas/ImportedToolkit' }
               description: >
-                Present (empty) only on the fast path (empty input OR nil
-                pool, handler.go:2255).
-            prompts:
+                ALWAYS present, and ALWAYS empty: a fork writes no toolkit.
+                The channel is still carried, because the import wizard reads
+                `result[item.entity]` for every row it sent with no guard, so
+                a channel the answer leaves out is `undefined` at that call
+                and the dialog stops with no message at all. The set of three
+                is the legacy set, seeded from ENTITY_IMPORT_MAPPER
+                (internal/api/v2/eliteacore/export_import.go:676-723, applied
+                at handler.go:3406).
+            skills:
               type: array
-              items:
-                type: object
-                x-elitea-passthrough: >-
-                  NOTE(W2): only ever the empty array, on the fast path
-                  gated by len(apps)==0 || h.pool==nil
-                  (internal/api/v2/eliteacore/handler.go:2255-2260) —
-                  element shape undefined on the Go side.
+              items: { $ref: '#/components/schemas/ImportedSkill' }
               description: >
-                Present (empty) only on the fast path (empty input OR nil
-                pool, handler.go:2255).
+                One entry for each entry of the request's `skills` array that
+                the fork wrote
+                (internal/api/v2/eliteacore/handler.go:3073-3079). Present and
+                empty when the request carried no skill.
         errors:
           type: object
-          required: [agents]
+          required: [agents, toolkits, skills]
           properties:
             agents:
               type: array
-              items:
-                type: object
-                required: [name, error]
-                properties:
-                  name: { type: string }
-                  error: { type: string }
-            datasources:
+              items: { $ref: '#/components/schemas/ImportError' }
+              description: >
+                index/name/msg, which is the shape the import already writes
+                and the wizard already maps
+                (internal/api/v2/eliteacore/handler.go:3099-3102). The earlier
+                name/error entries threw inside the wizard, because it reads
+                selectedData[item.index] with no guard (issue #505).
+            toolkits:
               type: array
-              items:
-                type: object
-                x-elitea-passthrough: >-
-                  NOTE(W2): only ever the empty array
-                  (internal/api/v2/eliteacore/handler.go:2256-2260).
-            prompts:
+              items: { $ref: '#/components/schemas/ImportError' }
+              description: >
+                ALWAYS present, and ALWAYS empty, for the reason
+                `result.toolkits` gives
+                (internal/api/v2/eliteacore/handler.go:3407).
+            skills:
               type: array
-              items:
-                type: object
-                x-elitea-passthrough: >-
-                  NOTE(W2): only ever the empty array
-                  (internal/api/v2/eliteacore/handler.go:2256-2260).
+              items: { $ref: '#/components/schemas/ImportError' }
+              description: >
+                Two faults report here, and every entry indexes ONE list: the
+                `applications` the request sent, followed by its `skills`.
+                That is the legacy numbering — `fork.py` concatenates the two
+                arrays into one entity list, and `_wrap_import_error` numbers
+                each entry by its position in that concatenation.
+
+                A `skills` entry the fork could not write carries
+                `len(applications)` plus its own position in the `skills`
+                array
+                (internal/api/v2/eliteacore/handler.go:3045-3048). A `skills`
+                reference on a version that the fork could not attach carries
+                the index of the AGENT that holds the reference (:3306-3322).
+
+                Each entry used to carry the constant 0, which named an
+                application and never the skill that failed. A client resolves
+                this index against the same concatenation, and must tolerate
+                an index it cannot resolve.
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2475-2478 (normal) and
-        :2256-2260 (fast-path variant with datasources/prompts keys). The
-        fast path fires when `len(apps) == 0 || h.pool == nil` (:2255) — not
-        only on empty input.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:3403-3408 (the normal
+        path) and :2975-2980 (the empty-input fast path). BOTH answers build
+        the same three channels on BOTH envelopes, through one helper
+        (internal/api/v2/eliteacore/export_import.go:711-723), so no answer of
+        this route can leave a channel out. The fast path used to send
+        `datasources` and `prompts` in place of `toolkits` and `skills`. Those
+        two keys are in no entity mapper, no path of this route can put an
+        entry in them, and they are gone.
+
+        The fast path fires only when `applications` is an array with no entry
+        (handler.go:2975). A body with no `applications` array is refused with
+        400 (:2970-2973), and a handler with no pool answers 500
+        (:2948-2952). Status on the normal path is 201 when everything was
+        forked, 207 when part of it was, and 400 when nothing was
+        (:3390-3401).
 
     AgentCategoriesResponse:
       type: object
@@ -3953,11 +4129,218 @@ components:
         NOTE(W2): stub — see rows marker.
 
     # ---- Export / import / fork ------------------------------------------------
+    ExportedSkillReference:
+      type: object
+      required: [import_uuid, entity_type]
+      properties:
+        import_uuid:
+          type: string
+          description: >
+            Names one entry of the document's top-level `skills` array. A
+            reference cannot name a skill by id: `skills.id` belongs to the
+            project the file came from, and an import writes into a different
+            project. The export reads the id and swaps the key for the uuid
+            once it has read the skills
+            (internal/api/v2/eliteacore/export_import.go:413-427).
+        entity_type:
+          type: string
+          enum: [agent]
+          description: >
+            The `entity_skill_mapping.entity_type` of the attachment, and a
+            CLOSED set of one member. The import refuses every other value and
+            reports it on `errors.skills`
+            (internal/api/v2/eliteacore/import_skills.go:433-437), because the
+            sibling write route answers 400 for anything else
+            (internal/api/v2/skills/handler.go:423-441) and both reads filter
+            on the literal — so a row with another value is a row nothing
+            reads. The export writes the column out as it stands
+            (internal/api/v2/eliteacore/export_import.go:371-374), and every
+            writer of that column in this service writes `agent`
+            (internal/api/v2/skills/handler.go:104).
+        version_name:
+          type: string
+          description: >
+            The skill version the attachment pins. The key is ABSENT when the
+            source row holds a NULL `skill_version_id`
+            (internal/api/v2/eliteacore/export_import.go:375-381). An absent
+            key tells the import to attach the skill's `base` version
+            (internal/api/v2/eliteacore/import_skills.go:115-127).
+      description: >
+        NOTE(W2): one skill attachment of one agent version, in the EXPORT
+        direction. Both required keys are always written
+        (internal/api/v2/eliteacore/export_import.go:371-374, with
+        `import_uuid` swapped in at :413-427). SkillReferenceInput is the
+        REQUEST twin of this schema, and it requires `import_uuid` only.
+
+    SkillReferenceInput:
+      type: object
+      required: [import_uuid]
+      properties:
+        import_uuid:
+          type: string
+          description: >
+            Names one entry of the request's top-level `skills` array. A
+            reference that names an entry the request did not carry, or one
+            whose own import failed, is reported on `errors.skills`
+            (internal/api/v2/eliteacore/import_skills.go:403-411).
+        entity_type:
+          type: string
+          enum: [agent]
+          description: >
+            OPTIONAL here, which is the one difference from the export
+            direction: an absent or empty value becomes `agent`
+            (internal/api/v2/eliteacore/import_skills.go:429-432). Every other
+            value is refused and reported (:433-437).
+        version_name:
+          type: string
+          description: >
+            The skill version to pin. An absent key attaches the skill's
+            `base` version, and then the skill's first version
+            (internal/api/v2/eliteacore/import_skills.go:115-127).
+      description: >
+        NOTE(W2): one skill attachment that a fork or an import request asks
+        for, read at
+        internal/api/v2/eliteacore/import_skills.go:397-437. It is the REQUEST
+        twin of ExportedSkillReference. The two are separate schemas because
+        `entity_type` is written on every exported reference and is optional
+        on every requested one. One schema that required the key would make
+        the generated client refuse a body this service accepts.
+
+    SkillVersionExport:
+      type: object
+      required: [id, name, instructions, author_id, meta, tags]
+      properties:
+        id:
+          type: integer
+          description: >
+            The source `skill_versions.id`. It is a NUMBER and not a string:
+            the export writes the raw column value
+            (internal/api/v2/eliteacore/export_import.go:580-583). The import
+            ignores it and uses the id of the row it writes.
+        name:
+          type: string
+          description: >
+            The version name a reference pins with `version_name`. An empty
+            name is written as "base" on import
+            (internal/api/v2/eliteacore/import_skills.go:229-232).
+        instructions: { type: string }
+        author_id:
+          type: integer
+          description: >
+            The source `skill_versions.author_id`. It is a NUMBER and not a
+            string. The import ignores it and writes the caller
+            (internal/api/v2/eliteacore/import_skills.go:251-257).
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the `skill_versions.meta` jsonb column. The export
+            copies it without inspecting it
+            (internal/api/v2/eliteacore/export_import.go:571-583) and the
+            import writes it back verbatim
+            (internal/api/v2/eliteacore/import_skills.go:234-237, 251-257). It
+            is `{}` when the column is NULL.
+        tags:
+          type: array
+          items:
+            type: object
+            required: [name, data]
+            properties:
+              name: { type: string }
+              data:
+                x-elitea-passthrough: >-
+                  NOTE(W2): the `tags.data` jsonb column. The export copies it
+                  without inspecting it
+                  (internal/api/v2/eliteacore/export_import.go:655-662) and it
+                  is `{}` when the column is NULL. The import reads the tag
+                  name only, and accepts a plain string in place of this
+                  object (internal/api/v2/eliteacore/import_skills.go:338-346).
+      description: >
+        NOTE(W2): one version of an exported skill,
+        internal/api/v2/eliteacore/export_import.go:580-583, with `tags` added
+        at :481-490. `status` is absent on purpose. It records whether the
+        SOURCE project holds a twin of the version in the public project,
+        which can never hold for the project the file is imported into
+        (:552-557). Only the versions the attachments name are exported. A
+        selection that matches nothing keeps the whole history, because a
+        skill with no version cannot be imported (:601-616).
+
+    SkillExport:
+      type: object
+      required: [entity, id, import_uuid, name, description, owner_id, meta,
+                 versions]
+      properties:
+        entity:
+          type: string
+          description: >
+            Always the literal "skills". The export stamps the key so that a
+            document sent to the import route unchanged names its own entities
+            (internal/api/v2/eliteacore/export_import.go:526-531).
+        id:
+          type: string
+          description: >
+            The source `skills.id`. The import ignores it, because that id
+            belongs to the project the file came from.
+        import_uuid:
+          type: string
+          description: >
+            The key every version reference uses. It is `skills.uuid`, or
+            `skill-<id>` when the row holds no uuid
+            (internal/api/v2/eliteacore/export_import.go:516-523).
+        name: { type: string }
+        description:
+          type: string
+          description: >
+            The import writes the name into the column when this value is
+            empty, because `skills.description` is NOT NULL
+            (internal/api/v2/eliteacore/import_skills.go:143-148).
+        owner_id:
+          type: string
+          description: >
+            The SOURCE project id, and not a user id. The import ignores it
+            and writes the destination project
+            (internal/api/v2/eliteacore/import_skills.go:213-217).
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the `skills.meta` jsonb column. The export copies it
+            without inspecting it
+            (internal/api/v2/eliteacore/export_import.go:509-515, written at
+            :537) and the import writes it back with `import_uuid` added
+            (internal/api/v2/eliteacore/import_skills.go:278-292). It is `{}`
+            when the column is NULL.
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/SkillVersionExport' }
+          description: >
+            ALWAYS an array, and never null. A skill needs no version row, and
+            an agent can be attached to a skill that has none, so this value
+            was the nil version list of such a skill; the export now writes
+            `[]` there, which is the shape every sibling array of the document
+            already has
+            (internal/api/v2/eliteacore/export_import.go:617-619).
+
+            The import adds a `base` clone of the first entry when the array
+            names no version called `base`, because every skills read of this
+            service joins on that name
+            (internal/api/v2/eliteacore/import_skills.go:304-326). The clone
+            is additive, so a reference that pins another version still finds
+            it. Every imported version is written with status `draft`
+            (:251-257). An entry whose array is empty is refused and reported
+            on errors.skills (:164-167).
+      description: >
+        NOTE(W2): one entry of the export document's top-level `skills` array,
+        internal/api/v2/eliteacore/export_import.go:525-539. The same object
+        is what the import route accepts as an entity with entity "skills",
+        and what the fork request carries in its own `skills` array.
+
     ApplicationVersionExport:
       type: object
       required: [id, name, status, application_id, author_id, agent_type,
                  instructions, welcome_message, llm_settings,
-                 conversation_starters, meta, tools, variables, tags, is_forked]
+                 conversation_starters, meta, tools, variables, tags, skills,
+                 is_forked]
       properties:
         id: { type: string }
         name: { type: string }
@@ -3985,13 +4368,25 @@ components:
         tags:
           type: array
           items: { $ref: '#/components/schemas/VersionTag' }
+        skills:
+          type: array
+          items: { $ref: '#/components/schemas/ExportedSkillReference' }
+          description: >
+            The skill attachments of this version. The key is ALWAYS present,
+            and the array is empty when the version carries no attachment
+            (internal/api/v2/eliteacore/export_import.go:364-382, written into
+            the version entry at :169-185). Each entry names a skill in the
+            document's top-level `skills` array. The import and the fork read
+            this array to write the `entity_skill_mapping` rows of the version
+            they create
+            (internal/api/v2/eliteacore/import_skills.go:397-461).
         is_forked: { type: boolean }
         import_version_uuid:
           type: string
           description: Present only when the version row has a uuid.
       description: >
         NOTE(W2): ExportImportGet version entry,
-        internal/api/v2/eliteacore/handler.go:2670-2683.
+        internal/api/v2/eliteacore/export_import.go:176-188.
 
     ApplicationExport:
       type: object
@@ -4022,7 +4417,8 @@ components:
           nullable: true
           description: Present only with ?fork=true.
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2692-2712.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:3507-3528 — the four
+        fork-only keys are set in the `isFork` branch at :3515-3528.
 
     ToolkitExport:
       type: object
@@ -4038,10 +4434,11 @@ components:
           x-elitea-passthrough: >-
             NOTE(W2): elitea_tools.settings jsonb with the sensitive keys
             (api_key, tokens, secrets, ...) stripped
-            (internal/api/v2/eliteacore/handler.go:2532-2547); remaining keys
-            are toolkit-type-specific. Channel-B fixture recommended (M1).
+            (internal/api/v2/eliteacore/export_import.go:68-78); remaining
+            keys are toolkit-type-specific. Channel-B fixture recommended
+            (M1).
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2544-2547.
+        NOTE(W2): internal/api/v2/eliteacore/export_import.go:81-84.
 
     ApplicationExportResponse:
       type: object
@@ -4054,14 +4451,25 @@ components:
         toolkits:
           type: array
           items: { $ref: '#/components/schemas/ToolkitExport' }
+        skills:
+          type: array
+          items: { $ref: '#/components/schemas/SkillExport' }
+          description: >
+            The content of every skill that a version of the exported
+            application is attached to. The key is OMITTED when the
+            application has no skill attachment, because the import wizard
+            turns each top-level array into a group the user selects, and an
+            empty group has nothing to select
+            (internal/api/v2/eliteacore/handler.go:3535-3541). The array is
+            built after the `?fork=true` branch drops the versions it does not
+            export, so it names only the skills the exported versions use
+            (:3490-3499).
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2714-2718. With
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:3530-3541. With
         ?as_file=true the same JSON is sent with a Content-Disposition
-        attachment header (:2720-2726). The handler also has a test-only
-        degraded return: when h.pool == nil it writes {"ok": true} with no
-        applications/toolkits keys (:2481-2484) — unreachable in production
-        (cmd/elitea-main/main.go:54-58 exits when the pool cannot be built;
-        internal/api/router.go:236 always passes it).
+        attachment header (:3557-3570), and with ?format=md it is rendered as
+        markdown instead (:3552-3555). A handler that holds no database pool
+        answers 500 and no document at all (:3416-3420).
 
     ExportConverterResponse:
       type: object
@@ -4072,10 +4480,10 @@ components:
           nullable: true
           x-elitea-passthrough: >-
             NOTE(W2): echo of the request body, whatever it was
-            (internal/api/v2/eliteacore/handler.go:2726-2730); null when the
+            (internal/api/v2/eliteacore/handler.go:3575-3579); null when the
             body was absent/malformed.
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2726-2730 — the
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:3575-3579 — the
         "converter" is currently an echo stub.
 
     ExportConverterRequest:
@@ -4083,14 +4491,19 @@ components:
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): arbitrary legacy payload; decoded into map[string]any and
-        echoed back unchanged (internal/api/v2/eliteacore/handler.go:2726-2730).
+        echoed back unchanged (internal/api/v2/eliteacore/handler.go:3575-3579).
 
     ImportEntity:
       type: object
       properties:
         entity:
           type: string
-          description: '"toolkits" routes to toolkit import; anything else is an agent.'
+          description: >
+            "toolkits" routes to the toolkit import and "skills" routes to the
+            skill import. Every other value is an agent
+            (internal/api/v2/eliteacore/handler.go:2439-2450). A "skills"
+            entry had no branch of its own, so every skill entry the wizard
+            sent became an agent named after the skill (#611).
         import_uuid: { type: string }
         name: { type: string }
         description: { type: string }
@@ -4100,23 +4513,29 @@ components:
           additionalProperties: true
           x-elitea-passthrough: >-
             NOTE(W2): toolkit settings persisted verbatim after import_uuid
-            resolution (internal/api/v2/eliteacore/handler.go:2110-2146).
+            resolution (internal/api/v2/eliteacore/handler.go:2698-2734).
         versions:
           type: array
           items: { $ref: '#/components/schemas/VersionWriteRequest' }
       additionalProperties: true
       x-elitea-passthrough: >-
-        NOTE(W2): entities are handled as map[string]any; the import reads
-        entity/import_uuid/name/description/type/settings/versions, each
-        version's import_version_uuid (:2043-2046, load-bearing — resolves
-        toolkit settings.application_version_id at :2120-2123), tools'
-        import_uuid + selected_tools (:2192-2196, persisted to
-        entity_tool_mapping), and toolkit settings.import_uuid /
-        settings.import_version_uuid (:2115, :2120); the rest is ignored
-        (internal/api/v2/eliteacore/handler.go:1928-2148). The versions
-        items ref VersionWriteRequest, whose additionalProperties admits the
-        round-trip keys (import_version_uuid, tools) that its named
-        properties do not declare.
+        NOTE(W2): entities are handled as map[string]any. The import reads
+        entity/import_uuid (handler.go:2439-2446), an agent's
+        name/description/versions (:2519-2522) and a toolkit's
+        name/type/settings (:2688-2698), each version's import_version_uuid
+        (:2618-2621, load-bearing — it resolves toolkit
+        settings.application_version_id at :2718-2721), tools' import_uuid and
+        selected_tools (:2805, :2828, persisted to entity_tool_mapping at
+        :2835-2838), and toolkit settings.import_uuid /
+        settings.import_version_uuid (:2713, :2718). It ALSO reads, for an
+        entity with entity "skills", that entity's versions[].name,
+        versions[].instructions, versions[].meta and versions[].tags
+        (import_skills.go:224-268), and, for an agent entity, each version's
+        `skills` array of SkillReferenceInput (import_skills.go:470-473,
+        written to entity_skill_mapping at :397-461). The rest is ignored. The
+        versions items ref VersionWriteRequest, whose additionalProperties
+        admits the round-trip keys (import_version_uuid, tools, skills) that
+        its named properties do not declare.
 
     ImportWizardRequest:
       oneOf:
@@ -4131,7 +4550,8 @@ components:
       description: >
         NOTE(W2): the handler accepts a bare entity array (import_wizard) or a
         {"applications": [...]} envelope
-        (internal/api/v2/eliteacore/handler.go:1887-1898).
+        (internal/api/v2/eliteacore/handler.go:2349-2378). An envelope with no
+        `applications` array is refused with 400 (:2372-2376).
 
     ImportError:
       type: object
@@ -4139,13 +4559,28 @@ components:
       properties:
         index:
           type: integer
-          description: Position of the failed entity in the request array.
+          description: >
+            The position of the failed entity. The two routes count over
+            different lists, and a client must know which one it is reading.
+
+            The IMPORT channel indexes the single flat entity array the
+            request sent — the bare array, or the `applications` array of the
+            envelope (internal/api/v2/eliteacore/handler.go:2430-2450).
+
+            The FORK channel indexes the CONCATENATION of the request's
+            `applications` array and its `skills` array, in that order, which
+            is the legacy numbering. An agent-attributed error therefore keeps
+            the position it had, and a skill-attributed error carries
+            `len(applications)` plus its position in the `skills` array
+            (:3045-3048). See ForkResponse.errors.skills.
         name: { type: string }
         msg: { type: string }
       description: >
-        NOTE(W2): all six emit sites include index —
-        internal/api/v2/eliteacore/handler.go:1966, 1974, 1986, 2125-2129,
-        2152, 2218-2222.
+        NOTE(W2): all 35 emit sites write the three keys — 17 in the import
+        (internal/api/v2/eliteacore/handler.go:2433, 2469, 2500, 2524, 2532,
+        2544, 2562, 2589, 2610, 2701, 2723, 2736, 2746, 2759, 2873, 2880,
+        2887) and 18 in the fork (:3051, 3063, 3090, 3099, 3115, 3130, 3149,
+        3162, 3170, 3181, 3208, 3226, 3251, 3269, 3283, 3294, 3311, 3318).
 
     ImportedAgent:
       type: object
@@ -4172,9 +4607,10 @@ components:
           nullable: true
           description: >
             Key ALWAYS present in the marshaled map — null only when every
-            version insert failed (versionDetails stays nil, :1997).
+            version insert failed (versionDetails stays nil,
+            handler.go:2555).
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2085-2093 —
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2663-2670 —
         version_details unconditionally present (hence required+nullable).
 
     ImportedToolkit:
@@ -4185,7 +4621,27 @@ components:
         name: { type: string }
         type: { type: string }
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2148-2150.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2757.
+
+    ImportedSkill:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: The id of the skill row the import or the fork wrote.
+        name:
+          type: string
+          description: >
+            The name of the skill. The import carries the entry's own `name`,
+            which is never empty because an entry with no name is refused
+            (internal/api/v2/eliteacore/handler.go:2487-2489). The fork
+            carries the same name, and falls back to "skills entry <n>" when
+            the entry has none (:3058-3060).
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2483-2489 (import) and
+        :3073-3079 (fork). Two keys only — the skill import returns no
+        version list.
 
     ImportWizardResponse:
       type: object
@@ -4193,7 +4649,7 @@ components:
       properties:
         result:
           type: object
-          required: [agents]
+          required: [agents, toolkits, skills]
           properties:
             agents:
               type: array
@@ -4201,9 +4657,15 @@ components:
             toolkits:
               type: array
               items: { $ref: '#/components/schemas/ImportedToolkit' }
+            skills:
+              type: array
+              items: { $ref: '#/components/schemas/ImportedSkill' }
+              description: >
+                One entry for each entity with entity "skills" that the import
+                wrote (internal/api/v2/eliteacore/handler.go:2483-2489).
         errors:
           type: object
-          required: [agents]
+          required: [agents, toolkits, skills]
           properties:
             agents:
               type: array
@@ -4211,11 +4673,27 @@ components:
             toolkits:
               type: array
               items: { $ref: '#/components/schemas/ImportError' }
+            skills:
+              type: array
+              items: { $ref: '#/components/schemas/ImportError' }
+              description: >
+                Two faults report here, and both carry an index into the flat
+                entity array the request sent. A skill entity the import could
+                not write carries the index of that entity
+                (internal/api/v2/eliteacore/handler.go:2466-2503). A `skills`
+                reference on an agent version that the import could not attach
+                carries the index of the AGENT, because that is the entity the
+                user selected (:2886-2891, with the message text from
+                import_skills.go:397-461).
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2238-2241 (the
-        writeJSON of the {result, errors} envelope); empty-input fast path at
-        :1900-1906 omits the toolkits keys. Status is 201 when all entities
-        imported, 207 on partial failure, 400 when all failed (:2226-2237).
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2907-2910 (the
+        writeJSON of the {result, errors} envelope) and :2380-2385 (the
+        empty-input fast path). BOTH answers build the same three channels on
+        BOTH envelopes, through one helper
+        (internal/api/v2/eliteacore/export_import.go:711-723), so no answer of
+        this route can leave a channel out. The fast path used to carry the
+        `agents` key alone. Status is 201 when all entities imported, 207 on
+        partial failure, 400 when all failed (handler.go:2895-2905).
 
     Permission:
       type: object
@@ -4545,6 +5023,53 @@ components:
         (internal/api/v2/toolkits/handler.go:526-534). Repository failures are
         returned as a safe 500 error rather than an indistinguishable empty
         successful listing.
+
+    ToolkitTool:
+      type: object
+      required: [id, name, type]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string }
+        description: { type: string }
+      description: >
+        NOTE(#440): one row of the two tool-catalogue reads. The Go type is
+        `toolkits.Tool` (internal/api/v2/toolkits/handler.go:21-28). Both
+        queries select the same four columns of `p_{project_id}.elitea_tools`:
+        `id`, `name`, `type` and `COALESCE(description, '')` (:1086-1116).
+        `id` is a JSON string because the struct field is a string. The column
+        itself is the table's `id SERIAL`
+        (internal/infra/db/migrations/001_initial.sql:435-447).
+
+        `description` is optional. The struct tag carries `omitempty`, so an
+        empty column value removes the key.
+
+        TWO STRUCT FIELDS ARE ABSENT ON PURPOSE. `toolkits.Tool` also declares
+        `owner_id` and `settings`. `scanTools` (:1121-1135) assigns neither,
+        and both tags carry `omitempty`, so neither key can reach a client of
+        these two operations. Do not add them here: a contract that promises a
+        key the handler never writes sends the client to look for data that
+        does not exist. The other producer of the same struct is `ForkToolkit`,
+        which this document does not describe.
+
+    ToolkitToolsPayload:
+      type: object
+      required: [tools, total]
+      properties:
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/ToolkitTool' }
+        total: { type: integer }
+      description: >
+        NOTE(#440): the `{tools, total}` envelope that both tool-catalogue
+        reads write (internal/api/v2/toolkits/handler.go:522, 544). `total` is
+        `len(tools)` of the SAME response, not a page count: neither operation
+        pages. Both keys are always present, so an absent `tools` key is a
+        transport fault, not an empty catalogue.
+
+        AN EMPTY LIST IS A RESULT, NOT A FAULT (#381). A failed read gives 500
+        and a named reason. Only a toolkit with no tools gives 200 and an empty
+        array. Render the two apart.
 
     # ---- MCP (issue 252) ---------------------------------------------------
 
@@ -7174,11 +7699,13 @@ paths:
       operationId: exportApplication
       summary: Export an application (with toolkits) as JSON
       description: |
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2480-2727. The
-        handler reads only ?fork= (keep last version + provenance keys) and
-        ?as_file= (attachment Content-Disposition). follow_version_ids and
-        format are accepted for old-SPA parity but not read — markdown export
-        is NOT implemented on the Go router.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:3411-3573. The handler
+        reads ?fork= (keep the last version and add the provenance keys,
+        :3490-3492), ?format=md (render the same document as markdown,
+        :3552-3555) and ?as_file= (attachment Content-Disposition,
+        :3557-3570). follow_version_ids is accepted for old-SPA parity and is
+        not read. The document carries a top-level `skills` array when a
+        version of the application is attached to a skill (:3535-3541).
       tags: [applications]
       parameters:
         - name: fork
@@ -7187,7 +7714,7 @@ paths:
         - name: as_file
           in: query
           schema: { type: boolean }
-          description: Serve as attachment (read at handler.go:2720).
+          description: Serve as attachment (read at handler.go:3557).
         - name: follow_version_ids
           in: query
           schema:
@@ -7202,10 +7729,15 @@ paths:
             type: string
             enum: [json, md]
           description: >
-            Old-SPA parameter; accepted but NOT read — the handler always
-            emits JSON (eliteacore/handler.go:2682, 2716 read only fork and
-            as_file). The enum records what the SPA actually sends:
-            `md`, not `markdown` (apps/elitea-ui/src/api/applications.js:592).
+            `md` renders the same document as markdown — one file for each
+            version, zipped when there is more than one
+            (eliteacore/handler.go:3552-3555; the renderer is
+            eliteacore/export_markdown.go:649). It is checked BEFORE
+            ?as_file=, which the markdown branch does not honour: a markdown
+            export always carries a Content-Disposition. Every other value,
+            and an absent parameter, emit JSON. The enum records what the SPA
+            actually sends: `md`, not `markdown`
+            (apps/elitea-ui/src/api/applications.js:592).
       responses:
         '200':
           description: Export document
@@ -7223,7 +7755,7 @@ paths:
       summary: Convert a legacy-format application payload into the current schema
       description: |
         NOTE(W2): echo stub — {"ok": true, "converted": <request body>}
-        (internal/api/v2/eliteacore/handler.go:2726-2730).
+        (internal/api/v2/eliteacore/handler.go:3575-3579).
       tags: [applications]
       requestBody:
         required: true
@@ -7247,11 +7779,14 @@ paths:
 
     post:
       operationId: importWizard
-      summary: Guided multi-step import flow for applications and toolkits
+      summary: Guided multi-step import flow for applications, toolkits and skills
       description: |
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:1883-2246 — 201 when
-        every entity imported, 207 on partial failure, 400 when all failed;
-        the body is always the {result, errors} envelope.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2315-2911 — 201 when
+        every entity imported, 207 on partial failure, 400 when all failed
+        (:2895-2905); the body is always the {result, errors} envelope, and
+        each envelope always carries all three entity channels (:2907-2910).
+        An entity with entity "skills" routes to the skill import, which had
+        no branch of its own until issue #611 (:2444-2446).
       tags: [applications]
       requestBody:
         required: true
@@ -7620,8 +8155,14 @@ paths:
       operationId: forkAgent
       summary: Copy a published application into the caller's project
       description: |
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:2244-2478 — responds
-        201 with the {result, errors} envelope.
+        NOTE(W2): internal/api/v2/eliteacore/handler.go:2942-3409 — responds
+        201 when everything was forked, 207 when part of it was, and 400 when
+        nothing was (:3390-3401). All three bodies are the same
+        {result, errors} envelope, and each envelope always carries all three
+        entity channels (:3403-3408); only the 201 is modelled below. The
+        request carries the content of every skill the forked versions are
+        attached to, because a skill id belongs to the project the file came
+        from (:3042-3045).
       tags: [applications]
       requestBody:
         required: true
@@ -10523,6 +11064,115 @@ paths:
               schema:
                 $ref: '#/components/schemas/ToolkitInstance'
         '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # NOTE(#440): the TOOL CATALOGUE of a toolkit — two reads that answer
+  # "which tools may this toolkit run?". Both routes have always been mounted
+  # (internal/api/router.go:1911-1914, behind the
+  # `models.applications.tool.details` permission). Until issue #440 no client
+  # called either one, and this document did not describe them, so
+  # `apps/elitea-web` reaches them through the hand-written
+  # `src/entities/toolkit/api/toolkitToolsApi.ts` and records both in
+  # `src/shared/api/endpoints.manifest.json`.
+  #
+  # THE TWO ARE NOT INTERCHANGEABLE. `toolkit_available_tools` takes a saved
+  # toolkit INSTANCE id and reads the rows mapped to it. `toolkit_discover_tools`
+  # takes a toolkit TYPE name and reads every row of that type in the project.
+  # A tool picker uses the first when the toolkit is saved, and the second
+  # while the toolkit is still being created and has no id.
+  /elitea_core/toolkit_available_tools/prompt_lib/{project_id}/{toolkit_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: toolkit_id
+        in: path
+        required: true
+        schema: { type: string }
+        description: >
+          The saved toolkit instance. The handler reads the segment and passes
+          it straight to the query as `entity_version_id`
+          (internal/api/v2/toolkits/handler.go:513, 1086-1101), so it is a
+          string here, like the `{toolkitID}` chi placeholder it fills.
+
+    get:
+      operationId: listToolkitAvailableTools
+      summary: List the tools that one toolkit instance has
+      description: |
+        NOTE(#440): internal/api/v2/toolkits/handler.go:511-523
+        (AvailableTools) calling pgRepo.AvailableTools (:1086-1101). The query
+        joins `entity_tool_mapping` to `elitea_tools` on the toolkit id.
+        Registered at internal/api/router.go:1911-1912.
+
+        GUARDRAILS FILTER THE RESULT. `filterBlockedTools`
+        (internal/api/v2/toolkits/guardrails.go:120-132) drops every row whose
+        TYPE this deployment blocks. The response stays 200 and the count
+        follows the filtered list, because a blocked type is not a tool the
+        caller may run.
+
+        A LOST READ IS NOT AN EMPTY CATALOGUE (#381). Any repository fault —
+        a dead pool, a missing tenant schema, a bad row, a row set that ends
+        early — gives 500 with `{"error": "available tools read failed"}`. The
+        driver detail goes to the log only. A toolkit with no tools gives 200
+        and an empty array.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: The tools this toolkit instance has
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitToolsPayload'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/toolkit_discover_tools/prompt_lib/{project_id}/{toolkit_type}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: toolkit_type
+        in: path
+        required: true
+        schema: { type: string }
+        description: >
+          A toolkit type name, for example `github` or `openapi`. The handler
+          matches it against the `type` column exactly
+          (internal/api/v2/toolkits/handler.go:1105-1116). An unknown type is
+          not an error: it selects no rows and gives an empty list.
+
+    post:
+      operationId: discoverToolkitTools
+      summary: List the tools that one toolkit type offers in a project
+      description: |
+        NOTE(#440): internal/api/v2/toolkits/handler.go:527-545 (DiscoverTools)
+        calling pgRepo.DiscoverTools (:1105-1116). Registered at
+        internal/api/router.go:1913-1914.
+
+        POST WITH NO BODY. The handler reads both arguments from the URL and
+        never opens the request body. pylon declares the verb, so the route
+        keeps it. Send no payload; the handler discards one.
+
+        A BLOCKED TYPE IS REFUSED, NOT EMPTIED. The type sits in the URL, so
+        `refuseBlockedToolkitType`
+        (internal/api/v2/toolkits/guardrails.go:82-97) answers 403 and NAMES
+        the type: `{"error": "toolkit type \"<name>\" is blocked by this
+        deployment's guardrails"}`. "This deployment blocks this type" and
+        "this project holds no toolkit of this type" are different facts, and
+        an operator who reads a bare 403 goes to the roles page instead of the
+        guardrail rule. `filterBlockedTools` then drops any surviving blocked
+        row from the list, exactly as it does for the read above.
+
+        A LOST READ IS NOT AN EMPTY CATALOGUE (#381). A repository fault gives
+        500 with `{"error": "discover tools read failed"}`, for the same reason
+        `listToolkitAvailableTools` does.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: The tools of this type that the project holds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitToolsPayload'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }

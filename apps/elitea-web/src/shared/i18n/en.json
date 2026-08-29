@@ -2701,5 +2701,17 @@
   "widgets.supportAssistant.open": "Support Assistant",
   "widgets.supportAssistant.send": "Send message",
   "widgets.supportAssistant.showFullAnswer": "Show the full answer",
-  "widgets.supportAssistant.userAvatar": "User avatar"
+  "widgets.supportAssistant.userAvatar": "User avatar",
+  "pages.onboarding.authorRetry": "Try again",
+  "pages.onboarding.authorUnavailable": "We could not load your account just now.",
+  "ai-configuration.copyConfigurationTooltip": "Copy configuration",
+  "agents.versionSelector.defaultMarker": "Default",
+  "agents.versionSelector.setDefault": "Set as default",
+  "features.agents.setDefaultVersion.confirm": "Set as a default",
+  "features.agents.setDefaultVersion.title": "Set as default?",
+  "features.agents.setDefaultVersion.warning": "is used whenever this agent joins a new conversation, another agent or pipeline as a toolkit, or an MCP toolkit.",
+  "features.toolkits.testToolSettings.toolListError": "The tool list did not load. Try again.",
+  "features.toolkits.testToolSettings.toolListRetry": "Retry",
+  "pipelines.loopToolSelect.retry": "Retry",
+  "pipelines.loopToolSelect.toolListError": "The tool list did not load. Try again."
 }

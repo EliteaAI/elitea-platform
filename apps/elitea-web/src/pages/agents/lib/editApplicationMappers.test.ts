@@ -81,6 +81,7 @@ describe('toVersionWriteBody', () => {
       stepLimit: undefined,
       internalTools: [],
       llmSettings: { model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1, temperature: 0.6 },
+      tags: [],
     };
 
     expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({
@@ -106,6 +107,7 @@ describe('toVersionWriteBody', () => {
       stepLimit: undefined,
       internalTools: [],
       llmSettings: undefined,
+      tags: [],
     };
 
     expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({ model_name: 'gpt' });
@@ -140,6 +142,12 @@ describe('toVersionSaveBody', () => {
       stepLimit: 12,
       internalTools: ['internal_mcp', 'internal_web'],
       llmSettings: undefined,
+      tags: [
+        { id: 4, name: 'sales', data: null },
+        // A tag the user just typed: `AgentTagEditor` gives it a negative
+        // placeholder id, which must NOT reach the wire (#345).
+        { id: -1712000000000, name: 'fresh', data: null },
+      ],
     };
 
     const body = toVersionSaveBody(version, [], edits);
@@ -150,6 +158,35 @@ describe('toVersionSaveBody', () => {
     // The untouched keys ride along through the same merge.
     expect(parsed.meta?.step_limit).toBe(12);
     expect(parsed.meta?.category).toBe('sales');
+    // #345 — `tags` reaches the wire, keyed by name; a stored tag keeps its
+    // id and a brand-new one sends none.
+    expect(parsed.tags).toEqual([
+      { id: 4, name: 'sales' },
+      { name: 'fresh' },
+    ]);
+  });
+
+  /*
+   * #345 — the save body must carry `tags` on EVERY save, including the one
+   * that empties the list. The Go handler reads the key's presence: an
+   * absent key leaves the stored associations alone, so a body that dropped
+   * an empty list would make "I removed my last tag" unsaveable, which is
+   * exactly the silent-discard shape this issue exists to fix.
+   */
+  it('sends an empty tags array rather than omitting the key', () => {
+    const version = { name: 'base', meta: {} } as unknown as ApplicationVersionDetail;
+    const body = toVersionSaveBody(version, [], {
+      instructions: '',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: undefined,
+      tags: [],
+    });
+
+    expect(body.tags).toEqual([]);
+    expect(Object.hasOwn(body, 'tags')).toBe(true);
   });
 });
 

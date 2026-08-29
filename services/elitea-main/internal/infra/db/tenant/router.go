@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -47,7 +48,12 @@ func (r *Router) ConnForTenant(ctx context.Context) (*pgxpool.Conn, error) {
 		return nil, fmt.Errorf("tenant: acquire conn: %w", err)
 	}
 
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %q, public", tenantID)); err != nil {
+	// The tenant id becomes an IDENTIFIER in the statement, so it is quoted
+	// with SQL rules. %q quotes with Go rules and writes an embedded double
+	// quote as \" , which PostgreSQL reads as an ordinary backslash followed
+	// by the quote that ENDS the identifier (issue #543).
+	schema := pgx.Identifier{tenantID}.Sanitize()
+	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", schema)); err != nil {
 		conn.Release()
 		return nil, fmt.Errorf("tenant: set search_path: %w", err)
 	}

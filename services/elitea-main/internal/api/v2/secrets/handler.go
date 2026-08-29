@@ -1192,26 +1192,40 @@ func (h *Handler) StoreProjectSecrets(ctx context.Context, projectID string, val
 
 // LookupProjectSecret reads one regular secret from a project vault.
 //
-// found is false only when the vault opens and holds no such name. An absent
-// vault and an unreadable vault are both errors, so no caller can read a key
-// mismatch as an empty result.
+// It answers with the package's ONE not-found idiom, the ErrSecretNotFound
+// sentinel below (#416). It used to answer with a `found bool` instead, which
+// made this package state the same condition two ways: a caller had to know
+// which function it held before it could tell "absent" from "failed".
+//
+// THE SENTINEL WON, for two reasons. It carries a cause, so the three answers
+// stay separable through any number of wrapping layers: ErrSecretNotFound (the
+// vault opened and holds no such name), ErrVaultAbsent (the project has no
+// vault yet), and every other error (a vault that exists and would not open).
+// A bool carries none of that, so a caller that wants the third case apart from
+// the second must invent its own convention. And every neighbouring vault API
+// already uses it — centrysecrets.ErrSecretNotFound and storage.ErrVaultAbsent
+// — so one idiom now spans the whole vault path rather than stopping here.
+//
+// Vault behaviour is unchanged. An absent vault and an unreadable vault were
+// errors before and stay errors, so no caller can read a key mismatch as an
+// empty result.
 func (h *Handler) LookupProjectSecret(
 	ctx context.Context,
 	projectID string,
 	name string,
-) (value string, found bool, err error) {
+) (string, error) {
 	vaultID := dbKey(projectID)
 	if name == "" {
-		return "", false, fmt.Errorf("look up %s secret: the name is empty", vaultID)
+		return "", fmt.Errorf("look up %s secret: the name is empty", vaultID)
 	}
 	vault, err := h.readVaultCtx(ctx, projectID)
 	if err != nil {
-		return "", false, fmt.Errorf("look up %s secret: %w", vaultID, err)
+		return "", fmt.Errorf("look up %s secret: %w", vaultID, err)
 	}
 	if stored, ok := vault.Secrets[name]; ok {
-		return stored, true, nil
+		return stored, nil
 	}
-	return "", false, nil
+	return "", fmt.Errorf("look up %s secret: %w: %q", vaultID, ErrSecretNotFound, name)
 }
 
 // StoreSecret programmatically stores a secret value without going through HTTP.
@@ -1225,6 +1239,11 @@ func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, n
 }
 
 // ErrSecretNotFound means the vault opened and holds no secret of that name.
+//
+// It is this package's ONLY idiom for "not found" (#416). No exported function
+// here reports the condition with a `found bool`, so a caller never has to know
+// which function it holds before it can read the answer.
+//
 // It is distinct from ErrVaultAbsent (the project has no vault yet) and from
 // every other read failure (a vault that exists and would not open). A caller
 // that applies a default value must separate the three: only the first two mean

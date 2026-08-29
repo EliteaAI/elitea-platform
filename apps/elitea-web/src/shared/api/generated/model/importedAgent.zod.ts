@@ -59,11 +59,11 @@ export const ImportedAgent = zod
       }),
     ),
     version_details: ApplicationVersionDetail.nullable().describe(
-      "Key ALWAYS present in the marshaled map — null only when every version insert failed (versionDetails stays nil, :1997).\n",
+      "Key ALWAYS present in the marshaled map — null only when every version insert failed (versionDetails stays nil, handler.go:2555).\n",
     ),
   })
   .describe(
-    "NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:2085-2093 — version_details unconditionally present (hence required+nullable).\n",
+    "NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:2663-2670 — version_details unconditionally present (hence required+nullable).\n",
   );
 
 export type ImportedAgent = zod.input<typeof ImportedAgent>;

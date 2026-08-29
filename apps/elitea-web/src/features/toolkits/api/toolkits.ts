@@ -48,9 +48,9 @@
  *   toolkitExport         GET    /export_toolkit/...                      :661
  *   toolkitTest           POST   /test_tool/..., /test_toolkit_tool/...   :659-660
  *   mcpSyncTools          POST   /mcp_sync_tools/prompt_lib/{projectID}   :886
- *   discoverMcpTools      POST   /toolkit_discover_tools/...              :655
+ *   discoverMcpTools      POST   /toolkit_discover_tools/...              :1914
  *   validateToolkit       GET+POST /toolkit_validator/...                 :656-657
- *   toolkitAvailableTools GET    /toolkit_available_tools/...             :654
+ *   toolkitAvailableTools GET    /toolkit_available_tools/...             :1912
  *   listToolkitTypes      GET    /toolkit_types/prompt_lib/{projectID}    :653
  *
  * The gap was never in the BACKEND — it was in the OpenAPI spec, and hence
@@ -62,6 +62,15 @@
  * work is "add the operation to v2.yaml and regenerate", NOT "implement a
  * handler" — do not repeat this comment's original mistake of treating a
  * missing spec entry as a missing endpoint.
+ *
+ * UPDATE (#440): two of those seven now have a real, hand-written client.
+ * `toolkit_available_tools` and `toolkit_discover_tools` are read by
+ * `entities/toolkit`'s `api/toolkitToolsApi.ts` and are recorded in
+ * `shared/api/endpoints.manifest.json` as `toolkits.availableTools` /
+ * `toolkits.discoverTools`. They live in `entities/` rather than here
+ * because `features/pipelines` needs them too and `no-sideways-features`
+ * forbids it to import this slice. Adding the operations to v2.yaml and
+ * moving both onto generated hooks remains the follow-up.
  *
  * Consistent with the established convention for exactly this situation
  * (`useValidateToolkit`'s injected `useValidateToolkitQuery`,

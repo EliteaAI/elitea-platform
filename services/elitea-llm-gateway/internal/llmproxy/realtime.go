@@ -669,15 +669,16 @@ func isWebSocketUpgrade(r *http.Request) bool {
 // on any route; the check is skipped there for the same reason checkBudget is,
 // and this is not a second policy.
 func (h *Handler) realtimePricedModel(w http.ResponseWriter, ctx context.Context, provider, model string) (realtimePricing, bool) {
-	if h.budgetGate == nil || h.costCalc == nil {
+	bp := h.budget()
+	if bp.gate == nil || bp.calc == nil {
 		// Nothing is metered on this deployment, so every basis is "as priced as
 		// any other". Reporting both keeps the mismatch counter silent here
 		// rather than firing on every turn of an ungoverned gateway.
 		return realtimePricing{tokens: true, seconds: true}, true
 	}
 	p := realtimePricing{
-		tokens:  h.costCalc.Cost(ctx, provider, model, 1, 1).FromCatalog(),
-		seconds: h.costCalc.CostUnits(ctx, provider, model, cost.Units{InputMillis: 1}).FromCatalog(),
+		tokens:  bp.calc.Cost(ctx, provider, model, 1, 1).FromCatalog(),
+		seconds: bp.calc.CostUnits(ctx, provider, model, cost.Units{InputMillis: 1}).FromCatalog(),
 	}
 	if p.tokens || p.seconds {
 		return p, true

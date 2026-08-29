@@ -20,7 +20,7 @@ func NewTagsRepo(pool *pgxpool.Pool) *TagsRepo {
 
 func (r *TagsRepo) List(ctx context.Context, projectID string) ([]tags.Tag, error) {
 	s := schema(projectID)
-	q := fmt.Sprintf(`SELECT id, name, COALESCE(data::text, 'null') FROM %q.tags ORDER BY name`, s)
+	q := fmt.Sprintf(`SELECT id, name, COALESCE(data::text, 'null') FROM %s.tags ORDER BY name`, s)
 
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {

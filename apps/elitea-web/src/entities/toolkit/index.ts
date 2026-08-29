@@ -24,8 +24,28 @@
  * established convention for spending a single budget slot on a
  * multi-symbol group (matches this file's own header note about pure
  * helpers left off individually) — bringing this barrel to the 20/20 cap
- * exactly; no further top-level exports may be added without retiring one.
+ * exactly.
+ *
+ * `toolkitTools` (#440). `api/toolkitToolsApi.ts` reads the two dynamic
+ * tool-catalogue routes (`toolkit_available_tools`, `toolkit_discover_tools`).
+ * Both `features/toolkits` and `features/pipelines` need them — seven tool
+ * pickers between them — and `no-sideways-features` forbids either slice to
+ * import the other, so `entities/` is the only legal home. Its 3 functions
+ * take ONE slot under the bundling convention above.
+ *
+ * THE CAP DOES NOT MOVE. It stays 20. This barrel was already at 20/20, so
+ * #440 retires one slot to pay for its own: `ToolConfigurationFormProps`.
+ * That type has no importer outside this slice, and `ToolConfigurationForm`
+ * stays exported, so no caller loses a capability.
+ * #440 also keeps the four `toolkitToolsApi` types OFF this barrel, for the
+ * same reason: no cross-slice caller reads them. Import them from the module
+ * inside the slice. Retire a slot before adding a 21st.
  */
+import {
+  discoverToolkitTools,
+  fetchAvailableTools,
+  useToolkitTools,
+} from './api/toolkitToolsApi';
 import {
   buildToolkitValidationKey,
   useToolkitValidationInfo,
@@ -42,7 +62,6 @@ export { CONFIGURATION_VIEW_OPTIONS, ConfigurationMode, configurationDoesNotMatc
 export { toolkitValidationErrors } from './model/validationStatus';
 export { toolkitTypeMenuEntries } from './model/toolMenu';
 export { ToolConfigurationForm } from './ui/ToolConfigurationForm';
-export type { ToolConfigurationFormProps } from './ui/ToolConfigurationForm';
 
 /** `api/useValidateToolkit.ts`'s 4 symbols, bundled — same one-slot-per-group convention as `entities/conversation`'s `conversationApi`. `useValidateToolkit`/`useToolkitValidationInfo` are the hooks; `useToolkitValidationStore` (the shared zustand store) and `buildToolkitValidationKey` (its key builder) are exposed for a sibling feature to read/derive from directly. */
 export const toolkitValidation = {
@@ -50,4 +69,11 @@ export const toolkitValidation = {
   useToolkitValidationInfo,
   useToolkitValidationStore,
   buildToolkitValidationKey,
+} as const;
+
+/** `api/toolkitToolsApi.ts`'s dynamic tool catalogue (#440), bundled into one slot — same convention as `toolkitValidation` above. `useToolkitTools` is the hook every picker uses; the two plain fetchers are exposed for a caller that needs the read outside React. */
+export const toolkitTools = {
+  useToolkitTools,
+  fetchAvailableTools,
+  discoverToolkitTools,
 } as const;

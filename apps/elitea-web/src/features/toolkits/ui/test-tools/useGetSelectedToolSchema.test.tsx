@@ -144,7 +144,15 @@ describe('useGetSelectedToolSchema', () => {
     );
   });
 
-  it('never resolves a dynamic (non-static, non-MCP) schema — the toolkit_available_tools endpoint does not exist (disclosed gap)', async () => {
+  /**
+   * #440 corrected the reason, not the outcome. The
+   * `toolkit_available_tools` route exists and `TestToolSettings.tsx` reads
+   * it, but its rows carry `id`/`name`/`type`/`description` only — no
+   * argument schema — so this hook still has nothing to resolve a dynamic
+   * tool's argument form from. The assertion below therefore stands; the
+   * title no longer claims a missing endpoint.
+   */
+  it('returns null for a dynamic (non-static, non-MCP) tool — the tool catalogue carries no argument schema', async () => {
     let requestCount = 0;
     server.use(
       http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => {

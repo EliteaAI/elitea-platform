@@ -30,7 +30,7 @@ func (r *FoldersRepo) List(ctx context.Context, projectID string) ([]folders.Fol
 	s := schema(projectID)
 	q := fmt.Sprintf(`
 		SELECT id::text, name, COALESCE(uuid::text, ''), owner_id, position, created_at, COALESCE(updated_at, created_at)
-		FROM %q.chat_conversation_folders %s`, s, listOrder)
+		FROM %s.chat_conversation_folders %s`, s, listOrder)
 
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
@@ -63,9 +63,9 @@ func (r *FoldersRepo) Create(ctx context.Context, projectID string, folder folde
 	// current maximum — the legacy runtime's own rule (folder.py:583-590).
 	// An explicit `position` in the create body still wins.
 	q := fmt.Sprintf(`
-		INSERT INTO %q.chat_conversation_folders (name, owner_id, position, uuid, meta)
+		INSERT INTO %s.chat_conversation_folders (name, owner_id, position, uuid, meta)
 		VALUES ($1, 1,
-			COALESCE($2::int, (SELECT COALESCE(MAX(position), 0) + %d FROM %q.chat_conversation_folders)),
+			COALESCE($2::int, (SELECT COALESCE(MAX(position), 0) + %d FROM %s.chat_conversation_folders)),
 			gen_random_uuid(), '{}'::jsonb)
 		RETURNING id::text, name, position, created_at, COALESCE(updated_at, created_at)`,
 		s, folders.PositionGap, s)
@@ -87,7 +87,7 @@ func (r *FoldersRepo) Update(ctx context.Context, projectID, folderID string, fo
 	// `{"name": …}` body useFolderUpdateMutation sends — leave the sidebar
 	// order alone, while a reorder PUT rewrites it.
 	q := fmt.Sprintf(`
-		UPDATE %q.chat_conversation_folders
+		UPDATE %s.chat_conversation_folders
 		SET name = COALESCE(NULLIF($1, ''), name),
 		    position = COALESCE($2::int, position),
 		    updated_at = now()
@@ -118,9 +118,9 @@ func (r *FoldersRepo) Rebalance(ctx context.Context, projectID string) ([]folder
 			SELECT id,
 			       ROW_NUMBER() OVER (%s) AS rn,
 			       COUNT(*) OVER () AS n
-			FROM %q.chat_conversation_folders
+			FROM %s.chat_conversation_folders
 		)
-		UPDATE %q.chat_conversation_folders f
+		UPDATE %s.chat_conversation_folders f
 		SET position = ((o.n - o.rn) + 1) * %d
 		FROM ordered o
 		WHERE f.id = o.id`, listOrder, s, s, folders.PositionGap)
@@ -133,7 +133,7 @@ func (r *FoldersRepo) Rebalance(ctx context.Context, projectID string) ([]folder
 
 func (r *FoldersRepo) Delete(ctx context.Context, projectID, folderID string) error {
 	s := schema(projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.chat_conversation_folders WHERE id = $1`, s)
+	q := fmt.Sprintf(`DELETE FROM %s.chat_conversation_folders WHERE id = $1`, s)
 	ct, err := r.pool.Exec(ctx, q, folderID)
 	if err != nil {
 		return fmt.Errorf("folders: delete: %w", err)

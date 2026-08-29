@@ -12,7 +12,9 @@ import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
 
-export interface ModelCapabilitiesSectionProps {
+/* Not exported: `ProjectAIConfiguration`'s sibling prop type is local too,
+   and the page composes this component through `aiConfigurationFeature`. */
+interface ModelCapabilitiesSectionProps {
   capabilities: readonly string[];
 }
 

@@ -21,6 +21,7 @@ const PUBLIC_SURFACE = [
   'useDeleteSecretMutation',
   'useHideSecretMutation',
   'useListSecretsQuery',
+  'useSecretFieldOptions',
   'useSecretsActions',
   'useUpdateSecretMutation',
 ] as const;

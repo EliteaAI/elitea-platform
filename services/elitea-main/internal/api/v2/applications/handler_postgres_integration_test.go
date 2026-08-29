@@ -734,3 +734,213 @@ func TestHandlerPostgres_UpdateVersionPersistsPipelineSettings(t *testing.T) {
 		t.Errorf("GET instructions = %v", fetched["instructions"])
 	}
 }
+
+// storedVersionTagNames reads the tag names the version's association rows
+// point at — the database assertion issue #345 asks for, not the response
+// body. A 201 proved nothing here: the handler answered one on every save
+// while writing no association row at all.
+func storedVersionTagNames(t *testing.T, pool *pgxpool.Pool, versionID string) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	rows, err := pool.Query(ctx, `
+		SELECT t.name
+		FROM p_1.application_version_tag_association a
+		JOIN p_1.tags t ON t.id = a.tag_id
+		WHERE a.version_id = $1
+		ORDER BY t.name`, versionID)
+	if err != nil {
+		t.Fatalf("read the association rows: %v", err)
+	}
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan an association row: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the association rows: %v", err)
+	}
+	return names
+}
+
+// responseTagNames reads the `tags` list out of a version-detail body.
+func responseTagNames(t *testing.T, body map[string]any) []string {
+	t.Helper()
+	raw, ok := body["tags"].([]any)
+	if !ok {
+		t.Fatalf("response carries no tags list: %v", body["tags"])
+	}
+	names := []string{}
+	for _, entry := range raw {
+		tag, _ := entry.(map[string]any)
+		if tag == nil {
+			t.Fatalf("a tag entry is not an object: %v", entry)
+		}
+		name, _ := tag["name"].(string)
+		names = append(names, name)
+	}
+	return names
+}
+
+func sameNames(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestHandlerPostgres_UpdateVersionPersistsTags is issue #345's regression
+// test. Before the fix UpdateVersion read no `tags` key at all, and both read
+// paths answered a hardcoded `[]`, so a tag edit was accepted with a 201 and
+// then lost twice over: nothing was written, and the echo said "no tags"
+// about the list the user had just sent.
+func TestHandlerPostgres_UpdateVersionPersistsTags(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 7, "seven@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "7", UserID: "7", Email: "seven@elitea.ai"})
+
+	recorder, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("tagged"))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	applicationID, _ := created["id"].(string)
+	versionDetails, _ := created["version_details"].(map[string]any)
+	versionID, _ := versionDetails["id"].(string)
+	if applicationID == "" || versionID == "" {
+		t.Fatalf("create response carries no ids: %s", recorder.Body.String())
+	}
+	versionPath := fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID)
+
+	// 1. A save that carries tags writes the association rows.
+	recorder, saved := do(t, router, http.MethodPut, versionPath, map[string]any{
+		"name":         "base",
+		"instructions": "Follow the brief.",
+		"tags": []any{
+			map[string]any{"name": "beta"},
+			map[string]any{"name": "alpha", "data": map[string]any{"color": "one"}},
+		},
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("save status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if names := storedVersionTagNames(t, pool, versionID); !sameNames(names, []string{"alpha", "beta"}) {
+		t.Fatalf("association rows = %v, want [alpha beta] — the tag edit was discarded", names)
+	}
+	// The save echo must report what was stored, not the empty list it used
+	// to hardcode.
+	if names := responseTagNames(t, saved); !sameNames(names, []string{"alpha", "beta"}) {
+		t.Errorf("save echo tags = %v, want [alpha beta]", names)
+	}
+
+	// 2. The reload the editor issues hands the same tags back.
+	recorder, fetched := do(t, router, http.MethodGet, versionPath, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if names := responseTagNames(t, fetched); !sameNames(names, []string{"alpha", "beta"}) {
+		t.Errorf("GET tags = %v, want [alpha beta]", names)
+	}
+	storedTags, _ := fetched["tags"].([]any)
+	first, _ := storedTags[0].(map[string]any)
+	if _, hasID := first["id"]; !hasID {
+		t.Errorf("GET tags[0] carries no id: %v", first)
+	}
+	if data, _ := first["data"].(map[string]any); data["color"] != "one" {
+		t.Errorf("GET tags[0].data = %v, want the data that was sent", first["data"])
+	}
+
+	// 3. A save with no `tags` key leaves the stored set alone, exactly as
+	// it leaves `variables` alone.
+	recorder, _ = do(t, router, http.MethodPut, versionPath, map[string]any{"instructions": "Second pass."})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("save status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if names := storedVersionTagNames(t, pool, versionID); !sameNames(names, []string{"alpha", "beta"}) {
+		t.Errorf("association rows = %v after a save with no tags key, want [alpha beta]", names)
+	}
+
+	// 4. Removing a tag deletes its association row, and leaves the shared
+	// `tags` row for other versions.
+	recorder, _ = do(t, router, http.MethodPut, versionPath, map[string]any{
+		"tags": []any{map[string]any{"name": "alpha"}},
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("save status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if names := storedVersionTagNames(t, pool, versionID); !sameNames(names, []string{"alpha"}) {
+		t.Errorf("association rows = %v, want [alpha] — the removed tag kept its row", names)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var betaCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM p_1.tags WHERE name = 'beta'`).Scan(&betaCount); err != nil {
+		t.Fatalf("read the tags table: %v", err)
+	}
+	if betaCount != 1 {
+		t.Errorf("p_1.tags rows named beta = %d, want 1 — the tag itself is shared, only the association goes", betaCount)
+	}
+
+	// 5. An empty list removes every association row: "I deleted my last
+	// tag" is a real user action and must reach the database.
+	recorder, emptied := do(t, router, http.MethodPut, versionPath, map[string]any{"tags": []any{}})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("save status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if names := storedVersionTagNames(t, pool, versionID); len(names) != 0 {
+		t.Errorf("association rows = %v after an empty tags list, want none", names)
+	}
+	if names := responseTagNames(t, emptied); len(names) != 0 {
+		t.Errorf("save echo tags = %v after an empty list, want none", names)
+	}
+}
+
+// TestHandlerPostgres_ExpandedVersionDetailCarriesTheStoredTags covers the
+// PATCH read the SDK uses (#336). It hardcoded the same empty list.
+func TestHandlerPostgres_ExpandedVersionDetailCarriesTheStoredTags(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 8, "eight@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "8", UserID: "8", Email: "eight@elitea.ai"})
+
+	recorder, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("expanded-tags"))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	applicationID, _ := created["id"].(string)
+	versionDetails, _ := created["version_details"].(map[string]any)
+	versionID, _ := versionDetails["id"].(string)
+	versionPath := fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID)
+
+	recorder, _ = do(t, router, http.MethodPut, versionPath, map[string]any{
+		"tags": []any{map[string]any{"name": "support"}},
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("save status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	// The expanded read is the SDK's, and it checks X-SECRET against the
+	// project vault. This project has no vault, so pylon's own default
+	// value applies (see TestVersionPatchFallsBackToThePylonDefaultSecret).
+	request := httptest.NewRequest(http.MethodPatch, versionPath, bytes.NewReader(nil))
+	request.Header.Set("X-SECRET", "secret")
+	patchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(patchRecorder, request)
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("expanded status = %d, body = %s", patchRecorder.Code, patchRecorder.Body.String())
+	}
+	expanded := map[string]any{}
+	if err := json.Unmarshal(patchRecorder.Body.Bytes(), &expanded); err != nil {
+		t.Fatalf("expanded body is not JSON (%v): %s", err, patchRecorder.Body.String())
+	}
+	if names := responseTagNames(t, expanded); !sameNames(names, []string{"support"}) {
+		t.Errorf("expanded tags = %v, want [support]", names)
+	}
+}

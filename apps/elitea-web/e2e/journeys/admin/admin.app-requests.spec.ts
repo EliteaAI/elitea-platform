@@ -41,8 +41,29 @@
  * refused forgeries at it and asserts nothing moved), and each test that needs a
  * decidable row FILES ITS OWN with a run-unique key and leaves it DECIDED. The
  * Pending tab therefore ends every run containing exactly what it started with.
+ *
+ * ## What this run leaves behind, and what reads past it (issue #544)
+ *
+ * A row filed here cannot be removed: `moderation_status` has a POST, a GET and
+ * a decision PUT, and no DELETE at any mode (internal/api/router.go). So each
+ * run adds three rows per browser project to `centry.moderation_state`, for
+ * ever, on a stack that is not re-created. Measured: 20 runs of the webkit
+ * journeys on one stack left 111 rows, and runs 19 and 20 failed.
+ *
+ * Two corrections, because the leak and the failure are different faults:
+ *
+ *  - `probeRow` reads with the SERVER's `entity_id` filter. It used to read
+ *    `?limit=100&offset=0` and `find()` its row in the answer, and the queue
+ *    sorts `created_at ASC` by default — so the newest row, which is the one
+ *    every test here asks about, is the first to fall off the end. The
+ *    assertion said "must be present in the queue" and meant "is on page one".
+ *    A read that names the row cannot be beaten by the size of the table.
+ *  - `afterAll` DECIDES every row this run filed and left pending, so a run
+ *    that fails half way still leaves the Pending tab as it found it. It cannot
+ *    delete the rows; nothing can. `scripts/e2e-stack.sh seed` removes the ones
+ *    earlier runs left, which is the only place with a database to do it in.
  */
-import { test as adminTest, expect, type Page } from '@playwright/test';
+import { test as adminTest, expect, request as apiRequest, type Page } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
@@ -80,6 +101,64 @@ const REQUESTER = 'e2e-member@autotest.local';
 const QUEUE_URL = '/api/v2/admin/moderation_statuses/administration';
 const DECISION_URL = '/api/v2/admin/moderation_status/administration';
 
+/**
+ * The requests this run filed, so the teardown can find them again.
+ *
+ * Filled by `fileRequest` on a 201 only: a refused POST created nothing, and a
+ * teardown that looked for it would report a missing row as a fault.
+ */
+const filedEntities: string[] = [];
+
+/**
+ * Leaves the Pending tab as this run found it (issue #544).
+ *
+ * Every test that files a row also decides it, so on a clean run this hook has
+ * nothing to do. It exists for the run that does NOT reach the decision: a
+ * failed assertion, or a timeout, between the POST and the Approve click leaves
+ * a pending row that no later run can remove and every later operator sees.
+ *
+ * It is a decision and not a delete because there is no delete. Rows still
+ * accumulate; `scripts/e2e-stack.sh seed` sweeps them, since it is the only
+ * step in this suite that can reach the database.
+ *
+ * Best effort, and LOUD about what it could not do. A teardown that fails the
+ * run for a transient 503 turns a green suite red for a reason that is not the
+ * product's; a teardown that hides the same 503 leaves the next reader with a
+ * pending row and no account of where it came from.
+ */
+adminTest.afterAll(async () => {
+  if (filedEntities.length === 0) return;
+  // Its OWN request context: `page` belongs to a test, and the test this hook
+  // has to clean up after may be the one whose page is already gone.
+  const api = await apiRequest.newContext({
+    baseURL: BASE_URL,
+    storageState: STORAGE_STATE.admin,
+  });
+  try {
+    for (const entity of filedEntities) {
+      const response = await api.get(queueByEntity(entity));
+      if (!response.ok()) {
+        // eslint-disable-next-line no-console -- a silent teardown is how the rows accumulated
+        console.warn(`J34 teardown: cannot read ${entity} back (${String(response.status())})`);
+        continue;
+      }
+      const body = (await response.json()) as { rows?: { id: number; status: string }[] };
+      for (const row of body.rows ?? []) {
+        if (row.status !== 'pending') continue;
+        const decided = await api.put(DECISION_URL, { data: { id: row.id, status: 'approved' } });
+        if (!decided.ok()) {
+          // eslint-disable-next-line no-console -- see above
+          console.warn(
+            `J34 teardown: ${entity} stays pending (${String(decided.status())} on the decision)`,
+          );
+        }
+      }
+    }
+  } finally {
+    await api.dispose();
+  }
+});
+
 async function openAppRequests(page: Page): Promise<void> {
   const response = await page.goto(BASE_URL + '/admin/app/app-requests', {
     waitUntil: 'domcontentloaded',
@@ -97,7 +176,7 @@ async function fileRequest(
   entity: string,
   label: string,
 ): Promise<{ status: number; body: string }> {
-  return page.evaluate(
+  const filed = await page.evaluate(
     async ([target, issueType]) => {
       const response = await fetch(`/api/v2/admin/moderation_status/default/1/${target}`, {
         method: 'POST',
@@ -116,25 +195,74 @@ async function fileRequest(
     },
     [entity, label] as const,
   );
+  // Recorded here, next to the call that creates the row, so a test added later
+  // cannot file one the teardown does not know about.
+  if (filed.status === 201) filedEntities.push(entity);
+  return filed;
 }
 
-/** Reads a request's real row straight off the queue endpoint. */
+/**
+ * The queue URL that asks for ONE request by name (issue #544).
+ *
+ * `entity_id` is an exact server-side filter — `queueFilters` renders it as
+ * `m.entity_id = $n` — so the answer is that request's rows and nothing else.
+ * `limit` stays because one entity can carry more than one row: a second user
+ * asking for the same catalogue entry is a second row with the same
+ * `entity_id`, and a RETRY of a test in this file files a second row under the
+ * key its first attempt used.
+ *
+ * `sort_order=desc` for that second case. The queue's default is `created_at`
+ * ASCENDING, so the first match would be the attempt that failed — pending,
+ * while the retry the test is judging is approved. Newest first makes the
+ * caller read the row it just wrote.
+ */
+function queueByEntity(entity: string): string {
+  return (
+    `${QUEUE_URL}?entity_id=${encodeURIComponent(entity)}` +
+    '&sort_by=created_at&sort_order=desc&limit=100&offset=0'
+  );
+}
+
+/**
+ * Reads a request's real row straight off the queue endpoint.
+ *
+ * THE READ NAMES THE ROW (issue #544). It used to ask for `?limit=100&offset=0`
+ * and `find()` the row in the answer, which holds only while the whole table is
+ * shorter than 100 rows — and the queue's default order is `created_at ASC`, so
+ * the row this file just filed is the last one in, and the first one out. On a
+ * stack that had run the journeys 19 times the assertion below reported
+ * `Received: null` and read as a queue that had lost a request.
+ */
 async function probeRow(
   page: Page,
   entity: string,
 ): Promise<{ id: number; status: string; rejection_comment: string | null }> {
-  const row = await page.evaluate(
+  const read = await page.evaluate(
     async ([url, wanted]) => {
-      const response = await fetch(`${url}?limit=100&offset=0`, { credentials: 'include' });
+      const response = await fetch(url, { credentials: 'include' });
       const body = (await response.json()) as {
+        total?: number;
         rows?: { id: number; entity_id: string; status: string; rejection_comment: string | null }[];
       };
-      return body.rows?.find((candidate) => candidate.entity_id === wanted) ?? null;
+      return {
+        status: response.status,
+        total: body.total ?? 0,
+        returned: body.rows?.length ?? 0,
+        row: body.rows?.find((candidate) => candidate.entity_id === wanted) ?? null,
+      };
     },
-    [QUEUE_URL, entity] as const,
+    [queueByEntity(entity), entity] as const,
   );
-  expect(row, `the request ${entity} must be present in the queue`).not.toBeNull();
-  return row as { id: number; status: string; rejection_comment: string | null };
+
+  expect(read.status, `the queue read for ${entity} must be authorised`).toBe(200);
+  expect(
+    read.row,
+    `the request ${entity} must be present in the queue. The filtered read answered ` +
+      `total=${String(read.total)} with ${String(read.returned)} rows: a total larger than ` +
+      `the rows returned means the server ignored entity_id, so this is a paging miss and ` +
+      `not a missing request (#544).`,
+  ).not.toBeNull();
+  return read.row as { id: number; status: string; rejection_comment: string | null };
 }
 
 adminTest('J34: the queue is the moderation table, read from the database', async ({ page }, testInfo) => {

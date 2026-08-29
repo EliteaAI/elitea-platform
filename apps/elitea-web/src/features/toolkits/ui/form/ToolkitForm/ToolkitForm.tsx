@@ -59,20 +59,26 @@ export type { ToolkitFormEditDetail, ToolkitFormProps, ToolkitValidationInjected
  *     (toolkitType route param, `forceCustom` query flag) become
  *     `routeToolkitType`/`forceCustomView` props for the same reason (no
  *     app-level router context reachable from `features/`).
- *  2. **`useToolkitAvailableToolsQuery`/`useValidateToolkitQuery`.** REAL,
- *     disclosed backend gaps — grepping `endpoints.manifest.json`/
- *     `shared/api/generated/toolkits/toolkits.ts` finds no
- *     `toolkit_available_tools`/`toolkit_validator` endpoint anywhere
- *     (matches the mission brief's own pre-disclosed toolkit-validation
- *     gap, one level over: the dynamic-tools-discovery endpoint is missing
- *     too). The dynamic `selected_tools` schema enrichment
- *     (`shouldFetchDynamicSchemas`/`toolSchemaWithDynamicTools`) is DROPPED
- *     rather than faked — `effectiveToolSchema` stays the static
- *     `convertToolkitSchema` result, matching the mission's own "no
- *     invented endpoints" instruction for the LLM-settings-defaulting gap.
- *     Toolkit-settings validation errors are accepted via an optional
- *     injected `toolkitValidation` prop (`{isError, error, refetch}`) —
- *     same "inject the network call" convention as
+ *  2. **`useToolkitAvailableToolsQuery`/`useValidateToolkitQuery`.**
+ *     CORRECTED (#440): this item used to say that no
+ *     `toolkit_available_tools` endpoint existed. It does exist —
+ *     `internal/api/router.go:1912` registers it, together with
+ *     `toolkit_discover_tools` at :1914 — and `endpoints.manifest.json`
+ *     now carries both as `toolkits.availableTools` /
+ *     `toolkits.discoverTools`. The client for them is
+ *     `entities/toolkit`'s `toolkitTools.useToolkitTools`, and
+ *     `ui/test-tools/TestToolSettings.tsx` reads it for its tool picker.
+ *
+ *     The dynamic `selected_tools` SCHEMA enrichment
+ *     (`shouldFetchDynamicSchemas`/`toolSchemaWithDynamicTools`) stays
+ *     dropped, for a narrower reason: the route returns tool
+ *     `id`/`name`/`type`/`description` and no argument schema (see
+ *     `ui/test-tools/useGetSelectedToolSchema.ts`'s own header for the
+ *     evidence), so there is nothing to enrich the schema WITH.
+ *     `effectiveToolSchema` stays the static `convertToolkitSchema`
+ *     result. Toolkit-settings validation errors are still accepted via an
+ *     optional injected `toolkitValidation` prop (`{isError, error,
+ *     refetch}`) — same "inject the network call" convention as
  *     `features/agents/api/useValidateToolkit.ts`.
  *  3. **`McpAuthHelpers.logout(url)`** (`features/mcp`, sideways-forbidden
  *     regardless) becomes an optional injected `onMcpScopesChanged`

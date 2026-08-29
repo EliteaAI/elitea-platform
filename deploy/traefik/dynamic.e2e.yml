@@ -29,6 +29,13 @@ http:
     # services/elitea-main/tests/deployedge/edge_root_routes_test.go walks the
     # real Go router. It fails if a route the router serves matches no rule
     # here and no entry in its `notAtTheBrowserEdge` list.
+    #
+    # THIS RULE HAS A SIBLING. The cluster runs a Gateway API edge, not
+    # traefik, and it carries the same list of paths in a different language:
+    # deploy/gateway-api/httproute.yaml. Widen this rule alone and the cluster
+    # stays a release behind, which is exactly what #568 measured — icons and
+    # avatars broken there while every compose test stayed green. Change both
+    # files. edge_gateway_api_test.go walks the same router against that file.
     api:
       rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/icons/`) || PathPrefix(`/avatars/`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`) || PathPrefix(`/app/application_icon/`) || PathPrefix(`/app/application_tool_icon/`) || PathPrefix(`/llm/`)"
       service: elitea-main

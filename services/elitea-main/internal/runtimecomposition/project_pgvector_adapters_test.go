@@ -3,10 +3,12 @@ package runtimecomposition
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
 
+	secretsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
 	"github.com/jackc/pgx/v5"
 )
@@ -175,18 +177,23 @@ type currentProjectPgvectorSecretsStub struct {
 	writes          int
 }
 
+// LookupProjectSecret answers the way secrets.Handler now answers: the one
+// sentinel for an absent name, a plain error for a read that failed (#416).
 func (s *currentProjectPgvectorSecretsStub) LookupProjectSecret(
 	_ context.Context,
 	projectID string,
 	name string,
-) (string, bool, error) {
+) (string, error) {
 	s.lookups++
 	s.lookupProjectID = projectID
 	if s.lookupErr != nil {
-		return "", false, s.lookupErr
+		return "", s.lookupErr
 	}
 	value, ok := s.stored[name]
-	return value, ok, nil
+	if !ok {
+		return "", fmt.Errorf("%w: %q", secretsapi.ErrSecretNotFound, name)
+	}
+	return value, nil
 }
 
 func (s *currentProjectPgvectorSecretsStub) StoreProjectSecrets(

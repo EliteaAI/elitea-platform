@@ -248,13 +248,24 @@ func canonicalLower(s string) string { return strings.ToLower(s) }
 // hasPrefix reports whether s starts with prefix.
 func hasPrefix(s, prefix string) bool { return strings.HasPrefix(s, prefix) }
 
-// setElapsedHeader stamps the gateway's pre-dispatch overhead as X-Elapsed-Ms
-// with sub-ms precision: the time spent in the handler before the router call
-// (decode, identity verification, loop breaker, budget check). Work performed
-// inside the router — credential resolution and core routing — is NOT included;
-// it is inseparable from the provider round-trip when measured from here. See
-// the Chat handler's t0 comment. Consumed by the BFF.9d k6 overhead gate
-// (design §10.2). Must be called before the first body/status write.
+// setElapsedHeader stamps the gateway's own overhead as X-Elapsed-Ms with
+// sub-ms precision. The value covers the request from the instant the handler
+// accepted it to the instant bifrost/core held the provider credential: decode,
+// identity verification, loop breaker, budget check, the wait in the core
+// provider queue, core routing, and the credential resolution (the Account's
+// Postgres read and Fernet decrypt).
+//
+// The value does NOT cover the provider round-trip, which starts only after
+// core holds the key, and it does not cover the response marshalling that
+// follows. A request that resolves no credential reports the pre-dispatch time
+// alone. See the Chat handler's t0 comment and internal/overhead (issue #17).
+//
+// Compute the argument with overhead.Meter.Overhead. Do NOT compute it with
+// time.Since at the call site: the call site runs after the router returned, so
+// time.Since would add the provider round-trip to the gateway's metric.
+//
+// Consumed by the BFF.9d k6 overhead gate (design §10.2). Must be called before
+// the first body/status write.
 func setElapsedHeader(w http.ResponseWriter, overhead time.Duration) {
 	if overhead < 0 {
 		overhead = 0

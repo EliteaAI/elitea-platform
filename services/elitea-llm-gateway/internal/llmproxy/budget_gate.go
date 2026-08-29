@@ -3,9 +3,14 @@ package llmproxy
 // budget_gate.go — pre-LLM admission check and post-completion billing hooks
 // wired into the /llm handler layer (design §8.5, BF0.9b).
 //
-// The gate is nil-safe: when Handler.budgetGate is nil every helper returns
-// immediately so existing call sites that build a Handler without governance
-// continue to work unchanged.
+// The gate is nil-safe: when the published budget plane carries no gate
+// (budget_plane.go) every helper returns immediately, so existing call sites
+// that build a Handler without governance continue to work unchanged.
+//
+// Every helper here takes ONE snapshot of the plane with h.budget() and reads
+// the fields of that snapshot. Do not read h.budget() twice in one operation:
+// budget enforcement can be installed while the gateway serves traffic (issue
+// #315), and two loads can straddle the install.
 
 import (
 	"context"
@@ -281,7 +286,11 @@ func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode ad
 		return v
 	}
 
-	if h.budgetGate == nil {
+	// ONE snapshot of the budget path for this whole admission decision — the
+	// project ceiling below and the member ceiling in memberVerdict. See
+	// budget_plane.go.
+	bp := h.budget()
+	if bp.gate == nil {
 		return budgetAllowed
 	}
 
@@ -302,7 +311,7 @@ func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode ad
 	// previously unwound on client hangup. Fail-closed semantics are preserved
 	// — a timeout surfaces as the existing 503 branch below.
 	gateCtx, gateCancel := context.WithTimeout(ctx, budgetGateTimeout)
-	dec, err := h.budgetGate.CheckBudget(gateCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+	dec, err := bp.gate.CheckBudget(gateCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
 	gateCancel()
 	if err != nil {
 		// A hard error from the gate is unexpected (the gate is designed to
@@ -332,7 +341,7 @@ func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode ad
 		}
 		// The project has room. The member cap is a SECOND ceiling inside it,
 		// so it is asked only after the project admits (issue #321).
-		return h.memberVerdict(ctx, pid, periodStart)
+		return h.memberVerdict(ctx, bp.gate, pid, periodStart)
 	case failmode.Block402:
 		return budgetVerdict{
 			status:  http.StatusPaymentRequired,
@@ -354,7 +363,7 @@ func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode ad
 		// independent limit.
 		h.logger.Warn("budget gate: unknown verdict; allowing request",
 			"verdict", fmt.Sprintf("%v", dec.Verdict))
-		return h.memberVerdict(ctx, pid, periodStart)
+		return h.memberVerdict(ctx, bp.gate, pid, periodStart)
 	}
 }
 
@@ -391,8 +400,13 @@ func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode ad
 // member refusal typed `member_budget_exceeded` failed that match, so
 // budget_exceeded_from returned None, no typed exception was raised, and the
 // refusal reached the model as ordinary message content. See budgetErrorType.
+//
+// gate is the SAME snapshot the project ceiling used (budget_plane.go). It is
+// a parameter and not a second h.budget() load, so one admission decision can
+// never ask two different gates.
 func (h *Handler) memberVerdict(
 	ctx context.Context,
+	gate BudgetChecker,
 	projectID int,
 	periodStart int64,
 ) budgetVerdict {
@@ -412,7 +426,7 @@ func (h *Handler) memberVerdict(
 	scopeID := failmode.UserScopeID(projectID, uid)
 
 	gateCtx, gateCancel := context.WithTimeout(ctx, budgetGateTimeout)
-	dec, err := h.budgetGate.CheckBudget(gateCtx, projectID, budgetScopeUser, scopeID, periodStart, 0)
+	dec, err := gate.CheckBudget(gateCtx, projectID, budgetScopeUser, scopeID, periodStart, 0)
 	gateCancel()
 	if err != nil {
 		// Same reasoning as the project gate: a hard error is not a licence to
@@ -586,7 +600,8 @@ func (h *Handler) updateUsageUnits(
 	// the log is about what happened rather than about what was charged.
 	recordLoggedUsage(ctx, u)
 
-	if h.budgetGate == nil || h.costCalc == nil {
+	bp := h.budget()
+	if bp.gate == nil || bp.calc == nil {
 		return billNotBillable
 	}
 	pid := parseProjectID(projectIDStr)
@@ -603,7 +618,7 @@ func (h *Handler) updateUsageUnits(
 	costCtx, costCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 	defer costCancel()
 
-	actualCost := h.costCalc.CostUnits(costCtx, provider, model, u)
+	actualCost := bp.calc.CostUnits(costCtx, provider, model, u)
 
 	// Report which rate paid, and refuse to let an UNPRICED audio request look
 	// like a cheap one. The two counters live in audio.go, where their names
@@ -709,7 +724,7 @@ func (h *Handler) updateUsageUnits(
 		OccurredAtUnix: now.Unix(),
 	}
 
-	if h.spawnBillingGoroutine(pid, userIDStr, periodStart, periodEnd, actualCost.TotalNanoUSD, dims) {
+	if h.spawnBillingGoroutine(bp, pid, userIDStr, periodStart, periodEnd, actualCost.TotalNanoUSD, dims) {
 		return billBilled
 	}
 	return billRefused
@@ -740,7 +755,8 @@ func (h *Handler) updateUsageDirect(
 	model string,
 	costNano int64,
 ) billOutcome {
-	if h.budgetGate == nil || costNano <= 0 {
+	bp := h.budget()
+	if bp.gate == nil || costNano <= 0 {
 		return billNotBillable
 	}
 	pid := parseProjectID(projectIDStr)
@@ -762,7 +778,7 @@ func (h *Handler) updateUsageDirect(
 		OccurredAtUnix: now.Unix(),
 	}
 
-	if h.spawnBillingGoroutine(pid, userIDStr, periodStart, periodEnd, costNano, dims) {
+	if h.spawnBillingGoroutine(bp, pid, userIDStr, periodStart, periodEnd, costNano, dims) {
 		return billBilled
 	}
 	return billRefused
@@ -794,7 +810,17 @@ func (h *Handler) updateUsageDirect(
 // the project delta already names the member in its user_id column; a second
 // row would double every token count, request count and cost figure the
 // per-day and per-model views report.
+//
+// The member scope also gets its own soft-alert crossing check (issue #510),
+// with its own pre-increment snapshot taken beside the project one. The member
+// cap refuses calls, so a member must be told they are near it before it does;
+// until this, the 402 was the first thing that told them a cap applied.
+//
+// bp is the caller's budget-plane snapshot. It is a parameter and not a fresh
+// h.budget() load, so the goroutine bills through the SAME gate that admitted
+// and priced the request (budget_plane.go).
 func (h *Handler) spawnBillingGoroutine(
+	bp *budgetPlane,
 	pid int,
 	userIDStr string,
 	periodStart, periodEnd int64,
@@ -826,13 +852,41 @@ func (h *Handler) spawnBillingGoroutine(
 		// call's deadline (gateway-review: sharing one budget across both would
 		// silently starve UpdateUsage under DB/NATS degradation).
 		alertCtx, alertCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
-		preDec, preErr := h.budgetGate.CheckBudget(alertCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+		preDec, preErr := bp.gate.CheckBudget(alertCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
 		alertCancel()
+
+		// The MEMBER pre-increment snapshot (issue #510). Read it here, beside
+		// the project one and before any increment. A crossing is a comparison
+		// of the counter before this request with the counter after it. After
+		// the increment the "before" value is gone.
+		//
+		// This is one more gate read for each request that bills a member. It
+		// costs the caller nothing: FIX #27 moved this whole block off the
+		// request goroutine, so the request has already been answered.
+		//
+		// Read it only when a member id resolved. A request with no member bills
+		// no member scope, thus there is no member crossing to find.
+		var (
+			memberScopeID string
+			memberPreDec  failmode.Decision
+			memberPreErr  error
+		)
+		if uid > 0 {
+			memberScopeID = failmode.UserScopeID(pid, uid)
+			memberPreCtx, memberPreCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+			memberPreDec, memberPreErr = bp.gate.CheckBudget(memberPreCtx, pid, budgetScopeUser,
+				memberScopeID, periodStart, 0)
+			memberPreCancel()
+			if memberPreErr != nil {
+				h.logger.Warn("budget gate: member CheckBudget error before the increment; the member soft alert is skipped",
+					"project_id", pid, "user_id", uid, "err", memberPreErr)
+			}
+		}
 
 		billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 		defer cancel()
 
-		projectErr := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
+		projectErr := bp.gate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
 			costNano, periodStart, periodEnd, dims)
 		if projectErr != nil {
 			h.logger.Warn("budget gate: UpdateUsage failed; spend may be under-counted",
@@ -851,43 +905,70 @@ func (h *Handler) spawnBillingGoroutine(
 		// already-expired context. That is not a missed alert, it is member
 		// spend dropped — and the member cap that admits forever afterwards is
 		// the defect #321 exists about, one layer down.
+		memberBilled := false
 		if uid > 0 {
 			memberEventID := uuid.NewString()
 			memberCtx, memberCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
-			err := h.budgetGate.UpdateUsage(memberCtx, pid, budgetScopeUser,
-				failmode.UserScopeID(pid, uid), memberEventID,
+			err := bp.gate.UpdateUsage(memberCtx, pid, budgetScopeUser,
+				memberScopeID, memberEventID,
 				costNano, periodStart, periodEnd, nil)
 			memberCancel()
 			if err != nil {
 				h.logger.Warn("budget gate: member UpdateUsage failed; member spend may be under-counted",
 					"project_id", pid, "user_id", uid, "cost_nano", costNano,
 					"event_id", memberEventID, "err", err)
+			} else {
+				memberBilled = true
 			}
-		}
-
-		if projectErr != nil {
-			return
 		}
 
 		// FIX #15: soft-alert threshold crossing check.
 		// The alert must fire ONLY when the pre-increment spend was BELOW the
 		// soft threshold and the post-increment spend is AT OR ABOVE it.
-		if preErr != nil {
-			// Non-fatal: skip the alert check if we couldn't read the pre-snapshot.
-			return
+		//
+		// Each scope is tested against ITS OWN pair of snapshots, and the two
+		// tests are independent (issue #510). They are conditions and not early
+		// returns on purpose: an unreadable project snapshot, or a project
+		// increment that failed, must not silence the member's alert. The
+		// member's counter moved, and the member is the person the alert is for.
+		//
+		//   - preErr / memberPreErr: the "before" value is unknown, so no
+		//     crossing can be established. Skip that scope only.
+		//   - Verdict != Allow: the scope was already at or over its hard limit
+		//     before this request. The refusal is the signal at that point; a
+		//     soft alert adds nothing.
+		if projectErr == nil && preErr == nil && preDec.Verdict == failmode.Allow {
+			h.trySoftAlert(billCtx, bp, pid, budgetScopeProject, scopeID, periodStart, costNano, preDec)
 		}
-		// If the project was already over or at the hard limit before this
-		// request, no soft alert is needed.
-		if preDec.Verdict != failmode.Allow {
-			return
+
+		// The member soft alert (issue #510). Before this, a member crossed
+		// their threshold in silence, and the 402 from their own cap was the
+		// first signal that a cap applied to them.
+		//
+		// Give it its OWN context, for the reason the member increment above
+		// gets one: billCtx has already paid for the project increment and can
+		// hold no time at all. A deadline spent elsewhere is not a reason to
+		// drop this member's warning.
+		if memberBilled && memberPreErr == nil && memberPreDec.Verdict == failmode.Allow {
+			memberAlertCtx, memberAlertCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+			h.trySoftAlert(memberAlertCtx, bp, pid, budgetScopeUser, memberScopeID,
+				periodStart, costNano, memberPreDec)
+			memberAlertCancel()
 		}
-		h.trySoftAlert(billCtx, pid, scopeID, periodStart, costNano, preDec)
 	}()
 	return true
 }
 
 // trySoftAlert fires the 80% soft-alert ONLY when the running counter has
 // CROSSED the SoftAlertPct threshold with this billing increment.
+//
+// It is SCOPE-GENERIC (issue #510). scope + scopeID name one budget: the
+// project ("project", "42") or one member inside it ("user", "42:7"). Both
+// ceilings refuse a call, so both owe their owner a warning before they do, and
+// everything the warning needs is already per-scope — CheckBudget reads the
+// member's own limit and threshold, and TryAlertCooldown derives its key from
+// (scope, scopeID, period), so the two scopes claim different cooldowns and
+// neither can suppress the other.
 //
 // Crossing detection: compare the pre-increment FSM state (preDec) with the
 // post-increment FSM state (from a fresh CheckBudget). The alert fires when:
@@ -903,20 +984,25 @@ func (h *Handler) spawnBillingGoroutine(
 // TryAlertCooldown deduplicates: once an alert fires it is suppressed within
 // the cooldown window (typically hours) even if every subsequent request also
 // crosses the threshold.
+//
+// bp is the caller's budget-plane snapshot: the alert re-reads the counter
+// through the same gate the increment used, and publishes through the same
+// event publisher (budget_plane.go).
 func (h *Handler) trySoftAlert(
 	ctx context.Context,
+	bp *budgetPlane,
 	pid int,
-	scopeID string,
+	scope, scopeID string,
 	periodStart, costJustBilled int64,
 	preDec failmode.Decision,
 ) {
 	// Re-read the budget state AFTER the increment. reqCostNano=costJustBilled
 	// lets the FSM account for the just-billed amount when evaluating thresholds
 	// (particularly the per-replica FRESH_NEAR cap on the degraded path).
-	postDec, postErr := h.budgetGate.CheckBudget(ctx, pid, budgetScopeProject, scopeID, periodStart, costJustBilled)
+	postDec, postErr := bp.gate.CheckBudget(ctx, pid, scope, scopeID, periodStart, costJustBilled)
 	if postErr != nil {
 		h.logger.Warn("budget gate: CheckBudget error during post-increment soft-alert check; skipping",
-			"project_id", pid, "err", postErr)
+			"project_id", pid, "scope", scope, "scope_id", scopeID, "err", postErr)
 		return
 	}
 
@@ -940,6 +1026,7 @@ func (h *Handler) trySoftAlert(
 
 	h.logger.Debug("soft-alert crossing check",
 		"project_id", pid,
+		"scope", scope, "scope_id", scopeID,
 		"crossed", crossed,
 		"pre_state", preDec.State.String(), "pre_near", preDec.SoftThresholdNear,
 		"post_state", postDec.State.String(), "post_near", postDec.SoftThresholdNear,
@@ -962,27 +1049,27 @@ func (h *Handler) trySoftAlert(
 	// claim made silently while alerts were off.
 	if postDec.SoftAlertsDisabled {
 		h.logger.Debug("budget gate: soft alert suppressed by platform switch",
-			"project_id", pid, "scope_id", scopeID)
+			"project_id", pid, "scope", scope, "scope_id", scopeID)
 		return
 	}
 
-	fired, err := h.budgetGate.TryAlertCooldown(ctx, budgetScopeProject, scopeID, periodStart)
+	fired, err := bp.gate.TryAlertCooldown(ctx, scope, scopeID, periodStart)
 	if err != nil {
 		h.logger.Warn("budget gate: TryAlertCooldown error; soft-alert suppressed",
-			"project_id", pid, "err", err)
+			"project_id", pid, "scope", scope, "scope_id", scopeID, "err", err)
 		return
 	}
 	if fired {
-		h.logger.Warn("budget soft-alert: project has crossed the spend threshold",
+		h.logger.Warn("budget soft-alert: the budget has crossed the spend threshold",
 			"project_id", pid,
-			"scope", budgetScopeProject,
+			"scope", scope,
 			"scope_id", scopeID,
 			"cost_just_billed_nano", costJustBilled,
 			"period_start", periodStart,
 			"pre_state", preDec.State.String(),
 			"post_state", postDec.State.String(),
 		)
-		h.publishSoftAlertEvent(ctx, scopeID, costJustBilled, periodStart)
+		h.publishSoftAlertEvent(ctx, bp.alerts, pid, scope, scopeID, costJustBilled, periodStart)
 	}
 }
 
@@ -990,10 +1077,23 @@ func (h *Handler) trySoftAlert(
 // of the platform event contract consumed by elitea-main subscribers and the
 // BFF.9e live gate — change only with a spec update.
 type softAlertPayload struct {
-	ProjectID          string `json:"project_id"`
-	Scope              string `json:"scope"`
-	PeriodStartUnix    int64  `json:"period_start_unix"`
-	CostJustBilledNano int64  `json:"cost_just_billed_nano"`
+	// ProjectID is ALWAYS the numeric project id, on both scopes. It names the
+	// project the alert belongs to, and it matches the subject the event is
+	// published on. A member alert does NOT put "42:7" here: a subscriber that
+	// read this field as a project id would then be looking up a project that
+	// does not exist.
+	ProjectID string `json:"project_id"`
+	// Scope is which ceiling crossed: "project" or "user" (issue #510).
+	Scope string `json:"scope"`
+	// ScopeID is the accumulator key of that ceiling — "42" for a project,
+	// "42:7" for a member. It is what identifies the budget the alert is about.
+	ScopeID string `json:"scope_id"`
+	// UserID names the member on a user-scope alert, so a subscriber does not
+	// have to parse ScopeID to know who to tell. It is absent on a project
+	// alert, which belongs to no one member.
+	UserID             int   `json:"user_id,omitempty"`
+	PeriodStartUnix    int64 `json:"period_start_unix"`
+	CostJustBilledNano int64 `json:"cost_just_billed_nano"`
 }
 
 // softAlertEnvelope mirrors elitea-main's redis.Event envelope (the shape
@@ -1013,16 +1113,43 @@ const softAlertEventType = "budget.soft_alert"
 // recorded on gateway.events.* within S seconds"). Best-effort: a publish
 // failure is logged, never fatal — the authoritative alert record remains the
 // NATS cooldown claim; the event is the notification channel.
-func (h *Handler) publishSoftAlertEvent(ctx context.Context, scopeID string, costJustBilled, periodStart int64) {
-	if h.alertEvents == nil {
+//
+// pub is the publisher from the caller's budget-plane snapshot. A nil pub
+// disables publishing; the alert still logs.
+//
+// The SUBJECT is the project's, for a member alert as well as a project one
+// (issue #510). PublishSoftAlertEvent turns its first argument into the NATS
+// subject token gateway.events.project.<id>.events, which is the channel
+// elitea-main relays to the members of that project; a member scope_id such as
+// "42:7" would build a subject nothing subscribes to, and the warning would
+// reach nobody. Which budget crossed is carried in the payload instead.
+func (h *Handler) publishSoftAlertEvent(
+	ctx context.Context,
+	pub AlertEventPublisher,
+	pid int,
+	scope, scopeID string,
+	costJustBilled, periodStart int64,
+) {
+	if pub == nil {
 		return
 	}
-	payload, err := json.Marshal(softAlertPayload{
-		ProjectID:          scopeID,
-		Scope:              budgetScopeProject,
+	projectID := strconv.Itoa(pid)
+	body := softAlertPayload{
+		ProjectID:          projectID,
+		Scope:              scope,
+		ScopeID:            scopeID,
 		PeriodStartUnix:    periodStart,
 		CostJustBilledNano: costJustBilled,
-	})
+	}
+	if scope == budgetScopeUser {
+		// A malformed member key leaves UserID absent rather than reporting
+		// member 0. ScopeID still carries the raw key, so the alert stays
+		// diagnosable instead of naming the wrong person.
+		if uid, ok := failmode.UserIDFromScopeID(scopeID); ok {
+			body.UserID = uid
+		}
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		h.logger.Warn("budget soft-alert: marshal event payload failed", "err", err)
 		return
@@ -1040,8 +1167,9 @@ func (h *Handler) publishSoftAlertEvent(ctx context.Context, scopeID string, cos
 
 	pubCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 	defer cancel()
-	if err := h.alertEvents.PublishSoftAlertEvent(pubCtx, scopeID, env); err != nil {
-		h.logger.Warn("budget soft-alert: event publish failed", "project_id", scopeID, "err", err)
+	if err := pub.PublishSoftAlertEvent(pubCtx, projectID, env); err != nil {
+		h.logger.Warn("budget soft-alert: event publish failed",
+			"project_id", projectID, "scope", scope, "scope_id", scopeID, "err", err)
 	}
 }
 

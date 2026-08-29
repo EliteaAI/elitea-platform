@@ -29,6 +29,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
+import { stripJsonc } from './lib/jsonc.mjs';
 import { checkFixtureFreshness, checkHandlerSource } from './lib/mock-rules-core.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -36,39 +37,10 @@ const APP = resolve(SCRIPT_DIR, '..');
 const FIXTURES = join(APP, 'tools', 'lint-rules', 'fixtures');
 const BIN = (name) => join(APP, 'node_modules', '.bin', name);
 
-// ── tiny string-aware JSONC stripper (the production config carries comments) ──
-// A four-state scanner; each state handler returns [nextState, emit, skipNext].
-const JSONC_STATES = {
-  code(c, n) {
-    if (c === '"') return ['string', c, false];
-    if (c === '/' && n === '/') return ['line', '', true];
-    if (c === '/' && n === '*') return ['block', '', true];
-    return ['code', c, false];
-  },
-  string(c, n) {
-    if (c === '\\') return ['string', c + (n ?? ''), true];
-    return [c === '"' ? 'code' : 'string', c, false];
-  },
-  line(c) {
-    return c === '\n' ? ['code', c, false] : ['line', '', false];
-  },
-  block(c, n) {
-    return c === '*' && n === '/' ? ['code', '', true] : ['block', '', false];
-  },
-};
-
-export function stripJsonc(text) {
-  let out = '';
-  let state = 'code';
-  for (let i = 0; i < text.length; i++) {
-    const [next, emit, skip] = JSONC_STATES[state](text[i], text[i + 1]);
-    state = next;
-    out += emit;
-    if (skip) i++;
-  }
-  return out;
-}
-
+// The production config carries comments. `stripJsonc` moved to
+// scripts/lib/jsonc.mjs with issue #528 — scripts/check-dead-code.mjs reads
+// knip.json with the same scanner, and importing it from here would run this
+// whole self-test as a side effect.
 const productionConfig = JSON.parse(stripJsonc(readFileSync(join(APP, '.oxlintrc.json'), 'utf8')));
 
 function writeCaseConfig(caseDir, { typeAware }) {

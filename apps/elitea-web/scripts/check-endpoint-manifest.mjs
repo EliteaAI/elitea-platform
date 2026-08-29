@@ -35,7 +35,7 @@
 // Usage:
 //   node apps/elitea-web/scripts/check-endpoint-manifest.mjs \
 //     [--manifest <path>] [--generated-dir <path>] [--parity-dir <path>] \
-//     [--json] [--verbose]
+//     [--min-entries <n>] [--json] [--verbose]
 //
 // APPEND CONVENTION for later Wave-2 units (documented here AND in
 // endpoints.manifest.json's own $comment — read either):
@@ -63,26 +63,57 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { crossReferenceParity, deriveOperationIdFromHookName, validateManifest } from './lib/endpoint-manifest-core.mjs';
+import { checkFloors, subjectPath } from './lib/gate-floor.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, '..');
 
+/*
+ * Floor on the manifest itself (issue #528).
+ *
+ * The generated set already had a floor: line 129 refuses an empty
+ * `--generated-dir`. The MANIFEST side had none. Ship `"endpoints": []` and
+ * `validateManifest` walks nothing, finds nothing, and the script prints
+ * "check-endpoint-manifest: OK" over an empty file.
+ *
+ * The manifest is append-only by convention, so this number only ever goes up.
+ * Measured on 2026-08-28: 186 entries (90 generated, 96 handwritten).
+ *
+ * `--min-entries` exists because a FIXTURE manifest is a legitimate subject of
+ * one or two entries — scripts/check-endpoint-manifest.test.mjs feeds several.
+ * Those runs state `--min-entries 0` and say so. CI passes no flag and gets
+ * the real floor.
+ */
+const DEFAULT_MIN_MANIFEST_ENTRIES = 150;
+
 // --- CLI ---------------------------------------------------------------------
 const args = process.argv.slice(2);
-const opts = { json: false, verbose: false, manifest: null, generatedDir: null, parityDir: null };
+const opts = {
+  json: false, verbose: false, manifest: null, generatedDir: null, parityDir: null,
+  minEntries: null,
+};
 const FLAGS = { '--json': 'json', '--verbose': 'verbose' };
-const VALUE_FLAGS = { '--manifest': 'manifest', '--generated-dir': 'generatedDir', '--parity-dir': 'parityDir' };
+const VALUE_FLAGS = {
+  '--manifest': 'manifest', '--generated-dir': 'generatedDir', '--parity-dir': 'parityDir',
+  '--min-entries': 'minEntries',
+};
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (FLAGS[a]) opts[FLAGS[a]] = true;
   else if (VALUE_FLAGS[a]) opts[VALUE_FLAGS[a]] = args[++i];
   else if (a === '--help' || a === '-h') {
-    console.log('usage: check-endpoint-manifest.mjs [--manifest path] [--generated-dir path] [--parity-dir path] [--json] [--verbose]');
+    console.log('usage: check-endpoint-manifest.mjs [--manifest path] [--generated-dir path] [--parity-dir path] [--min-entries n] [--json] [--verbose]');
     process.exit(0);
   } else {
     console.error(`unknown argument: ${a}`);
     process.exit(2);
   }
+}
+
+const minEntries = opts.minEntries === null ? DEFAULT_MIN_MANIFEST_ENTRIES : Number(opts.minEntries);
+if (!Number.isInteger(minEntries) || minEntries < 0) {
+  console.error(`check-endpoint-manifest: --min-entries needs a whole number, got "${opts.minEntries}"`);
+  process.exit(2);
 }
 
 const manifestPath = path.resolve(opts.manifest ?? path.join(appRoot, 'src/shared/api/endpoints.manifest.json'));
@@ -137,6 +168,17 @@ if (generatedOperationIds.size === 0) {
 // --- Validate the manifest -------------------------------------------------------
 const { violations, duplicateIds, total } = validateManifest(manifestDoc, generatedOperationIds);
 
+// The floor runs before the report. An empty manifest makes every rule below
+// vacuous, so the count is stated and refused first — the same shape as the
+// "found 0 generated operations" refusal above.
+const floors = checkFloors('check-endpoint-manifest', [
+  { subject: `entries in ${subjectPath(appRoot, manifestPath)}`, observed: total, floor: minEntries },
+]);
+if (!floors.ok) {
+  console.error(floors.error);
+  process.exit(2);
+}
+
 // --- Informational P1 cross-reference (never affects exit code) -----------------
 function loadParityApiItems(dir) {
   let files;
@@ -174,6 +216,7 @@ if (opts.json) {
     generatedDir: path.relative(appRoot, generatedDir),
     generatedOperationCount: generatedOperationIds.size,
     totalEntries: total,
+    minEntries,
     violations,
     duplicateIds,
     parity: {
@@ -195,6 +238,9 @@ if (opts.json) {
     console.log(`generated operations on disk: ${generatedOperationIds.size}`);
     console.log(`manifest entries: ${total}`);
   }
+  // State what the gate measured on the pass path too. An exit code alone
+  // cannot tell a full manifest from an empty one.
+  for (const line of floors.lines) console.log(line);
   console.log(
     `check-endpoint-manifest: parity cross-reference ${crossRef.matched.length}/${parityItems.length} ` +
       `P1 API-* items have a manifest entry (rest are handwritten, not yet landed — expected during Wave 1/2)`,

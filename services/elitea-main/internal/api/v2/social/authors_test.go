@@ -177,7 +177,9 @@ func TestCurrentAuthorsRouteDeniesSuspendedPrincipalProjectAndInvalidScope(t *te
 		"suspended principal": {
 			target: "/api/v2/social/authors/7",
 			principal: func(context.Context, auth.User) (auth.User, error) {
-				return auth.User{}, errors.New("suspended principal")
+				// The sentinel, not a bare error: only auth.ErrPrincipalInactive
+				// is a 401, so a database fault stays a 5xx (#537).
+				return auth.User{}, auth.ErrPrincipalInactive
 			},
 			permissions: authorizedCurrentAuthorsPermissions(),
 			status:      http.StatusUnauthorized,

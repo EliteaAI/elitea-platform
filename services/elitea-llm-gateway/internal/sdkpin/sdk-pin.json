@@ -28,13 +28,41 @@
     "pull_request and push arms. Without that line the job never starts on the",
     "one change this gate exists to catch, and the sentence above is false.",
     "",
+    "WHY THE CONTENT DIGESTS ARE BELOW (#567). A revision names WHICH commit is",
+    "checked out. It does not name WHAT the working tree holds. Both gates ran",
+    "`git rev-parse HEAD`, compared it with the revision, and stopped. Two holes",
+    "followed. A DIRTY tree keeps the pinned HEAD, so uncommitted SDK edits stay",
+    "invisible. `git rev-parse` also walks UP to an enclosing repository, so a",
+    "hand-authored directory inside a pinned clone reports the pinned revision.",
+    "An operator whose checkout is dirty then mints a pin from a green run that",
+    "measured other bytes.",
+    "",
+    "The `contents` list records the sha256 of every SDK file the two gates",
+    "read. Tier 1 and tier 2 hash those files in the checkout and REFUSE TO RUN",
+    "when a digest differs, so the gates measure the content this file names.",
+    "",
+    "THE LIST IS SCOPED ON PURPOSE. ci-python.yml applies the two patch",
+    "revisions with `git cherry-pick --no-commit`, so the CI tree is",
+    "deliberately dirty. A whole-tree cleanliness check fails every CI run, and",
+    "that trap is why this states FILES instead. Both patches touch",
+    "elitea_sdk/runtime/toolkits/mcp.py, elitea_sdk/runtime/utils/mcp_adapter.py",
+    "and tests/ only, so neither digest below moves under them.",
+    "",
     "WHEN THE SDK MOVES:",
     "  1. Update services/elitea-worker-python/elitea-sdk.lock.json as usual.",
     "  2. Run tier 1:  ELITEA_SDK_SOURCE_ROOT=<new checkout>",
     "                  python -m pytest scripts/contract/test_sdk_budget_contract.py",
     "  3. Run tier 2:  services/elitea-llm-gateway/scripts/sdk-conformance/run.sh",
-    "  4. ONLY when both pass, copy the new revision and patch revisions here.",
-    "     Copying them first turns a real incompatibility into a green build.",
+    "  4. Read the new digests from the new checkout:",
+    "       cd <new checkout> && sha256sum elitea_sdk/runtime/exceptions.py \\",
+    "         elitea_sdk/runtime/clients/client.py     # macOS: shasum -a 256",
+    "  5. ONLY when both gates pass, copy the revision, the patch revisions and",
+    "     the digests here. Copying them first turns a real incompatibility into",
+    "     a green build.",
+    "",
+    "ADD A FILE TO `contents` WHENEVER A GATE STARTS READING IT. Tier 1 compares",
+    "this list with the SDK files it reads and fails when they differ, so a new",
+    "gate input cannot stay unmeasured.",
     "",
     "verified_on is a date for the reader. Nothing keys on it."
   ],
@@ -44,6 +72,16 @@
     "patch_revisions": [
       "5c9409779ac0a55f8bf74f6ef438977089187a14",
       "07ddc5cd67a0c747f83ca0e26421cde71bd97d9d"
+    ],
+    "contents": [
+      {
+        "path": "elitea_sdk/runtime/exceptions.py",
+        "sha256": "510969b0fdd1b153ba96bc1e3673b6e3d2c7ceed95c7196d5a18b0511fd3273d"
+      },
+      {
+        "path": "elitea_sdk/runtime/clients/client.py",
+        "sha256": "9cfac67a8a1c1d0eb43dbf6245f4ee03f659e4de4023cadf6921fa0e16bbed28"
+      }
     ],
     "verified_on": "2026-08-23"
   }

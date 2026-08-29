@@ -709,9 +709,27 @@ func TestProductionRouterMountsOnlyExactCurrentIndexTypesPathWhenComposed(t *tes
 					recorder.Body.String(),
 				)
 			}
+			// One body, both key sets (#394): the published
+			// DocumentLoadersResponse keys the generated apps/elitea-web
+			// client reads, beside the Pylon maps apps/elitea-ui reads. Each
+			// item lists the extensions of the map its `type` names, so the
+			// two halves cannot disagree.
 			if test.want == http.StatusOK &&
 				recorder.Body.String() !=
-					"{\"document_types\":{\".txt\":\"text/plain\"},\"image_types\":{\".png\":\"image/png\"},\"code_types\":{\".go\":\"text/x-go\"}}\n" {
+					"{\"items\":["+
+						"{\"type\":\"document_types\",\"name\":\"Document types\","+
+						"\"description\":\"File extensions the indexer loads as documents.\","+
+						"\"supported_extensions\":[\".txt\"]},"+
+						"{\"type\":\"image_types\",\"name\":\"Image types\","+
+						"\"description\":\"File extensions the indexer loads as images.\","+
+						"\"supported_extensions\":[\".png\"]},"+
+						"{\"type\":\"code_types\",\"name\":\"Code types\","+
+						"\"description\":\"File extensions the indexer loads as plain-text code.\","+
+						"\"supported_extensions\":[\".go\"]}"+
+						"],\"total\":3,"+
+						"\"document_types\":{\".txt\":\"text/plain\"},"+
+						"\"image_types\":{\".png\":\"image/png\"},"+
+						"\"code_types\":{\".go\":\"text/x-go\"}}\n" {
 				t.Fatalf("successful body=%q", recorder.Body.String())
 			}
 		})
@@ -814,7 +832,16 @@ func TestProductionRouterMountsOnlyExactCurrentApplicationSkillsPathWhenComposed
 			path:          "/api/v2/elitea_core/application_skills/prompt_lib/007/0031",
 			authenticated: true,
 			want:          http.StatusOK,
-			wantBody:      "{\"skills\":[{\"name\":\"deploy\",\"description\":\"Deploy safely\",\"skill_id\":17,\"version_id\":19,\"version_name\":\"release\",\"version_missing\":false,\"icon_meta\":null}],\"max_skills\":5}\n",
+			// One body, both clients (#395): `items` is the published
+			// SkillsList contract apps/elitea-web reads, `skills` and
+			// `max_skills` are the Pylon keys apps/elitea-ui reads.
+			wantBody: "{\"items\":[{\"id\":\"17\",\"project_id\":\"7\",\"name\":\"deploy\"," +
+				"\"description\":\"Deploy safely\",\"type\":\"skill\",\"is_default\":false," +
+				"\"created_at\":\"0001-01-01T00:00:00Z\",\"updated_at\":\"0001-01-01T00:00:00Z\"}]," +
+				"\"total\":1,\"page\":1,\"page_size\":1,\"total_pages\":1," +
+				"\"skills\":[{\"name\":\"deploy\",\"description\":\"Deploy safely\",\"skill_id\":17," +
+				"\"version_id\":19,\"version_name\":\"release\",\"version_missing\":false," +
+				"\"icon_meta\":null}],\"max_skills\":5}\n",
 		},
 		{
 			method: http.MethodGet,
@@ -838,14 +865,14 @@ func TestProductionRouterMountsOnlyExactCurrentApplicationSkillsPathWhenComposed
 			path:          "/api/v2/elitea_core/application_skills/prompt_lib/7/0",
 			authenticated: true,
 			want:          http.StatusOK,
-			wantBody:      "{\"skills\":[],\"max_skills\":5}\n",
+			wantBody:      "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n",
 		},
 		{
 			method:        http.MethodGet,
 			path:          "/api/v2/elitea_core/application_skills/prompt_lib/7/9999999999999999999999999999999999999999",
 			authenticated: true,
 			want:          http.StatusOK,
-			wantBody:      "{\"skills\":[],\"max_skills\":5}\n",
+			wantBody:      "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n",
 		},
 		{
 			method: http.MethodGet,

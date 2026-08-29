@@ -624,11 +624,15 @@ FOR UPDATE OF j, o`, outboxID, r.expectedStream).Scan(
 		if retired {
 			return executionapp.ErrDispatchRetired
 		}
-		// A competing publisher can select and append the envelope while this
-		// publisher is signing. Once a worker has authority, or the job has
-		// terminalized, returning the stored winner would recreate a Redis entry
-		// that the worker may already have acknowledged and deleted.
-		if authorityGranted || jobState != string(executiondomain.JobPending) {
+		// A competing publisher can select, append and publish the envelope while
+		// this publisher is signing. That moves the job to DISPATCHED, which is
+		// not terminal: no worker holds the command yet, and the visibility
+		// redelivery path appends the same durable winner again. The winner
+		// therefore stays returnable in PENDING and in DISPATCHED. Worker
+		// authority, or a terminal job state, does end the window: returning the
+		// winner then would recreate a Redis entry that the worker may already
+		// have acknowledged and deleted.
+		if authorityGranted || (jobState != string(executiondomain.JobPending) && jobState != string(executiondomain.JobDispatched)) {
 			return executionapp.ErrDispatchRetired
 		}
 		if deadlineExpired {
@@ -643,6 +647,12 @@ FOR UPDATE OF j, o`, outboxID, r.expectedStream).Scan(
 			return nil
 		}
 		if published {
+			return ErrPendingIndexIngestDispatchNotFound
+		}
+		// Selection stays a one-shot. Only a PENDING job may select a new
+		// envelope; a DISPATCHED job already holds its durable winner, so a
+		// second signature must never replace it.
+		if jobState != string(executiondomain.JobPending) {
 			return ErrPendingIndexIngestDispatchNotFound
 		}
 		tag, err := tx.Exec(ctx, `

@@ -265,34 +265,35 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 		// wins when it is composed, and the compatibility mount serves the
 		// path in every shipped install, where it is not.
 		"ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "#460 — the compatibility write routes serve this path in every install; turning the flag on is a cutover to a second route with a different request shape",
-		// #367 — cannot be turned on until the response contract is
-		// reconciled, and must not be deleted while it is the only
-		// SDK-derived implementation. A dedicated follow-up issue should
-		// replace this reference; #367 is where the conflict is recorded.
+		// ELITEA_INDEX_TYPES_ENABLED was listed here, first against #367 and
+		// then against #394. Its route answered {document_types, image_types,
+		// code_types} only, and the published contract for the same path is
+		// DocumentLoadersResponse — {items, total} — so turning the flag on made
+		// the shipped generated client drift. #394 removed the conflict rather
+		// than the flag: internal/api/v2/indextypes now answers the published
+		// envelope BESIDE the Pylon keys, from one snapshot read, and
+		// deploy/helm/elitea/values-standalone.yaml sets the flag. The entry is
+		// gone because the check above turns a kept entry into a failure once a
+		// deployment assigns the flag.
 		//
-		// The route it composes answers {document_types, image_types,
-		// code_types} from the pinned SDK snapshot. The published contract for
-		// the same path is DocumentLoadersResponse — {items, total} — at
-		// api/openapi/v2.yaml:2023, and elitea-web's generated client is built
-		// from it. Turning the flag on makes the current route win the path
-		// and hands that client a body it cannot read.
+		// Keep the snapshot files with it. scripts/contract/
+		// sync_index_types_snapshot.py holds the snapshot to the locked SDK
+		// revision, and ci-python.yml runs that generator with --check against
+		// internal/runtimecomposition/current_index_types_snapshot.json and
+		// internal/api/v2/indextypes/testdata/current_index_types_ui_response.json.
+		// Deleting either file turns that gate red.
 		//
-		// Unlike application_skills, the handler answering today is not
-		// returning another resource's data: internal/api/v2/toolkits'
-		// IndexTypes returns a static six-loader list. It is stale rather than
-		// wrong-scoped, so the flag stays off until the contract moves.
-		"ELITEA_INDEX_TYPES_ENABLED": "#367 — enabling it would serve a shape the published contract and the generated client do not accept",
-		// #367 — same conflict, and the harm it used to mask is now fixed on
-		// the path every deployment reaches. A dedicated follow-up issue
-		// should replace this reference too.
-		//
-		// The route it composes answers {skills, max_skills}; elitea-web reads
-		// the SkillsList envelope. #367 fixed the handler that actually serves
-		// this path instead (router.go's /application_skills/{mode}/… now
-		// reads {appVersionID}), so the flag no longer hides a wrong answer —
-		// only a second, contract-incompatible implementation kept for the
-		// Pylon edge cutover its CURRENT_PARITY_EVIDENCE.md describes.
-		"ELITEA_APPLICATION_SKILLS_ENABLED": "#367 — the Pylon-parity read kept for the edge cutover; its {skills,max_skills} shape conflicts with the shipped client",
+		// A DEFAULT install still leaves the flag off, because the capability
+		// needs production authentication that install does not build. The
+		// toolkits handler answers the path there, and it answers the prototype
+		// six-loader list — see values.yaml for what that costs.
+		// ELITEA_APPLICATION_SKILLS_ENABLED was listed here, with the same
+		// conflict: the route it composes answered {skills, max_skills} and
+		// elitea-web reads the SkillsList envelope. #395 removed the conflict
+		// rather than the flag — the route now answers both key sets from one
+		// row read — and deploy/helm/elitea/values-standalone.yaml sets the
+		// flag. The entry is gone because the check above turns a kept entry
+		// into a failure once a deployment assigns the flag.
 	}
 
 	flagFiles, globErr := filepath.Glob(filepath.Join(root, "cmd/elitea-main/*_config.go"))
@@ -317,20 +318,11 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	}
 
 	deployed := deployAssignedEnv(t, filepath.Join(root, "..", "..", "deploy"))
-	var darkUndeclared, staleDark []string
-	for flag := range compositionFlags {
-		_, isDeployed := deployed[flag]
-		_, declared := darkFlags[flag]
-
-		switch {
-		case isDeployed && declared:
-			staleDark = append(staleDark, flag)
-		case !isDeployed && !declared:
-			darkUndeclared = append(darkUndeclared, flag)
-		}
-	}
-	sort.Strings(darkUndeclared)
-	sort.Strings(staleDark)
+	darkUndeclared, staleDark, orphanedDark := gradeCompositionFlags(
+		compositionFlags,
+		deployed,
+		darkFlags,
+	)
 
 	for _, flag := range darkUndeclared {
 		t.Errorf("%s is read by cmd/elitea-main/%s, and no file under deploy/ sets it.\n"+
@@ -344,12 +336,10 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 			"  Remove the entry: a stale allowlist hides the next real regression for this flag.",
 			flag, deployed[flag])
 	}
-	for flag := range darkFlags {
-		if _, read := compositionFlags[flag]; !read {
-			t.Errorf("darkFlags lists %s, but no reader in cmd/elitea-main/*_config.go looks it up.\n"+
-				"  The flag was removed and the entry was left behind, where it reads as a live\n"+
-				"  claim about a branch that no longer exists. Delete the entry.", flag)
-		}
+	for _, flag := range orphanedDark {
+		t.Errorf("darkFlags lists %s, but no reader in cmd/elitea-main/*_config.go looks it up.\n"+
+			"  The flag was removed and the entry was left behind, where it reads as a live\n"+
+			"  claim about a branch that no longer exists. Delete the entry.", flag)
 	}
 
 	var unwired, staleAllowlist []string
@@ -399,6 +389,136 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 			"  The field or its gate was removed and the entry was left behind, where it reads as a\n"+
 			"  live claim about routes that no longer exist. Delete the entry.",
 			f, f, strings.Join(routerFiles, " or "))
+	}
+}
+
+// gradeCompositionFlags is the whole judgement the dark-flag check makes, in
+// one place so that the judgement itself can be tested.
+//
+// It used to be an inline loop, and that made the check unfalsifiable: the only
+// way to see it work was to break the repository and watch the real test go
+// red. TestCompositionFlagGradingCatchesADarkFlagWithNoJustification below
+// drives it with synthetic inputs instead, so the three verdicts stay proved
+// while the real inputs move.
+//
+//   - darkUndeclared: read by the composition root, set by no deployment, and
+//     not declared dark. This is the #367 shape — a branch that runs nowhere,
+//     and a lower-priority route answering on the path in its place.
+//   - staleDark: declared dark AND set by a deployment. The claim is no longer
+//     true, and leaving it hides the next real regression for that flag.
+//   - orphanedDark: declared dark, and no composition-root reader looks it up.
+//     The flag went away and the entry stayed behind as a live-looking claim.
+func gradeCompositionFlags(
+	compositionFlags map[string]string,
+	deployed map[string]string,
+	darkFlags map[string]string,
+) (darkUndeclared, staleDark, orphanedDark []string) {
+	for flag := range compositionFlags {
+		_, isDeployed := deployed[flag]
+		_, declared := darkFlags[flag]
+
+		switch {
+		case isDeployed && declared:
+			staleDark = append(staleDark, flag)
+		case !isDeployed && !declared:
+			darkUndeclared = append(darkUndeclared, flag)
+		}
+	}
+	for flag := range darkFlags {
+		if _, read := compositionFlags[flag]; !read {
+			orphanedDark = append(orphanedDark, flag)
+		}
+	}
+	sort.Strings(darkUndeclared)
+	sort.Strings(staleDark)
+	sort.Strings(orphanedDark)
+	return darkUndeclared, staleDark, orphanedDark
+}
+
+// TestCompositionFlagGradingCatchesADarkFlagWithNoJustification proves the
+// check still refuses a flag that has neither a deployment assignment nor a
+// justification (#395's acceptance criterion).
+//
+// #395 removed ELITEA_APPLICATION_SKILLS_ENABLED from darkFlags, because
+// deploy/helm/elitea/values-standalone.yaml now sets it. Removing an entry from
+// an allowlist is exactly the edit that can turn a gate into a no-op, so the
+// grading is exercised here on its own inputs.
+func TestCompositionFlagGradingCatchesADarkFlagWithNoJustification(t *testing.T) {
+	t.Parallel()
+
+	darkUndeclared, staleDark, orphanedDark := gradeCompositionFlags(
+		map[string]string{
+			// Read, set by nobody, justified by nobody.
+			"ELITEA_NEW_THING_ENABLED": "new_thing_config.go",
+			// Read, set by nobody, justified. Allowed.
+			"ELITEA_DARK_THING_ENABLED": "dark_thing_config.go",
+			// Read and set. Allowed.
+			"ELITEA_LIVE_THING_ENABLED": "live_thing_config.go",
+			// Read, set, AND still declared dark. The claim is stale.
+			"ELITEA_WAS_DARK_ENABLED": "was_dark_config.go",
+		},
+		map[string]string{
+			"ELITEA_LIVE_THING_ENABLED": "values.yaml:1",
+			"ELITEA_WAS_DARK_ENABLED":   "values-standalone.yaml:2",
+		},
+		map[string]string{
+			"ELITEA_DARK_THING_ENABLED": "#1 — justified",
+			"ELITEA_WAS_DARK_ENABLED":   "#2 — no longer true",
+			"ELITEA_DELETED_ENABLED":    "#3 — the reader is gone",
+		},
+	)
+
+	if len(darkUndeclared) != 1 || darkUndeclared[0] != "ELITEA_NEW_THING_ENABLED" {
+		t.Fatalf(
+			"a flag with no deployment assignment and no justification must fail the check; got %v",
+			darkUndeclared,
+		)
+	}
+	if len(staleDark) != 1 || staleDark[0] != "ELITEA_WAS_DARK_ENABLED" {
+		t.Fatalf("stale dark entries = %v", staleDark)
+	}
+	if len(orphanedDark) != 1 || orphanedDark[0] != "ELITEA_DELETED_ENABLED" {
+		t.Fatalf("orphaned dark entries = %v", orphanedDark)
+	}
+}
+
+// TestDeployAssignedEnvReadsAssignmentsNotMentions pins the input side of the
+// grading above: only a line that actually turns a flag ON counts as a
+// deployment assignment.
+func TestDeployAssignedEnvReadsAssignmentsNotMentions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "values.yaml"), []byte(
+		"main:\n"+
+			"  env:\n"+
+			"    # ELITEA_COMMENTED_ENABLED: \"true\" — a comment is not a deployment\n"+
+			"    ELITEA_OFF_ENABLED: \"false\"\n"+
+			"    ELITEA_ON_ENABLED: \"true\"\n"+
+			"    ELITEA_TRAILING_ENABLED: \"true\" # with a reason\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runbook.md"), []byte(
+		"    ELITEA_DOCUMENTED_ENABLED: \"true\"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	assigned := deployAssignedEnv(t, dir)
+	for _, flag := range []string{"ELITEA_ON_ENABLED", "ELITEA_TRAILING_ENABLED"} {
+		if _, found := assigned[flag]; !found {
+			t.Fatalf("%s is assigned ON and must count as deployed: %v", flag, assigned)
+		}
+	}
+	for _, flag := range []string{
+		"ELITEA_COMMENTED_ENABLED",
+		"ELITEA_OFF_ENABLED",
+		"ELITEA_DOCUMENTED_ENABLED",
+	} {
+		if where, found := assigned[flag]; found {
+			t.Fatalf("%s must not count as deployed, but %s claimed it", flag, where)
+		}
 	}
 }
 

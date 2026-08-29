@@ -1,10 +1,8 @@
 package applications
 
-import "github.com/jackc/pgx/v5"
-
-// maxProjectIDDigits bounds a tenant project id well above any real SERIAL
-// value while refusing pathological input outright.
-const maxProjectIDDigits = 19
+import (
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
+)
 
 // defaultVersionName is the well-known "unnamed default" version name shared
 // with the UI (apps/elitea-web/src/entities/version/model/selectors.ts's
@@ -17,19 +15,15 @@ const defaultVersionName = "base"
 //
 // The handlers previously built the schema with fmt.Sprintf("p_%s", projectID)
 // and interpolated it with %q. %q is a Go string quoter, not a PostgreSQL
-// identifier quoter: it escapes an embedded quote as \" where PostgreSQL wants
-// it doubled, and PostgreSQL rejects a backslash inside a quoted identifier.
-// That combination keeps statement injection out of reach, but it still puts
-// unvalidated caller text into the statement, where a hostile id surfaces as a
-// 500 carrying a raw SQL syntax error. Validating first keeps it out entirely.
+// identifier quoter: it writes an embedded quote as \" where PostgreSQL wants
+// it doubled, and PostgreSQL treats the backslash as an ordinary character and
+// ENDS the identifier at that quote, so the rest of the caller's text became
+// SQL. The validation and the quoting both live in one place now; see
+// internal/infra/db/tenantschema and issue #543.
 func tenantSchema(projectID string) (string, bool) {
-	if projectID == "" || len(projectID) > maxProjectIDDigits {
+	quoted, err := tenantschema.Quote(projectID)
+	if err != nil {
 		return "", false
 	}
-	for i := 0; i < len(projectID); i++ {
-		if projectID[i] < '0' || projectID[i] > '9' {
-			return "", false
-		}
-	}
-	return pgx.Identifier{"p_" + projectID}.Sanitize(), true
+	return quoted, true
 }

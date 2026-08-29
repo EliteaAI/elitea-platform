@@ -8,6 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 type Analytics struct {
@@ -118,8 +120,11 @@ type pgRepo struct {
 }
 
 func (r *pgRepo) GetAnalytics(ctx context.Context, projectID, conversationID string) (Analytics, error) {
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_message_group WHERE conversation_id = $1`, s)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return Analytics{}, err
+	}
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM %s.chat_message_group WHERE conversation_id = $1`, s)
 	var count int
 	if err := r.pool.QueryRow(ctx, q, conversationID).Scan(&count); err != nil {
 		return Analytics{TokenCount: 0, MaxTokens: 128000}, nil

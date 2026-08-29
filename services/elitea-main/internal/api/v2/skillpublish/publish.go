@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 type publishRequest struct {
@@ -138,7 +140,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) publishedVersionCount(ctx context.Context, schema string, skillID int) int {
 	var count int
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.skill_versions WHERE skill_id = $1 AND status = 'published'`, schema),
+		`SELECT COUNT(*) FROM %s.skill_versions WHERE skill_id = $1 AND status = 'published'`, schema),
 		skillID).Scan(&count) // a failed count leaves 0; the INSERT's own constraints still apply
 	return count
 }
@@ -186,7 +188,7 @@ func insertVersion(ctx context.Context, tx queryExecer, schema string, skillID i
 	}
 	var versionID int
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %q.skill_versions (skill_id, name, instructions, author_id, status, meta)
+		INSERT INTO %s.skill_versions (skill_id, name, instructions, author_id, status, meta)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 		RETURNING id`, schema),
 		skillID, name, instructions, authorID, status, string(encodedMeta)).Scan(&versionID); err != nil {
@@ -208,7 +210,7 @@ func isUniqueViolation(err error) bool {
 // fork/export.
 func setDefaultVersionIfUnset(ctx context.Context, tx queryExecer, schema string, skillID, versionID int) error {
 	_, err := tx.Exec(ctx, fmt.Sprintf(`
-		UPDATE %q.skills
+		UPDATE %s.skills
 		SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('default_version_id', $2::int)
 		WHERE id = $1
 		  AND COALESCE(meta->>'default_version_id', '') = ''`, schema), skillID, versionID)
@@ -264,10 +266,10 @@ func (h *Handler) adminPublish(ctx context.Context, w http.ResponseWriter, schem
 // userPublish snapshots the source version and copies it into the public
 // project's schema.
 func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projectID, schema, publicID string, row skillVersionRow, body publishRequest, activeCategories []string, userID int) {
-	publicSchema := "p_" + publicID
+	publicQuoted := publicSchema()
 
-	twinID, twinExists := h.findPublicTwin(ctx, publicSchema, projectID, row.SkillID)
-	if twinExists && !h.guardAdditionalPublish(ctx, w, publicSchema, twinID, body.VersionName) {
+	twinID, twinExists := h.findPublicTwin(ctx, publicQuoted, projectID, row.SkillID)
+	if twinExists && !h.guardAdditionalPublish(ctx, w, publicQuoted, twinID, body.VersionName) {
 		return
 	}
 
@@ -306,17 +308,17 @@ func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projec
 	sourceProjectNumeric, _ := strconv.Atoi(projectID)
 	if !twinExists {
 		err = tx.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.skills (name, description, owner_id, author_id, meta, shared_owner_id, shared_id)
+			INSERT INTO %s.skills (name, description, owner_id, author_id, meta, shared_owner_id, shared_id)
 			VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6)
 			ON CONFLICT (shared_owner_id, shared_id) WHERE shared_owner_id IS NOT NULL DO NOTHING
-			RETURNING id`, publicSchema),
+			RETURNING id`, publicQuoted),
 			row.SkillName, row.SkillDescription, publicIDInt(publicID), userID,
 			sourceProjectNumeric, row.SkillID).Scan(&twinID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Lost a concurrent first publish: the twin now exists, so append
 			// to it instead of failing the request.
 			var found bool
-			twinID, found = h.findTwinTx(ctx, tx, publicSchema, projectID, row.SkillID)
+			twinID, found = h.findTwinTx(ctx, tx, publicQuoted, projectID, row.SkillID)
 			if !found {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal_error", "msg": "public skill twin could not be resolved"})
 				return
@@ -332,7 +334,7 @@ func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projec
 	// (3) The catalog version.
 	publishedRow := row
 	publishedRow.VersionID = sourceVersionID
-	publicVersionID, err := insertVersion(ctx, tx, publicSchema, twinID, body.VersionName, row.Instructions,
+	publicVersionID, err := insertVersion(ctx, tx, publicQuoted, twinID, body.VersionName, row.Instructions,
 		userID, "published", publishedMeta(projectID, publishedRow, userID), snapshotTags)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -345,7 +347,7 @@ func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projec
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal_error", "msg": err.Error()})
 		return
 	}
-	if err := setDefaultVersionIfUnset(ctx, tx, publicSchema, twinID, publicVersionID); err != nil {
+	if err := setDefaultVersionIfUnset(ctx, tx, publicQuoted, twinID, publicVersionID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal_error", "msg": err.Error()})
 		return
 	}
@@ -369,18 +371,18 @@ func publicIDInt(publicID string) int {
 	return parsed
 }
 
-func (h *Handler) findPublicTwin(ctx context.Context, publicSchema, sourceProjectID string, sourceSkillID int) (int, bool) {
-	return h.findTwinTx(ctx, h.pool, publicSchema, sourceProjectID, sourceSkillID)
+func (h *Handler) findPublicTwin(ctx context.Context, publicQuoted, sourceProjectID string, sourceSkillID int) (int, bool) {
+	return h.findTwinTx(ctx, h.pool, publicQuoted, sourceProjectID, sourceSkillID)
 }
 
-func (h *Handler) findTwinTx(ctx context.Context, q queryExecer, publicSchema, sourceProjectID string, sourceSkillID int) (int, bool) {
+func (h *Handler) findTwinTx(ctx context.Context, q queryExecer, publicQuoted, sourceProjectID string, sourceSkillID int) (int, bool) {
 	numericProjectID, err := strconv.Atoi(sourceProjectID)
 	if err != nil {
 		return 0, false
 	}
 	var id int
 	err = q.QueryRow(ctx, fmt.Sprintf(
-		`SELECT id FROM %q.skills WHERE shared_owner_id = $1 AND shared_id = $2`, publicSchema),
+		`SELECT id FROM %s.skills WHERE shared_owner_id = $1 AND shared_id = $2`, publicQuoted),
 		numericProjectID, sourceSkillID).Scan(&id)
 	if err != nil {
 		return 0, false
@@ -432,7 +434,7 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 	var skillID int
 	var status, metaText string
 	err := tx.QueryRow(ctx, fmt.Sprintf(
-		`SELECT skill_id, status, COALESCE(meta::text, '{}') FROM %q.skill_versions WHERE id = $1`, schema),
+		`SELECT skill_id, status, COALESCE(meta::text, '{}') FROM %s.skill_versions WHERE id = $1`, schema),
 		publicVersionID).Scan(&skillID, &status, &metaText)
 	// A missing row and a failed query are different answers. Reporting a
 	// database fault as "not published" tells the caller their published skill
@@ -451,13 +453,13 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 	_ = json.Unmarshal([]byte(metaText), &meta) // DB jsonb column; malformed means nil meta
 
 	if _, err := tx.Exec(ctx, fmt.Sprintf(
-		`DELETE FROM %q.skill_versions WHERE id = $1`, schema), publicVersionID); err != nil {
+		`DELETE FROM %s.skill_versions WHERE id = $1`, schema), publicVersionID); err != nil {
 		return deletePublicVersionResult{}, err
 	}
 
 	var remainingPublished int
 	if err := tx.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.skill_versions WHERE skill_id = $1 AND status = 'published'`, schema),
+		`SELECT COUNT(*) FROM %s.skill_versions WHERE skill_id = $1 AND status = 'published'`, schema),
 		skillID).Scan(&remainingPublished); err != nil {
 		return deletePublicVersionResult{}, err
 	}
@@ -465,7 +467,7 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 	var sharedOwner *int
 	var skillMetaText string
 	if err := tx.QueryRow(ctx, fmt.Sprintf(
-		`SELECT shared_owner_id, COALESCE(meta::text, '{}') FROM %q.skills WHERE id = $1`, schema),
+		`SELECT shared_owner_id, COALESCE(meta::text, '{}') FROM %s.skills WHERE id = $1`, schema),
 		skillID).Scan(&sharedOwner, &skillMetaText); err != nil {
 		return deletePublicVersionResult{}, err
 	}
@@ -477,7 +479,7 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 		// A twin exists only to carry published versions; with none left it is
 		// an empty catalog entry. An in-place original (no shared link) is NOT
 		// deleted — that would take the author's own drafts with it.
-		if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.skills WHERE id = $1`, schema), skillID); err != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.skills WHERE id = $1`, schema), skillID); err != nil {
 			return deletePublicVersionResult{}, err
 		}
 		result.ShellDeleted = true
@@ -493,16 +495,16 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 		// the skill resolve no version at all.
 		var replacement *int
 		_ = tx.QueryRow(ctx, fmt.Sprintf(
-			`SELECT id FROM %q.skill_versions WHERE skill_id = $1 ORDER BY id DESC LIMIT 1`, schema),
+			`SELECT id FROM %s.skill_versions WHERE skill_id = $1 ORDER BY id DESC LIMIT 1`, schema),
 			skillID).Scan(&replacement) // no surviving version leaves nil, handled below
 		if replacement != nil {
 			if _, err := tx.Exec(ctx, fmt.Sprintf(`
-				UPDATE %q.skills SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('default_version_id', $2::int)
+				UPDATE %s.skills SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('default_version_id', $2::int)
 				WHERE id = $1`, schema), skillID, *replacement); err != nil {
 				return deletePublicVersionResult{}, err
 			}
 		} else if _, err := tx.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.skills SET meta = COALESCE(meta, '{}'::jsonb) - 'default_version_id' WHERE id = $1`, schema),
+			`UPDATE %s.skills SET meta = COALESCE(meta, '{}'::jsonb) - 'default_version_id' WHERE id = $1`, schema),
 			skillID); err != nil {
 			return deletePublicVersionResult{}, err
 		}
@@ -511,11 +513,11 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 }
 
 func (h *Handler) userUnpublish(ctx context.Context, w http.ResponseWriter, projectID, schema, skillID, versionID string) {
-	publicSchema := "p_" + publicProjectID()
+	publicQuoted := publicSchema()
 	sourceSkillID, _ := strconv.Atoi(skillID)
 	sourceVersionID, _ := strconv.Atoi(versionID)
 
-	twinID, ok := h.findPublicTwin(ctx, publicSchema, projectID, sourceSkillID)
+	twinID, ok := h.findPublicTwin(ctx, publicQuoted, projectID, sourceSkillID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_published", "msg": "Skill version is not published"})
 		return
@@ -526,8 +528,8 @@ func (h *Handler) userUnpublish(ctx context.Context, w http.ResponseWriter, proj
 	// publish identifies the copy that belongs to THIS source version.
 	var publicVersionID int
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT id FROM %q.skill_versions
-		WHERE skill_id = $1 AND status = 'published' AND meta->>'source_version_id' = $2`, publicSchema),
+		SELECT id FROM %s.skill_versions
+		WHERE skill_id = $1 AND status = 'published' AND meta->>'source_version_id' = $2`, publicQuoted),
 		twinID, versionID).Scan(&publicVersionID); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_published", "msg": "Skill version is not published"})
 		return
@@ -540,7 +542,7 @@ func (h *Handler) userUnpublish(ctx context.Context, w http.ResponseWriter, proj
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	result, err := deletePublicVersion(ctx, tx, publicSchema, publicVersionID)
+	result, err := deletePublicVersion(ctx, tx, publicQuoted, publicVersionID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal_error", "msg": err.Error()})
 		return
@@ -551,7 +553,7 @@ func (h *Handler) userUnpublish(ctx context.Context, w http.ResponseWriter, proj
 	}
 
 	if _, err := tx.Exec(ctx, fmt.Sprintf(
-		`UPDATE %q.skill_versions SET status = 'draft' WHERE id = $1 AND skill_id = $2`, schema),
+		`UPDATE %s.skill_versions SET status = 'draft' WHERE id = $1 AND skill_id = $2`, schema),
 		sourceVersionID, sourceSkillID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal_error", "msg": err.Error()})
 		return
@@ -571,7 +573,7 @@ func (h *Handler) adminUnpublish(ctx context.Context, w http.ResponseWriter, sch
 	// unpublish addressed to skill A could delete skill B's version.
 	var ownerSkillID int
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT skill_id FROM %q.skill_versions WHERE id = $1`, schema), publicVersionID).Scan(&ownerSkillID); err != nil ||
+		`SELECT skill_id FROM %s.skill_versions WHERE id = $1`, schema), publicVersionID).Scan(&ownerSkillID); err != nil ||
 		strconv.Itoa(ownerSkillID) != skillID {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "not_published", "msg": "Skill version is not currently published"})
 		return
@@ -599,10 +601,15 @@ func (h *Handler) adminUnpublish(ctx context.Context, w http.ResponseWriter, sch
 	// An in-place admin publish has source == public and needs no such hop.
 	sourceProjectID := metaInt(result.Meta, "source_project_id")
 	sourceVersionID := metaInt(result.Meta, "source_version_id")
-	publicProject, _ := strconv.Atoi(strings.TrimPrefix(schema, "p_"))
-	if sourceProjectID > 0 && sourceVersionID > 0 && sourceProjectID != publicProject {
+	// adminUnpublish only runs when the caller IS the public project, so the
+	// public project id comes from publicProjectID. It is NOT recovered from
+	// schema: schema is a quoted identifier, and trimming "p_" off it would
+	// leave the quotes behind.
+	publicProject, _ := strconv.Atoi(publicProjectID())
+	sourceProjectSchema, sourceSchemaOK := tenantschema.QuoteInt(int64(sourceProjectID))
+	if sourceProjectID > 0 && sourceVersionID > 0 && sourceProjectID != publicProject && sourceSchemaOK == nil {
 		if _, err := tx.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.skill_versions SET status = 'draft' WHERE id = $1`, fmt.Sprintf("p_%d", sourceProjectID)),
+			`UPDATE %s.skill_versions SET status = 'draft' WHERE id = $1`, sourceProjectSchema),
 			sourceVersionID); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal_error", "msg": err.Error()})
 			return

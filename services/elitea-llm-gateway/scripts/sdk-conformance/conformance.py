@@ -151,11 +151,17 @@ def journal_for(base_url: str, path: str) -> list[dict]:
 def assert_provenance(result: Result, sdk_source_root: Path) -> None:
     """The INSTALLED SDK must be the PINNED SDK.
 
-    run.sh has already checked that the source tree is at the revision
-    internal/sdkpin/sdk-pin.json names. This closes the last hop: the tree that
-    was checked and the package that is imported must be the same bytes.
-    Without it the run could pass against a developer's working copy and report
-    a compatibility claim about a revision it never loaded.
+    run.sh has already made two checks. The source tree is at the revision
+    internal/sdkpin/sdk-pin.json names, and — through
+    verify_pinned_content.py — every file below holds the CONTENT that pin
+    records (#567). This closes the last hop: the tree that was checked and the
+    package that is imported must be the same bytes. Without it the run could
+    pass against a developer's working copy and report a compatibility claim
+    about a revision it never loaded.
+
+    The three checks are one chain, and each link is needed. This one alone
+    cannot see a source tree that was edited and then installed with `pip
+    install -e`: both sides move together and the digests still agree.
     """
     print("-> provenance: the installed elitea_sdk is the pinned one")
     import elitea_sdk

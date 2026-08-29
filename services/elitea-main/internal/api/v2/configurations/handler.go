@@ -22,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 const (
@@ -263,15 +265,15 @@ func (h *Handler) Routes() chi.Router {
 //     so a Handler built without WithPermissionResolver serves nothing.
 //  2. legacyrbac.PostgresResolver parses the project id with parsePositiveID in
 //     the default mode, so a project id that is not a positive integer is
-//     refused BEFORE any handler runs. That closes a second hazard on this
-//     surface: every handler below builds its tenant schema as
-//     fmt.Sprintf("p_%s", projectID) and interpolates it with %q, which is Go
-//     string quoting and not SQL identifier quoting (PostgreSQL escapes a quote
-//     inside an identifier by doubling it, never with a backslash). Measured on
-//     PostgreSQL 16, a crafted id does break out of the quoted identifier, and
-//     the breakout is not exploitable only because the backslash %q inserts
-//     lands INSIDE the identifier, so the schema it names cannot exist. That is
-//     an accident, not a defence. No caller reaches it now.
+//     refused BEFORE any handler runs.
+//
+// The handlers below no longer depend on either gate for their SQL. Each one
+// builds its tenant schema with tenantSchema, which refuses a project id that
+// is not a plain decimal number and quotes the name with SQL rules. The
+// previous code interpolated the id with %q, which is Go string quoting: it
+// writes an embedded quote as \" where PostgreSQL wants it doubled, so a
+// crafted id left the identifier. It failed only because the backslash landed
+// inside the name. That was an accident, not a defence (issue #543).
 func (h *Handler) require(permission string) func(http.Handler) http.Handler {
 	return middleware.RequireResolvedPermissions(
 		h.permissionResolver,
@@ -623,7 +625,11 @@ func (h *Handler) sharedConfigurationSchema(projectID string, request configurat
 	if err != nil || callerID == h.publicProjectID {
 		return "", false
 	}
-	return fmt.Sprintf("p_%d", h.publicProjectID), true
+	shared, err := tenantschema.QuoteInt(int64(h.publicProjectID))
+	if err != nil {
+		return "", false
+	}
+	return shared, true
 }
 
 // configurationSelectColumns is the row shape both list statements read. It is
@@ -649,7 +655,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		apierr.WriteStatus(w, http.StatusBadRequest, "invalid configuration request")
 		return
 	}
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	filter, filterArgs := configurationRowFilter(request, 1)
@@ -657,7 +666,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	// The page carries every row the project OWNS, shared or not. The old
 	// `shared = false` predicate hid a shared credential from its own project.
 	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE TRUE%s`, schema, filter)
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s.configuration WHERE TRUE%s`, schema, filter)
 	if err := h.pool.QueryRow(ctx, countQ, filterArgs...).Scan(&total); err != nil {
 		if configurationSchemaMissing(err) {
 			writeJSON(w, http.StatusOK, emptyConfigurationList(request))
@@ -669,7 +678,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	listQ := fmt.Sprintf(`
 		SELECT %s
-		FROM %q.configuration
+		FROM %s.configuration
 		WHERE TRUE%s
 		%s
 		LIMIT $%d OFFSET $%d
@@ -728,7 +737,7 @@ func (h *Handler) appendSharedConfigurations(
 
 	var sharedTotal int
 	sharedCountQ := fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.configuration WHERE shared = true%s`, sharedSchema, sharedFilter)
+		`SELECT COUNT(*) FROM %s.configuration WHERE shared = true%s`, sharedSchema, sharedFilter)
 	if err := h.pool.QueryRow(ctx, sharedCountQ, sharedArgs...).Scan(&sharedTotal); err != nil {
 		// This is the FIRST statement against the public project's schema, so
 		// a missing schema is answerable: the public project holds nothing to
@@ -742,7 +751,7 @@ func (h *Handler) appendSharedConfigurations(
 
 	sharedQ := fmt.Sprintf(`
 		SELECT %s
-		FROM %q.configuration
+		FROM %s.configuration
 		WHERE shared = true%s
 		%s
 		LIMIT $%d OFFSET $%d
@@ -873,14 +882,17 @@ func writeConfigurationUpdateFailure(
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	configID := chi.URLParam(r, "configID")
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	q := fmt.Sprintf(`
 		SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
 			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
 			created_at, updated_at
-		FROM %q.configuration WHERE %s = $1
+		FROM %s.configuration WHERE %s = $1
 	`, schema, configurationIDColumn(configID))
 
 	var c Configuration
@@ -914,7 +926,10 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var body map[string]any
@@ -968,7 +983,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	shared, _ := body["shared"].(bool)
 
 	q := fmt.Sprintf(`
-		INSERT INTO %q.configuration (project_id, label, elitea_title, type, section, data, meta, shared, status_ok, source, author_id)
+		INSERT INTO %s.configuration (project_id, label, elitea_title, type, section, data, meta, shared, status_ok, source, author_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, 'user', $9)
 		RETURNING id, uuid::text, created_at
 	`, schema)
@@ -1094,7 +1109,10 @@ func (h *Handler) sectionFor(configType, requested string) string {
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	configID := chi.URLParam(r, "configID")
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var body map[string]any
@@ -1274,7 +1292,7 @@ func (h *Handler) buildConfigurationUpdate(
 	args = append(args, configID)
 
 	query = fmt.Sprintf(`
-		UPDATE %q.configuration SET
+		UPDATE %s.configuration SET
 			%s
 		WHERE %s = $%d
 		RETURNING id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
@@ -1362,10 +1380,13 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID := chi.URLParam(r, "projectID")
 	configID := chi.URLParam(r, "configID")
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
-	q := fmt.Sprintf(`DELETE FROM %q.configuration WHERE %s = $1`, schema, configurationIDColumn(configID))
+	q := fmt.Sprintf(`DELETE FROM %s.configuration WHERE %s = $1`, schema, configurationIDColumn(configID))
 	ct, err := h.pool.Exec(ctx, q, configID)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -1411,14 +1432,17 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectID := chi.URLParam(r, "projectID")
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	modelTypes := []string{"llm_model", "embedding_model", "asr_model", "tts_model", "image_generation_model"}
 
 	q := fmt.Sprintf(`
 		SELECT id, COALESCE(elitea_title, ''), type, section, data, project_id
-		FROM %q.configuration
+		FROM %s.configuration
 		WHERE type = ANY($1)
 		ORDER BY id
 		LIMIT %d
@@ -1506,7 +1530,10 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectID := chi.URLParam(r, "projectID")
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	displayNames := map[string]string{
@@ -1524,7 +1551,7 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 		"image_generation_model": "image_generation",
 	}
 
-	q := fmt.Sprintf(`SELECT DISTINCT type, section FROM %q.configuration ORDER BY type`, schema)
+	q := fmt.Sprintf(`SELECT DISTINCT type, section FROM %s.configuration ORDER BY type`, schema)
 	// Same rule as ListModels: only a missing schema is an empty list.
 	rows, err := h.pool.Query(ctx, q)
 	if err != nil {

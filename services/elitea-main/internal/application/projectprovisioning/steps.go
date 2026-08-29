@@ -636,7 +636,8 @@ func removeSystemToken(ctx context.Context, p *Provisioner, state *provisionStat
 // it stays because pylon provisions the vault with the project, and because it
 // keeps every vault minted by the one minter (api/v2/secrets.Handler).
 //
-// The vault is created EMPTY. pylon additionally stores an approle blob in
+// The vault is created empty and is then given ONE value: the project's
+// `secrets_header_value` (#408). pylon additionally stores an approle blob in
 // centry.project.secrets_json; that column stays dead here, its only occurrence
 // in Go being the sqlc struct field, so this reproduces the half with a reader.
 //
@@ -654,9 +655,42 @@ func createProjectSecrets(ctx context.Context, p *Provisioner, state *provisionS
 	if err := p.vault.EnsureProjectVault(ctx, state.projectIDString()); err != nil {
 		return fmt.Errorf("create project secrets vault: %w", err)
 	}
+	// The `X-SECRET` value (#408). The vault is created empty, and an empty
+	// vault is what made the value guessable: pylon's check_secret_header
+	// reads `secrets.get("secrets_header_value", "secret")`, so a project that
+	// never set one accepts the literal string "secret" on the version-details
+	// route. Writing a random value here removes that state for every project
+	// created from now on; secrets.BackfillProjectSecretsHeaderValues removes
+	// it for the projects that already exist.
+	//
+	// IT IS PART OF THIS STEP AND NOT A STEP OF ITS OWN. The value has no
+	// meaning without the vault that holds it, and one step means one
+	// compensation: removeProjectSecrets deletes the vault rows, so the value
+	// goes with them.
+	written, err := p.vault.EnsureProjectSecretsHeaderValue(ctx, state.projectIDString())
+	if err != nil {
+		return fmt.Errorf("create project secrets header value: %w", err)
+	}
+	if !written {
+		// Only a re-run over a vault that already holds a value reaches this,
+		// and the value is kept rather than replaced. Say so: a project that
+		// inherited a value is not the same as one that was given its own.
+		p.logger.InfoContext(ctx, "the project vault already holds an X-SECRET value; keeping it",
+			"project_id", state.projectIDString())
+	}
 	return nil
 }
 
+// removeProjectSecrets deletes the vault, and with it the `X-SECRET` value
+// createProjectSecrets sealed in it (#408).
+//
+// The delete is what compensates BOTH halves of the step. The value lives in
+// centry.secrets_data, which RemoveProjectVault deletes in the same
+// transaction as centry.secrets_key, so a compensated project has no vault and
+// no value rather than a vault holding a credential nothing can reach.
+//
+// Removing an absent vault is success, so this is safe for a step that failed
+// before it created anything.
 func removeProjectSecrets(ctx context.Context, p *Provisioner, state *provisionState) error {
 	if p.vault == nil || state.projectID == 0 {
 		return nil

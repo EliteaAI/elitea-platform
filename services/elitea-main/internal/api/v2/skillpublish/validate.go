@@ -214,7 +214,7 @@ func runDeterministicChecks(row skillVersionRow, versionName, category string, a
 func (h *Handler) versionNameTaken(ctx context.Context, schema string, skillID int, versionName string) bool {
 	var exists bool
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.skill_versions WHERE skill_id = $1 AND name = $2)`, schema),
+		`SELECT EXISTS(SELECT 1 FROM %s.skill_versions WHERE skill_id = $1 AND name = $2)`, schema),
 		skillID, versionName).Scan(&exists); err != nil {
 		return false
 	}

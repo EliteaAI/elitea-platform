@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
 	"github.com/go-chi/chi/v5"
@@ -47,6 +49,11 @@ type CurrentApplicationSkill struct {
 	VersionName    string          `json:"version_name"`
 	VersionMissing bool            `json:"version_missing"`
 	IconMeta       json.RawMessage `json:"icon_meta"`
+	// CreatedAt carries skills.created_at for the published `items` half of
+	// the envelope. It is `json:"-"` on purpose: the Pylon dict has no such
+	// key, and adding one would break the byte parity the rest of this type
+	// exists to hold.
+	CreatedAt time.Time `json:"-"`
 }
 
 type CurrentApplicationSkillsReader interface {
@@ -103,7 +110,8 @@ SELECT
     CASE
         WHEN version.id IS NULL THEN 'null'::jsonb
         ELSE COALESCE(version.meta -> 'icon_meta', 'null'::jsonb)
-    END
+    END,
+    skill.created_at
 FROM entity_skill_mapping AS mapping
 JOIN skills AS skill
   ON skill.id = mapping.skill_id
@@ -129,6 +137,7 @@ WHERE mapping.entity_version_id = $1
 					&skill.VersionName,
 					&skill.VersionMissing,
 					&iconMeta,
+					&skill.CreatedAt,
 				); err != nil {
 					return fmt.Errorf("scan current application skill: %w", err)
 				}
@@ -196,9 +205,81 @@ type currentApplicationSkillsHandler struct {
 	reader CurrentApplicationSkillsReader
 }
 
+// currentApplicationSkillsResponse answers BOTH shipped clients from one body.
+//
+// The Pylon keys `skills` and `max_skills` are unchanged, byte for byte:
+// apps/elitea-ui reads them (features/skill/ui/ApplicationSkills.jsx and the
+// two mention hooks read `data.skills` and `data.max_skills`), and the edge
+// cutover this slice was written for depends on them.
+//
+// The `items`/`total`/`page`/`page_size`/`total_pages` keys are the PUBLISHED
+// contract for this path — SkillsList in api/openapi/v2.yaml. apps/elitea-web
+// reads that half: shared/api/unwrap.ts takes `items` first, and both skill
+// mention hooks go through it. Before this envelope carried them, turning
+// ELITEA_APPLICATION_SKILLS_ENABLED on gave the web client a body with no
+// `items` key, which unwrapList reports as an unrecognised shape and renders
+// as "no skills" (#395). That is why the flag could not be turned on.
+//
+// The two halves project the SAME rows, so they cannot disagree. Extra keys
+// are contract-legal: SkillsList does not close its object, so a client
+// generated from the published spec ignores what it did not ask for.
 type currentApplicationSkillsResponse struct {
+	Items      []v2skills.Skill `json:"items"`
+	Total      int              `json:"total"`
+	Page       int              `json:"page"`
+	PageSize   int              `json:"page_size"`
+	TotalPages int              `json:"total_pages"`
+
 	Skills    []CurrentApplicationSkill `json:"skills"`
 	MaxSkills int                       `json:"max_skills"`
+}
+
+// currentApplicationSkillType is the value the skills List handler marshals for
+// every row (internal/infra/db/repos/skills.go scanSkillRow). The published
+// Skill schema makes `type` required, so the same literal is used here rather
+// than an empty string.
+const currentApplicationSkillType = "skill"
+
+// newCurrentApplicationSkillsResponse builds both halves from one row set.
+//
+// The pagination numbers copy SkillsRepo.ListForApplicationVersion, which
+// serves this path where the capability is off: one page, sized by the
+// attached set, so the SAME request gets the SAME body from either handler.
+//
+// Only the fields the published Skill schema requires, plus `description`, are
+// filled. `instructions`, `tags` and `versions` stay absent, because this read
+// projects the ATTACHED skill version, not the base version those fields come
+// from; inventing them from the attached version would put a different
+// version's identity behind a base-version key. `is_default` and `updated_at`
+// take the same degenerate values the skills List handler already ships.
+func newCurrentApplicationSkillsResponse(
+	projectID string,
+	attached []CurrentApplicationSkill,
+) currentApplicationSkillsResponse {
+	items := make([]v2skills.Skill, 0, len(attached))
+	for _, skill := range attached {
+		items = append(items, v2skills.Skill{
+			ID:          strconv.FormatInt(int64(skill.SkillID), 10),
+			ProjectID:   projectID,
+			Name:        skill.Name,
+			Description: skill.Description,
+			Type:        currentApplicationSkillType,
+			CreatedAt:   skill.CreatedAt,
+		})
+	}
+	totalPages := 0
+	if len(items) > 0 {
+		totalPages = 1
+	}
+	return currentApplicationSkillsResponse{
+		Items:      items,
+		Total:      len(items),
+		Page:       1,
+		PageSize:   len(items),
+		TotalPages: totalPages,
+		Skills:     append([]CurrentApplicationSkill{}, attached...),
+		MaxSkills:  MaxCurrentApplicationSkills,
+	}
 }
 
 func (handler *currentApplicationSkillsHandler) list(
@@ -215,10 +296,7 @@ func (handler *currentApplicationSkillsHandler) list(
 		writeCurrentApplicationSkillsJSON(
 			writer,
 			http.StatusOK,
-			currentApplicationSkillsResponse{
-				Skills:    []CurrentApplicationSkill{},
-				MaxSkills: MaxCurrentApplicationSkills,
-			},
+			newCurrentApplicationSkillsResponse("", nil),
 		)
 		return
 	}
@@ -233,10 +311,14 @@ func (handler *currentApplicationSkillsHandler) list(
 		return
 	}
 
-	writeCurrentApplicationSkillsJSON(writer, http.StatusOK, currentApplicationSkillsResponse{
-		Skills:    append([]CurrentApplicationSkill{}, skills...),
-		MaxSkills: MaxCurrentApplicationSkills,
-	})
+	writeCurrentApplicationSkillsJSON(
+		writer,
+		http.StatusOK,
+		newCurrentApplicationSkillsResponse(
+			strconv.FormatInt(int64(projectID), 10),
+			skills,
+		),
+	)
 }
 
 func currentApplicationSkillsProjectID(request *http.Request) (string, bool) {

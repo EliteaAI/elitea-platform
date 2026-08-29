@@ -38,8 +38,8 @@
 #
 # The last line reports how many assertions RAN and how many failed. A run that
 # skips its assertions is a FAILURE here, not a pass: the expected count is
-# fixed, and a lower count exits non-zero. Read that line, not the exit code
-# alone.
+# DERIVED from this file, and any other number exits non-zero. Read that line,
+# not the exit code alone.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -48,6 +48,10 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 
 # shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh
 . "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
+# shellcheck source=lib/seeded-driver.sh
+. "${REPO_ROOT}/deploy/scripts/lib/seeded-driver.sh"
+# shellcheck source=../../scripts/lib/assertion-floor.sh
+. "${REPO_ROOT}/scripts/lib/assertion-floor.sh"
 detect_compose_bin
 
 ENGINE="${COMPOSE_BIN%% *}"
@@ -56,7 +60,14 @@ RUNTIME_CERTS="${REPO_ROOT}/deploy/certs/runtime"
 
 # Every assertion this script is meant to make. A run that makes fewer has
 # skipped one, and a skipped assertion proves nothing.
-EXPECTED_ASSERTIONS=13
+#
+# DERIVED from this file, not written down (issue #534). A number an author
+# states is true only when the pull request merges: an assertion added by a
+# later merge, with the number left alone, makes the floor under-count in
+# silence for ever. Each assertion below holds exactly one accepting arm, so
+# the accepting arms are the assertions. Read scripts/lib/assertion-floor.sh.
+ASSERTION_SITE_PATTERN='(^|[^[:alnum:]_])pass[[:space:]]+"'
+EXPECTED_ASSERTIONS="$(derive_assertion_floor "$0" "$ASSERTION_SITE_PATTERN")"
 
 ran=0
 failed=0
@@ -69,17 +80,12 @@ psql_read() {
     psql -U elitea -d elitea -tAc "$1" 2>/dev/null | tr -d '\r' || true
 }
 
-# The driver: a PAT whose user OWNS a personal project. The /llm hop resolves
-# the credential from that project, so a caller without one reports
-# `project_not_resolved` — a true statement about the wrong caller.
-DRIVER="$(psql_read "SELECT t.uuid || ' ' || p.id
-   FROM public.auth_core__token t
-   JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
-   JOIN public.auth_core__project_user_role pur
-     ON pur.project_id = p.id AND pur.user_id = t.user_id
-  WHERE t.uuid IS NOT NULL
-  ORDER BY t.user_id
-  LIMIT 1")"
+# The driver: a PAT whose user OWNS a personal project AND whose project holds
+# the seeded chat model. The /llm hop resolves the credential from that project,
+# so a caller without one reports `project_not_resolved` — a true statement
+# about the wrong caller. Selected by deploy/scripts/lib/seeded-driver.sh, which
+# every LLM check shares; read it for why the id ordering alone stopped working.
+DRIVER="$(resolve_seeded_driver psql_read)"
 DRIVER_PAT="$(printf '%s' "$DRIVER" | awk '{print $1}')"
 DRIVER_PROJECT="$(printf '%s' "$DRIVER" | awk '{print $2}')"
 [ -n "$DRIVER_PAT" ] || abort "no PAT owning a personal project. Run: deploy/scripts/standalone-stack.sh seed-runtime"

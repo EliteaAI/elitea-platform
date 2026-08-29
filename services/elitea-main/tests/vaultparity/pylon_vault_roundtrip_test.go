@@ -43,6 +43,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -278,13 +279,13 @@ func TestPylonIndexerWritesAVaultEliteaMainReads(t *testing.T) {
 	requireWrappedKeyRow(t, pool, roundTripProjectID)
 
 	t.Setenv("SECRETS_MASTER_KEY", masterKey)
-	value, found, err := secrets.NewHandler(pool).
+	value, err := secrets.NewHandler(pool).
 		LookupProjectSecret(context.Background(), roundTripProjectID, roundTripName)
 	if err != nil {
 		t.Fatalf("elitea-main could not read the vault pylon-indexer wrote: %v", err)
 	}
-	if !found || value != roundTripValue {
-		t.Fatalf("elitea-main read %q (found=%t); want %q", value, found, roundTripValue)
+	if value != roundTripValue {
+		t.Fatalf("elitea-main read %q; want %q", value, roundTripValue)
 	}
 }
 
@@ -375,11 +376,18 @@ func TestASecondMasterKeyBreaksBothDirections(t *testing.T) {
 		insertVaultRows(t, pool, otherProjectID, written.KeyRow, written.DataRow)
 
 		t.Setenv("SECRETS_MASTER_KEY", deploymentKey)
-		_, _, err := secrets.NewHandler(pool).
+		_, err := secrets.NewHandler(pool).
 			LookupProjectSecret(context.Background(), otherProjectID, roundTripName)
 		if err == nil {
 			t.Fatal("elitea-main opened a vault written under a different master key; " +
 				"the round trip above proves nothing")
+		}
+		// And it failed for the right reason. ErrSecretNotFound here would mean
+		// the wrong key opened the vault and merely found no such name, which
+		// is the conflation the one idiom exists to prevent (#416).
+		if errors.Is(err, secrets.ErrSecretNotFound) {
+			t.Fatalf("a vault written under a different master key reported an absent "+
+				"secret rather than a read failure: %v", err)
 		}
 	})
 }

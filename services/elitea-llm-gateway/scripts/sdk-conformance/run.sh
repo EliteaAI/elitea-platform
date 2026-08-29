@@ -25,6 +25,13 @@
 # any other revision: a green result about the wrong revision is worse than no
 # result, and "the checkout happened to be something else" is exactly the shape
 # this repository keeps mistaking for a pass.
+#
+# IDENTITY AND CONTENT ARE TWO CHECKS (#567). The revision below answers WHICH
+# commit is checked out. It does not answer WHAT the working tree holds: a dirty
+# tree keeps the pinned HEAD, and `git rev-parse` walks UP to an enclosing
+# repository, so a hand-authored directory inside a pinned clone reports the
+# pinned revision too. verify_pinned_content.py then compares the bytes of every
+# file the gates read against the digests the pin records.
 set -euo pipefail
 
 GATEWAY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -61,6 +68,22 @@ ACTUAL_REVISION="$(git -C "$SDK_SOURCE_ROOT" rev-parse HEAD 2>/dev/null || true)
        Point ELITEA_SDK_SOURCE_ROOT at the pinned revision, or — if the SDK moved
        on purpose — update the worker lock file and re-verify both gates before
        you touch the pin."
+
+# The checkout must also HOLD the pinned content. The revision check above
+# cannot see an uncommitted edit, and it reports the pinned revision for a
+# hand-authored directory nested inside a pinned clone (#567). The digests come
+# from the same pin file, so this script and tier 1 cannot measure two different
+# trees. The check is SCOPED to the pinned files: CI applies two cherry-picks
+# with --no-commit, so the CI tree is dirty on purpose.
+CONTENT_CHECK="${GATEWAY_ROOT}/scripts/sdk-conformance/verify_pinned_content.py"
+[ -f "$CONTENT_CHECK" ] || abort "${CONTENT_CHECK} is missing. Without it this script
+       verifies WHICH commit is checked out and not WHAT the tree holds."
+echo "-> verifying the pinned SDK content"
+python3 "$CONTENT_CHECK" \
+  --pin "$PIN_FILE" \
+  --sdk-source-root "$SDK_SOURCE_ROOT" \
+  --gate "${GATEWAY_ROOT}/scripts/sdk-conformance/conformance.py" \
+  || abort "the SDK checkout does not hold the pinned content; see the difference above"
 
 # The gateway is a standalone module on its own Go toolchain; the parent
 # workspace must never be consulted.

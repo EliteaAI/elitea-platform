@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,4 +233,143 @@ func TestServeAndGracefulShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("ListenAndServe did not return after Shutdown")
 	}
+}
+
+// --- RedialNATS (issue #315) -------------------------------------------------
+//
+// New dials NATS exactly once, and nats.go only resurrects a connection that
+// succeeded at least once. A failed boot dial therefore left the client nil for
+// the life of the process, so budget enforcement never came back. RedialNATS is
+// the seam the composition root polls to end that.
+
+// TestRedialNATSRecoversAfterFailedBootDial is the sequence issue #315 fixes: a
+// gateway boots during a NATS outage, and a later dial succeeds.
+func TestRedialNATSRecoversAfterFailedBootDial(t *testing.T) {
+	fake := &fakeNATS{}
+	var dials atomic.Int64
+	up := make(chan struct{})
+	conn := func(context.Context, natsinfra.Config) (NATSClient, error) {
+		dials.Add(1)
+		select {
+		case <-up:
+			return fake, nil
+		default:
+			return nil, errors.New("dial tcp: connection refused")
+		}
+	}
+	cfg := testConfig()
+	cfg.NATSURL = "nats://unreachable:4222"
+	srv := newServerWithConnector(t, cfg, conn)
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	if srv.NATS() != nil {
+		t.Fatal("NATS() non-nil after a failed boot dial")
+	}
+	if _, err := srv.RedialNATS(context.Background()); err == nil {
+		t.Fatal("RedialNATS reported success while NATS was still unreachable")
+	}
+	if srv.NATS() != nil {
+		t.Fatal("a failed re-dial published a client")
+	}
+
+	close(up)
+	nc, err := srv.RedialNATS(context.Background())
+	if err != nil {
+		t.Fatalf("RedialNATS after NATS returned: %v", err)
+	}
+	if nc != NATSClient(fake) {
+		t.Error("RedialNATS returned a client the connector did not produce")
+	}
+	if srv.NATS() != NATSClient(fake) {
+		t.Error("the re-dialled client was not published to NATS()")
+	}
+
+	// A second call must NOT open a second connection: two clients would mean
+	// two budget paths, and only one of them is ever closed.
+	before := dials.Load()
+	again, err := srv.RedialNATS(context.Background())
+	if err != nil || again != NATSClient(fake) {
+		t.Fatalf("second RedialNATS = (%v, %v), want the live client", again, err)
+	}
+	if dials.Load() != before {
+		t.Errorf("a second RedialNATS dialled again (%d extra dials)", dials.Load()-before)
+	}
+}
+
+// TestRedialNATSRefusesWhenUnconfigured keeps the NATS-less posture a choice
+// rather than a fault: a caller must not poll a URL that does not exist.
+func TestRedialNATSRefusesWhenUnconfigured(t *testing.T) {
+	called := false
+	srv := newServerWithConnector(t, testConfig(), func(context.Context, natsinfra.Config) (NATSClient, error) {
+		called = true
+		return nil, nil
+	})
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	if _, err := srv.RedialNATS(context.Background()); !errors.Is(err, ErrNATSNotConfigured) {
+		t.Errorf("RedialNATS err = %v, want ErrNATSNotConfigured", err)
+	}
+	if called {
+		t.Error("the connector ran for a gateway with no GATEWAY_NATS_URL")
+	}
+}
+
+// TestRedialNATSRefusesAfterClose stops the recovery loop at shutdown. A client
+// opened after Close is one nothing will ever close.
+func TestRedialNATSRefusesAfterClose(t *testing.T) {
+	var dials atomic.Int64
+	conn := func(context.Context, natsinfra.Config) (NATSClient, error) {
+		dials.Add(1)
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	cfg := testConfig()
+	cfg.NATSURL = "nats://unreachable:4222"
+	srv := newServerWithConnector(t, cfg, conn)
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	srv.Close()
+	before := dials.Load()
+	if _, err := srv.RedialNATS(context.Background()); !errors.Is(err, ErrServerClosed) {
+		t.Errorf("RedialNATS err = %v, want ErrServerClosed", err)
+	}
+	if dials.Load() != before {
+		t.Error("RedialNATS dialled after the server closed")
+	}
+}
+
+// TestRedialNATSIsSafeUnderConcurrentReaders runs re-dials against concurrent
+// NATS() readers. The composition root does exactly this: /readyz and the
+// shutdown path read the client while the recovery loop writes it.
+func TestRedialNATSIsSafeUnderConcurrentReaders(t *testing.T) {
+	fake := &fakeNATS{}
+	conn := func(context.Context, natsinfra.Config) (NATSClient, error) {
+		return fake, nil
+	}
+	cfg := testConfig()
+	cfg.NATSURL = "nats://unreachable:4222"
+	srv := newServerWithConnector(t, cfg, conn)
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				_ = srv.NATS()
+			}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if _, err := srv.RedialNATS(context.Background()); err != nil {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
