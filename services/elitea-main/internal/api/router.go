@@ -51,6 +51,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/artifactbootstrap"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/audit"
 	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
@@ -112,6 +113,12 @@ type RouterConfig struct {
 	SAMLHandler        *v2auth.SAMLHandler
 	HealthDeps         health.Deps
 	Pool               *pgxpool.Pool
+	// AuditRecorder overrides the Pool-backed `centry.audit_events` writer
+	// mounted on the /api/v2 group. Tests inject one to assert WHICH events a
+	// request produces without a live database; production leaves it unset and
+	// gets audit.NewPostgresRecorder(Pool). A nil Pool and a nil field together
+	// mean the audit middleware is not mounted at all.
+	AuditRecorder audit.Recorder
 	// ArtifactPermissionResolver overrides the legacyrbac.NewPostgresResolver
 	// built from Pool for the artifact routes only (S11) — tests inject a
 	// resolver here to control RBAC outcomes without a live database. Every
@@ -723,6 +730,17 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
 	permissionResolver := legacyrbac.NewPostgresResolver(cfg.Pool)
 
+	// The audit-trail recorder. Built from the same pool the audit READS use,
+	// for the reason stated at newProjectProvisioner: a write path and a read
+	// path on two different pools can disagree about which database holds the
+	// rows, and the Audit Trail would then be empty for a reason no log line
+	// names. `NewPostgresRecorder(nil, …)` returns a typed nil, which
+	// apimw.Audit recognises and answers by not mounting itself at all.
+	auditRecorder := cfg.AuditRecorder
+	if auditRecorder == nil {
+		auditRecorder = audit.NewPostgresRecorder(cfg.Pool, nil)
+	}
+
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -995,6 +1013,25 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				Metrics:    cfg.ShadowMetrics,
 			}))
 		}
+
+		// The audit-trail emitter for `centry.audit_events` — the producer the
+		// admin Audit Trail page never had (internal/api/middleware/audit.go
+		// carries the four decisions: level, scope, failure policy, retention).
+		//
+		// Placed here, and this is the only correct place in this chain:
+		//
+		//   - BELOW Auth, so the row carries the principal. Above it, the
+		//     handler's context — where the principal lives — is invisible,
+		//     because a context flows down and never back up.
+		//   - BELOW the cutover router and the shadow comparator. A request the
+		//     cutover router proxies to pylon is audited BY pylon's own tracing
+		//     plugin; recording it here as well would double every row during
+		//     the migration window, and the Audit Trail has no way to tell the
+		//     two copies apart.
+		//   - ABOVE the per-route RBAC gates, so a caller refused a permission
+		//     (403) is recorded rather than silently disappearing — which is
+		//     the question an audit trail is most often opened to answer.
+		r.Use(apimw.Audit(auditRecorder))
 
 		r.Route("/api/v2", func(r chi.Router) {
 			mountRuntimeRoutes(r, cfg.RuntimeRoutes)

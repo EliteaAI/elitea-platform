@@ -289,9 +289,11 @@ adminTest.describe('member persona', () => {
  *    same file through a much slower path.
  *  - the activity drawer's ROWS. J34 covers the queries and their scoping,
  *    and `src/pages/admin/UserActivityDrawer.test.tsx` covers the drawer's own
- *    state — but neither asserts what comes back: `centry.audit_events` is
- *    written by the legacy tracing plugin, so a seeded stack can have zero
- *    rows for a persona and an empty table would be the correct answer.
+ *    state — but neither asserts what comes back. elitea-main now emits into
+ *    `centry.audit_events` itself (its audit middleware records administrative
+ *    and security-relevant requests), but it emits for the acting principal on
+ *    the surfaces it covers, so a given persona in a given project can still
+ *    legitimately have zero rows and an empty table is still a correct answer.
  *  - the nine other admin sections (Projects, Secrets, Roles, …). Not ported
  *    yet — issue #200 lists them. Audit Trail HAS since landed; journey 29
  *    (`admin.audit-trail.spec.ts`) covers it.

@@ -10,9 +10,11 @@ package eliteacore
 //   legacy/plugins/elitea_core/api/v2/audit_trace_heatmap.py
 // — same paths, same query parameters, same body keys.
 //
-// The rows come from `centry.audit_events`, whose write path belongs to the
-// legacy tracing plugin (legacy/plugins/tracing/models/audit_event.py). Nothing
-// here writes: the whole audit surface is read-only, by design.
+// The rows come from `centry.audit_events`. Nothing in THIS file writes: the
+// audit surface is read-only, by design. The producer is internal/audit, driven
+// by the middleware in internal/api/middleware/audit.go, and it emits the same
+// `event_type`/`action` vocabulary these queries filter and group by — the
+// legacy tracing plugin's (legacy/plugins/tracing/utils/audit_processor.py).
 //
 // ## Every filter is a bound parameter, and every identifier is allow-listed
 //
