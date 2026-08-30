@@ -78,6 +78,8 @@
  * delete) is done by clicking. The state itself is not exotic: an operator
  * reaches it by renaming or deleting a credential another row names.
  */
+import { randomBytes } from 'node:crypto';
+
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 import { BASE_URL, STORAGE_STATE } from '../../playwright.config';
@@ -106,7 +108,16 @@ interface ProviderRow {
  * table's `elitea_title` UNIQUE constraint — which surfaces as a refused create
  * and reads as "the form is broken".
  */
-const RUN = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+/*
+ * `randomBytes`, not `Math.random()`. The suffix is only for uniqueness across
+ * concurrent runs, but it is interpolated into the fake `sk-…` api_key this
+ * journey writes, so CodeQL reads it as a secret built from a
+ * cryptographically insecure source (`js/insecure-randomness`, high). The
+ * value is not a real credential — it names a provider that is deleted at the
+ * end of the run — but a test is a poor place to teach the pattern, and a
+ * secure source costs nothing here.
+ */
+const RUN = `${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
 const PROVIDER_NAME = `${AUTOTEST_PREFIX}platform_provider_${RUN}`;
 /** The credential the broken reference names. It does not exist until step 3. */
 const TARGET_NAME = `${AUTOTEST_PREFIX}platform_target_${RUN}`;

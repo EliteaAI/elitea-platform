@@ -261,6 +261,13 @@ def main() -> int:
             sys.stderr.write("mock-mcp: missing TLS material at %s\n" % path)
             return 1
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # PROTOCOL_TLS_SERVER negotiates DOWN to TLSv1/TLSv1.1 on builds whose
+    # OpenSSL still enables them, which CodeQL flags as py/insecure-protocol
+    # (high). This is a mock the e2e stack talks to over the compose network,
+    # so nothing here is exposed — but the client under test is the real
+    # gateway, and pinning the floor keeps the mock from being the one place
+    # that would still accept a protocol production refuses.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
     server = LoggingTLSServer(("0.0.0.0", PORT), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
