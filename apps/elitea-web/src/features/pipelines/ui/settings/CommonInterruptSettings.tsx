@@ -13,32 +13,57 @@ import { FlowEditorConstants } from '../../lib/flow-editor/constants';
 import { FlowEditorContext, type FlowEditorContextValue } from '../../lib/flow-editor/flowEditorContext';
 import * as FlowEditorHelpers from '../../lib/flow-editor/helpers/flowEditor.helpers';
 import type { YamlPipelineDocument, YamlPipelineNode } from '../../lib/flow-editor/helpers/pipelineFlow.types';
-import type { FlowEdge } from '../../lib/flow-editor/reactFlowTypes';
 
 /**
  * Ported from `apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/
  * settings/CommonInterruptSettings.jsx` (unit A2h). Reads `FlowEditorContext`
  * from `../../lib/flow-editor/flowEditorContext.ts` (see `InputSelect.tsx`'s
- * doc comment for the R-L1 rationale) and `PipelineNodeTypes` via the
- * already-landed `FlowEditorConstants` namespace instead of a direct
- * `constants/flowEditor.constants` import, matching every other A2h/A2d
- * consumer of that module.
+ * doc comment for the R-L1 rationale).
  *
- * `styled(FormControlLabel)` (baseline: `@emotion/styled`) -> a plain
- * `sx` object -- this app's `shared/ui` components consistently use MUI's
- * `sx` prop rather than `@emotion/styled` wrappers for one-off styling
- * (no `@emotion/styled` import appears anywhere else in this sub-unit's
- * sibling files), so the same convention is used here rather than
- * introducing a second styling mechanism for one component.
+ * `styled(FormControlLabel)` (baseline: `@emotion/styled`) -> a plain `sx`
+ * object -- this app's `shared/ui` components consistently use MUI's `sx`
+ * prop rather than `@emotion/styled` wrappers for one-off styling.
  *
- * Split into `useInterruptSettingsContext` (every `FlowEditorContext` read
- * and derived flag), `useInterruptToggleHandler` (the near-identical
- * before/after callback bodies), and a local `InterruptSwitchRow` --
- * purely to keep this function's own cyclomatic complexity under the
- * §3.5 budget (12), which oxlint's `complexity` rule counts against every
- * optional-chain/`??`/`&&`/`||`/default-param, not just `if`/ternary; no
- * behaviour change.
+ * ── The two interrupt switches are permanently disabled. This is a
+ * deliberate INTERSECTION choice, not an oversight. ───────────────────────
+ *
+ * A pipeline turn can be executed by either of two workers, and the editor
+ * cannot know which one will take a given turn:
+ *
+ *  - the **native Rust runtime** refuses ANY non-empty `interrupt_before` /
+ *    `interrupt_after` outright — `services/elitea-worker-rust/src/agents/
+ *    graph/compiler.rs:470-474`, "static pipeline interrupts are not enabled
+ *    in this compiler slice". The refusal is whole-document: one interrupt
+ *    entry and the pipeline does not start at all.
+ *  - the **Python SDK worker** honours them.
+ *
+ * So the editor authors the intersection both accept: no static interrupts.
+ * Before this change, flipping either switch silently turned a working
+ * pipeline into one that would not start, with no signal anywhere in the
+ * UI until a chat turn failed in another process with a data-free
+ * `graph.pipeline.invalid_configuration`.
+ *
+ * The switches are DISABLED rather than removed on purpose. Removing them
+ * would hide the fact that this capability exists and is withheld, and it
+ * would leave a document that already carries interrupts (authored before
+ * this change, or through the YAML tab) showing nothing at all. Kept
+ * disabled, they still display the stored state, and
+ * `lib/graphAdmission.helpers.ts`'s `document.static-interrupts` rule names
+ * the exact entries in the save gate — the YAML tab is the repair path for
+ * such a document.
+ *
+ * **To re-enable them**, exactly one thing has to change: the Rust
+ * compiler has to admit static interrupts (`compiler.rs:470-474` becomes a
+ * real `interrupt_before`/`interrupt_after` wiring rather than an
+ * `Unsupported` early return, and `MAX_STATIC_INTERRUPTS` at
+ * `compiler.rs:53` stops being decorative). When that lands, drop the
+ * hardcoded `disabled` on the two `InterruptSwitchRow`s below (restoring
+ * `isEntryPoint || disabled` / `isEndTransition || disabled`), restore the two `useCallback` toggle
+ * handlers this file used to carry (they wrote `{...yamlJsonObject,
+ * [field]: nextList}` and relabelled the incoming/outgoing edge via
+ * `setFlowEdges`), and drop the `document.static-interrupts` rule.
  */
+
 export interface CommonInterruptSettingsProps {
   readonly id: string;
   readonly showStructuredOutput?: boolean;
@@ -47,6 +72,7 @@ export interface CommonInterruptSettingsProps {
 }
 
 const rowSx: SxProps<Theme> = { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', width: '100%', flexDirection: 'row' };
+const reasonSx: SxProps<Theme> = { width: '100%' };
 
 function switchLabelSx(theme: Theme) {
   return {
@@ -65,7 +91,7 @@ function switchLabelSx(theme: Theme) {
 interface InterruptSwitchRowProps {
   readonly disabled: boolean;
   readonly checked: boolean;
-  readonly onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  readonly onChange?: ((event: ChangeEvent<HTMLInputElement>) => void) | undefined;
   readonly label: ReactNode;
   readonly emphasized: boolean;
 }
@@ -94,36 +120,9 @@ function InterruptSwitchRow({ disabled, checked, onChange, label, emphasized }: 
   );
 }
 
-interface UseInterruptToggleHandlerArgs {
-  readonly id: string;
-  readonly field: 'interrupt_before' | 'interrupt_after';
-  readonly edgeSide: 'target' | 'source';
-  readonly current: readonly string[];
-  readonly yamlJsonObject: YamlPipelineDocument | undefined;
-  readonly setYamlJsonObject: ((next: YamlPipelineDocument) => void) | undefined;
-  readonly setFlowEdges: ((updater: (prev: FlowEdge[]) => FlowEdge[]) => void) | undefined;
-}
-
-/** Shared body of `onChangeInterruptBefore`/`onChangeInterruptAfter` -- see this file's own doc comment. */
-function useInterruptToggleHandler(args: UseInterruptToggleHandlerArgs): (event: ChangeEvent<HTMLInputElement>) => void {
-  const { id, field, edgeSide, current, yamlJsonObject, setYamlJsonObject, setFlowEdges } = args;
-  return useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      if (!setYamlJsonObject) return;
-      const nextList = event.target.checked ? [...current, id] : current.filter(item => item !== id);
-      setYamlJsonObject({ ...yamlJsonObject, [field]: nextList });
-      setFlowEdges?.(prevEdges =>
-        prevEdges.map(edge => (edge[edgeSide] === id ? { ...edge, data: event.target.checked ? { label: 'interrupt' } : {} } : edge)),
-      );
-    },
-    [id, field, edgeSide, current, yamlJsonObject, setYamlJsonObject, setFlowEdges],
-  );
-}
-
 interface InterruptSettingsContext {
   readonly yamlJsonObject: YamlPipelineDocument | undefined;
   readonly setYamlJsonObject: FlowEditorContextValue['setYamlJsonObject'] | undefined;
-  readonly setFlowEdges: FlowEditorContextValue['setFlowEdges'] | undefined;
   readonly yamlNode: YamlPipelineNode | undefined;
   readonly isEntryPoint: boolean;
   readonly isEndTransition: boolean;
@@ -135,36 +134,29 @@ interface InterruptSettingsContext {
  * Baseline's `Array.isArray(yamlJsonObject?.interrupt_before) ?
  * yamlJsonObject?.interrupt_before : []` (`CommonInterruptSettings.jsx:27-34`)
  * -- a malformed (non-array) `interrupt_before`/`interrupt_after` value in
- * the YAML degrades to an empty list instead of flowing straight into
- * `.includes()`/the spread in `useInterruptToggleHandler` above.
+ * the YAML degrades to an empty list instead of flowing into `.includes()`.
  *
- * The explicitly-typed intermediate `list: readonly string[]` binding
- * (rather than `return Array.isArray(value) ? value : []` directly, or an
- * unannotated `const list = ...`) is required, not stylistic:
- * `Array.isArray`'s `arg is any[]` predicate widens the narrowed value to
- * `any[]`, tripping `no-unsafe-return` on a direct/unannotated return --
- * the same gap `parsePipelineTraversal.helpers.ts:138-139`'s identical
- * `interrupt_before`/`interrupt_after` guard and `yamlUpdate.helpers.ts`'s
- * own doc comment both already document for this exact narrowing pattern;
- * the explicit annotation here is what those two call sites didn't need
- * (neither one ever `return`s the narrowed value directly).
+ * The explicitly-typed intermediate `list: readonly string[]` binding is
+ * required, not stylistic: `Array.isArray`'s `arg is any[]` predicate widens
+ * the narrowed value to `any[]`, tripping `no-unsafe-return` on a direct or
+ * unannotated return -- the same gap `parsePipelineTraversal.helpers.ts:138-139`
+ * and `yamlUpdate.helpers.ts` already document for this exact pattern.
  */
 function toInterruptList(value: readonly string[] | undefined): readonly string[] {
   const list: readonly string[] = Array.isArray(value) ? value : [];
   return list;
 }
 
-/** Every `FlowEditorContext` read plus derived entry-point/end-transition flags for this node -- see this file's own doc comment. */
+/** Every `FlowEditorContext` read plus derived entry-point/end-transition flags for this node. */
 function useInterruptSettingsContext(id: string, type: string | undefined): InterruptSettingsContext {
   const context = useContext(FlowEditorContext);
   const yamlJsonObject = context?.yamlJsonObject;
 
-  const yamlNode = useMemo(() => yamlJsonObject?.nodes?.find(node => matchesNode(node, id, type)), [id, type, yamlJsonObject]);
+  const yamlNode = useMemo(() => yamlJsonObject?.nodes?.find((node) => matchesNode(node, id, type)), [id, type, yamlJsonObject]);
 
   return {
     yamlJsonObject,
     setYamlJsonObject: context?.setYamlJsonObject,
-    setFlowEdges: context?.setFlowEdges,
     yamlNode,
     isEntryPoint: yamlJsonObject?.entry_point === id,
     isEndTransition: yamlNode?.transition === FlowEditorConstants.PipelineNodeTypes.End,
@@ -180,8 +172,7 @@ function matchesNode(node: YamlPipelineNode, id: string, type: string | undefine
 export function CommonInterruptSettings(props: CommonInterruptSettingsProps): ReactNode {
   const { id, showStructuredOutput = true, type, disabled = false } = props;
 
-  const { yamlJsonObject, setYamlJsonObject, setFlowEdges, yamlNode, isEntryPoint, isEndTransition, realInterruptBefore, realInterruptAfter } =
-    useInterruptSettingsContext(id, type);
+  const { yamlJsonObject, setYamlJsonObject, yamlNode, isEntryPoint, isEndTransition, realInterruptBefore, realInterruptAfter } = useInterruptSettingsContext(id, type);
 
   const onChangeStructuredOutput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -191,42 +182,31 @@ export function CommonInterruptSettings(props: CommonInterruptSettingsProps): Re
     [yamlJsonObject, setYamlJsonObject, id],
   );
 
-  const onChangeInterruptBefore = useInterruptToggleHandler({
-    id,
-    field: 'interrupt_before',
-    edgeSide: 'target',
-    current: realInterruptBefore,
-    yamlJsonObject,
-    setYamlJsonObject,
-    setFlowEdges,
-  });
-
-  const onChangeInterruptAfter = useInterruptToggleHandler({
-    id,
-    field: 'interrupt_after',
-    edgeSide: 'source',
-    current: realInterruptAfter,
-    yamlJsonObject,
-    setYamlJsonObject,
-    setFlowEdges,
-  });
-
   return (
     <Box sx={rowSx}>
       <InterruptSwitchRow
-        disabled={isEntryPoint || disabled}
+        disabled
         checked={!isEntryPoint && realInterruptBefore.includes(id)}
-        onChange={onChangeInterruptBefore}
         label={t('pipelines.commonInterruptSettings.interruptBefore', 'Interrupt before')}
         emphasized={isEntryPoint}
       />
       <InterruptSwitchRow
-        disabled={isEndTransition || disabled}
+        disabled
         checked={!isEndTransition && realInterruptAfter.includes(id)}
-        onChange={onChangeInterruptAfter}
         label={t('pipelines.commonInterruptSettings.interruptAfter', 'Interrupt after')}
         emphasized={isEndTransition}
       />
+      <Typography
+        variant="bodySmall"
+        color="text.secondary"
+        sx={reasonSx}
+        data-testid="interrupt-withheld-reason"
+      >
+        {t(
+          'pipelines.commonInterruptSettings.withheldReason',
+          'Interrupts are unavailable: the native pipeline runtime refuses any pipeline that declares them, so a pipeline saved with one would not start.',
+        )}
+      </Typography>
       {showStructuredOutput && (
         <InterruptSwitchRow
           disabled={disabled}

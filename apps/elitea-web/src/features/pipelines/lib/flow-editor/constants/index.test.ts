@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { FlowEditorConstants, StateDrawerConstants, ValidationErrors } from './index';
+import { FlowEditorConstants, NodeDefaultsConstants, RuntimeContractConstants, StateDrawerConstants, ValidationErrors } from './index';
 
 describe('constants barrel (unit A2c symbols)', () => {
   it('re-exports FlowEditorConstants as a namespace with real values', () => {
@@ -13,5 +13,14 @@ describe('constants barrel (unit A2c symbols)', () => {
 
   it('re-exports ValidationErrors directly', () => {
     expect(ValidationErrors.VariableNameExists).toBe('Name already exists');
+  });
+
+  it('re-exports RuntimeContractConstants as a namespace with the compiler allow-list', () => {
+    expect(RuntimeContractConstants.isCompilerAdmittedNodeType('agent')).toBe(true);
+    expect(RuntimeContractConstants.isCompilerAdmittedNodeType('code')).toBe(false);
+  });
+
+  it('re-exports NodeDefaultsConstants as a namespace with real seed data', () => {
+    expect(NodeDefaultsConstants.InitialNodeData['agent']).toHaveProperty('tool');
   });
 });

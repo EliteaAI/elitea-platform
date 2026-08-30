@@ -98,6 +98,23 @@ describe('validateVariableName', () => {
     expect(validateVariableName('1abc', null, {})).toMatch(/letter/);
     expect(validateVariableName('valid_name1', null, {})).toBe('');
   });
+
+  /**
+   * `compiler.rs:1373` runs `reserved_user_state_key` (`compiler.rs:1456`)
+   * over every key of the document's own `state:` mapping and rejects the
+   * WHOLE pipeline when one matches. Several of those names are ordinary
+   * looking and sail through the character rule above.
+   */
+  it('refuses a state key the pipeline runtime reserves', () => {
+    for (const reserved of ['output', 'result', 'router_output', 'session_id', 'thread_id', 'chat_history']) {
+      expect(validateVariableName(reserved, null, {})).toBe('This name is reserved by the pipeline runtime. Choose another.');
+    }
+  });
+
+  it('still accepts input/messages — the two DefaultState keys the editor itself seeds', () => {
+    expect(validateVariableName('input', null, {})).toBe('');
+    expect(validateVariableName('messages', null, {})).toBe('');
+  });
 });
 
 describe('validateValueByType', () => {

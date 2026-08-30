@@ -17,6 +17,7 @@ import {
   StateVariableTypes,
 } from '../constants/flowEditor.constants';
 import { ValidationErrors } from '../constants/validation.constants';
+import { isReservedStateKey } from '../constants/runtimeContract.constants';
 
 /**
  * Calculate dynamic name field width based on drawer width. Uses linear
@@ -121,6 +122,18 @@ export const validateVariableName = (
   if (states?.[name] !== undefined && name !== excludeName) return ValidationErrors.VariableNameExists;
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)) {
     return ValidationErrors.VariableNameInvalid;
+  }
+  // The compiler refuses a user-declared `state:` key that collides with one
+  // of its own channels (`compiler.rs:1373` -> `reserved_user_state_key`,
+  // `compiler.rs:1456`), and it refuses the WHOLE document, not just the
+  // variable. Several of those names — `output`, `result`, `session_id`,
+  // `chat_history` — are ordinary-looking and pass the character rule above,
+  // so without this branch the editor happily mints a pipeline that cannot
+  // load. `input`/`messages` are deliberately absent from the reserved list
+  // (`builtin_state_key`, `compiler.rs:1436`, is a different, wider set):
+  // they are the two `DefaultState` keys the editor itself seeds.
+  if (isReservedStateKey(name)) {
+    return ValidationErrors.VariableNameReserved;
   }
   return '';
 };

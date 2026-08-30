@@ -1,11 +1,16 @@
 /**
  * Ported from `apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/
  * constants/flowEditor.constants.js` (302 lines, unit A2c). Pure data — no
- * behavioural changes from the baseline. `NodeHeightMap`/`InitialNodeData`
- * keep the baseline's untyped-object shape (heterogeneous per-node-type
- * fields, see `InitialNodeData`'s own factories below) rather than a
- * discriminated union, matching the baseline's own design: the flow editor's
- * consumers read these defensively by node type, never exhaustively.
+ * behavioural changes from the baseline. `NodeHeightMap` keeps the
+ * baseline's untyped-object shape rather than a discriminated union,
+ * matching the baseline's own design: the flow editor's consumers read
+ * these defensively by node type, never exhaustively.
+ *
+ * The baseline's `InitialNodeData` (and the `create*NodeData` factories
+ * behind it) now lives in `./nodeDefaults.constants.ts` — the per-node-type
+ * runtime-contract comments added there pushed this file past the §3.5
+ * 400-line budget. Import it from that module directly; this one does not
+ * re-export it (that would be an initialization cycle).
  */
 
 /** Suffix appended to a node id to derive its synthetic legacy-condition sub-node id. */
@@ -207,115 +212,4 @@ export const InitialNodeId: Readonly<Record<string, string>> = {
   [PipelineNodeTypes.Mcp]: 'MCP',
   [PipelineNodeTypes.Printer]: 'Printer',
   [PipelineNodeTypes.Hitl]: 'HITL',
-};
-
-// ── Common data patterns for node initialization (baseline lines 193-283) ──
-
-const createBaseNodeData = () => ({
-  input: [] as unknown[],
-  output: [] as unknown[],
-});
-
-const createTransitionNodeData = () => ({
-  ...createBaseNodeData(),
-  transition: PipelineNodeTypes.End as string,
-});
-
-const createStructuredOutputNodeData = () => ({
-  ...createTransitionNodeData(),
-  structured_output: false,
-});
-
-const createToolNodeData = () => ({
-  tool: '',
-  ...createStructuredOutputNodeData(),
-});
-
-const createFunctionNodeData = () => ({
-  ...createToolNodeData(),
-  function: undefined as unknown,
-  input_mapping: {} as Record<string, unknown>,
-});
-
-const createConditionNodeData = () => ({
-  condition_input: [] as unknown[],
-  condition_definition: '',
-  conditional_outputs: [] as string[],
-  default_output: '',
-});
-
-const createDecisionNodeData = () => ({
-  input: [] as unknown[],
-  description: '',
-  nodes: [] as string[],
-  default_output: '',
-});
-
-const createLoopNodeData = () => ({
-  task: '',
-  ...createToolNodeData(),
-});
-
-const createLoopFromToolNodeData = () => ({
-  tool: '',
-  loop_tool: '',
-  variables_mapping: undefined as Record<string, unknown> | undefined,
-  ...createStructuredOutputNodeData(),
-});
-
-const createRouterNodeData = () => ({
-  default_output: '',
-  routes: [] as string[],
-  input: [] as unknown[],
-  condition: '',
-});
-
-const createStateModifierNodeData = () => ({
-  template: '',
-  variables_to_clean: [] as unknown[],
-  ...createBaseNodeData(),
-});
-
-const createCodeNodeData = () => ({
-  code: { type: 'fixed', value: '' },
-  ...createStructuredOutputNodeData(),
-});
-
-const createPrinterNodeData = () => ({
-  transition: PipelineNodeTypes.End as string,
-});
-
-const createHitlNodeData = () => ({
-  input: [] as unknown[],
-  user_message: { type: 'fixed', value: '' },
-  routes: {
-    approve: '',
-    edit: '',
-    reject: PipelineNodeTypes.End as string,
-  },
-  edit_state_key: '',
-});
-
-/**
- * Default `data` payload seeded onto a freshly-created YAML node, keyed by
- * `PipelineNodeTypes`. Heterogeneous by design (baseline lines 285-302) — see
- * this module's doc comment.
- */
-export const InitialNodeData: Readonly<Record<string, Record<string, unknown>>> = {
-  [PipelineNodeTypes.Tool]: createToolNodeData(),
-  [PipelineNodeTypes.Agent]: createTransitionNodeData(),
-  [PipelineNodeTypes.Pipeline]: createTransitionNodeData(),
-  [PipelineNodeTypes.LLM]: createStructuredOutputNodeData(),
-  [PipelineNodeTypes.Toolkit]: createFunctionNodeData(),
-  [PipelineNodeTypes.Mcp]: createFunctionNodeData(),
-  [PipelineNodeTypes.Function]: createFunctionNodeData(),
-  [PipelineNodeTypes.Condition]: createConditionNodeData(),
-  [PipelineNodeTypes.Decision]: createDecisionNodeData(),
-  [PipelineNodeTypes.Loop]: createLoopNodeData(),
-  [PipelineNodeTypes.LoopFromTool]: createLoopFromToolNodeData(),
-  [PipelineNodeTypes.Router]: createRouterNodeData(),
-  [PipelineNodeTypes.StateModifier]: createStateModifierNodeData(),
-  [PipelineNodeTypes.Code]: createCodeNodeData(),
-  [PipelineNodeTypes.Printer]: createPrinterNodeData(),
-  [PipelineNodeTypes.Hitl]: createHitlNodeData(),
 };

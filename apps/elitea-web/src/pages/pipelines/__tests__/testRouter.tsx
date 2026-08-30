@@ -33,18 +33,19 @@ function buildTestRouter(
   withSocket: boolean,
 ): AnyRouter {
   const rootRoute = createRootRoute({
-    // `EditPipeline`'s real `<ConfigurationTab>` mount (adversarial-review
-    // fix) reads `useSocketClient()` several layers down
-    // (`usePipelineChat`/`usePipelineMCPToolsStatusMonitor`) — same
+    // `EditPipeline`'s real `<ConfigurationTab>` mount reads
+    // `useSocketClient()` several layers down (`usePipelineChat`/
+    // `usePipelineMCPToolsStatusMonitor`, and now `ChatBox` itself) — same
     // in-memory double `pages/toolkits/__tests__/testRouter.tsx` already
-    // wraps its own tree with, for the identical reason. `withSocket=false`
-    // (`renderPipelinesRouteWithoutSocket`) deliberately reproduces this
-    // app's real, current, un-fixed gap instead — no
-    // `SocketClientContext.Provider` exists anywhere in the real app tree
-    // yet (verified: `grep -rn "SocketClientContext.Provider" src
-    // --include=*.tsx | grep -v test` — zero hits) — so
-    // `EditPipeline.test.tsx` can assert `PipelineConfigurationTabBoundary`'s
-    // fallback actually fires instead of crashing the page.
+    // wraps its own tree with, for the identical reason.
+    //
+    // `withSocket=false` (`renderPipelinesRouteWithoutSocket`) is NOT a
+    // reproduction of the real app tree, and the comment that used to say so
+    // was wrong: `src/app/providers/AppProviders.tsx` mounts a real
+    // `SocketClientContext.Provider` around every page. It is simply the
+    // cheapest way to make the editor subtree throw on its first render, so
+    // `EditPipeline.test.tsx` can assert `PipelineConfigurationTabBoundary`
+    // contains that throw instead of the page unmounting.
     component: () =>
       withSocket ? (
         <SocketClientContext.Provider value={createTestSocketClient()}>

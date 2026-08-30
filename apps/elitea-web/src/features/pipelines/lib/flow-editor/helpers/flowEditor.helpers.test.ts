@@ -229,9 +229,9 @@ describe('calculatePositionForNewNode', () => {
 });
 
 describe('getInitialNodeId / generateNodeIdByType', () => {
-  it('numbers normal node types sequentially, skipping used names (spaces ignored)', () => {
-    expect(getInitialNodeId(PipelineNodeTypes.Tool, [{ id: 'Tool 1' }, { id: 'Tool2' }])).toBe('Tool 3');
-    expect(getInitialNodeId(PipelineNodeTypes.Tool, [])).toBe('Tool 1');
+  it('numbers normal node types sequentially, skipping used names (spaces and underscores ignored)', () => {
+    expect(getInitialNodeId(PipelineNodeTypes.Tool, [{ id: 'Tool 1' }, { id: 'Tool2' }])).toBe('Tool_3');
+    expect(getInitialNodeId(PipelineNodeTypes.Tool, [])).toBe('Tool_1');
   });
 
   it('generates a timestamped id for Condition nodes instead', () => {
@@ -240,7 +240,7 @@ describe('getInitialNodeId / generateNodeIdByType', () => {
 
   it('generateNodeIdByType seeds the node with its InitialNodeData shape', () => {
     const node = generateNodeIdByType(PipelineNodeTypes.Tool, []);
-    expect(node).toMatchObject({ id: 'Tool 1', type: PipelineNodeTypes.Tool, tool: '', structured_output: false });
+    expect(node).toMatchObject({ id: 'Tool_1', type: PipelineNodeTypes.Tool, tool: '', structured_output: false });
   });
 });
 

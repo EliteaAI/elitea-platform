@@ -141,10 +141,13 @@ describe('NodeCardHeader', () => {
 
     fireEvent.doubleClick(screen.getByText('Tool 1'));
     const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Tool 2' } });
+    // `Tool_2`, not `Tool 2`: a node id is a runtime graph identifier and
+    // `valid_graph_id` (worker `yaml.rs:362`) admits no spaces, so the rename
+    // box now refuses one (see `findRenameRejection`).
+    fireEvent.change(input, { target: { value: 'Tool_2' } });
     fireEvent.blur(input);
 
-    expect(setYamlJsonObject).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'Tool 2' }] }));
+    expect(setYamlJsonObject).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'Tool_2' }] }));
     expect(setFlowNodes).toHaveBeenCalled();
     expect(setFlowEdges).toHaveBeenCalled();
   });
@@ -163,7 +166,7 @@ describe('NodeCardHeader', () => {
 
     fireEvent.doubleClick(screen.getByText('Tool 1'));
     const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Tool 1 Renamed' } });
+    fireEvent.change(input, { target: { value: 'Tool_1_Renamed' } });
     fireEvent.blur(input);
 
     expect(setFlowNodes).toHaveBeenCalledTimes(1);
@@ -184,10 +187,10 @@ describe('NodeCardHeader', () => {
 
     const nextFlowNodes = updater(prevFlowNodes);
 
-    expect(nextFlowNodes[0]).toMatchObject({ id: 'Tool 1 Renamed', data: { label: 'Tool 1 Renamed' } });
+    expect(nextFlowNodes[0]).toMatchObject({ id: 'Tool_1_Renamed', data: { label: 'Tool_1_Renamed' } });
     expect(nextFlowNodes[1]).toMatchObject({
       id: 'Router 1',
-      data: { nodes: ['Tool 1 Renamed', 'End'], default_output: 'Tool 1 Renamed' },
+      data: { nodes: ['Tool_1_Renamed', 'End'], default_output: 'Tool_1_Renamed' },
     });
   });
 
@@ -198,7 +201,7 @@ describe('NodeCardHeader', () => {
 
     fireEvent.doubleClick(screen.getByText('Tool 1'));
     const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Tool 1 Renamed' } });
+    fireEvent.change(input, { target: { value: 'Tool_1_Renamed' } });
     fireEvent.blur(input);
 
     expect(setFlowEdges).toHaveBeenCalledTimes(1);
@@ -211,8 +214,8 @@ describe('NodeCardHeader', () => {
 
     const nextFlowEdges = updater(prevFlowEdges);
 
-    expect(nextFlowEdges[0]).toMatchObject({ source: 'Tool 1 Renamed', target: 'End' });
-    expect(nextFlowEdges[1]).toMatchObject({ source: 'Start', target: 'Tool 1 Renamed' });
+    expect(nextFlowEdges[0]).toMatchObject({ source: 'Tool_1_Renamed', target: 'End' });
+    expect(nextFlowEdges[1]).toMatchObject({ source: 'Start', target: 'Tool_1_Renamed' });
     expect(nextFlowEdges[2]).toMatchObject({ source: 'Other', target: 'End' });
   });
 
@@ -225,7 +228,7 @@ describe('NodeCardHeader', () => {
   it('calls onDuplicateName and reverts the input instead of renaming on a duplicate node name', () => {
     const onDuplicateName = vi.fn();
     const setYamlJsonObject = vi.fn();
-    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Tool 1' }, { id: 'Tool 2' }] };
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Tool 1' }, { id: 'Tool_2' }] };
     renderWithTheme(
       <NodeCardHeader
         {...baseProps({ name: 'Tool 1', type: 'llm', yamlJsonObject, setYamlJsonObject, onDuplicateName })}
@@ -234,13 +237,40 @@ describe('NodeCardHeader', () => {
 
     fireEvent.doubleClick(screen.getByText('Tool 1'));
     const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Tool 2' } });
+    fireEvent.change(input, { target: { value: 'Tool_2' } });
     fireEvent.blur(input);
 
     expect(onDuplicateName).toHaveBeenCalledWith(
       'The name has been used by other nodes, please input a new name!',
     );
     expect(setYamlJsonObject).not.toHaveBeenCalled();
+  });
+
+  it('refuses a rename to a name the pipeline compiler cannot address, and reverts', () => {
+    // The runtime's `valid_graph_id` (worker `graph/yaml.rs:362`) admits ASCII
+    // alphanumerics plus `_ - . :` only. Without this guard the rename box
+    // could undo the whole point of minting compiler-legal ids: the new name
+    // is written into `entry_point`, every `transition` and every route
+    // target by `renameYamlDocument`, so one space makes the stored document
+    // unloadable (`graph.pipeline.invalid_configuration`).
+    const onDuplicateName = vi.fn();
+    const setYamlJsonObject = vi.fn();
+    const setFlowNodes = vi.fn();
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Tool 1' }] };
+    renderWithTheme(
+      <NodeCardHeader
+        {...baseProps({ name: 'Tool 1', type: 'llm', yamlJsonObject, setYamlJsonObject, setFlowNodes, onDuplicateName })}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText('Tool 1'));
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'My Agent' } });
+    fireEvent.blur(input);
+
+    expect(onDuplicateName).toHaveBeenCalledWith('Only letters, numbers and _ - . : are allowed — no spaces.');
+    expect(setYamlJsonObject).not.toHaveBeenCalled();
+    expect(setFlowNodes).not.toHaveBeenCalled();
   });
 
   it('calls onDuplicateName with the toolkit-name message when the new name matches a toolName', () => {

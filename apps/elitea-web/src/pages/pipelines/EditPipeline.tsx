@@ -18,9 +18,12 @@ import { pipelineDetailDisplayName, toVersionSummaries } from './lib/editPipelin
 import { isPublicPipelinesProject } from './lib/isPublicPipelinesProject';
 import {
   buildPipelineConfigurationTabSlots,
-  DISCLOSED_PIPELINE_CHAT_ADAPTER,
   PipelineConfigurationTabBoundary,
 } from './lib/pipelineConfigurationTabGaps';
+import { useRefetchPipelineAfterSave } from './lib/useRefetchPipelineAfterSave';
+import { usePipelineChatAdapter } from './lib/usePipelineChatAdapter';
+import { usePipelineChatSlotContext } from './lib/usePipelineChatSlotContext';
+import { usePipelineEditorUser } from './lib/usePipelineEditorUser';
 import { useCorrectUserNameInUrl } from './lib/useCorrectUserNameInUrl';
 import { useEditPipelineConfigurationTabBridge } from './lib/useEditPipelineConfigurationTabBridge';
 import { useEditPipelineData } from './lib/useEditPipelineData';
@@ -41,6 +44,27 @@ import { EditPipelineSaveBar } from './ui/EditPipelineSaveBar';
  */
 function useEditPipelineNavBlocker(isFormDirty: boolean, isYamlDirty: boolean): void {
   useUnsavedChangesNavBlocker(isFormDirty || isYamlDirty);
+}
+
+/**
+ * Whether the editor has nothing to show YET — as opposed to "a request is in
+ * flight", which is what `isFetching` means and which is also true for a
+ * background refetch.
+ *
+ * `ConfigurationTab` renders a spinner INSTEAD of the editor while its
+ * `isFetching` is set, unmounting the whole canvas and both side panels. That
+ * was harmless while nothing ever refetched; `useRefetchPipelineAfterSave`
+ * made it happen after every save, and the cost was measured in a browser: the
+ * editor blanked, both panels reopened, and their collapse states were gone.
+ * TanStack keeps the previous `detail` while it revalidates, so this keeps the
+ * first-load spinner and leaves a refetch invisible.
+ *
+ * A module-scope function rather than an inline `&&` for the same reason
+ * `useEditPipelineNavBlocker` above is one: the page is at the §3.5
+ * cyclomatic-complexity ceiling (12) and one more branch breaches it.
+ */
+function editorIsLoading(isFetching: boolean, detail: unknown): boolean {
+  return isFetching && detail === undefined;
 }
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
@@ -94,13 +118,15 @@ function parseApplicationId(agentId: string | undefined): number | undefined {
  *    empty placeholder `<Box>` here even after `ConfigurationTab` existed,
  *    leaving the entire standalone pipeline editor blank). It is now
  *    mounted for real below, wrapped in `PipelineConfigurationTabBoundary`
- *    (`./lib/pipelineConfigurationTabGaps.tsx`) — see that module's own doc
- *    comment for the three sub-gaps that boundary and its two slot/adapter
- *    stand-ins disclose (no `features/chat` slice, no promoted
- *    `features/agents` configuration panels reachable through a barrel, no
- *    app-wide `SocketClientContext.Provider` mounted anywhere yet). The
- *    flow-editor canvas itself (`EditorPanel`/`FlowEditor`) is real and
- *    live; only those three surrounding pieces are disclosed gaps.
+ *    (`./lib/pipelineConfigurationTabGaps.tsx`). Two of the three sub-gaps
+ *    that module used to disclose are now CLOSED, and their stated reasons
+ *    were stale rather than merely optimistic — read its corrected header:
+ *    the test-chat slot renders the real `widgets/chat-box` `ChatBox`
+ *    (`./ui/PipelineTestChat.tsx`), the `adapter` is real
+ *    (`./lib/usePipelineChatAdapter.ts`), and the boundary's "nobody mounts
+ *    a `SocketClientContext.Provider`" claim was simply false —
+ *    `app/providers/AppProviders.tsx` mounts one around every page. What
+ *    remains a genuine gap is the configuration FORM's agent-domain panels.
  *  - `ApplicationTabBar`/`ApplicationControls`
  *    (`@/[fsd]/entities/application-tab-bar/ui`) were NOT promoted into any
  *    `entities/` slice (verified: no `entities/application-tab-bar`
@@ -183,6 +209,13 @@ export function EditPipeline(): ReactNode {
     applicationId,
   );
   const { setFieldValue, versionDetails } = useEditPipelineConfigurationTabBridge(activeVersion, form.setValue);
+  useRefetchPipelineAfterSave(isSaving, saveError, projectId, applicationId);
+  // The real `ChatConversationAdapter`, and the signed-in user the test chat's
+  // conversation names as its author — both page-owned because `pages/` is the
+  // layer allowed to reach `entities/conversation`, `entities/participant` and
+  // `widgets/chat-box` at once. See `./lib/pipelineConfigurationTabGaps.tsx`.
+  const chatAdapter = usePipelineChatAdapter();
+  const chatUser = usePipelineEditorUser();
   /*
    * #133 — this used to be a write-only `const [, setIsYamlDirty]`: the
    * flow editor reported its dirtiness and the page dropped it. It is now
@@ -226,6 +259,7 @@ export function EditPipeline(): ReactNode {
   // which pass a `viewMode` override on navigation) is a read-only viewer
   // of someone else's public pipeline, not its owner.
   const isReadOnlyView = isPublicPipelinesProject(projectId);
+  const isEditorLoading = editorIsLoading(isFetching, detail);
 
   /*
    * Confirming the discard dialog now actually DROPS the draft and LEAVES
@@ -250,6 +284,9 @@ export function EditPipeline(): ReactNode {
 
   const setLlmSettings = llmSettings.setValue;
   const handleModelSettingsChange = useCallback((next: AgentLlmSettings) => setLlmSettings(next), [setLlmSettings]);
+  // Everything the test-chat slot needs to name the pipeline it talks to.
+  const chatSlotContext = usePipelineChatSlotContext({ projectId, applicationId: params.agentId, detail, activeVersion, user: chatUser });
+
   /*
    * The model picker rides in `ConfigurationTab`'s configuration-form slot —
    * the left panel, where the baseline puts model settings — rather than
@@ -266,8 +303,9 @@ export function EditPipeline(): ReactNode {
           onChange={handleModelSettingsChange}
           disabled={isReadOnlyView || isFetching}
         />,
+        chatSlotContext,
       ),
-    [projectId, llmSettings.value, handleModelSettingsChange, isReadOnlyView, isFetching],
+    [projectId, llmSettings.value, handleModelSettingsChange, isReadOnlyView, isFetching, chatSlotContext],
   );
 
   if (isDetailNotFound) {
@@ -341,7 +379,7 @@ export function EditPipeline(): ReactNode {
           )}
           <PipelineConfigurationTabBoundary>
             <ConfigurationTab
-              isFetching={isFetching}
+              isFetching={isEditorLoading}
               isError={isError}
               applicationId={applicationId}
               pipelineName={detail ? pipelineDetailDisplayName(detail) : undefined}
@@ -349,7 +387,7 @@ export function EditPipeline(): ReactNode {
               versions={versions}
               setFieldValue={setFieldValue}
               setYamlDirty={setIsYamlDirty}
-              adapter={DISCLOSED_PIPELINE_CHAT_ADAPTER}
+              adapter={chatAdapter}
               slots={configurationTabSlots}
             />
           </PipelineConfigurationTabBoundary>

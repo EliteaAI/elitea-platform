@@ -8,14 +8,21 @@ import type { ConfigurationTabProps } from '@/features/pipelines';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 
+import { PipelineTestChat, type PipelineTestChatProps } from '../ui/PipelineTestChat';
+
+/** What `buildPipelineConfigurationTabSlots` needs to build the chat slot — grouped into one object so the factory keeps two parameters. */
+export interface PipelineChatSlotContext {
+  readonly identity: PipelineTestChatProps['identity'];
+  readonly user: PipelineTestChatProps['user'];
+}
+
 /**
- * Disclosed-gap stand-ins for `ConfigurationTab`'s two REQUIRED slots
- * (`renderConfigurationForm`/`renderChat`) and its required `adapter` prop,
- * used only by `EditPipeline.tsx` (this unit, A2m/A2's own composition-gap
- * fix — see that page's doc comment for the full picture).
+ * `ConfigurationTab`'s two REQUIRED slots (`renderConfigurationForm`/
+ * `renderChat`), built for `EditPipeline.tsx` — one of them still a
+ * disclosed stand-in, the other now real.
  *
- * **Why these can't be the real thing, mechanically, not just "not yet
- * built":**
+ * **ONE gap is left here, and the other two are CLOSED — the old text
+ * claiming all three was stale and is corrected, not preserved:**
  *  - `renderConfigurationForm` is no longer a pure stand-in: it now carries
  *    the model picker the page supplies (`buildPipelineConfigurationTabSlots`
  *    below), which is the one panel of that form this app can build. The
@@ -25,27 +32,23 @@ import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
  *    "^export" src/features/agents/index.ts`, no such names), and
  *    `no-deep-slice-import` (`.dependency-cruiser.cjs`) mechanically forbids
  *    `pages/` from reaching a slice's un-exported internals regardless.
- *  - `renderChat` needs `features/chat`'s `ChatBox`/`ChatButton` — that
- *    slice does not exist anywhere in this worktree yet (verified: `ls
- *    src/features/chat` — no such directory; `ConfigurationTab.tsx`'s own
- *    doc comment already discloses this same gap for its `renderChat` slot).
- *  - `adapter` (`ChatConversationAdapter`) needs real
- *    create-conversation/delete-message/stop-task REST endpoints —
- *    `ChatConversationAdapter`'s OWN doc comment
- *    (`features/pipelines/lib/hooks/pipelineChat.types.ts`) already
- *    discloses these do not exist in the generated client yet ("a future
- *    chat-domain unit supplies the real implementation once these endpoints
- *    exist"). `DISCLOSED_PIPELINE_CHAT_ADAPTER` below is that documented
- *    placeholder, not a new gap.
- *
- * Replacing all three turns "the whole standalone pipeline editor is blank"
- * (the confirmed regression) into "the flow editor (`EditorPanel`/
- * `FlowEditor`, hundreds of already-landed, already-tested files) is real
- * and live; only the two genuinely cross-slice sub-panels show a disclosed
- * gap" — the same "disclosed placeholder, not a silent workaround"
- * discipline this whole mission uses throughout (e.g. `EditPipeline.tsx`'s
- * own prior single big placeholder, `ConfigurationTab.tsx`'s `renderChat`/
- * `renderContextBudget` slots).
+ *    This one is REAL and stays.
+ *  - `renderChat` — CLOSED. The old reason ("needs `features/chat`'s
+ *    `ChatBox` — that slice does not exist") named the wrong slice. The chat
+ *    composition root is `widgets/chat-box`, which exports `ChatBox` and
+ *    `ChatBoxHandle`; `ChatBoxHandle` is a structural SUPERSET of the
+ *    `ChatBoxSlotHandle` (`stopAll`/`onClear`) `ChatPanel.tsx` declares as
+ *    what the slot owes. `features/pipelines` genuinely may not import a
+ *    widget (`no-upward-from-features`) — which is the whole reason this is
+ *    a slot — but this module is in `pages/`, and `pages/` may. The slot now
+ *    renders `../ui/PipelineTestChat.tsx`; read that file for the run-event
+ *    wire it also carries.
+ *  - `adapter` — CLOSED, see `./usePipelineChatAdapter.ts`. The four
+ *    operations were never missing from the app, only from the GENERATED
+ *    client: `entities/conversation`'s `conversationApi` has been carrying
+ *    all of them since unit C1, and `ui/ChatWithPipelineButton.tsx` in this
+ *    very directory already calls two of them. The placeholder that resolved
+ *    every method to `{ error: 'not_available' }` is deleted.
  */
 
 const gapContainerSx: SxProps<Theme> = { padding: '1.5rem', height: '100%', boxSizing: 'border-box' };
@@ -79,58 +82,33 @@ function renderPipelineConfigurationFormGap(modelSettings: ReactNode): ReactNode
   );
 }
 
-/** `ConfigurationTab`'s required `slots.renderChat` — see this module's own doc comment for why the real `features/chat` chat box can't be reached from here (that slice does not exist yet). */
-function renderPipelineChatGap(): ReactNode {
-  return (
-    <Box
-      data-testid="edit-pipeline-chat-gap"
-      sx={gapContainerSx}
-    >
-      <NoResultsMessage
-        title={t('pages.pipelines.editPipeline.chatGap.title', 'Live test chat is not available yet.')}
-        description={t('pages.pipelines.editPipeline.chatGap.description', 'The chat feature this panel embeds has not landed in this app yet.')}
-      />
-    </Box>
-  );
-}
-
-/** Every `ChatConversationAdapter` method resolves to this same "not available" result — real network calls have nothing to hit yet (see this module's own doc comment). */
-const ADAPTER_GAP_RESULT = { error: 'not_available' } as const;
-
-/**
- * The documented placeholder `ChatConversationAdapter`
- * (`pipelineChat.types.ts`'s own doc comment) — every method resolves
- * instead of throwing, so `usePipelineChat`'s internal error-handling paths
- * (already real, already tested against a rejected/errored adapter call)
- * run exactly as they would against a real backend that returned an error,
- * rather than an unhandled rejection crashing the page. A module-scope
- * constant, not a per-render factory — `usePipelineChat.hooks.ts` closes
- * over `adapter` in several `useCallback`/`useEffect` dependency arrays, so
- * a stable reference matters here (this is a plain object literal, not a
- * zustand store — `elitea/no-module-scope-store`, R-S2, does not apply).
- */
-export const DISCLOSED_PIPELINE_CHAT_ADAPTER: ConfigurationTabProps['adapter'] = {
-  createConversation: () => Promise.resolve(ADAPTER_GAP_RESULT),
-  deleteMessage: () => Promise.resolve(ADAPTER_GAP_RESULT),
-  deleteAllMessages: () => Promise.resolve(ADAPTER_GAP_RESULT),
-  stopChatTask: () => Promise.resolve(),
-};
-
 /**
  * `ConfigurationTab`'s required `slots` prop.
  *
- * A factory rather than the module-scope constant it used to be, because one
- * of the two slots now carries page-owned content (the model picker, whose
- * value and `onChange` belong to `EditPipeline`'s own state). The caller
- * memoises the result on that node — `GeneralFormPanel` calls
- * `renderConfigurationForm` straight through in render and holds it in no
- * dependency array, so a fresh object costs nothing but is still worth not
- * rebuilding every keystroke.
+ * A factory rather than the module-scope constant it used to be, because
+ * both slots now carry page-owned content — the model picker (whose value
+ * and `onChange` belong to `EditPipeline`'s own state) and the test chat
+ * (which needs the pipeline's identity and the signed-in user). The caller
+ * memoises the result on those inputs — `GeneralFormPanel`/`ChatPanel` call
+ * their render props straight through and hold them in no dependency array,
+ * so a fresh object costs nothing but is still worth not rebuilding every
+ * keystroke.
  */
-export function buildPipelineConfigurationTabSlots(modelSettings: ReactNode): ConfigurationTabProps['slots'] {
+export function buildPipelineConfigurationTabSlots(
+  modelSettings: ReactNode,
+  chat: PipelineChatSlotContext,
+): ConfigurationTabProps['slots'] {
   return {
     renderConfigurationForm: () => renderPipelineConfigurationFormGap(modelSettings),
-    renderChat: renderPipelineChatGap,
+    renderChat: ({ settings, disableChat, ref }) => (
+      <PipelineTestChat
+        settings={settings}
+        disableChat={disableChat}
+        slotRef={ref}
+        identity={chat.identity}
+        user={chat.user}
+      />
+    ),
   };
 }
 
@@ -144,39 +122,27 @@ interface PipelineConfigurationTabBoundaryState {
 const boundaryFallbackSx: SxProps<Theme> = { padding: '1.5rem' };
 
 /**
- * Guards the real `<ConfigurationTab>` mount in `EditPipeline.tsx` against
- * one more real, disclosed, OUT-OF-CLUSTER-SCOPE gap: `ConfigurationTab`
- * unconditionally calls `usePipelineChat`/`usePipelineMCPToolsStatusMonitor`,
- * both of which call `useSocketClient()`
- * (`shared/api/socket/client.ts`) — and that hook throws synchronously
- * during render if no `SocketClientContext.Provider` is mounted above it
- * (`useSocketClient`'s own doc comment: "a missing provider is a programmer
- * error, not a recoverable state").
+ * Contains a crash inside the editor subtree so it cannot take the whole
+ * page (name, Save/Cancel bar, not-found handling) down with it — same
+ * `PureComponent`/`getDerivedStateFromError` shape
+ * `features/pipelines/ui/EditorPanel.tsx`'s own `FlowEditorErrorBoundary`
+ * establishes for this "no `react-error-boundary` dependency" codebase.
  *
- * **Verified nobody provides one anywhere in this worktree's real
- * (non-test) render tree** (`grep -rn "SocketClientContext.Provider" src
- * --include=*.tsx | grep -v test` — zero hits) — `client.ts`'s own doc
- * comment assigns creating that ONE instance to "the app layer (R2, Wave
- * 1)" (`shared/api/socket/client.ts:6-9`), i.e. genuinely outside
- * `pages/pipelines`' (and this whole A2 cluster's) file scope; `pages/chat/
- * index.tsx`'s own doc comment already discloses the sibling gap for
- * `ChatBox` ("no fully-wired source until unit S1/AppShell or R2/router-
- * context lands"). Not something to fabricate a page-local socket
- * connection for either — `client.ts` is explicit that there must be
- * exactly ONE app-wide instance (R-S2), and `shared/api/socket/testing.ts`'s
- * `createTestSocketClient` is documented "Test-only surface", not a
- * production stand-in.
+ * **CORRECTION — the reason this boundary used to give was FALSE, and is
+ * deleted rather than reworded.** It said: "verified nobody provides a
+ * `SocketClientContext.Provider` anywhere in this worktree's real (non-test)
+ * render tree — zero hits". `src/app/providers/AppProviders.tsx` mounts one
+ * around every page (`<SocketClientContext.Provider value={socketClient}>`),
+ * and has for as long as this app has booted; the grep that "verified" the
+ * claim is the kind that reads absence as proof. `useSocketClient()`
+ * therefore does NOT throw here in production, and the fallback below is not
+ * the expected steady state of this page — it is an error path.
  *
- * Rather than let that real infra gap crash this whole page (name, Save/
- * Cancel bar, not-found handling — everything `EditPipeline` already does
- * correctly), this local error boundary (same `PureComponent`/
- * `getDerivedStateFromError` shape `features/pipelines/ui/EditorPanel.tsx`'s
- * own `FlowEditorErrorBoundary` already establishes for this exact
- * "no `react-error-boundary` dependency" codebase convention) contains the
- * blast radius to the flow-editor area alone, with the same disclosed-gap
- * messaging as `renderPipelineConfigurationFormGap`/`renderPipelineChatGap`
- * above. Once R2/S1 mounts the real provider, this boundary's fallback
- * simply stops firing — no code change needed here.
+ * The boundary is kept anyway, for what it actually does: the flow editor is
+ * the largest render subtree in the app (`@xyflow/react` plus every node
+ * card), so a throw anywhere in it would otherwise unmount the page and lose
+ * the user's unsaved graph along with the Save button they would use to keep
+ * it. Its fallback copy is worded as a failure, not as a disclosed gap.
  */
 export class PipelineConfigurationTabBoundary
   extends PureComponent<PipelineConfigurationTabBoundaryProps, PipelineConfigurationTabBoundaryState>
@@ -200,10 +166,10 @@ export class PipelineConfigurationTabBoundary
           sx={boundaryFallbackSx}
         >
           <NoResultsMessage
-            title={t('pages.pipelines.editPipeline.configurationTabError.title', 'The pipeline editor is not available yet.')}
+            title={t('pages.pipelines.editPipeline.configurationTabError.title', 'The pipeline editor could not be displayed.')}
             description={t(
               'pages.pipelines.editPipeline.configurationTabError.description',
-              'Some app-wide infrastructure this editor depends on has not landed yet. Please try again later.',
+              'Something went wrong while rendering the editor. Reload the page to try again.',
             )}
           />
         </Box>

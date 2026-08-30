@@ -14,7 +14,7 @@ import { useTheme, type SxProps, type Theme } from '@mui/material/styles';
 import { t } from '@/shared/i18n';
 import { PlusIcon } from '@/shared/ui/icons/plus-icon';
 
-import { DeprecatedConstants, FlowEditorConstants } from '../lib/flow-editor/constants';
+import { DeprecatedConstants, FlowEditorConstants, RuntimeContractConstants } from '../lib/flow-editor/constants';
 import { getNodeIconByType } from '../lib/flow-editor/helpers/node.helpers';
 import type { PipelineNodeType } from '../lib/flow-editor/constants/flowEditor.constants';
 
@@ -40,14 +40,32 @@ interface MenuItemEntry {
   readonly icon: ReactNode;
 }
 
-/** `AddNodeMenu.jsx`'s `getVisibleNodeTypes` — the declared KEYS of `PipelineNodeTypes` (e.g. `'Tool'`), sorted, minus the deprecated/invisible ones, mapped back to their VALUE (e.g. `'tool'`). */
+/**
+ * `AddNodeMenu.jsx`'s `getVisibleNodeTypes` — the declared KEYS of
+ * `PipelineNodeTypes` (e.g. `'Tool'`), sorted, minus the
+ * deprecated/invisible ones, mapped back to their VALUE (e.g. `'tool'`).
+ *
+ * **Plus a second filter the baseline did not have:** the result is
+ * intersected with `RuntimeContractConstants.CompilerAdmittedNodeTypes`,
+ * the exact `type:` allow-list of the runtime's `parse_pipeline_node`
+ * (`services/elitea-worker-rust/src/agents/graph/compiler.rs:1236`). The
+ * menu used to offer `Code` and `Custom`, for which the compiler has no arm
+ * at all: adding either produced a pipeline that could not load
+ * (`the pipeline contains a node type that is not enabled`,
+ * `compiler.rs:1267`).
+ *
+ * This withholds them from AUTHORING only. Their renderers stay registered
+ * in `useFlowEditorNodeTypes` so already-stored documents containing a Code
+ * or Custom node still display on the canvas rather than vanishing.
+ */
 function getVisibleNodeTypes(): readonly PipelineNodeType[] {
   const types = FlowEditorConstants.PipelineNodeTypes as Readonly<Record<string, PipelineNodeType>>;
   return Object.keys(types)
     .sort()
     .filter((key) => !DeprecatedConstants.DeprecatedOrInvisibleNode.includes(key))
     .map((key) => types[key])
-    .filter((value): value is PipelineNodeType => value !== undefined);
+    .filter((value): value is PipelineNodeType => value !== undefined)
+    .filter((value) => RuntimeContractConstants.isCompilerAdmittedNodeType(value));
 }
 
 const menuColumnsSx: SxProps<Theme> = { display: 'flex' };

@@ -69,6 +69,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { FlowEditorContext, NodeCardContext, type FlowEditorContextValue } from '../../../lib/flow-editor/flowEditorContext';
 import { getNodeColor } from '../../../lib/flow-editor/helpers/node.helpers';
+import { NodeAdmissionIssues } from '../../settings/NodeAdmissionIssues';
 import { TriggerTypeSelector, type TriggerTypeSelectorProps } from '../../settings/TriggerTypeSelector';
 import { NodeBodyContainer } from './NodeBodyContainer';
 import { NodeCardHeader } from './NodeCardHeader';
@@ -254,7 +255,20 @@ export const NodeCard = memo(function NodeCard(props: NodeCardProps): ReactNode 
 
   return (
     <NodeCardContext.Provider value={{ isExpanded }}>
-      <Box sx={styles.container}>
+      {/*
+        `data-performing` exposes `isPerforming` — the "this node is running
+        RIGHT NOW" highlight `useRunEvent` sets from the streamed run events
+        — as something other than a border style. It carries no appearance of
+        its own; `styles.container` still owns the dashed border. Without it
+        the only evidence that a run reached the canvas is a computed
+        `border-style`, which is not an assertion a journey can make about
+        the mechanism (`e2e/streaming/chat.pipeline-authored.spec.ts` reads
+        this attribute to prove the run feed is live during a turn).
+      */}
+      <Box
+        sx={styles.container}
+        data-performing={isPerforming ? 'true' : 'false'}
+      >
         <Box sx={styles.header}>
           <NodeCardHeaderSlot
             name={name}
@@ -277,6 +291,15 @@ export const NodeCard = memo(function NodeCard(props: NodeCardProps): ReactNode 
               disabled={Boolean(isRunningPipeline || disabled)}
             />
           )}
+          {/*
+            Every reason the native pipeline runtime would refuse THIS node,
+            named by field and value. Mounted here rather than in each node
+            component because this is the one card body they all share —
+            five families (Router, HITL, Printer, StateModifier, the legacy
+            Decision) render no `CommonInterruptSettings`, so hanging it
+            there would have left them silent.
+          */}
+          <NodeAdmissionIssues nodeId={id} />
           {children}
         </NodeBodyContainer>
         {handles?.(isExpanded)}

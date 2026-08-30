@@ -27,8 +27,6 @@ import {
   CONDITION_NODE_ID_SUFFIX,
   DECISION_NODE_ID_SUFFIX,
   HITL_HANDLE_ID_SUFFIX,
-  InitialNodeData,
-  InitialNodeId,
   PipelineNodeTypes,
   ROUTER_HANDLE_ID_SUFFIX,
 } from '../constants/flowEditor.constants';
@@ -42,6 +40,15 @@ export {
   getInputMappingDefaultValue,
   getRequiredInputsAndTooltips,
 } from './flowEditorInputMapping.helpers';
+
+/**
+ * Node-id minting and the compiler's id grammar live in
+ * `./nodeIdentity.helpers.ts` — split out for the same §3.5 400-line reason
+ * as `flowEditorInputMapping.helpers` above, and re-exported here so the
+ * ~29 callers keep the baseline's single `flowEditor.helpers` import
+ * surface.
+ */
+export { generateNodeIdByType, getInitialNodeId, isCompilerLegalNodeId } from './nodeIdentity.helpers';
 
 interface MeasurableFlowNode {
   readonly id: string;
@@ -318,30 +325,6 @@ export const calculatePositionForNewNode = (
   return { xPos, yPos };
 };
 
-const getNormalInitialNodeId = (type: string, nodes: readonly { readonly id: string }[] = []): string => {
-  const filterNodeNames = nodes.map(node => node.id);
-  const namePrefix = InitialNodeId[type] ?? InitialNodeId[PipelineNodeTypes.Custom] ?? 'Custom';
-  for (let index = 0; ; index++) {
-    const newId = `${namePrefix} ${index + 1}`;
-    if (!filterNodeNames.find(id => id.replace(/\s/g, '') === newId.replace(/\s/g, ''))) {
-      return newId;
-    }
-  }
-};
-
-export const getInitialNodeId = (type: string, nodes: readonly { readonly id: string }[] = []): string =>
-  type !== PipelineNodeTypes.Condition
-    ? getNormalInitialNodeId(type, nodes)
-    : `Condition${new Date().getTime()}${CONDITION_NODE_ID_SUFFIX}`;
-
-export const generateNodeIdByType = (
-  type: string,
-  nodes: readonly { readonly id: string }[],
-): { id: string; type: string; [key: string]: unknown } => ({
-  id: getInitialNodeId(type, nodes),
-  type,
-  ...InitialNodeData[type],
-});
 
 export const formatFStringValue = (value: unknown): unknown => {
   try {

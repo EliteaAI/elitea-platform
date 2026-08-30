@@ -87,13 +87,20 @@ describe('SubgraphNode', () => {
   });
 
   it('does not disable the toolkit select when isRunningPipeline and disabled are both false', async () => {
-    const { getByRole, getAllByRole } = renderSubgraphNode({ isRunningPipeline: false, disabled: false });
+    const { getByRole } = renderSubgraphNode({ isRunningPipeline: false, disabled: false });
 
     await waitFor(() => expect(getByRole('combobox', { hidden: true })).not.toHaveAttribute('aria-disabled', 'true'));
 
-    for (const switchControl of getAllByRole('switch', { hidden: true })) {
-      expect(switchControl).not.toBeDisabled();
-    }
+    /*
+     * The two interrupt switches are permanently disabled — an intersection
+     * choice, not a per-node state: the native Rust runtime refuses any
+     * pipeline declaring static interrupts (`compiler.rs:470-474`) while the
+     * SDK worker honours them, so the editor authors only what both accept.
+     * See `ui/settings/CommonInterruptSettings.tsx`. Only the switches that
+     * really do track `disabled` are asserted here — and a Subgraph node
+     * passes `showStructuredOutput={false}`, so it has none. The combobox
+     * assertion above is this test's whole subject.
+     */
   });
 
   it('keeps an Application-typed, Pipeline-agent_type versionTools entry -- its label shows as the selected toolkit', async () => {

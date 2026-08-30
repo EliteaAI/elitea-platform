@@ -39,7 +39,7 @@ import {
   resolveConversationStarters,
 } from './ChatBox.helpers';
 import type { ChatBoxEditorCallbacks } from './ChatBox.helpers';
-import type { ChatBoxConversationProp } from './ChatBox.props';
+import type { ChatBoxAgentEventSink, ChatBoxConversationProp } from './ChatBox.props';
 import { unwrapChatBoxConversation } from './ChatBox.props';
 import type { ChatBoxHandle } from './ChatBox.types';
 import { buildChatBoxInputSlots } from './ChatBoxInputSlots';
@@ -95,6 +95,7 @@ export interface ChatBoxProps {
     readonly editorCallbacks?: ChatBoxEditorCallbacks;
     /** Real lists for the composer's "+" menu — see `processes/chat/model/usePlusMenuEntities.ts`, which is the only layer allowed to fetch them. */
     readonly entitySubmenus?: PlusChatButtonEntitySubmenus;
+    readonly onAgentEvent?: ChatBoxAgentEventSink | undefined; // The run of the turn, not only its answer — see `ChatBoxAgentEventSink`.
   };
 }
 
@@ -118,7 +119,7 @@ const ChatBoxInner = memo(function ChatBox({
   onDelete,
   extensions,
 }: ChatBoxProps) {
-  const { editorCallbacks, entitySubmenus } = extensions ?? {};
+  const { editorCallbacks, entitySubmenus, onAgentEvent } = extensions ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
   const { activeConversation, isLoadingConversation, onConversationCreated } = unwrapChatBoxConversation(conversation);
@@ -190,7 +191,7 @@ const ChatBoxInner = memo(function ChatBox({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
     setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage, conversationUuid,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
-    llmSettings, model: data.selectedModel, userId,
+    llmSettings, model: data.selectedModel, userId, onAgentEvent,
   });
   // After `useChatBoxSend`: a "+" pick on a chat with no conversation has to create one first, and it reuses the adapter the first send would have used, so an eagerly created conversation is seeded exactly like a send-created one.
   const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant, createConversation: () => createConversationForSend(''), ...(onConversationCreated ? { onConversationCreated } : {}) });

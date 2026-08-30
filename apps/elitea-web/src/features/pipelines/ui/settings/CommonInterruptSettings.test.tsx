@@ -60,14 +60,62 @@ describe('CommonInterruptSettings', () => {
     expect(getByRole('switch', { name: 'Interrupt before' })).toBeDisabled();
   });
 
-  it('updates interrupt_before and the incoming edge label when toggled on', async () => {
-    const user = userEvent.setup();
+  /*
+   * The interrupt switches used to write `interrupt_before`/`interrupt_after`
+   * and relabel the edge. They are now permanently disabled: the native Rust
+   * runtime refuses ANY pipeline that declares a static interrupt
+   * (`services/elitea-worker-rust/src/agents/graph/compiler.rs:470-474`)
+   * while the Python SDK worker honours them, and the editor cannot know
+   * which worker will take a turn — so it authors the intersection. Flipping
+   * one used to turn a working pipeline into one that would not start, with
+   * no signal until a chat turn failed in another process.
+   *
+   * Asserted as three separate facts, because "disabled" alone would also be
+   * satisfied by the pre-existing entry-point/END-transition disabling: the
+   * control is disabled for an ORDINARY node, clicking it writes nothing,
+   * and a reason is on screen.
+   */
+  it('leaves both interrupt switches disabled on an ordinary node, and says why', async () => {
+    // `pointerEventsCheck: 0` forces the click through: user-event otherwise
+    // refuses to dispatch on a `pointer-events: none` control, which would
+    // make "nothing was written" true for the wrong reason. Forced, the
+    // click really is delivered and the handler really is absent.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     const setYamlJsonObject = vi.fn();
     const setFlowEdges = vi.fn<SetFlowEdges>();
     const contextValue = buildFlowEditorContextValue({
-      yamlJsonObject: { nodes: [{ id: 'Tool 1' }] },
+      // Neither the entry point nor an END transition — the two states that
+      // already disabled a switch before this change.
+      yamlJsonObject: { nodes: [{ id: 'Tool 1', type: 'tool', transition: 'Tool 2' }], entry_point: 'Tool 2' },
       setYamlJsonObject,
       setFlowEdges,
+    });
+
+    const { getByRole, getByText } = renderWithTheme(
+      <FlowEditorContext.Provider value={contextValue}>
+        <CommonInterruptSettings
+          id="Tool 1"
+          type="tool"
+        />
+      </FlowEditorContext.Provider>,
+    );
+
+    const before = getByRole('switch', { name: 'Interrupt before' });
+    const after = getByRole('switch', { name: 'Interrupt after' });
+    expect(before).toBeDisabled();
+    expect(after).toBeDisabled();
+
+    await user.click(before);
+    await user.click(after);
+
+    expect(setYamlJsonObject).not.toHaveBeenCalled();
+    expect(setFlowEdges).not.toHaveBeenCalled();
+    expect(getByText(/native pipeline runtime refuses/i)).toBeInTheDocument();
+  });
+
+  it('still shows an interrupt a stored document already carries, so it can be found and removed', () => {
+    const contextValue = buildFlowEditorContextValue({
+      yamlJsonObject: { nodes: [{ id: 'Tool 1', type: 'tool' }], interrupt_before: ['Tool 1'] },
     });
 
     const { getByRole } = renderWithTheme(
@@ -79,22 +127,8 @@ describe('CommonInterruptSettings', () => {
       </FlowEditorContext.Provider>,
     );
 
-    await user.click(getByRole('switch', { name: 'Interrupt before' }));
-
-    expect(setYamlJsonObject).toHaveBeenCalledWith(expect.objectContaining({ interrupt_before: ['Tool 1'] }));
-    expect(setFlowEdges).toHaveBeenCalled();
-    // The edge-rewrite updater reads `event.target.checked` off the real DOM
-    // node at the moment `setFlowEdges` runs; this mock context (a plain
-    // `vi.fn()`, not a real store) never re-renders the switch's `checked`
-    // prop back to `true`, so re-invoking the captured updater after the
-    // fact would observe React's post-click revert, not the click itself --
-    // asserting the callback shape (a function updater over the edges
-    // array, matching `setFlowEdges`'s `SetFlowEdges` signature) is the
-    // meaningful check available with this harness; the equivalent
-    // "produces the right edge" behaviour is exercised end-to-end by
-    // `RouteSelect.test.tsx`'s own edge-rewrite test.
-    const updater = setFlowEdges.mock.calls[0]?.[0];
-    expect(typeof updater).toBe('function');
+    expect(getByRole('switch', { name: 'Interrupt before' })).toBeChecked();
+    expect(getByRole('switch', { name: 'Interrupt before' })).toBeDisabled();
   });
 
   it('updates structured_output on toggle', async () => {
@@ -127,8 +161,7 @@ describe('CommonInterruptSettings', () => {
   // an empty list, same as `parsePipelineTraversal.helpers.test.ts`'s own
   // `interrupt_before: 'not-an-array'` fixture for the identical malformed
   // shape.
-  it('degrades a malformed (non-array) interrupt_before/interrupt_after to an empty list instead of throwing', async () => {
-    const user = userEvent.setup();
+  it('degrades a malformed (non-array) interrupt_before/interrupt_after to an empty list instead of throwing', () => {
     const setYamlJsonObject = vi.fn();
     const malformedYamlJsonObject = {
       nodes: [{ id: 'Tool 1' }],
@@ -151,10 +184,7 @@ describe('CommonInterruptSettings', () => {
 
     expect(getByRole('switch', { name: 'Interrupt before' })).not.toBeChecked();
     expect(getByRole('switch', { name: 'Interrupt after' })).not.toBeChecked();
-
-    await user.click(getByRole('switch', { name: 'Interrupt before' }));
-
-    expect(setYamlJsonObject).toHaveBeenCalledWith(expect.objectContaining({ interrupt_before: ['Tool 1'] }));
+    expect(setYamlJsonObject).not.toHaveBeenCalled();
   });
 
   it('does not throw with no FlowEditorContext ancestor', () => {

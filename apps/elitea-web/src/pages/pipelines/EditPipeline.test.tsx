@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
@@ -81,9 +81,22 @@ const CATALOGUE = {
   default_model_name: 'gpt-4o',
 };
 
-/** Opens the model menu and picks a row by its catalogue display name. */
+/**
+ * The configuration-form slot, scoped.
+ *
+ * Every model-picker query below goes through this rather than `screen`:
+ * the chat slot now renders the REAL `ChatBox`, which carries a model
+ * selector of its own, so an unscoped `getByText('GPT-4o')` matches two
+ * elements. Scoping is also the stronger assertion — it says the picker is
+ * in the panel it belongs to, not merely somewhere on the page.
+ */
+function configPanel() {
+  return within(screen.getByTestId('edit-pipeline-configuration-form-gap'));
+}
+
+/** Opens the CONFIGURATION panel's model menu and picks a row by its catalogue display name. */
 async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName: string): Promise<void> {
-  await user.click(await screen.findByTestId('model-selector-name'));
+  await user.click(await configPanel().findByTestId('model-selector-name'));
   await user.click(await screen.findByRole('menuitem', { name: new RegExp(displayName) }));
 }
 
@@ -96,6 +109,9 @@ beforeEach(() => {
     // issues the author read. RAW body, no `{data:…}` envelope — `eliteaFetch`
     // wraps the parsed body itself.
     http.get('*/social/author*', () => HttpResponse.json({ id: '6', name: 'E2E Chat Driver', avatar: '' })),
+    // The editor's chat pane mounts the real `ChatBox`, whose read-aloud hook
+    // asks the project for its TTS voices as soon as a model is selected.
+    http.get('*/configurations/tts_voices/*', () => HttpResponse.json({ items: [] })),
   );
 });
 
@@ -148,19 +164,33 @@ describe('EditPipeline', () => {
     // real flow editor (not the old unconditional empty
     // `<Box data-testid="edit-pipeline-configuration-tab-panel" />`) is live.
     expect(await screen.findByRole('button', { name: 'Add node' })).toBeInTheDocument();
-    // The two REAL cross-slice gaps (no `features/chat`, no promoted `features/agents`
-    // configuration panels) still show their own disclosed placeholders, not silently blank areas.
+    // The ONE remaining cross-slice gap (no promoted `features/agents` configuration
+    // panels) still shows its disclosed placeholder, not a silently blank area.
     expect(screen.getByTestId('edit-pipeline-configuration-form-gap')).toBeInTheDocument();
-    expect(screen.getByTestId('edit-pipeline-chat-gap')).toBeInTheDocument();
+    // The chat slot is no longer a gap: it renders the real `widgets/chat-box`
+    // `ChatBox` (`./ui/PipelineTestChat.tsx`). `chat-message-input` is that
+    // composer's own testid — a placeholder cannot produce it.
+    expect(screen.queryByTestId('edit-pipeline-chat-gap')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('edit-pipeline-test-chat')).toBeInTheDocument();
+    expect(within(screen.getByTestId('edit-pipeline-test-chat')).getByTestId('chat-message-input')).toBeInTheDocument();
   });
 
-  it('falls back to the disclosed-gap boundary (not a page crash) when no SocketClientContext.Provider is mounted', async () => {
-    // Regression guard for the real app-tree state today (verified: `grep -rn
-    // "SocketClientContext.Provider" src --include=*.tsx | grep -v test` — zero hits;
-    // `useSocketClient()` throws synchronously during `ConfigurationTab`'s render without one).
-    // `renderPipelinesRouteWithoutSocket` reproduces that exact gap instead of this file's
-    // usual `renderPipelinesRoute` (which wraps with a test socket double, matching the
-    // `pages/toolkits/__tests__/testRouter.tsx` precedent).
+  it('contains a render crash in the editor subtree instead of taking the whole page down', async () => {
+    /*
+     * CORRECTED PREMISE. This test used to describe itself as a guard for
+     * "the real app-tree state today — nobody mounts a
+     * `SocketClientContext.Provider`". That was false:
+     * `src/app/providers/AppProviders.tsx` mounts one around every page, so
+     * `useSocketClient()` does NOT throw in production and this fallback is
+     * an ERROR path, not the steady state.
+     *
+     * The scenario is still worth pinning, because what it actually measures
+     * is the boundary: a throw anywhere in the editor subtree (the largest in
+     * the app) must not unmount the page and take the user's unsaved graph —
+     * and the Save button they would keep it with — along with it. A missing
+     * socket provider is simply the cheapest way to make that subtree throw
+     * on its first render.
+     */
     server.use(getGetApplicationMockHandler(detail()));
     renderPipelinesRouteWithoutSocket(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
 
@@ -270,7 +300,8 @@ describe('EditPipeline', () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
 
-    const picker = await screen.findByText('GPT-4o');
+    await screen.findByTestId('edit-pipeline-configuration-form-gap');
+    const picker = await configPanel().findByText('GPT-4o');
     expect(picker).toBeVisible();
     // Inside the configuration-form slot, not floating somewhere above the
     // editor — the gap notice for the panels that are still missing stays.
@@ -290,7 +321,8 @@ describe('EditPipeline', () => {
     );
     renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
 
-    expect(await screen.findByText('Qwen 3.5')).toBeVisible();
+    await screen.findByTestId('edit-pipeline-configuration-form-gap');
+    expect(await configPanel().findByText('Qwen 3.5')).toBeVisible();
   });
 
   it('sends a newly picked model in the version PUT body, with a NUMERIC model_project_id', async () => {
@@ -305,7 +337,8 @@ describe('EditPipeline', () => {
     renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
-    await screen.findByText('GPT-4o');
+    await screen.findByTestId('edit-pipeline-configuration-form-gap');
+    await configPanel().findByText('GPT-4o');
     await chooseModel(user, 'Qwen 3.5');
     await user.click(await screen.findByTestId('pipeline-save-button'));
 
@@ -328,7 +361,8 @@ describe('EditPipeline', () => {
     renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
-    await screen.findByText('GPT-4o');
+    await screen.findByTestId('edit-pipeline-configuration-form-gap');
+    await configPanel().findByText('GPT-4o');
     await user.click(await screen.findByTestId('pipeline-save-button'));
 
     await waitFor(() => expect(bodies).toHaveLength(1));
@@ -342,7 +376,8 @@ describe('EditPipeline', () => {
     renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
-    await screen.findByText('GPT-4o');
+    await screen.findByTestId('edit-pipeline-configuration-form-gap');
+    await configPanel().findByText('GPT-4o');
     expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
 
     await chooseModel(user, 'Qwen 3.5');
@@ -531,7 +566,8 @@ describe('talking to the pipeline', () => {
       { projectId: '9' },
     );
 
-    await screen.findByText('GPT-4o');
+    await screen.findByTestId('edit-pipeline-configuration-form-gap');
+    await configPanel().findByText('GPT-4o');
     await chooseModel(user, 'Qwen 3.5');
     await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
 
