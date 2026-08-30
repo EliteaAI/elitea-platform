@@ -174,6 +174,8 @@ export * from "./mcpToolCallRequest.zod";
 export * from "./memberBudget.zod";
 export * from "./memberBudgetListing.zod";
 export * from "./memberBudgetRow.zod";
+export * from "./memoryContextManagement.zod";
+export * from "./memorySummarization.zod";
 export * from "./messageResponse.zod";
 export * from "./messageTraceListing.zod";
 export * from "./messageTraceStep.zod";

@@ -67,6 +67,60 @@ export const getGetCurrentAuthorResponseMock = (
     faker.helpers.arrayElement([{}, null]),
     null,
   ]),
+  default_context_management: faker.helpers.arrayElement([
+    {
+      enabled: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+      max_context_tokens: faker.helpers.arrayElement([
+        faker.number.int({ min: 1000 }),
+        undefined,
+      ]),
+      preserve_recent_messages: faker.helpers.arrayElement([
+        faker.number.int({ min: 1, max: 99 }),
+        undefined,
+      ]),
+      enable_context_editing: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  default_summarization: faker.helpers.arrayElement([
+    {
+      enable_summarization: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+      summary_instructions: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      summary_model_name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      summary_model_project_id: faker.helpers.arrayElement([
+        faker.number.int(),
+        undefined,
+      ]),
+      summary_trigger_ratio: faker.helpers.arrayElement([
+        faker.number.float({ min: 0, max: 1, fractionDigits: 2 }),
+        undefined,
+      ]),
+      min_messages_for_summary: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+      target_summary_tokens: faker.helpers.arrayElement([
+        faker.number.int({ min: 100 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
   ...overrideResponse,
 });
 

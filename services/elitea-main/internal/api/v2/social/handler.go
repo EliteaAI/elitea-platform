@@ -16,6 +16,7 @@ import (
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/contextsettings"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -81,6 +82,19 @@ type AuthorResponse struct {
 	Description       string `json:"description"`
 	PersonalProjectID string `json:"personal_project_id"`
 	Personalization   any    `json:"personalization,omitempty"`
+
+	// The user's context-management defaults, from the two jsonb columns of
+	// the same name on centry.social_users. They are the author record's
+	// second and third settings blocks, exactly as in pylon's UserModel
+	// (legacy/plugins/social/models/pd/users.py) — and, before this, the only
+	// two the Go handler neither read nor wrote. Settings › Memory saves them
+	// through this endpoint, so dropping them here made every save on that
+	// page vanish.
+	//
+	// Omitted rather than sent as `null` when the user has never saved them:
+	// absence is what the client's own defaults are for.
+	DefaultContextManagement *contextsettings.ContextManagement `json:"default_context_management,omitempty"`
+	DefaultSummarization     *contextsettings.Summarization     `json:"default_summarization,omitempty"`
 }
 
 func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
@@ -104,13 +118,16 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 	// Query centry.social_users joined with auth_core__user
 	var resp AuthorResponse
 
+	var contextManagement, summarization []byte
 	err := h.pool.QueryRow(ctx, `
 		SELECT
 			COALESCE(au.name, ''),
 			COALESCE(au.email, ''),
 			COALESCE(su.avatar, ''),
 			COALESCE(su.description, ''),
-			su.personalization
+			su.personalization,
+			su.default_context_management,
+			su.default_summarization
 		FROM centry.social_users su
 		LEFT JOIN auth_core__user au ON au.id = su.user_id
 		WHERE au.email = $1 OR su.user_id::text = $2
@@ -121,9 +138,14 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 		&resp.Avatar,
 		&resp.Description,
 		&resp.Personalization,
+		&contextManagement,
+		&summarization,
 	)
 
-	if err != nil {
+	if err == nil {
+		resp.DefaultContextManagement, resp.DefaultSummarization =
+			readMemoryDefaults(contextManagement, summarization, resp.Personalization)
+	} else {
 		// No social_users row: fall back to what the auth context knows. The
 		// personal project is resolved below either way — it does not depend
 		// on the social profile existing.
@@ -283,21 +305,43 @@ func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Upsert social_users
+	contextManagement, summarization, fieldErr := memoryDefaultsFromBody(body)
+	if fieldErr != nil {
+		writeFieldError(w, fieldErr)
+		return
+	}
+
+	// Upsert social_users.
+	//
+	// The two memory columns are COALESCEd against the row's existing value
+	// rather than taken from EXCLUDED outright, because a request that does
+	// not mention them must not erase them: Settings › AI Personality and
+	// Settings › Memory are two pages over ONE record, and the personality
+	// page's payload carries no context settings at all. `personalization`,
+	// `title`, `description` and `avatar` keep their prior replace-outright
+	// behaviour — the SPA carries those forward itself
+	// (apps/elitea-web .../settingsProfileForm.ts `buildAuthorUpdate`).
 	_, err := h.pool.Exec(ctx, `
-		INSERT INTO centry.social_users (user_id, title, description, avatar, personalization)
-		SELECT au.id, $2, $3, $4, $5
+		INSERT INTO centry.social_users (user_id, title, description, avatar, personalization,
+			default_context_management, default_summarization)
+		SELECT au.id, $2, $3, $4, $5, $6, $7
 		FROM auth_core__user au WHERE au.email = $1
 		ON CONFLICT (user_id) DO UPDATE SET
 			title = EXCLUDED.title,
 			description = EXCLUDED.description,
 			avatar = EXCLUDED.avatar,
-			personalization = EXCLUDED.personalization
+			personalization = EXCLUDED.personalization,
+			default_context_management = COALESCE(EXCLUDED.default_context_management,
+				social_users.default_context_management),
+			default_summarization = COALESCE(EXCLUDED.default_summarization,
+				social_users.default_summarization)
 	`, user.Email,
 		strVal(body, "name"),
 		strVal(body, "description"),
 		strVal(body, "avatar"),
 		jsonVal(body, "personalization"),
+		contextManagement,
+		summarization,
 	)
 	if err != nil {
 		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update author")
@@ -305,6 +349,116 @@ func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// memoryDefaultsFromBody extracts, validates and re-encodes the author
+// record's two context-settings blocks.
+//
+// TWO ACCEPTED PLACEMENTS. Top level is the contract, and it is what pylon
+// took (UserUpdateModel's own fields). NESTED INSIDE `personalization` is
+// accepted too, because that is where apps/elitea-web put them while this
+// handler dropped every other top-level key: its `deserializeSettingsProfile`
+// wrote them into the personalization blob precisely so that something would
+// survive the round trip. Refusing that shape now would silently orphan every
+// setting saved by a client that has not yet shipped, so the nested placement
+// is read as a fallback and rewritten into the columns on the next save.
+//
+// A nil result means "the request said nothing about this block", which the
+// upsert turns into "keep what is stored" — NOT "clear it".
+func memoryDefaultsFromBody(body map[string]any) (contextManagement, summarization []byte, fieldErr *contextsettings.FieldError) {
+	rawContext, rawSummary := memoryDefaultsSource(body)
+
+	decodedContext, fieldErr := contextsettings.DecodeContextManagement(rawContext)
+	if fieldErr != nil {
+		return nil, nil, fieldErr
+	}
+	decodedSummary, fieldErr := contextsettings.DecodeSummarization(rawSummary)
+	if fieldErr != nil {
+		return nil, nil, fieldErr
+	}
+
+	// Re-encoded from the DECODED value, so what reaches the column is the
+	// validated contract shape rather than whatever extra keys the caller sent.
+	// A nil block stays nil, which the upsert reads as "keep what is stored".
+	if decodedContext != nil {
+		encoded, err := json.Marshal(decodedContext)
+		if err != nil {
+			return nil, nil, &contextsettings.FieldError{
+				Field: "default_context_management", Message: "default_context_management is not encodable"}
+		}
+		contextManagement = encoded
+	}
+	if decodedSummary != nil {
+		encoded, err := json.Marshal(decodedSummary)
+		if err != nil {
+			return nil, nil, &contextsettings.FieldError{
+				Field: "default_summarization", Message: "default_summarization is not encodable"}
+		}
+		summarization = encoded
+	}
+	return contextManagement, summarization, nil
+}
+
+// memoryDefaultsSource picks each block out of the request body, preferring
+// the top-level key and falling back to the personalization-nested one.
+func memoryDefaultsSource(body map[string]any) (contextManagement, summarization []byte) {
+	nested, _ := body["personalization"].(map[string]any)
+	return pickJSON(body, nested, "default_context_management"),
+		pickJSON(body, nested, "default_summarization")
+}
+
+func pickJSON(top, nested map[string]any, key string) []byte {
+	for _, source := range []map[string]any{top, nested} {
+		if source == nil {
+			continue
+		}
+		value, present := source[key]
+		if !present || value == nil {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			continue
+		}
+		return encoded
+	}
+	return nil
+}
+
+// readMemoryDefaults answers GET with the columns, falling back to the
+// personalization blob for a profile last written by a client that nested them
+// there (see memoryDefaultsFromBody). A stored block that will not decode is
+// reported as absent rather than failing the whole author read — the SPA boots
+// on this endpoint.
+func readMemoryDefaults(contextManagement, summarization []byte, personalization any) (
+	*contextsettings.ContextManagement, *contextsettings.Summarization,
+) {
+	nested, _ := personalization.(map[string]any)
+	if len(contextManagement) == 0 {
+		contextManagement = pickJSON(nil, nested, "default_context_management")
+	}
+	if len(summarization) == 0 {
+		summarization = pickJSON(nil, nested, "default_summarization")
+	}
+
+	decodedContext, err := contextsettings.DecodeContextManagement(contextManagement)
+	if err != nil {
+		decodedContext = nil
+	}
+	decodedSummary, summaryErr := contextsettings.DecodeSummarization(summarization)
+	if summaryErr != nil {
+		decodedSummary = nil
+	}
+	return decodedContext, decodedSummary
+}
+
+// writeFieldError answers with this API's validation shape — the same
+// `{"error": ..., "field": ...}` body internal/api/v2/configurations writes.
+func writeFieldError(w http.ResponseWriter, fieldErr *contextsettings.FieldError) {
+	writeJSON(w, http.StatusBadRequest, struct {
+		Error string `json:"error"`
+		Field string `json:"field"`
+	}{Error: fieldErr.Message, Field: fieldErr.Field})
 }
 
 func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {

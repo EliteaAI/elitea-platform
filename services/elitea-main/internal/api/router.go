@@ -2027,7 +2027,8 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					convHandler := v2convs.NewHandler(cfg.ConvsRepo).
 						WithPool(cfg.Pool).
 						WithObjectStore(cfg.ObjectStore).
-						WithAttachmentStore(newAttachmentStore(cfg.Pool))
+						WithAttachmentStore(newAttachmentStore(cfg.Pool)).
+						WithUserContextDefaults(newUserContextDefaults(cfg.Pool))
 					requireConversationRead := projectPermission("models.chat.conversation.details")
 					requireMessageDelete := projectPermission("models.chat.messages.delete")
 					requireEntitySettings := projectPermission("models.chat.entity_settings.update")
@@ -2099,7 +2100,14 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					r.With(projectPermission("models.chat.attachments.delete")).
 						Delete("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteAttachments)
 					r.With(requireConversationRead).
-						Get("/context_analytics/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextAnalytics)
+						Get("/context_analytics/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextStatus)
+					// The strategy READ is new here (pylon exposed only the
+					// write). It takes the conversation-details permission,
+					// like every other read of this conversation's own
+					// settings, and it sits on the same path as the write so
+					// the pair reads as one resource.
+					r.With(requireConversationRead).
+						Get("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextStrategy)
 					r.With(requireConversationEdit).
 						Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
 				}
