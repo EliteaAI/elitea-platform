@@ -12,9 +12,9 @@
  */
 import { ROLES } from '@/shared/lib/enums';
 
-import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 import type { MessageParticipantWire } from '@/entities/message/lib/wire';
 
+import type { ToolAction } from './chatStreamToolAction';
 import type { ChatMessage } from './convertMessagesToChatHistory';
 import type { ChatStreamFrame } from './chatStreamFrame';
 
@@ -107,18 +107,7 @@ export function threadIdOf(frame: ChatStreamFrame): string | undefined {
 }
 
 
-/**
- * One entry in a message's tool timeline. Left open deliberately: the baseline
- * writes provider- and toolkit-specific members onto these objects and the
- * rendering layer reads them by name, so narrowing the shape here would drop
- * data the UI still needs.
- */
-export interface ToolAction extends SubAgentGroupable {
-  readonly id: string;
-  readonly status: string;
-  readonly toolMeta?: Record<string, unknown> | undefined;
-  readonly [key: string]: unknown;
-}
+export type { ToolAction } from './chatStreamToolAction';
 
 /**
  * The metadata a tool frame carries, merged the way the baseline merges it:

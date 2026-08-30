@@ -16,7 +16,9 @@ import {
   type ApplicationCreationInput,
 } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
+import { areAgentLlmSettingsEqual, type AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
+import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
@@ -33,6 +35,8 @@ interface CreatePipelineFormExtraFields {
   readonly welcomeMessage: string;
   readonly variables: { readonly name: string; readonly value: string }[];
   readonly stepLimit: number | undefined;
+  /** The model this pipeline's first version will run on; `undefined` leaves it on the project catalogue default. */
+  readonly llmSettings: AgentLlmSettings | undefined;
 }
 
 /**
@@ -52,6 +56,9 @@ function areExtraFieldsEqual(a: CreatePipelineFormExtraFields, b: CreatePipeline
   if (a.instructions !== b.instructions) return false;
   if (a.welcomeMessage !== b.welcomeMessage) return false;
   if (a.stepLimit !== b.stepLimit) return false;
+  // Key by key, never by identity: the picker hands back a fresh object each
+  // time, so an identity check would report "dirty" from the first render.
+  if (!areAgentLlmSettingsEqual(a.llmSettings, b.llmSettings)) return false;
   if (a.variables.length !== b.variables.length) return false;
   return a.variables.every((variable, index) => {
     const other = b.variables[index];
@@ -158,6 +165,7 @@ export function CreatePipeline(): ReactNode {
     welcomeMessage: '',
     variables: draftDefaults.versionDetails.variables.map((variable) => ({ ...variable })),
     stepLimit: draftDefaults.versionDetails.meta.step_limit,
+    llmSettings: draftDefaults.versionDetails.llmSettings,
   });
 
   /*
@@ -183,6 +191,7 @@ export function CreatePipeline(): ReactNode {
       welcome_message: extraFields.welcomeMessage,
       variables: extraFields.variables,
       meta: { step_limit: extraFields.stepLimit },
+      llm_settings: extraFields.llmSettings,
     },
   };
 
@@ -216,6 +225,13 @@ export function CreatePipeline(): ReactNode {
             stepLimit: typeof value === 'number' ? value : undefined,
           }));
           return;
+        // No `version_details.llm_settings` case, deliberately: model settings
+        // reach `extraFields.llmSettings` through `handleModelSettingsChange`
+        // below, straight off the `AgentModelSettings` slot. The create form's
+        // dispatcher (`features/agents/model/useCreateAgentFormState.ts`)
+        // emits only the paths above, so a branch here would be dead — the
+        // EDIT page's identical-looking branch IS live, which is what made
+        // this one read as reachable. Do not re-add it.
         default:
           return;
       }
@@ -230,11 +246,32 @@ export function CreatePipeline(): ReactNode {
         name: values.name,
         description: values.description,
         type: draftDefaults.type,
+        /*
+         * Every field the page HOLDS, not just the schema-validated ones.
+         * This used to spread `draftDefaults.versionDetails` and override
+         * `conversationStarters` alone, with `extraFields` absent from both
+         * the body and this callback's dependency list — so the instructions,
+         * variables and step limit a user typed on this page were replaced by
+         * the empty draft defaults on Save, silently, with a 201 back. The
+         * agents twin (`pages/agents/CreateApplication.tsx`) always did it
+         * this way; only the pipelines copy drifted.
+         */
         version: {
           ...draftDefaults.versionDetails,
+          instructions: extraFields.instructions,
+          // The same key the agents twin was missing: held in `extraFields`,
+          // echoed back into the form, and absent from this body — so a
+          // pipeline's welcome message was dropped on create with a 201 back.
+          welcomeMessage: extraFields.welcomeMessage,
           conversationStarters: (values.version_details?.conversation_starters ?? []).filter(
             (entry): entry is string => typeof entry === 'string',
           ),
+          variables: extraFields.variables,
+          meta: {
+            ...draftDefaults.versionDetails.meta,
+            step_limit: extraFields.stepLimit ?? draftDefaults.versionDetails.meta.step_limit,
+          },
+          llmSettings: extraFields.llmSettings,
         },
       });
       if (created === undefined) {
@@ -250,7 +287,12 @@ export function CreatePipeline(): ReactNode {
         search: { isFromCreation: 'true' },
       });
     })();
-  }, [form, create, draftDefaults, navigate, params.tab]);
+  }, [form, create, draftDefaults, extraFields, navigate, params.tab]);
+
+  const handleModelSettingsChange = useCallback(
+    (next: AgentLlmSettings) => setExtraFields((previous) => ({ ...previous, llmSettings: next })),
+    [],
+  );
 
   const handleCancel = useCallback(() => {
     // #133: Cancel IS the explicit discard, so it is not also prompted.
@@ -285,6 +327,14 @@ export function CreatePipeline(): ReactNode {
               values={pipelineDraftValues}
               onFieldChange={handlePipelineFieldChange}
               disabled={isCreating}
+              modelSettingsSlot={
+                <AgentModelSettings
+                  projectId={projectId}
+                  value={extraFields.llmSettings}
+                  onChange={handleModelSettingsChange}
+                  disabled={isCreating}
+                />
+              }
             />
           </Box>
         </Box>

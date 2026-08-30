@@ -81,6 +81,12 @@ describe('hasUnresolvedFilepath — attachment.helpers.js:38-42', () => {
 });
 
 describe('getAttachmentName — attachment.helpers.js:44-52', () => {
+  it('renders the filename, not the uuid-prefixed object key a stored item carries as its name', () => {
+    expect(
+      getAttachmentName({ item_details: { name: '0d9e5c1a-2b3c-4d5e-8f90-123456789abc/report.pdf' } }),
+    ).toBe('report.pdf');
+  });
+
   it('prefers item_details.name', () => {
     expect(getAttachmentName({ item_details: { name: 'from-item-details.png' }, name: 'top-level.png' })).toBe(
       'from-item-details.png',

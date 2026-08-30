@@ -388,7 +388,12 @@ func currentAdhocConversationOptions(source json.RawMessage) (string, *int32, er
 	var stepsLimit *int32
 	if value, exists := meta["steps_limit"]; exists && value != nil {
 		parsed, ok := positiveCurrentAgentJSONInteger(value)
-		if !ok {
+		// The same ceiling the application path enforces
+		// (maxCurrentAgentStepLimit, start.go): forwarding a larger number
+		// admits a turn the native runtime then refuses as invalid_profile —
+		// a start that fails with no stated reason. The web UI clamps below
+		// this, so only direct API writers can hit it.
+		if !ok || parsed > maxCurrentAgentStepLimit {
 			return "", nil, ErrUnsupportedCurrentAgentStart
 		}
 		bounded := int32(parsed)

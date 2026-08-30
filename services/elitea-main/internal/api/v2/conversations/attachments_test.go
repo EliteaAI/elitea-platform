@@ -15,6 +15,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -575,5 +576,78 @@ func TestArtifactAttachmentUploadStampsItsOwnExpiry(t *testing.T) {
 	wantHigh := time.Now().AddDate(0, 0, int(retention))
 	if got.Before(wantLow) || got.After(wantHigh) {
 		t.Errorf("attachment ExpiresAt = %v, want between %v and %v", *got, wantLow, wantHigh)
+	}
+}
+
+// A chat attachment is stored under `{conversationUUID}/{filename}` and the
+// admission gate refuses any reference that is not prefixed by the
+// conversation's UUID (internal/application/agentexecution/attachments.go,
+// currentTurnAttachments) — an authorisation check, not tidiness. So an object
+// keyed by the conversation's NUMERIC id is unusable the moment it is written:
+// the upload answers 201, the send is refused 400 before admissions.Submit
+// runs, the question is lost, and the bytes stay in the bucket until retention
+// expires them. That is what the web composer really did (#606's client half).
+//
+// The refusal is asserted together with "nothing was stored": a 400 that had
+// already written the object would leave exactly the orphan this guard exists
+// to prevent, and only the store assertions can tell the two apart.
+func TestArtifactAttachmentUploadRefusesNumericConversationID(t *testing.T) {
+	attStore := newFakeAttachmentStore()
+	objStore := newFakeAttachmentObjectStore()
+	h := newAttachmentTestHandler(t, attStore, objStore)
+
+	body, contentType := multipartAttachmentBody(t, nil, "notes.txt", []byte("hello attachment"))
+	req := httptest.NewRequest(http.MethodPost, "/projects/1/conversations/4242/attachments", body)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a numeric conversation id; body=%s", rec.Code, rec.Body.String())
+	}
+	// The message has to name the identifier, not just say "invalid": the
+	// caller holds both and the whole defect is that they are interchangeable
+	// everywhere else on this resource.
+	if !strings.Contains(rec.Body.String(), "uuid") {
+		t.Errorf("body = %s, want a message naming the conversation uuid", rec.Body.String())
+	}
+	if len(objStore.objects) != 0 {
+		t.Errorf("object store holds %v after a refused upload, want nothing written", objStore.objects)
+	}
+	if len(attStore.recorded) != 0 {
+		t.Errorf("RecordAttachmentObject calls = %+v after a refused upload, want none", attStore.recorded)
+	}
+}
+
+// The UUID path is the one the fixed composer takes, and it stays keyed
+// exactly as `finalizeAttachment`'s own comment says it is — the guard above
+// is what makes that comment true, so it is asserted here rather than left
+// implied.
+func TestArtifactAttachmentUploadKeysObjectByConversationUUID(t *testing.T) {
+	attStore := newFakeAttachmentStore()
+	objStore := newFakeAttachmentObjectStore()
+	h := newAttachmentTestHandler(t, attStore, objStore)
+
+	const conversationUUID = "8f14e45f-ceea-467a-9ba6-2e3a3d1e9b21"
+	body, contentType := multipartAttachmentBody(t, nil, "notes.txt", []byte("hello attachment"))
+	req := httptest.NewRequest(http.MethodPost, "/projects/1/conversations/"+conversationUUID+"/attachments", body)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []struct {
+		Filepath string `json:"filepath"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, rec.Body.String())
+	}
+	if len(got) != 1 || got[0].Filepath != "/chat-attachments/"+conversationUUID+"/notes.txt" {
+		t.Fatalf("filepath = %+v, want /chat-attachments/%s/notes.txt", got, conversationUUID)
+	}
+	if _, ok := objStore.objects[conversationUUID+"/notes.txt"]; !ok {
+		t.Errorf("stored keys = %v, want the object keyed %q", objStore.objects, conversationUUID+"/notes.txt")
 	}
 }

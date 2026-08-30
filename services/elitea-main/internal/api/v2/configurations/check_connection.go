@@ -41,14 +41,19 @@ import (
 // handler can actually validate against the real provider, via the gateway's
 // /llm/v1/check_connection endpoint (elitea-llm-gateway/internal/llmproxy/checkconnection.go).
 //
-// This is a deliberate subset of every type the catalogue advertises
-// has_test_connection for. amazon_bedrock (AWS SigV4) and vertex_ai (GCP
-// service-account JWT) are not implemented — see the identical set and
-// rationale in the gateway's checkConnectionProviders. Toolkit credential
-// types (github, jira, confluence, ...) use a wholly different check
-// (legacy's applications_configuration_check_connection over the SDK toolkit
-// surface, itself never implemented in Go) and are out of this issue's scope
-// (#319 is specifically the LiteLLM/ai_credentials path — see the issue body).
+// It now covers all six ai_credentials provider types legacy's LiteLLM check
+// covered: amazon_bedrock (AWS SigV4) and vertex_ai (a Google service-account
+// token exchange) joined the set when the gateway grew their probes
+// (elitea-llm-gateway/internal/llmproxy/checkconnection_cloud.go). This map
+// must stay identical to the gateway's checkConnectionProviders: a type here
+// that the gateway cannot probe answers "unsupported_type", which reads to the
+// user as a failed credential rather than a missing feature.
+//
+// Toolkit credential types (github, jira, confluence, ...) use a wholly
+// different check (legacy's applications_configuration_check_connection over
+// the SDK toolkit surface, itself never implemented in Go) and are out of this
+// issue's scope (#319 is specifically the LiteLLM/ai_credentials path — see
+// the issue body).
 const (
 	// maxBatchConnectionChecks bounds how many items of one POST
 	// /check_connections body reach the gateway. The web app sends a
@@ -69,10 +74,12 @@ const (
 var batchConnectionCheckBudget = 30 * time.Second
 
 var checkableConnectionTypes = map[string]struct{}{
-	"open_ai":       {},
-	"azure_open_ai": {},
-	"ai_dial":       {},
-	"ollama":        {},
+	"open_ai":        {},
+	"azure_open_ai":  {},
+	"ai_dial":        {},
+	"ollama":         {},
+	"amazon_bedrock": {},
+	"vertex_ai":      {},
 }
 
 // connectionCheckNotSupportedMessage matches, word for word, the message
@@ -111,6 +118,26 @@ type checkConnectionRequestBody struct {
 	APIBase    string `json:"api_base"`
 	APIKey     string `json:"api_key"`
 	APIVersion string `json:"api_version"`
+
+	// amazon_bedrock and vertex_ai carry no api_base and no api_key: they
+	// authenticate with these fields instead (the same ones
+	// application/configurations/litellm_normalizer.go stores for them, and
+	// the same ones the gateway's account package builds their bifrost key
+	// configs from). Without them on the wire the gateway can only answer
+	// "this credential is missing ...", so a valid Bedrock or Vertex
+	// credential would test as broken.
+	AWSAccessKeyID     string `json:"aws_access_key_id,omitempty"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
+	AWSSessionToken    string `json:"aws_session_token,omitempty"`
+	AWSRegionName      string `json:"aws_region_name,omitempty"`
+
+	VertexProject  string `json:"vertex_project,omitempty"`
+	VertexLocation string `json:"vertex_location,omitempty"`
+	// VertexCredentials is forwarded as the caller sent it, not coerced to a
+	// string: the Google service-account document arrives as an escaped JSON
+	// STRING from one screen and as a nested JSON OBJECT from another, and the
+	// gateway accepts both shapes (its jsonTextField).
+	VertexCredentials any `json:"vertex_credentials,omitempty"`
 }
 
 // checkConnectionResponseBody is the gateway's reply (mirrors
@@ -199,6 +226,15 @@ func (c *GatewayConnectionChecker) Check(ctx context.Context, configType string,
 		APIBase:    strVal(data, "api_base"),
 		APIKey:     firstStrVal(data, "api_key", "api_token"),
 		APIVersion: strVal(data, "api_version"),
+
+		AWSAccessKeyID:     strVal(data, "aws_access_key_id"),
+		AWSSecretAccessKey: strVal(data, "aws_secret_access_key"),
+		AWSSessionToken:    strVal(data, "aws_session_token"),
+		AWSRegionName:      strVal(data, "aws_region_name"),
+
+		VertexProject:     strVal(data, "vertex_project"),
+		VertexLocation:    strVal(data, "vertex_location"),
+		VertexCredentials: data["vertex_credentials"],
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

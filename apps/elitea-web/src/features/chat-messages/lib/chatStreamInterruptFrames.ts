@@ -31,6 +31,10 @@ function singlePauseRaw(frame: ChatStreamFrame): Record<string, unknown> {
     routes: responseMetadata?.routes,
     edit_state_key: responseMetadata?.edit_state_key,
     guardrail_type: nested['guardrail_type'],
+    // The clarifying questions of an `ask_user` pause. Only the nested
+    // interrupt carries them, and the card has no other source: without this
+    // line the pause renders its question TEXT and no controls at all.
+    questions: nested['questions'],
     tool_name: nested['tool_name'],
     toolkit_name: nested['toolkit_name'],
     toolkit_type: nested['toolkit_type'],

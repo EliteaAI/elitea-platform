@@ -1,0 +1,306 @@
+/**
+ * Journey 16b: pipeline VERSIONING — save as a new version, switch versions,
+ * pin a default.
+ *
+ * Pipelines are `application` rows and their versions are
+ * `application_versions` rows, so the editor mounts the same version bar the
+ * agent editor does (`features/agents`' `AgentVersionControls`). What is NOT
+ * shared is the create path's behaviour, and that is what this file exists to
+ * pin down against the running backend rather than against the schema:
+ *
+ *  - `CreateVersion` -> `versionFromBody`
+ *    (`services/elitea-main/internal/api/v2/applications/handler.go:496-525`)
+ *    substitutes the literal `"openai"` for an empty `agent_type`
+ *    (`internal/infra/db/repos/applications.go:29`), and
+ *  - reads no `pipeline_settings` key at all — `insertVersion` (:517-525)
+ *    does not name the column, so the POST physically cannot store the graph
+ *    geometry. The editor follows it with the PUT that can.
+ *
+ * Every assertion below is read back over the API from the STORED document,
+ * never off the screen. A version selector that relabels its trigger and a
+ * version selector that actually loads a different graph look identical on a
+ * screenshot; only the persisted row tells them apart. That is the same trap
+ * `e2e/fixtures/pipelines.ts` was written for.
+ */
+import { test, expect, type Page } from '@playwright/test';
+
+import { BASE_URL } from '../../../playwright.config';
+import { API_BASE, AUTOTEST_PREFIX, DEFAULT_PROJECT_ID, clickCreateButton, deleteAgent } from '../../fixtures/api';
+import {
+  COMPILER_LEGAL_NODE_ID,
+  parseStoredGraph,
+  readDefaultPipelineVersionId,
+  readStoredPipelineVersion,
+  resolveLatestPipelineVersionId,
+  storedNodeIds,
+} from '../../fixtures/pipelines';
+
+const createdIds: string[] = [];
+
+test.afterEach(async ({ page }) => {
+  while (createdIds.length > 0) {
+    const id = createdIds.pop();
+    if (id !== undefined) await deleteAgent(page.request, id);
+  }
+});
+
+/** Add one node of `label` through the editor's own menu — no store pokes. */
+async function addNodeThroughMenu(page: Page, label: string): Promise<void> {
+  await page.getByRole('button', { name: 'Add node' }).click();
+  await page.getByRole('menuitem', { name: label, exact: true }).click();
+}
+
+/**
+ * Drive the real create form to completion and return the backend-assigned id.
+ * A SERIAL id in the URL is something no stub route can produce.
+ */
+async function createPipelineThroughUi(page: Page, name: string): Promise<string> {
+  await page.goto(BASE_URL + '/app/pipelines/my');
+  await page.waitForURL('**/pipelines**', { timeout: 15_000 });
+  await clickCreateButton(page);
+  await page.waitForURL('**/app/pipelines/create**', { timeout: 15_000 });
+
+  const panel = page.getByTestId('create-pipeline-form-panel');
+  await expect(panel.getByTestId('agent-name-input')).toBeVisible({ timeout: 10_000 });
+  await panel.getByTestId('agent-name-input').fill(name);
+  await panel.getByTestId('agent-description-input').fill(`${AUTOTEST_PREFIX}JRNY-016b versioning`);
+  await page.getByTestId('pipeline-save-button').click();
+
+  await page.waitForURL(/\/app\/pipelines\/latest\/\d+/, { timeout: 20_000 });
+  const id = /\/app\/pipelines\/latest\/(\d+)/.exec(page.url())?.[1];
+  expect(id, 'create must navigate to the backend-assigned pipeline id').toBeTruthy();
+  createdIds.push(id as string);
+  return id as string;
+}
+
+/** Click Save and wait for the version PUT to land — not merely for the click. */
+async function saveAndAwaitPersist(page: Page): Promise<void> {
+  const persisted = page.waitForResponse(
+    response =>
+      response.request().method() === 'PUT' &&
+      response.url().includes('/version/prompt_lib/') &&
+      response.status() < 400,
+    { timeout: 30_000 },
+  );
+  await page.getByTestId('pipeline-save-button').click();
+  await persisted;
+  await expect(page.getByText('Failed to save your changes.')).toHaveCount(0);
+}
+
+/**
+ * "Save As Version" through the bar's own dialog, returning the id the POST
+ * minted.
+ *
+ * `expectGraphCarry` waits for the follow-up PUT as well — the create alone
+ * leaves the new version without its geometry, and asserting before that lands
+ * would race. Pass `false` for a pipeline whose flow editor holds nothing yet
+ * (a freshly created one stores no `instructions`, so `usePipelineGraphDraft`
+ * returns `undefined` and NO second request is made — deliberately, since
+ * writing then would blank a real stored graph).
+ */
+async function saveAsVersion(page: Page, versionName: string, expectGraphCarry = true): Promise<string> {
+  const created = page.waitForResponse(
+    response =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/versions/prompt_lib/') &&
+      response.status() < 400,
+    { timeout: 30_000 },
+  );
+  // Armed only when it is expected: an un-awaited `waitForResponse` that times
+  // out rejects with nobody listening.
+  const carried = expectGraphCarry
+    ? page.waitForResponse(
+        response =>
+          response.request().method() === 'PUT' &&
+          response.url().includes('/version/prompt_lib/') &&
+          response.status() < 400,
+        { timeout: 30_000 },
+      )
+    : undefined;
+
+  await page.getByRole('button', { name: 'Save As Version' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await dialog.getByLabel('Version name').fill(versionName);
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = (await (await created).json()) as { id?: string | number };
+  if (carried !== undefined) await carried;
+  expect(body.id, 'the create response must carry the new version id').toBeTruthy();
+  return String(body.id);
+}
+
+test('J16b: "Save As Version" stores a runnable pipeline version, graph and all', async ({ page }) => {
+  test.slow();
+  const name = `${AUTOTEST_PREFIX}ver-${Date.now() % 1e9}`;
+  const id = await createPipelineThroughUi(page, name);
+
+  await expect(page.locator('.react-flow__node[data-id="END"]')).toBeVisible({ timeout: 15_000 });
+
+  // Author a graph on the BASE version and persist it, so the clone below has
+  // something real to carry and the two versions are distinguishable.
+  await addNodeThroughMenu(page, 'Printer');
+  await saveAndAwaitPersist(page);
+
+  const baseVersionId = await resolveLatestPipelineVersionId(page.request, DEFAULT_PROJECT_ID, id);
+  const baseStored = await readStoredPipelineVersion(page.request, DEFAULT_PROJECT_ID, id, baseVersionId);
+  const baseNodeId = storedNodeIds(parseStoredGraph(baseStored.instructions)).find(nodeId => nodeId.startsWith('Printer'));
+  expect(baseNodeId, 'the authored Printer node must reach the base version').toBeTruthy();
+
+  // Add a SECOND node, do NOT press Save, and clone. The clone must carry the
+  // live canvas, not the last-stored document — that is what "Save As Version"
+  // means, and the create POST alone would send the stored `instructions`.
+  await addNodeThroughMenu(page, 'LLM');
+  const newVersionId = await saveAsVersion(page, `v${Date.now() % 1e5}`);
+  expect(newVersionId).not.toBe(baseVersionId);
+
+  const stored = await readStoredPipelineVersion(page.request, DEFAULT_PROJECT_ID, id, newVersionId);
+
+  // 1. It is still a PIPELINE. An empty `agent_type` on create silently
+  //    becomes "openai" — the same rows, run by the wrong executor.
+  expect(stored.agentType, 'a cloned pipeline version must stay a pipeline').toBe('pipeline');
+
+  // 2. The LIVE graph reached it: both the node saved earlier and the one that
+  //    was only ever on the canvas.
+  const graph = parseStoredGraph(stored.instructions);
+  const ids = storedNodeIds(graph);
+  expect(ids).toContain(baseNodeId as string);
+  const clonedLlmId = ids.find(nodeId => nodeId.startsWith('LLM'));
+  expect(clonedLlmId, 'the unsaved canvas node must travel with the clone').toBeTruthy();
+  for (const nodeId of ids) {
+    expect(nodeId, `stored node id "${nodeId}" is not addressable by the pipeline compiler`).toMatch(
+      COMPILER_LEGAL_NODE_ID,
+    );
+  }
+
+  // 3. The laid-out geometry reached it. `CreateVersion` cannot write this
+  //    column at all, so an empty object here is precisely the state a
+  //    create-only implementation leaves behind.
+  const nodes = stored.pipelineSettings['nodes'];
+  expect(Array.isArray(nodes), 'pipeline_settings.nodes must be an array, not the empty jsonb the POST leaves').toBe(true);
+  expect((nodes as unknown[]).length).toBeGreaterThan(0);
+
+  // 4. `meta` is not reset. `versionFromBody` DOES read the key and only
+  //    defaults `step_limit` when the caller sends none.
+  expect(stored.meta['step_limit']).toBeDefined();
+
+  // The base version is untouched — a clone is a new row, not an overwrite.
+  const baseAfter = await readStoredPipelineVersion(page.request, DEFAULT_PROJECT_ID, id, baseVersionId);
+  expect(storedNodeIds(parseStoredGraph(baseAfter.instructions))).not.toContain(clonedLlmId as string);
+});
+
+/**
+ * The reason the editor issues a second request at all, pinned against the
+ * running backend rather than against a reading of the handler.
+ *
+ * This posts a version body that DOES carry `pipeline_settings` — something
+ * the app itself never sends — and shows the column comes back empty while
+ * `instructions` round-trips. Without this, the geometry assertion in the
+ * test above could be vacuous: it would pass just as well if `CreateVersion`
+ * stored the graph and the follow-up PUT were dead code.
+ *
+ * If elitea-main ever learns to persist `pipeline_settings` on create, this
+ * test goes RED — and that is the signal to delete
+ * `lib/carryPipelineGraphToVersion.ts`, not to relax the assertion.
+ */
+test('J16b: the version-create endpoint cannot store a graph, which is why a PUT follows it', async ({ page }) => {
+  const name = `${AUTOTEST_PREFIX}post-${Date.now() % 1e9}`;
+  const id = await createPipelineThroughUi(page, name);
+
+  const instructions = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n';
+  const resp = await page.request.post(
+    `${API_BASE}/elitea_core/versions/prompt_lib/${DEFAULT_PROJECT_ID}/${id}`,
+    {
+      data: {
+        name: `probe${Date.now() % 1e5}`,
+        agent_type: 'pipeline',
+        instructions,
+        pipeline_settings: { nodes: [{ id: 'Printer_1' }], edges: [], orientation: 'vertical', layout_version: '1.0' },
+      },
+    },
+  );
+  expect(resp.status(), await resp.text()).toBe(201);
+  const created = (await resp.json()) as { id?: string | number };
+
+  const stored = await readStoredPipelineVersion(page.request, DEFAULT_PROJECT_ID, id, String(created.id));
+  // The document IS read on create…
+  expect(stored.instructions).toContain('Printer_1');
+  expect(stored.agentType).toBe('pipeline');
+  // …the geometry is NOT. `versionFromBody` has no branch for the key and
+  // `insertVersion`'s INSERT does not name the column.
+  expect(stored.pipelineSettings['nodes']).toBeUndefined();
+});
+
+test('J16b: the version selector loads the chosen version graph into the editor', async ({ page }) => {
+  test.slow();
+  const name = `${AUTOTEST_PREFIX}sel-${Date.now() % 1e9}`;
+  const id = await createPipelineThroughUi(page, name);
+  await expect(page.locator('.react-flow__node[data-id="END"]')).toBeVisible({ timeout: 15_000 });
+
+  await addNodeThroughMenu(page, 'Printer');
+  await saveAndAwaitPersist(page);
+  const baseVersionId = await resolveLatestPipelineVersionId(page.request, DEFAULT_PROJECT_ID, id);
+
+  // Clone, then diverge: the new version gains a node the base never had.
+  const versionName = `v${Date.now() % 1e5}`;
+  const newVersionId = await saveAsVersion(page, versionName);
+  await page.waitForURL(new RegExp(`/app/pipelines/\\w+/${id}/${newVersionId}`), { timeout: 20_000 });
+  await expect(page.locator('.react-flow__node[data-id="END"]')).toBeVisible({ timeout: 15_000 });
+  await addNodeThroughMenu(page, 'Decision');
+  await saveAndAwaitPersist(page);
+
+  const divergent = await readStoredPipelineVersion(page.request, DEFAULT_PROJECT_ID, id, newVersionId);
+  const divergentId = storedNodeIds(parseStoredGraph(divergent.instructions)).find(nodeId => nodeId.startsWith('Decision'));
+  expect(divergentId, 'the second version must hold a node the base does not').toBeTruthy();
+  await expect(page.locator(`.react-flow__node[data-id="${divergentId as string}"]`)).toBeVisible();
+
+  // Now switch BACK to base through the dropdown. The canvas must lose the
+  // node that only the other version has — the assertion a trigger relabel
+  // cannot satisfy.
+  await page.getByTestId('version-selector-trigger').click();
+  await page.getByRole('menuitem', { name: 'base', exact: true }).click();
+
+  await page.waitForURL(new RegExp(`/app/pipelines/\\w+/${id}/${baseVersionId}`), { timeout: 20_000 });
+  await expect(page.locator(`.react-flow__node[data-id="${divergentId as string}"]`)).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator('.react-flow__node[data-id="END"]')).toBeVisible({ timeout: 15_000 });
+
+  // …and forward again, to prove the switch is not one-way.
+  await page.getByTestId('version-selector-trigger').click();
+  await page.getByRole('menuitem', { name: new RegExp(versionName) }).click();
+  await expect(page.locator(`.react-flow__node[data-id="${divergentId as string}"]`)).toBeVisible({ timeout: 15_000 });
+});
+
+test('J16b: "Set as default" moves the pipeline default the SERVER reports', async ({ page }) => {
+  test.slow();
+  const name = `${AUTOTEST_PREFIX}def-${Date.now() % 1e9}`;
+  const id = await createPipelineThroughUi(page, name);
+  await expect(page.locator('.react-flow__node[data-id="END"]')).toBeVisible({ timeout: 15_000 });
+
+  const baseVersionId = await resolveLatestPipelineVersionId(page.request, DEFAULT_PROJECT_ID, id);
+  // No graph authored here, so no carry PUT follows the create — see
+  // `saveAsVersion`. This test is about the default pointer, not the graph.
+  const newVersionId = await saveAsVersion(page, `v${Date.now() % 1e5}`, false);
+  await page.waitForURL(new RegExp(`/app/pipelines/\\w+/${id}/${newVersionId}`), { timeout: 20_000 });
+
+  // Before: `GetDefaultVersion` falls back to the version named `base`.
+  expect(await readDefaultPipelineVersionId(page.request, DEFAULT_PROJECT_ID, id)).toBe(baseVersionId);
+
+  const patched = page.waitForResponse(
+    response =>
+      response.request().method() === 'PATCH' &&
+      response.url().includes('/default_version/prompt_lib/') &&
+      response.status() < 400,
+    { timeout: 30_000 },
+  );
+  await page.getByTestId('version-selector-trigger').click();
+  await page.getByTestId('agent-version-set-default').click();
+  await page.getByRole('button', { name: 'Set as a default' }).click();
+  await patched;
+
+  // After: the SERVER's own answer moved. The bar only remembers what it set
+  // (nothing in the documented contract reports a default back), so this is
+  // the one reading that is not the component's own state played back.
+  await expect
+    .poll(() => readDefaultPipelineVersionId(page.request, DEFAULT_PROJECT_ID, id), { timeout: 15_000 })
+    .toBe(newVersionId);
+});

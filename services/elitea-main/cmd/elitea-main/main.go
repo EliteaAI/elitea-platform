@@ -38,6 +38,7 @@ import (
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
+	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
@@ -708,6 +709,18 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// with (#371). It is composed from the Configurations runtime, so it exists
 	// only where that runtime does; without it a created project cannot index.
 	var projectVectorStore *runtimecomposition.ProjectVectorStore
+	// The save-time credential gate for the toolkit write path (#613). It is
+	// composed from the same Configurations graph agent-version freezing uses,
+	// so it exists only where that graph does.
+	//
+	// DISCLOSED: deploy/helm/elitea/values.yaml leaves
+	// ELITEA_CONFIGURATIONS_ENABLED "false", so a DEFAULT install still saves
+	// toolkit credential references unresolved. Only values-standalone.yaml and
+	// the standalone compose file turn it on. Composing a second graph from a
+	// second vault key source to close that would reproduce #399's
+	// one-key-source defect on the model catalogue the resolver reads, which is
+	// a worse failure than the one it would fix.
+	var toolkitSettingsValidator v2toolkits.ToolkitSettingsValidator
 	var currentConfigurationRead http.Handler
 	var currentConfigurationAvailable http.Handler
 	var currentConfigurationTypes http.Handler
@@ -715,6 +728,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentModelCatalog http.Handler
 	var currentModelDefault http.Handler
 	var configProviderAdmission configurationapi.ProviderAdmission
+	// The resolve+unseal capability the STORED connection checks need
+	// (internal/api/v2/configurations/stored_check.go). It composes here, with
+	// the admission decision, because both read the same expander and the same
+	// project vault this Configurations runtime owns, and a second vault with
+	// a second key source is #399's defect.
+	var configStoredResolver configurationapi.StoredConfigurationResolver
 	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
@@ -743,6 +762,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose project vector-store provisioning: %w", err)
 		}
+		toolkitSettingsResolver, err := currentConfigurationsRoot.NewToolkitSettingsValidator(pool)
+		if err != nil {
+			return fmt.Errorf("compose toolkit settings validation: %w", err)
+		}
+		// Assigned through the concrete value, never a typed nil: the handler's
+		// only fallback is a nil-interface check.
+		toolkitSettingsValidator = toolkitSettingsResolver
 		currentAuth := apimw.AuthConfig{
 			Validator:                 formGraph,
 			PrincipalValidator:        principalValidator,
@@ -825,6 +851,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// on a nil receiver instead of leaving the column alone.
 		if providerAdmission != nil {
 			configProviderAdmission = providerAdmission
+		}
+		storedResolver, storedResolverErr := runtimecomposition.NewCurrentStoredConfigurationResolver(
+			currentConfigurationsRoot,
+		)
+		if storedResolverErr != nil {
+			return fmt.Errorf("compose current stored configuration resolution: %w", storedResolverErr)
+		}
+		// Assigned only when non-nil, for the same reason as the two
+		// dependencies around it: a nil POINTER boxed into this interface
+		// makes the handler's nil test false, so the stored check would call a
+		// method on a nil receiver instead of reporting itself unavailable.
+		if storedResolver != nil {
+			configStoredResolver = storedResolver
 		}
 		// No /llm data plane is composed here. This block used to build the
 		// LiteLLM facade (an authenticated reverse proxy plus an administration
@@ -1403,6 +1442,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		Pool:                       pool,
 		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
 		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
+		ToolkitSettingsValidator:   toolkitSettingsValidator,
 		ToolkitRegistry:            toolkitArgumentSchemas,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
@@ -1454,6 +1494,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ConfigConnectionChecker:    configConnectionChecker,
 		GatewayStatus:              gatewayStatus,
 		ConfigProviderAdmission:    configProviderAdmission,
+		ConfigStoredResolver:       configStoredResolver,
 		ObjectStore:                objectStore,
 		ProjectVectorStore:         projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering

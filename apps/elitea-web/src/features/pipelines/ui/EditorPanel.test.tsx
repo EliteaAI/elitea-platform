@@ -11,6 +11,7 @@ import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/sh
 import { forceResizeObserverAbsentForTest } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 
 import { usePipelineYamlStore } from '../model/pipelineYamlStore';
+import { dumpYaml } from '../lib/dumpYaml.helpers';
 import { EditorPanel } from './EditorPanel';
 import type { EditorPanelHandle } from './EditorPanel';
 
@@ -132,6 +133,46 @@ describe('EditorPanel', () => {
     const setYamlDirty = vi.fn();
     renderEditorPanel({ setYamlDirty });
     await waitFor(() => expect(setYamlDirty).toHaveBeenCalledWith(false));
+  });
+
+  /**
+   * A PLAIN LOAD CAN ARM THE UNSAVED-CHANGES GUARD, with no user edit — and
+   * this is the only mechanism in this file that can do it.
+   *
+   * `usePipelineVersionSync` seeds `yamlCode` and `initYamlCode` to the same
+   * stored string, so a loaded pipeline starts clean. The effect below
+   * (`if (nodes?.find((node) => node.decision)) onParseCodeToJson(...)`) then
+   * runs `migerateLegacyNodes`, which REWRITES a legacy `decision:` node into
+   * the current shape and hands the result to `setYamlJsonObject` — which
+   * re-dumps it into `yamlCode`. `useIsPipelineYamlCodeDirty` compares that
+   * against `initYamlCode` (and against a re-dump of it) and both differ, so
+   * the page arms `useUnsavedChangesNavBlocker` and every subsequent
+   * navigation is met with "You have unsaved changes in the editor."
+   *
+   * It is pinned rather than changed here because both readings are
+   * defensible — the document really has changed, and re-baselining it would
+   * make the migration silently unsaveable — and because deciding that is a
+   * change to the migration's contract, not to this panel. What matters for
+   * anything downstream is that it is REACHABLE and STICKY: it depends on the
+   * stored document alone, so it either happens for a whole session or never.
+   */
+  it('arms the dirty flag on a plain load of a pipeline holding a legacy decision node', async () => {
+    const legacy = {
+      entry_point: 'Decision_1',
+      nodes: [{ id: 'Decision_1', decision: { nodes: ['LLM_1'] } }, { id: 'LLM_1', type: 'llm', transition: 'END' }],
+    };
+    const stored = dumpYaml(legacy);
+    usePipelineYamlStore.setState({
+      yamlCode: stored,
+      yamlJsonObject: legacy,
+      initYamlCode: stored,
+      initYamlJsonObject: legacy,
+    });
+    const setYamlDirty = vi.fn();
+
+    renderEditorPanel({ setYamlDirty });
+
+    await waitFor(() => expect(setYamlDirty).toHaveBeenCalledWith(true));
   });
 
   it('shows the error-boundary fallback for the flow pane, reflecting the real current state of the sibling FlowEditor dependency chain', async () => {

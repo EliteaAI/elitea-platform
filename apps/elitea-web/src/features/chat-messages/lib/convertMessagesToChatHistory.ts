@@ -39,8 +39,11 @@ import { ROLES } from '@/shared/lib/enums';
 import { ChatParticipantType, TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
 
 import type { MessageGroupWire, MessageItemWire, MessageParticipantWire } from '@/entities/message/lib/wire';
-import { convertTime, normaliseAssistantMessage, normaliseUserMessage } from '@/entities/message/lib/normalise';
+import { convertTime, isParticipant, normaliseAssistantMessage, normaliseUserMessage } from '@/entities/message/lib/normalise';
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
+
+import { splitWholeResponse } from './chatStreamReasoning';
+import type { ToolAction } from './chatStreamToolAction';
 
 // ---------------------------------------------------------------------------
 // ChatMessage union type
@@ -124,9 +127,16 @@ export function isUserMessage(
 ): boolean {
   if (role === 'user') return true;
   if (role === 'assistant') return false;
+  // The membership tests are the same participant lookup in `includes` form,
+  // and `includes` is strict: a Go row stating `author_participant_id: 1`
+  // against a roster of string ids matched nothing, and a question whose
+  // `sent_to_id` is set (so the `(!sentToId && !replyToId)` clause is false)
+  // was then classified as an ASSISTANT answer and normalised as one.
+  // `?? ''` is dropped with it: an id the row never states must not match a
+  // roster entry that happens to be empty.
   return (
-    userIds.includes(authorParticipantId ?? '') ||
-    userIds.includes(sentToId ?? '') ||
+    userIds.some((id) => isParticipant(id, authorParticipantId)) ||
+    userIds.some((id) => isParticipant(id, sentToId)) ||
     (!sentToId && !replyToId) ||
     !!sentTo
   );
@@ -157,14 +167,24 @@ export function convertToPlayerQuestion(
   participants: readonly MessageParticipantWire[],
 ): ChatMessage {
   const { content, message_items, created_at, uuid, sent_to_id, author_participant_id, likes } = messageGroup;
-  const sentToParticipant = participants.find((p) => p.id === sent_to_id);
-  const authorParticipant = participants.find((p) => p.id === author_participant_id);
+  // `isParticipant`, not `===`: the ids cross this wire in two spellings (see
+  // its docblock). One lookup governs `name` and `avatar` below, the other
+  // `sentTo` — and this function already stringifies `sent_to_id` for
+  // `participantId`, so comparing it strictly was an inconsistency inside one
+  // returned object.
+  const sentToParticipant = participants.find((p) => isParticipant(p.id, sent_to_id));
+  const authorParticipant = participants.find((p) => isParticipant(p.id, author_participant_id));
 
   // The wire type uses snake_case (`user_name`, `user_avatar`); the old app
   // also reads these same properties from its Participant shape.
   let name = authorParticipant?.meta?.user_name ?? 'You';
   let avatar = authorParticipant?.meta?.user_avatar ?? '';
-  if (playerInfo.firstUserMessage?.author_participant_id === authorParticipant?.id) {
+  // Declared `string | number` on one side and `string` on the other, compared
+  // strictly — the mismatch that decides whether the player's own name and
+  // avatar are used at all. `undefined` on either side no longer matches: a
+  // `playerInfo` carrying no `firstUserMessage` used to compare equal to an
+  // author who did not resolve, and captioned an anonymous row as the player.
+  if (isParticipant(authorParticipant?.id, playerInfo.firstUserMessage?.author_participant_id)) {
     name = playerInfo.user.name ?? name;
     avatar = playerInfo.user.avatar ?? avatar;
   }
@@ -179,7 +199,7 @@ export function convertToPlayerQuestion(
     content,
     messageItems: sortedItems,
     createdAt: convertTime(created_at),
-    participantId: sent_to_id,
+    participantId: sent_to_id === undefined ? undefined : String(sent_to_id),
     sentTo: sentToParticipant,
     likes,
   };
@@ -236,6 +256,32 @@ function buildSwarmChildAction(child: MessageGroupWire): Record<string, unknown>
  * which takes `convertMessagesToChatHistory` as an injected parameter.
  */
 // eslint-disable-next-line eslint/complexity — full conversion pipeline with parent/child/swarm branching
+/**
+ * Do to a STORED answer what the reducer does to a streamed one.
+ *
+ * A reasoning model's monologue is part of the answer text the backend
+ * persists — measured: the stored content of a Qwen3.5 turn opens with
+ * "Thinking Process:" and carries a bare `</think>` between the monologue and
+ * the reply. `chatStreamReasoning` peels that off while the turn streams, so
+ * the bubble reads correctly right up until the page is reloaded, at which
+ * point the same answer comes back through THIS function and the whole
+ * monologue reappears. Two renderings of one message is a worse defect than
+ * either one alone, because only one of them is ever seen at a time.
+ *
+ * `splitWholeResponse` is the same call the reducer's whole-response frame
+ * makes, so the row a reload produces is the row the live turn produced.
+ */
+function splitPersistedReasoning(message: ChatMessage): ChatMessage {
+  const { answer, actions } = splitWholeResponse(
+    message.id,
+    message.content,
+    (message.toolActions ?? []) as readonly ToolAction[],
+    message.createdAt,
+  );
+  if (answer === message.content) return message;
+  return { ...message, content: answer, toolActions: actions as unknown as readonly SubAgentGroupable[] };
+}
+
 export function convertMessagesToChatHistory(
   messageGroups: readonly MessageGroupWire[] = [],
   participants: readonly MessageParticipantWire[] = [],
@@ -300,7 +346,9 @@ export function convertMessagesToChatHistory(
     }
 
     // Convert AI answer using entities-level normaliser.
-    const aiMessage = normaliseAssistantMessage(messageGroup, sortedMessages, participants) as unknown as ChatMessage;
+    const aiMessage = splitPersistedReasoning(
+      normaliseAssistantMessage(messageGroup, sortedMessages, participants) as unknown as ChatMessage,
+    );
 
     // Attach child messages as SwarmChild toolActions.
     const childMessages = childMessagesByParent[uuid] ?? [];

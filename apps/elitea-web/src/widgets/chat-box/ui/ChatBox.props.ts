@@ -6,7 +6,27 @@
  * headroom, and `ChatBox.tsx` is at its complexity budget — an inline
  * `conversation ?? {}` in the component costs it one branch too many.
  */
+import type { ExecutionEventData } from '@/shared/api/sse';
+
 import type { ChatBoxActiveConversation } from './ChatBox.helpers';
+
+/**
+ * `ChatBoxProps.extensions.onAgentEvent` — the sink for a host that renders
+ * the RUN of a turn and not only its answer (the pipeline editor's flow
+ * canvas, whose `onRcvAgentEvent` highlights the executing node and builds
+ * the run timeline).
+ *
+ * Declared here rather than inline in `ChatBox.tsx` for the same reason
+ * everything else in this file is: that component is at its §3.5 file-length
+ * budget with no headroom.
+ *
+ * A PASS-THROUGH, not a gate. `useChatStreamTransport` decides which frames
+ * are graph frames (`shouldForwardAgentEvent`) and calls this only for those,
+ * so a per-token `agent_llm_chunk` never reaches a timeline that has no entry
+ * for it. A second filter here would be a copy of that contract, free to
+ * drift out of step with it.
+ */
+export type ChatBoxAgentEventSink = (frame: ExecutionEventData) => void;
 
 /** `ChatBoxProps.conversation` — the conversation on screen, and whether it is still arriving. */
 export interface ChatBoxConversationProp {

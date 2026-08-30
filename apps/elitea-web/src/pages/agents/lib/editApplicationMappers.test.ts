@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApplicationDetail, ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
 import { VersionWriteRequest } from '@/shared/api/generated/model/versionWriteRequest.zod';
 
+import type { EditApplicationVersionFields } from './useEditApplicationVersionFields';
 import {
   applicationDetailDisplayName,
   toFormValues,
@@ -49,6 +50,7 @@ describe('toVersionWriteBody', () => {
       llm_settings: { model_name: 'gpt' },
       conversation_starters: ['s1'],
       variables: [{ name: 'k', value: 'v' }],
+      meta: { step_limit: 25 },
     });
   });
 
@@ -56,10 +58,186 @@ describe('toVersionWriteBody', () => {
     const version = { id: '1', name: 'base' } as ApplicationVersionDetail;
     const body = toVersionWriteBody(version, []);
 
-    expect(body).toEqual({ instructions: '', welcome_message: '', conversation_starters: [], variables: [] });
-    expect(body).not.toHaveProperty('meta');
+    expect(body).toEqual({
+      instructions: '',
+      welcome_message: '',
+      conversation_starters: [],
+      variables: [],
+      meta: {},
+    });
+    // `tags` stays omitted — `versionFromBody` reads no `tags` key, so only
+    // the PUT writes them. `meta` is NOT in that category; see below.
     expect(body).not.toHaveProperty('tags');
     expect(body).not.toHaveProperty('agent_type');
+  });
+
+  /*
+   * Save-As-Version used to drop `meta`, on the premise that "the CREATE
+   * handler discards it". That premise was false, and the cost was real:
+   * `step_limit` silently reset to the handler's default and `internal_tools`
+   * vanished — the two keys the native Rust runtime gates admission on, so a
+   * cloned agent could stop running while every screen still looked right.
+   *
+   * Traced end to end before this test was written: `CreateVersion`
+   * (`applications/handler.go:811`) calls `versionFromBody`, which reads
+   * `vBody["meta"]` (`:504`) and only DEFAULTS `step_limit` when the key is
+   * absent; `insertVersion` (`repos/applications.go:517-525`) persists it as
+   * the tenth column.
+   */
+  it('carries `meta` onto the new version, so a clone keeps its step limit and internal tools', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      meta: { step_limit: 40, internal_tools: ['internal_mcp'], category: 'sales' },
+    } as unknown as ApplicationVersionDetail;
+
+    const body = toVersionWriteBody(version, [], {
+      instructions: 'i',
+      welcomeMessage: 'w',
+      variables: [],
+      stepLimit: 12,
+      internalTools: ['internal_mcp', 'internal_web'],
+      tags: [],
+    } as unknown as EditApplicationVersionFields);
+
+    // The live edits win...
+    expect(body.meta?.step_limit).toBe(12);
+    expect(body.meta?.internal_tools).toEqual(['internal_mcp', 'internal_web']);
+    // ...and a key the editor does not model survives rather than being
+    // replaced away, which is the whole point of merging over the stored blob.
+    expect(body.meta?.['category']).toBe('sales');
+  });
+
+  /*
+   * The create path folds the body's TOP-LEVEL `variables` into `meta` only
+   * when that list is NON-EMPTY (`applications/handler.go:509-511`). So a
+   * `variables` copy forwarded inside `meta` survives a deletion and wins:
+   * the new version is inserted with the deleted variable still in
+   * `meta.variables` while `application_variables` has no row, and the Rust
+   * worker applies the meta copy LAST — substituting a value the user
+   * deleted into every turn, while the editor shows no variables at all.
+   */
+  it('drops the stored `meta.variables` so deleting the last variable is not undone by the clone', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      variables: [{ name: 'api_key', value: 's3cret' }],
+      meta: { step_limit: 7, internal_tools: [], variables: [{ name: 'api_key', value: 's3cret' }] },
+    } as unknown as ApplicationVersionDetail;
+
+    const body = toVersionWriteBody(version, [], {
+      instructions: 'i',
+      welcomeMessage: 'w',
+      variables: [],
+      stepLimit: 7,
+      internalTools: [],
+      tags: [],
+    } as unknown as EditApplicationVersionFields);
+
+    expect(body.variables, 'the authoritative list is the deleted one').toEqual([]);
+    expect(
+      (body.meta as Record<string, unknown> | undefined)?.['variables'],
+      '`meta` must not carry a second, stale copy the server would prefer',
+    ).toBeUndefined();
+    // The rest of the blob still rides along.
+    expect(body.meta?.step_limit).toBe(7);
+  });
+
+  it('keeps the stored `meta` verbatim when there are no live edits to fold in', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      meta: { step_limit: 40, internal_tools: ['internal_mcp'] },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionWriteBody(version, []).meta).toEqual({
+      step_limit: 40,
+      internal_tools: ['internal_mcp'],
+    });
+  });
+
+  /*
+   * #307's argument, applied to the model: while the picker did not exist the
+   * edit could not diverge from the server's copy, so reading `llm_settings`
+   * off `version` was harmless. Now a Save-As-Version taken after picking a
+   * different model would clone the OLD model onto the new version and say
+   * nothing about it.
+   */
+  it('prefers the edited llm_settings over the stored one', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'gpt-4o', model_project_id: 3, max_tokens: 4096 },
+    } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: '',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: { model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1, temperature: 0.6 },
+      tags: [],
+    };
+
+    expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+      temperature: 0.6,
+    });
+  });
+
+  /*
+   * #611-review-3, the write half. The seeded draft round-trips: an edit that
+   * never touched the model must put the version's own `reasoning_effort`
+   * back on the wire, not a profile without one.
+   */
+  it('round-trips a reasoning_effort through an edit that never touched the model', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'o3-mini', model_project_id: 17, max_tokens: -1, reasoning_effort: 'high' },
+    } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: 'Edited somewhere else entirely.',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: toVersionDraft(version, []).llmSettings,
+      tags: [],
+    };
+
+    expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({
+      model_name: 'o3-mini',
+      model_project_id: 17,
+      max_tokens: -1,
+      reasoning_effort: 'high',
+    });
+  });
+
+  /*
+   * Verbatim, NOT re-read through `toAgentLlmSettings`. A stored blob naming
+   * only a model is a working shape — elitea-main's freeze fills the project
+   * id in from the catalogue row it resolves — so a strict read would drop it
+   * and move the cloned version onto a different model.
+   */
+  it('forwards the stored llm_settings unchanged when there is no edit', () => {
+    const version = { name: 'base', llm_settings: { model_name: 'gpt' } } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: '',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: undefined,
+      tags: [],
+    };
+
+    expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({ model_name: 'gpt' });
+  });
+
+  it('omits llm_settings entirely when neither the edit nor the version has one', () => {
+    const version = { name: 'base' } as ApplicationVersionDetail;
+    expect(Object.hasOwn(toVersionWriteBody(version, []), 'llm_settings')).toBe(false);
   });
 });
 
@@ -85,6 +263,7 @@ describe('toVersionSaveBody', () => {
       variables: [],
       stepLimit: 12,
       internalTools: ['internal_mcp', 'internal_web'],
+      llmSettings: undefined,
       tags: [
         { id: 4, name: 'sales', data: null },
         // A tag the user just typed: `AgentTagEditor` gives it a negative
@@ -124,6 +303,7 @@ describe('toVersionSaveBody', () => {
       variables: [],
       stepLimit: undefined,
       internalTools: [],
+      llmSettings: undefined,
       tags: [],
     });
 
@@ -204,10 +384,38 @@ describe('toVersionDraft', () => {
     });
   });
 
-  it('defaults meta.step_limit/internal_tools when the existing meta lacks them', () => {
+  /*
+   * The `internal_tools` fallback used to be `['internal_mcp']`, which the
+   * chat query refuses: it admits a version only when
+   * `COALESCE(meta -> 'internal_tools', '[]') IN ('[]', '["ask_user"]')`
+   * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362`), so a
+   * stored version with NO `internal_tools` key — which answers turns fine
+   * today, thanks to that COALESCE — was quietly given one the first time a
+   * user saved any unrelated edit, and stopped answering with a 422.
+   */
+  it('falls back to an EMPTY meta.internal_tools (never internal_mcp) when the existing meta lacks the key', () => {
     const version = { name: 'base', meta: {} } as unknown as ApplicationVersionDetail;
     const draft = toVersionDraft(version, []);
-    expect(draft.meta).toEqual({ step_limit: 25, internal_tools: ['internal_mcp'] });
+    expect(draft.meta).toEqual({ step_limit: 25, internal_tools: [] });
+  });
+
+  it('falls back to an EMPTY meta.internal_tools when the stored value is not an array', () => {
+    const version = {
+      name: 'base',
+      meta: { internal_tools: 'internal_mcp' },
+    } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).meta.internal_tools).toEqual([]);
+  });
+
+  // The other direction, and the reason the fallback is the ONLY thing that
+  // changed: a user who deliberately turned Elitea MCP Tools on must still
+  // find it on when the editor reloads their version.
+  it('round-trips an explicitly stored internal_mcp unchanged', () => {
+    const version = {
+      name: 'base',
+      meta: { internal_tools: ['internal_mcp'] },
+    } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).meta.internal_tools).toEqual(['internal_mcp']);
   });
 
   it('defaults instructions/variables/tags/tools to empty when absent', () => {
@@ -222,5 +430,47 @@ describe('toVersionDraft', () => {
   it('sets agentType to "pipeline" only when the version agent_type is exactly "pipeline"', () => {
     const version = { name: 'base', agent_type: 'pipeline' } as ApplicationVersionDetail;
     expect(toVersionDraft(version, []).agentType).toBe('pipeline');
+  });
+
+  it('reads the stored llm_settings back, with model_project_id as a number', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'qwen3.5', model_project_id: '17', max_tokens: -1, temperature: 0.6 },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionDraft(version, []).llmSettings).toEqual({
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+      temperature: 0.6,
+    });
+  });
+
+  /*
+   * #611-review-3, the seed half. An edit page starts from this draft, so a
+   * key dropped here is dropped from the version on the NEXT save of any
+   * field — the author edits the instructions, saves, and the reasoning
+   * budget they picked is gone with no error anywhere.
+   */
+  it('reads a stored reasoning_effort back into the draft', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'o3-mini', model_project_id: 17, max_tokens: -1, reasoning_effort: 'high' },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionDraft(version, []).llmSettings).toEqual({
+      model_name: 'o3-mini',
+      model_project_id: 17,
+      max_tokens: -1,
+      reasoning_effort: 'high',
+    });
+  });
+
+  // `{}` is what every version written before the picker existed stores, and
+  // the omitted key is what keeps those agents on the catalogue-default
+  // fallback they answer turns with today.
+  it('leaves llmSettings undefined for a version that names no model', () => {
+    const version = { name: 'base', llm_settings: {} } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).llmSettings).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@
 
 pub(crate) mod application_tools;
 pub(crate) mod assembly;
+pub(crate) mod attachments;
 pub(crate) mod context_management;
 pub(crate) mod direct_hitl;
 pub(crate) mod events;
@@ -16,6 +17,7 @@ pub mod result;
 pub(crate) mod runtime;
 pub(crate) mod sensitive_tools;
 pub(crate) mod session;
+pub(crate) mod variables;
 
 #[cfg(test)]
 mod assembly_tests;

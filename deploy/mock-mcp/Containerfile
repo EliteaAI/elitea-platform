@@ -1,0 +1,71 @@
+# Deterministic remote MCP server for the standalone stack.
+#
+# Two stages, because the server must speak real TLS (the worker's MCP client
+# is `https_only` and offers no verification switch — see server.py's header)
+# and python:3.12-slim carries libssl but not the `openssl` command line.
+#
+# The certificate is minted HERE, at build time, rather than at container
+# start: the same bytes then survive every restart, so the trust bundle this
+# image hands the worker cannot go stale while a run is in flight.
+FROM docker.io/library/alpine:3.20 AS tls
+RUN apk add --no-cache openssl
+# A real two-level chain — a CA that signs a separate leaf — and NOT a
+# self-signed leaf doubling as its own trust anchor. rustls builds a path from
+# the presented certificate to an anchor and applies CA rules to the anchor
+# (`keyCertSign`, `CA:TRUE`); a single self-signed certificate that carries a
+# SAN and `serverAuth` cannot satisfy both roles at once. This is the same
+# shape deploy/scripts/gen-runtime-certs.sh mints for the rest of the stack.
+#
+# `mcp-mock` is the compose service name and therefore the host the worker
+# dials; `localhost`/127.0.0.1 are for the container's own healthcheck. A SAN
+# that does not cover the dialled name fails verification no matter how the
+# trust bundle is built.
+RUN mkdir -p /out \
+ && openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout /out/ca.key -out /out/ca.crt \
+      -days 3650 -subj "/CN=elitea-mock-mcp-ca" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+ && openssl req -newkey rsa:2048 -nodes \
+      -keyout /out/server.key -out /out/server.csr \
+      -subj "/CN=mcp-mock" \
+ && printf '%s\n' \
+      'basicConstraints=critical,CA:FALSE' \
+      'subjectAltName=DNS:mcp-mock,DNS:localhost,IP:127.0.0.1' \
+      'extendedKeyUsage=serverAuth' \
+      'keyUsage=critical,digitalSignature,keyEncipherment' > /out/leaf.ext \
+ && openssl x509 -req -in /out/server.csr \
+      -CA /out/ca.crt -CAkey /out/ca.key -CAcreateserial \
+      -out /out/server.crt -days 3650 -sha256 \
+      -extfile /out/leaf.ext \
+ && cat /out/server.crt /out/ca.crt > /out/server-chain.crt \
+ && chmod 0644 /out/ca.crt /out/server-chain.crt /out/server.key
+# 0644 on the key, deliberately: the server runs as an unprivileged uid that
+# must read it, and the material is a throwaway minted for one test double on a
+# private compose network. It authenticates nothing outside this stack, and
+# `ca.key` is not copied into the runtime image at all, so nothing here can mint
+# a second certificate.
+
+# python:3.12.10-slim is already in this stack's build graph (mock-llm and
+# services/elitea-worker-python both build from it), so this pulls no new base
+# image family. Standard library only: no pip install, no network at run time.
+FROM docker.io/library/python:3.12.10-slim
+
+# Non-root, and a uid that collides with nothing else in the stack (elitea-main
+# is 65532, the worker 10001, redis 999, mock-llm 10101).
+RUN useradd --system --uid 10102 --home-dir /nonexistent --shell /usr/sbin/nologin mockmcp
+
+COPY --from=tls /out/server-chain.crt /opt/mock-mcp/tls/server-chain.crt
+COPY --from=tls /out/server.key /opt/mock-mcp/tls/server.key
+# The ANCHOR the consumer must trust — the CA, not the leaf. mcp-mock-trust
+# publishes this one, so rotating the leaf never invalidates a live bundle.
+COPY --from=tls /out/ca.crt /opt/mock-mcp/tls/ca.crt
+COPY server.py /opt/mock-mcp/server.py
+
+USER 10102:10102
+EXPOSE 8443
+
+# Unbuffered so the startup line and any traceback reach compose logs
+# immediately rather than sitting in a pipe buffer while a test times out.
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["python3", "/opt/mock-mcp/server.py"]

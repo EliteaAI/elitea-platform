@@ -8,6 +8,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { ViewRunHistoryButton } from '@/shared/ui/ViewRunHistoryButton';
 
 import type { UseToolkitEditMutation } from '../api/toolkits';
+import { useToolkitSaveValidation } from '../model/useToolkitSaveValidation';
 import type { SharepointAuthModalRenderers } from '../sharepoint/ui/SharepointOAuthStatus';
 import type { ToolBaseSlots } from './form/ToolBase/ToolBase.types';
 import { ToolkitForm, type ToolkitFormEditDetail } from './form/ToolkitForm/ToolkitForm';
@@ -161,6 +162,13 @@ export function ConfigurationTab({
   const { renderTestPane, renderRunHistory, sharepointAuth, renderCredentialPicker } = slots;
   const { editToolDetail, onChangeToolDetail, isToolDirty } = toolDetailState;
   const { saveToolkit, onSaveSuccess, onSaveError } = saveHandlers;
+  /**
+   * #613 — the server's per-field save refusal, owned here rather than by the
+   * page, because `handleSave` below is the only thing on this screen that
+   * issues the write. `ToolkitForm`'s server-error channel had no producer
+   * anywhere in the app before this.
+   */
+  const saveValidation = useToolkitSaveValidation();
   const [showHistory, setShowHistory] = useState(false);
   const [isFullScreenChat, setIsFullScreenChat] = useState(false);
 
@@ -182,18 +190,27 @@ export function ConfigurationTab({
   const handleSave = useCallback(
     async (payload: SaveToolkitPayload): Promise<Readonly<Record<string, unknown>>> => {
       if (payload.projectId === undefined || payload.toolId === undefined) return {};
-      const result = await saveToolkit({
-        projectId: payload.projectId,
-        toolId: String(payload.toolId),
-        type: (payload.values['type'] as string | undefined) ?? '',
-        ...(payload.name !== undefined ? { name: payload.name } : {}),
-        description: payload.values['description'] as string | undefined,
-        settings: payload.values['settings'] as Readonly<Record<string, unknown>> | undefined,
-        meta: payload.values['meta'] as Readonly<Record<string, unknown>> | undefined,
-      });
-      return { ...result };
+      saveValidation.clearSaveErrors();
+      try {
+        const result = await saveToolkit({
+          projectId: payload.projectId,
+          toolId: String(payload.toolId),
+          type: (payload.values['type'] as string | undefined) ?? '',
+          ...(payload.name !== undefined ? { name: payload.name } : {}),
+          description: payload.values['description'] as string | undefined,
+          settings: payload.values['settings'] as Readonly<Record<string, unknown>> | undefined,
+          meta: payload.values['meta'] as Readonly<Record<string, unknown>> | undefined,
+        });
+        return { ...result };
+      } catch (error) {
+        // Recorded, then RETHROWN: `ToolkitForm`'s own caller still owns the
+        // `onSaveError` message and the failed-save state. Swallowing here
+        // would make a refused save look like a successful one.
+        saveValidation.reportSaveError(error);
+        throw error;
+      }
     },
-    [saveToolkit],
+    [saveToolkit, saveValidation],
   );
 
   if (isFetching) {
@@ -237,6 +254,7 @@ export function ConfigurationTab({
             onSave={handleSave}
             onSaveSuccess={onSaveSuccess}
             onSaveError={onSaveError}
+            toolkitValidation={saveValidation.toolkitValidation}
             slots={formSlots}
           />
         </Grid>

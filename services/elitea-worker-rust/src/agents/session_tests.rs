@@ -359,6 +359,7 @@ async fn invocation_local_session_runs_one_real_adk_turn_and_projects_the_exact_
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("native plan");
     let mut assembled = assemble_ordinary_native(
@@ -422,6 +423,7 @@ async fn injected_session_restores_existing_history_without_reseeding_the_frozen
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("first native plan");
     let user_id = first_plan.user_id().to_owned();
@@ -443,6 +445,7 @@ async fn injected_session_restores_existing_history_without_reseeding_the_frozen
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("second native plan");
     let second_sessions: Arc<dyn SessionService> = sessions.clone();
@@ -496,6 +499,7 @@ async fn durable_session_projects_the_previous_assistant_turn_into_the_next_mode
         &first_request,
         &first_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &first_request.payload.input_attachments,
     )
     .expect("first native plan");
     let sessions = Arc::new(InMemorySessionService::new());
@@ -521,6 +525,7 @@ async fn durable_session_projects_the_previous_assistant_turn_into_the_next_mode
         &second_request,
         &second_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &second_request.payload.input_attachments,
     )
     .expect("second native plan");
     let captured = Arc::new(Mutex::new(Vec::new()));
@@ -595,6 +600,7 @@ async fn regeneration_rebuilds_the_session_without_the_replaced_assistant_turn()
         &first_request,
         &first_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &first_request.payload.input_attachments,
     )
     .expect("first native plan");
     let sessions = Arc::new(InMemorySessionService::new());
@@ -620,6 +626,7 @@ async fn regeneration_rebuilds_the_session_without_the_replaced_assistant_turn()
         &regeneration,
         &regeneration_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &regeneration.payload.input_attachments,
     )
     .expect("regeneration native plan");
     let captured = Arc::new(Mutex::new(Vec::new()));
@@ -682,6 +689,7 @@ async fn session_backend_rejects_a_claim_from_another_execution_before_storage()
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("native plan");
     let result = NativeSessionBackend::invocation_local()
@@ -708,6 +716,7 @@ async fn direct_llm_agent_executes_a_bound_toolset_before_the_final_model_turn()
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("native plan");
     let model_calls = Arc::new(AtomicUsize::new(0));
@@ -756,6 +765,7 @@ async fn application_only_agent_dispatches_repeated_participant_calls_concurrent
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("native plan");
     let model = FixtureBoundModel {
@@ -827,6 +837,7 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("native plan");
     let model_calls = Arc::new(AtomicUsize::new(0));
@@ -920,6 +931,7 @@ async fn ask_user_pauses_and_resumes_as_the_original_correlated_tool_result() {
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("ask_user native plan");
     let internal_tools =
@@ -994,6 +1006,7 @@ async fn ask_user_pauses_and_resumes_as_the_original_correlated_tool_result() {
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("ask_user resume plan");
     let provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1072,6 +1085,7 @@ async fn persisted_read_only_sensitive_call_replays_through_native_adk_without_m
         &fixture.request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &fixture.request.payload.input_attachments,
     )
     .expect("resume native plan");
     let provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1162,6 +1176,7 @@ async fn assert_blocked_direct_replay(action: &str, value: &str, expected_reason
         &fixture.request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &fixture.request.payload.input_attachments,
     )
     .expect("blocked replay plan");
     let provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1219,6 +1234,7 @@ async fn persist_blocked_result_before_provider(
         &fixture.request,
         profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &fixture.request.payload.input_attachments,
     )
     .expect("blocked result plan");
     let provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1279,6 +1295,7 @@ async fn persisted_read_only_result_continues_after_restart_without_tool_reexecu
         &fixture.request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &fixture.request.payload.input_attachments,
     )
     .expect("first resume plan");
     let first_provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1325,6 +1342,7 @@ async fn persisted_read_only_result_continues_after_restart_without_tool_reexecu
         &fixture.request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &fixture.request.payload.input_attachments,
     )
     .expect("second resume plan");
     let second_provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1376,6 +1394,7 @@ async fn interrupt_replay_before_tool_result(
         &fixture.request,
         profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &fixture.request.payload.input_attachments,
     )
     .expect("interrupted resume plan");
     let provider_calls = Arc::new(AtomicUsize::new(0));
@@ -1436,6 +1455,7 @@ async fn pause_sensitive_call(read_only: bool) -> PendingDirectReplay {
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("first native plan");
     let user_id = plan.user_id().to_owned();
@@ -1766,12 +1786,14 @@ fn pseudonymous_session_identity_is_stable_per_thread_and_separated_between_thre
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("first plan");
     let same = OrdinaryNativeAgentPlan::from_authorized(
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("same plan");
     assert_eq!(first.session_id(), same.session_id());
@@ -1786,6 +1808,7 @@ fn pseudonymous_session_identity_is_stable_per_thread_and_separated_between_thre
         &other_request,
         &other_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &other_request.payload.input_attachments,
     )
     .expect("other plan");
     assert_ne!(first.session_id(), other.session_id());
@@ -1799,6 +1822,7 @@ fn output_continuation_keeps_the_session_and_replaces_the_user_turn_with_a_bound
         &request,
         &profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
     )
     .expect("fresh plan");
 
@@ -1812,6 +1836,7 @@ fn output_continuation_keeps_the_session_and_replaces_the_user_turn_with_a_bound
         &continuation,
         &continuation_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &continuation.payload.input_attachments,
     )
     .expect("output continuation plan");
 
@@ -1830,12 +1855,58 @@ fn output_continuation_keeps_the_session_and_replaces_the_user_turn_with_a_bound
         &continuation,
         &reasoning_only_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &continuation.payload.input_attachments,
     )
     .expect("reasoning-only continuation plan");
     assert!(
         reasoning_only
             .user_text()
             .contains("before it produced visible output")
+    );
+}
+
+#[test]
+fn input_attachments_are_spliced_into_the_human_message_after_the_user_text() {
+    // #606: an attached file's header chunk reaches the model AFTER the user's
+    // own text. `user_text()` concatenates every text part, so a header spliced
+    // in after the prompt shows up in it. The document is flagged
+    // `needs_content_extraction` and carries no text beside it — the native
+    // runtime cannot read it — so the file is ANNOUNCED (its name reaches the
+    // model) while its content is not, which is exactly what the streaming e2e
+    // asserts for the rust leg.
+    let mut request = ordinary_request(AgentExecutionKind::Adhoc);
+    request.payload.input_attachments = vec![json!({
+        "type": "text",
+        "text": "Bucket: chat-attachments\nFilename: conv/report.txt\nfilepath: /chat-attachments/conv/report.txt",
+        "elitea_attachment": {
+            "needs_content_extraction": true,
+            "bucket": "chat-attachments",
+            "name": "conv/report.txt",
+            "filepath": "/chat-attachments/conv/report.txt",
+            "item_id": "11111111-1111-1111-1111-111111111111"
+        }
+    })];
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("attachment profile admitted");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
+    )
+    .expect("attachment plan");
+
+    let composed = plan.user_text();
+    let user_offset = composed.find("current").expect("user text is present");
+    let header_offset = composed
+        .find("report.txt")
+        .expect("the file is announced to the model");
+    assert!(
+        user_offset < header_offset,
+        "the attachment header must follow the user's own text"
+    );
+    assert!(
+        !composed.contains("elitea_attachment"),
+        "the extraction marker must not reach the model"
     );
 }
 
@@ -1848,6 +1919,7 @@ fn session_definition_lineage_is_request_independent_and_application_version_sco
         &first_request,
         &first_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &first_request.payload.input_attachments,
     )
     .expect("first application plan");
 
@@ -1860,6 +1932,7 @@ fn session_definition_lineage_is_request_independent_and_application_version_sco
         &first_request,
         &continued_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &first_request.payload.input_attachments,
     )
     .expect("continued application plan");
     assert_eq!(first.definition_digest(), continued.definition_digest());
@@ -1874,6 +1947,7 @@ fn session_definition_lineage_is_request_independent_and_application_version_sco
         &first_request,
         &changed_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &first_request.payload.input_attachments,
     )
     .expect("changed application plan");
     assert_ne!(first.definition_digest(), changed.definition_digest());
@@ -1885,6 +1959,7 @@ fn session_definition_lineage_is_request_independent_and_application_version_sco
         &adhoc_request,
         &adhoc_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &adhoc_request.payload.input_attachments,
     )
     .expect("first ad-hoc plan");
     adhoc_request.binding.request_content_digest = [7; 32];
@@ -1896,6 +1971,7 @@ fn session_definition_lineage_is_request_independent_and_application_version_sco
         &adhoc_request,
         &next_adhoc_profile,
         &AuthorizedNativeCommandBinding::fixture(),
+        &adhoc_request.payload.input_attachments,
     )
     .expect("next ad-hoc plan");
     assert_eq!(adhoc.definition_digest(), next_adhoc.definition_digest());

@@ -5,11 +5,17 @@
 import { memo, useCallback, useMemo } from 'react';
 import { useTheme, type Theme } from '@mui/material/styles';
 
+import RefreshIcon from '@mui/icons-material/Refresh';
 import Box from '@mui/material/Box';
+import CircularProgress from '@mui/material/CircularProgress';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 import { GradientIconWrapper } from '@/shared/ui/GradientIconWrapper';
 import { t } from '@/shared/i18n';
+import { toConfigurationId } from '@/features/settings/lib/ai-configuration/useStoredConnectionHealth';
+import type { StoredConnectionHealth } from '@/features/settings/lib/ai-configuration/useStoredConnectionHealth';
 import {
   getConfigurationDisplayName,
   getConfigurationStatus,
@@ -80,10 +86,105 @@ interface ConfigurationCardProps {
   canEdit: boolean;
   isDefault: boolean;
   onClick?: (configurationId: string) => void;
+  /** This row's last connection-check verdict. Absent = the panel's
+   * "Check connections" button has not been pressed, which is NOT the same as
+   * healthy — the dot renders its own `unchecked` state for that. */
+  health?: StoredConnectionHealth | undefined;
+  /** Re-runs ADMISSION for this row (`POST /configurations/revalidate/...`)
+   * and repaints the dot from the `status_ok` it returns. Absent = the
+   * action is not offered. */
+  onRevalidate?: ((configurationId: string) => void) | undefined;
+  isRevalidating?: boolean | undefined;
 }
 
+/*
+ * All three are declared `| undefined` rather than merely optional:
+ * `ConfigurationSection` (this file's only caller, and a `@ts-nocheck` file)
+ * threads them straight off a lookup that misses for any row nobody has
+ * checked, so an explicit `undefined` is what actually arrives. Under
+ * `exactOptionalPropertyTypes` a plain `?:` would reject that — today
+ * silently, because the caller is unchecked, and loudly the day that
+ * `@ts-nocheck` comes off.
+ */
+
+/** The dot's four resting states, plus `checking`. Colour is the only signal that fits beside a card title, so the tooltip carries the words. */
+const HEALTH_DOT_COLORS: Record<StoredConnectionHealth['status'], (theme: Theme) => string> = {
+  unchecked: (theme) => theme.vars.palette.text.disabled,
+  checking: (theme) => theme.vars.palette.text.disabled,
+  ok: (theme) => theme.vars.palette.status.publishedText,
+  failed: (theme) => theme.vars.palette.status.rejectedText,
+  // Amber, never red: a type this build has no checker for has not failed
+  // anything, and the red dot would send someone to fix a working credential.
+  unsupported: (theme) => theme.vars.palette.status.warningText,
+};
+
+function healthTooltip(health: StoredConnectionHealth): string {
+  if (health.status === 'ok') return t('ai-configuration.health.ok', 'Connection OK');
+  if (health.status === 'checking') return t('ai-configuration.health.checking', 'Checking connection...');
+  if (health.status === 'unsupported') return t('ai-configuration.health.unsupported', 'Checking connection is not supported yet for this configuration type.');
+  if (health.status === 'failed') return health.message ?? t('ai-configuration.health.failed', 'Connection failed');
+  return t('ai-configuration.health.unchecked', 'Connection not checked yet');
+}
+
+/**
+ * The dot and its Re-validate button. Split out of the card body so the card
+ * itself stays within the §3.5 complexity budget, and so the `stopPropagation`
+ * that keeps the button from also opening the card sits next to the click it
+ * has to stop.
+ */
+const ConfigurationHealth = memo(({ configurationId, health, onRevalidate, isRevalidating }: {
+  configurationId: string;
+  health: StoredConnectionHealth;
+  onRevalidate?: ((configurationId: string) => void) | undefined;
+  isRevalidating?: boolean | undefined;
+}) => {
+  const handleRevalidate = useCallback((event: { stopPropagation: () => void }) => {
+    // The whole card is a click target that navigates to the edit screen.
+    event.stopPropagation();
+    onRevalidate?.(configurationId);
+  }, [configurationId, onRevalidate]);
+
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+      <Tooltip title={healthTooltip(health)} placement="top">
+        <Box
+          data-testid={`configuration-health-dot-${configurationId}`}
+          data-health={health.status}
+          aria-label={healthTooltip(health)}
+          sx={(theme: Theme) => ({
+            width: '0.5rem',
+            height: '0.5rem',
+            borderRadius: 'var(--el-shape-radiusPill, 9999px)',
+            flexShrink: 0,
+            backgroundColor: HEALTH_DOT_COLORS[health.status](theme),
+            opacity: health.status === 'checking' ? 0.5 : 1,
+          })}
+        />
+      </Tooltip>
+      {onRevalidate !== undefined && (
+        <Tooltip title={t('ai-configuration.health.revalidate', 'Re-validate')} placement="top">
+          <IconButton
+            size="small"
+            data-testid={`configuration-revalidate-${configurationId}`}
+            aria-label={t('ai-configuration.health.revalidate', 'Re-validate')}
+            onClick={handleRevalidate}
+            disabled={isRevalidating === true}
+            sx={{ width: '1.5rem', height: '1.5rem' }}
+          >
+            {isRevalidating === true ? <CircularProgress size={12} /> : <RefreshIcon fontSize="inherit" />}
+          </IconButton>
+        </Tooltip>
+      )}
+    </Box>
+  );
+});
+
+ConfigurationHealth.displayName = 'ConfigurationHealth';
+
+const UNCHECKED: StoredConnectionHealth = { status: 'unchecked' };
+
 export default memo(
-  ({ configuration, projectId, canEdit, isDefault, onClick }: ConfigurationCardProps) => {
+  ({ configuration, projectId, canEdit, isDefault, onClick, health, onRevalidate, isRevalidating }: ConfigurationCardProps) => {
     const theme = useTheme();
     const styles = getStyles(theme);
     const configData = (configuration.data ?? {}) as Record<string, unknown>;
@@ -100,7 +201,11 @@ export default memo(
     // whether the configuration is the project default. Replicated literally
     // (not tied to `configuration.default`, which is an unrelated field —
     // the "Default" badge below already covers that via `isDefault`).
-    const statusText = useMemo(() => getConfigurationStatus(true, isShared), [isShared]);
+    // ... UNTIL a Re-validate re-derives it: that route returns the row, and
+    // its `status_ok` is the real answer to the question this line was
+    // hardcoding. `?? true` keeps the ported behaviour for every row nobody
+    // has re-validated in this session.
+    const statusText = useMemo(() => getConfigurationStatus(health?.statusOk ?? true, isShared), [health?.statusOk, isShared]);
 
     const handleCardClick = useCallback(() => {
       if (!disabled) {
@@ -135,6 +240,14 @@ export default memo(
                   {t('ai-configuration.card.noPermissions', 'No edit permissions')}
                 </Typography>
               )}
+              <Box sx={styles.healthSlot}>
+                <ConfigurationHealth
+                  configurationId={toConfigurationId(configuration.id)}
+                  health={health ?? UNCHECKED}
+                  onRevalidate={onRevalidate}
+                  isRevalidating={isRevalidating}
+                />
+              </Box>
             </Box>
             <Typography variant="bodySmall" color="text.default" sx={styles.statusText}>
               {statusText}
@@ -224,6 +337,12 @@ function getStyles(theme: ReturnType<typeof useTheme>) {
     },
     disabledLabel: {
       marginLeft: 'auto',
+      flexShrink: 0,
+    },
+    healthSlot: {
+      marginLeft: 'auto',
+      display: 'flex',
+      alignItems: 'center',
       flexShrink: 0,
     },
     statusText: {

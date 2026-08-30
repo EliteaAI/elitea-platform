@@ -3,6 +3,7 @@ module github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway
 go 1.26.4
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/coder/websocket v1.8.15
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/google/cel-go v0.28.1
@@ -11,6 +12,7 @@ require (
 	github.com/maximhq/bifrost/core v1.7.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/sony/gobreaker/v2 v2.4.0
+	golang.org/x/oauth2 v0.36.0
 )
 
 require (
@@ -23,7 +25,6 @@ require (
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.42.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.11 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14 // indirect
@@ -81,7 +82,6 @@ require (
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.39.0 // indirect

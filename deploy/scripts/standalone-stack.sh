@@ -47,6 +47,30 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROJECT="${STANDALONE_PROJECT:-elitea-standalone}"
 COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.yml"
 
+# Overlay files, applied after the base in the order given. Every subcommand
+# has to see the same set: an overlay that replaces a service's image (the Rust
+# agent runtime does exactly that) would otherwise be present for `up` and
+# absent for `build`, so `build` would rebuild the service the overlay replaced
+# and `up` would run whatever stale tag the overlay names.
+#
+#   STANDALONE_WORKER=rust  deploy/scripts/standalone-stack.sh build
+#
+# is the supported way to select the native Rust worker; STANDALONE_OVERLAY
+# takes an explicit space-separated list of paths for anything else.
+OVERLAY="${STANDALONE_OVERLAY:-}"
+case "${STANDALONE_WORKER:-python}" in
+  python) ;;
+  rust) OVERLAY="${REPO_ROOT}/deploy/docker-compose.standalone-rust-agent.yml ${OVERLAY}" ;;
+  *) echo "ERROR: STANDALONE_WORKER must be python or rust (got '${STANDALONE_WORKER}')." >&2; exit 1 ;;
+esac
+for overlay_file in $OVERLAY; do
+  if [ ! -f "$overlay_file" ]; then
+    echo "ERROR: overlay '$overlay_file' does not exist." >&2
+    exit 1
+  fi
+  COMPOSE_F="${COMPOSE_F} -f ${overlay_file}"
+done
+
 # Shared with apps/elitea-web/scripts/e2e-stack.sh: CI has the docker compose
 # v2 plugin, this machine has podman.
 # shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh
@@ -1727,6 +1751,17 @@ except Exception as error:
     # completion line the python prints, and require the count in it. The
     # python refuses a partial run on its own; this catches a run that never
     # happened.
+    # The check runs the SDK inside the RUNNING worker's image. On the native
+    # Rust runtime that image is a Rust binary with no python and no SDK — the
+    # SDK is not part of that leg's execution path at all, so running it there
+    # can only measure the image's lack of python3 (measured: "exec: python3:
+    # executable file not found"). The gate is the running container's image,
+    # not $STANDALONE_WORKER, so a mislabelled invocation cannot dodge it.
+    # SDK conformance still rides every python-worker leg.
+    SDK_WORKER_IMAGE="$($ENGINE ps --filter "name=${PROJECT}" --format '{{.Names}} {{.Image}}' 2>/dev/null | sed -n 's/^[^ ]*elitea-worker[^ ]* //p' | head -1)"
+    if [ -n "$SDK_WORKER_IMAGE" ] && [[ "$SDK_WORKER_IMAGE" == *worker-rust* ]]; then
+      skip "the elitea-sdk client check does not apply: the worker is the native runtime (${SDK_WORKER_IMAGE}), which carries no SDK"
+    else
     sdk_check_log="$(mktemp)"
     if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/sdk-client-check.sh" 2>&1 | tee "$sdk_check_log"; then
       sdk_check_ran="$(sed -n 's/^→ elitea-sdk client: \([0-9][0-9]*\) assertion(s) ran.*/\1/p' "$sdk_check_log" | tail -1)"
@@ -1741,6 +1776,7 @@ except Exception as error:
       fail "the elitea-sdk client check failed — read its assertion lines above"
     fi
     rm -f "$sdk_check_log"
+    fi
 
     echo "→ chat critical path (#284 smoke):"
     # Precondition first, because the failure it produces is a bare HTTP 500

@@ -35,23 +35,15 @@ import { filterEmptyStrings, type AgentDraft, type SuggestedResource } from '../
  * sets at the one real call site (`GenerateAgentModal.tsx`) — there is
  * nothing to associate yet regardless.
  *
- * **`welcome_message` gap, disclosed, not owned by this sub-unit.**
- * `useCreateApplicationDraft`'s `toVersionWriteRequest`
- * (`entities/application-form/model/mutations.ts:56-65`) does not forward
- * `welcome_message` even though the LIVE `VersionWriteRequest` schema
- * (checked directly against `shared/api/generated/model/
- * versionWriteRequest.zod.ts`, not that entity's own doc comment, which
- * predates this field) now carries one. The AI-drafted welcome message
- * therefore does not survive `create()` today. `entities/application-form/
- * model/mutations.ts` is not one of this sub-unit's owned files — flagged
- * here, not silently patched around with a second, divergent create path.
  *
- * **`llm_settings`/model defaulting, same already-documented gap.** No
- * `ListModels`-shaped endpoint exists and no port of the baseline's
- * `generateLLMSettings` exists anywhere in this app — the created agent
- * gets no `llm_settings` from this flow, same as
- * `ApplicationVersionDraft`'s own doc comment already discloses for the
- * general create flow this hook reuses.
+ * **`llm_settings` — deliberately not authored here.** The generator's
+ * `AgentDraft` describes an agent, not a model, so this flow has nothing to
+ * pick from and omits the key: the new agent runs on the project's
+ * catalogue default, which is what every version created before the model
+ * picker existed does. (An earlier revision of this note blamed a missing
+ * `ListModels` endpoint. That endpoint exists — `useListModelsQuery` in
+ * `shared/api/configurationsApi.ts`, hand-written rather than generated,
+ * which is why a grep confined to `shared/api/generated/` came back empty.)
  *
  * `agent_type` is deliberately left `undefined` (not `'openai'`, unlike
  * the baseline's explicit literal): `ApplicationVersionDraft.agentType`'s
@@ -150,9 +142,21 @@ export function useAgentDraftApproval({
             name: LATEST_VERSION_NAME,
             agentType: undefined,
             instructions: draft.instructions,
+            // The generator drafts a welcome message and the review form
+            // edits it; the draft carrying it end to end is what makes that
+            // field real rather than decorative (the gap used to be in
+            // `toVersionWriteRequest`, which had no key for it).
+            welcomeMessage: draft.welcome_message,
             conversationStarters: filterEmptyStrings(draft.conversation_starters),
             variables: contextResolver(draft.instructions).map((name) => ({ name, value: '' })),
+            // Empty `internal_tools` matches a fresh form: the gates admit
+            // the whole authorable catalogue now (see
+            // `internal_tools_catalogue_drift_test.go`), and a generated
+            // agent starts with nothing toggled.
             meta: { step_limit: 25, internal_tools: [] },
+            // See the "`llm_settings`" paragraph in this hook's doc comment:
+            // absent, so the platform's catalogue-default fallback stands.
+            llmSettings: undefined,
             tags: [],
             tools: [],
             pipelineSettings: undefined,

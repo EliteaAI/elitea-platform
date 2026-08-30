@@ -9,7 +9,10 @@
  */
 import type { ReactNode } from 'react';
 
+import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
 import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import LinearProgress from '@mui/material/LinearProgress';
@@ -26,7 +29,31 @@ import { t } from '@/shared/i18n';
 
 import { providerTypeLabel } from './llmProviderForm';
 import { configFailureReason } from './api/adminConfigurationApi';
-import type { LlmProvider } from './api/adminLlmProvidersApi';
+import type { LlmProvider, LlmProviderCheckResult } from './api/adminLlmProvidersApi';
+
+/**
+ * The Test/Re-validate actions and their per-row state, grouped into one prop
+ * so `ProviderTable`/`ProviderResults` stay under the §3.5 component-props
+ * budget as these two actions grew the row — the same collapse
+ * `useCredentialConnectionTest.ts`'s `request` object makes for its own hook,
+ * and for the same reason.
+ */
+export interface ProviderRowActions {
+  /** Runs the live provider round trip (`POST /{id}/check`) — writes nothing. */
+  readonly onCheck: (row: LlmProvider) => void;
+  /** Re-runs admission (`POST /{id}/revalidate`) and patches `status_ok`. */
+  readonly onRevalidate: (row: LlmProvider) => void;
+  /**
+   * Opens the adopt-models dialog for this credential — the successor to
+   * legacy's `import_llm_models`. It reads the provider's own catalogue; it
+   * publishes nothing until the operator picks.
+   */
+  readonly onAdopt: (row: LlmProvider) => void;
+  /** This session's own live-check verdicts, keyed by row id. Absent for a row = Test has not been pressed since the panel loaded. */
+  readonly checkResults: Readonly<Record<number, LlmProviderCheckResult>>;
+  readonly checkingId: number | undefined;
+  readonly revalidatingId: number | undefined;
+}
 
 /**
  * The four things that can be wrong at once, each its own statement.
@@ -39,11 +66,13 @@ export function ProviderAlerts({
   loadError,
   saveError,
   deleteError,
+  revalidateError,
   unsealed,
 }: {
   readonly loadError: unknown;
   readonly saveError: string | undefined;
   readonly deleteError: unknown;
+  readonly revalidateError: unknown;
   readonly unsealed: readonly LlmProvider[];
 }): ReactNode {
   return (
@@ -68,6 +97,15 @@ export function ProviderAlerts({
         </Alert>
       ) : null}
 
+      {/* Re-validate re-runs ADMISSION only — a failure here means the row
+          could not be re-derived, never that the provider is unreachable. */}
+      {revalidateError != null ? (
+        <Alert severity="error" data-testid="llm-providers-revalidate-error">
+          {configFailureReason(revalidateError) ??
+            t('pages.admin.llmProviders.revalidateError', 'Failed to re-validate the provider.')}
+        </Alert>
+      ) : null}
+
       {/* A finding, not a footnote: the value is readable by every holder of the
           project-scoped configuration permissions on the public project, and
           re-saving the credential is what fixes it. */}
@@ -83,15 +121,47 @@ export function ProviderAlerts({
     </>
   );
 }
+/**
+ * One row's live-check verdict, rendered UNDER the stored `status_ok` chip —
+ * never inside it. `status_ok` is the ADMISSION decision this platform
+ * already made; this is a fresh provider round trip the operator just asked
+ * for, and the two can disagree (a credential can be admitted and still
+ * unreachable right now, or briefly unreachable and still correctly admitted)
+ * — collapsing them into one indicator would hide exactly the case an
+ * operator presses Test to find.
+ */
+function ProviderCheckResult({ id, result }: { readonly id: number; readonly result: LlmProviderCheckResult }): ReactNode {
+  return (
+    <Box
+      data-testid={`admin-provider-check-result-${String(id)}`}
+      sx={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}
+    >
+      {result.success ? (
+        <CheckCircleOutlineIcon fontSize="inherit" color="success" />
+      ) : (
+        <CancelOutlinedIcon fontSize="inherit" color="error" />
+      )}
+      <Typography variant="bodySmall" color={result.success ? 'success.main' : 'error.main'}>
+        {result.success
+          ? t('pages.admin.llmProviders.checkSuccess', 'Live check: connected')
+          : (result.message ?? t('pages.admin.llmProviders.checkFailed', 'Live check failed'))}
+      </Typography>
+    </Box>
+  );
+}
+
 export function ProviderTable({
   items,
   onEdit,
   onDelete,
+  rowActions,
 }: {
   readonly items: readonly LlmProvider[];
   readonly onEdit: (row: LlmProvider) => void;
   readonly onDelete: (row: LlmProvider) => void;
+  readonly rowActions: ProviderRowActions;
 }): ReactNode {
+  const { onCheck, onRevalidate, onAdopt, checkResults, checkingId, revalidatingId } = rowActions;
   return (
     <TableContainer component={Paper} variant="outlined">
       <Table size="small" data-testid="llm-providers-table">
@@ -107,7 +177,9 @@ export function ProviderTable({
           </TableRow>
         </TableHead>
         <TableBody>
-          {items.map((row) => (
+          {items.map((row) => {
+            const checkResult = checkResults[row.id];
+            return (
             <TableRow key={row.id}>
               <TableCell>
                 {/* The words matter. "Inactive" would read as a switch someone
@@ -123,6 +195,9 @@ export function ProviderTable({
                       : t('pages.admin.llmProviders.status.unresolved', 'Not resolving')
                   }
                 />
+                {/* The LIVE result, distinct from the chip above: see
+                    ProviderCheckResult's own header for why they never merge. */}
+                {checkResult !== undefined ? <ProviderCheckResult id={row.id} result={checkResult} /> : null}
               </TableCell>
               <TableCell>{row.elitea_title}</TableCell>
               <TableCell>{providerTypeLabel(row.type)}</TableCell>
@@ -137,12 +212,40 @@ export function ProviderTable({
                   {t('pages.admin.llmProviders.edit', 'Edit')}
                 </Button>
                 <Button
+                  variant="elitea" color="tertiary" size="small"
+                  data-testid={`admin-provider-check-${String(row.id)}`}
+                  disabled={checkingId === row.id}
+                  onClick={() => onCheck(row)}
+                >
+                  {checkingId === row.id
+                    ? t('pages.admin.llmProviders.checking', 'Testing…')
+                    : t('pages.admin.llmProviders.check', 'Test')}
+                </Button>
+                <Button
+                  variant="elitea" color="tertiary" size="small"
+                  data-testid={`admin-provider-revalidate-${String(row.id)}`}
+                  disabled={revalidatingId === row.id}
+                  onClick={() => onRevalidate(row)}
+                >
+                  {revalidatingId === row.id
+                    ? t('pages.admin.llmProviders.revalidating', 'Re-validating…')
+                    : t('pages.admin.llmProviders.revalidate', 'Re-validate')}
+                </Button>
+                <Button
+                  variant="elitea" color="tertiary" size="small"
+                  data-testid={`admin-provider-adopt-${String(row.id)}`}
+                  onClick={() => onAdopt(row)}
+                >
+                  {t('pages.admin.llmProviders.adopt', 'Adopt models…')}
+                </Button>
+                <Button
             variant="elitea" color="alarm" size="small" onClick={() => onDelete(row)}>
                   {t('pages.admin.llmProviders.delete', 'Delete')}
                 </Button>
               </TableCell>
             </TableRow>
-          ))}
+            );
+          })}
         </TableBody>
       </Table>
     </TableContainer>
@@ -163,18 +266,20 @@ export function ProviderResults({
   items,
   onEdit,
   onDelete,
+  rowActions,
 }: {
   readonly isPending: boolean;
   readonly failed: boolean;
   readonly items: readonly LlmProvider[];
   readonly onEdit: (row: LlmProvider) => void;
   readonly onDelete: (row: LlmProvider) => void;
+  readonly rowActions: ProviderRowActions;
 }): ReactNode {
   if (isPending) {
     return <LinearProgress aria-label={t('pages.admin.llmProviders.loading', 'Loading providers')} />;
   }
   if (items.length > 0) {
-    return <ProviderTable items={items} onEdit={onEdit} onDelete={onDelete} />;
+    return <ProviderTable items={items} onEdit={onEdit} onDelete={onDelete} rowActions={rowActions} />;
   }
   if (failed) return null;
   return (

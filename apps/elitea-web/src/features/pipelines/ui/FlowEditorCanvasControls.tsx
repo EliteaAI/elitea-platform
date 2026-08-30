@@ -48,6 +48,23 @@ export interface FlowEditorCanvasControlsProps {
   readonly onReLayout: () => void;
 }
 
+/**
+ * Both custom `ControlButton`s carry an `aria-label` holding the same string
+ * their `Tooltip` shows.
+ *
+ * The tooltip alone never named them: MUI puts `title`/`aria-describedby` on
+ * the element it wraps, and what it wraps here is the `<Box component="span">`
+ * (a `ControlButton` renders a bare `<button>` and forwards no ref, so it
+ * cannot be a Tooltip child directly). The `<button>` inside therefore had NO
+ * accessible name at all, while `<Controls>`'s own four built-ins ("Zoom In",
+ * "Zoom Out", "Fit View", "Toggle Interactivity") all have one.
+ *
+ * axe cannot see it: `e2e/fixtures/axe.ts` calls `.exclude('.react-flow')`, and
+ * these buttons live inside that subtree — so `button-name` has never been
+ * evaluated on them and the pipeline-editor a11y journey passes either way.
+ * `ControlButton` spreads `...rest` onto the `<button>` (@xyflow/react 12.11.2),
+ * so the label lands on the element that needs it.
+ */
 export function FlowEditorCanvasControls({ expandAll, onExpandAll, onReLayout }: FlowEditorCanvasControlsProps): ReactNode {
   const theme = useTheme();
 
@@ -61,7 +78,10 @@ export function FlowEditorCanvasControls({ expandAll, onExpandAll, onReLayout }:
           component="span"
           sx={{ display: 'inline-flex', borderBottom: `0.0625rem solid ${theme.vars.palette.divider}` }}
         >
-          <ControlButton onClick={onExpandAll}>
+          <ControlButton
+            onClick={onExpandAll}
+            aria-label={t('pipelines.flowEditor.toggleCardsSize', 'Toggle cards size')}
+          >
             {expandAll ? (
               <CollapseSecondIcon
                 style={flowEditorIconStyle}
@@ -84,7 +104,10 @@ export function FlowEditorCanvasControls({ expandAll, onExpandAll, onReLayout }:
           component="span"
           sx={{ display: 'inline-flex' }}
         >
-          <ControlButton onClick={onReLayout}>
+          <ControlButton
+            onClick={onReLayout}
+            aria-label={t('pipelines.flowEditor.autoArrange', 'Auto-arrange')}
+          >
             <PolylineOutlineIcon
               style={flowEditorIconStyle}
               fill={theme.vars.palette.icon.fill.secondary}

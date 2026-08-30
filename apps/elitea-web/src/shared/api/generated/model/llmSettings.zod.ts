@@ -52,6 +52,12 @@ export const LlmSettings = zod.object({
   temperature: zod.number().optional(),
   max_tokens: zod.int().optional(),
   top_p: zod.number().optional(),
+  reasoning_effort: zod
+    .string()
+    .optional()
+    .describe(
+      "One of none, low, medium or high. Mutually exclusive with temperature on the runtime profile: the native worker refuses a profile carrying both (services\/elitea-worker-rust\/src\/agents\/ assembly.rs, parse_reasoning_effort), and the web write path encodes the same rule (apps\/elitea-web\/src\/shared\/api\/ agentLlmSettings.ts, selectEffortAndTemperature).\n",
+    ),
 });
 
 export type LlmSettings = zod.input<typeof LlmSettings>;

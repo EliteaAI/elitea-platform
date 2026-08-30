@@ -40,7 +40,7 @@ export interface UseChatBoxActionsResult {
   readonly handleCopy: (message: ChatMessage) => void;
   readonly handleDeleteAnswer: (messageId: string) => void;
   readonly handleSubmitEditedMessage: (messageId: string, updatedItems: readonly { uuid?: string | undefined; content: string; item_type: string }[]) => void;
-  readonly handleHitlResume: (payload: { action: 'approve' | 'reject' | 'edit' | 'block_with_comment'; value?: string | undefined; toolCallId?: string | undefined }) => void;
+  readonly handleHitlResume: (payload: { action: 'approve' | 'reject' | 'edit' | 'block_with_comment' | 'answer'; value?: string | undefined; toolCallId?: string | undefined }) => void;
   readonly handleContinueMcpExecution: (messageId: string, addToIgnoreList?: boolean) => void;
   readonly handleContinueTokenLimit: (messageId: string) => void;
   readonly handleClear: () => void;
@@ -117,7 +117,7 @@ export function useChatBoxActions({
   );
 
   const handleHitlResume = useCallback(
-    (payload: { action: 'approve' | 'reject' | 'edit' | 'block_with_comment'; value?: string | undefined; toolCallId?: string | undefined }) => {
+    (payload: { action: 'approve' | 'reject' | 'edit' | 'block_with_comment' | 'answer'; value?: string | undefined; toolCallId?: string | undefined }) => {
       const childThreadId = deriveHitlChildThreadId(data.pendingHitlMessage, payload.toolCallId);
       void handlers.continueHitl({
         action: payload.action,

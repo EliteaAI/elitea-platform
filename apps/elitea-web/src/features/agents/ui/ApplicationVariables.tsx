@@ -3,7 +3,9 @@ import { useCallback, useMemo } from 'react';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
+import Typography from '@mui/material/Typography';
 
+import { t } from '@/shared/i18n';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 import { StyledInputEnhancer } from '@/shared/ui/StyledInputEnhancer';
 
@@ -33,6 +35,22 @@ import type { AgentVariable } from '../model/types';
  * DISCLOSED REDESIGN — no ambient form context (see `../model/types.ts`'s
  * module doc comment): `variables` is a prop, `onChangeVariable` replaces
  * `formik.setFieldValue('version_details.variables', ...)`.
+ *
+ * **Where the rows come from.** This panel edits VALUES only, in both the
+ * baseline and this port — there is no add-a-row control, because in the
+ * baseline authoring a variable IS writing its `{{placeholder}}` in the
+ * instructions. That derivation is the half this app was missing; it now
+ * lives in `../model/useCreateAgentFormState.ts`
+ * (`deriveVariablesFromInstructions`), which is where the baseline's own
+ * `updateVariableList` sat relative to this component. The caption below is
+ * this port's one addition: the baseline shipped a bare list, and a panel
+ * whose rows appear and vanish as the instructions change needs to say why
+ * — especially now that a removed placeholder removes its row.
+ *
+ * Still `null` for an empty list, as in the baseline
+ * (`ApplicationVariables.jsx:56` — `variables?.length > 0 ? ... : null`):
+ * with derivation wired, "no rows" means "no placeholders written yet", and
+ * the panel appears the moment one is.
  */
 export interface ApplicationVariablesProps {
   readonly variables: readonly AgentVariable[] | undefined;
@@ -67,9 +85,23 @@ export function ApplicationVariables({ variables, onChangeVariable, sx }: Applic
   const accordionItems = useMemo(
     () => [
       {
-        title: 'Variables',
+        title: t('features.agents.applicationVariables.title', 'Variables'),
         content: (
           <Box sx={listSx}>
+            <Typography
+              variant="bodySmall"
+              color="text.secondary"
+            >
+              {/*
+                No literal double braces in this copy on purpose: i18next
+                parses them as an interpolation placeholder, so a
+                `{{topic}}` written here would render as an empty string.
+              */}
+              {t(
+                'features.agents.applicationVariables.derivedHint',
+                'One row per placeholder in the instructions. Write a new placeholder to add a variable; delete every use of it to remove the row.',
+              )}
+            </Typography>
             {(variables ?? []).map((variable) => (
               <VariableRow
                 key={variable.id ?? variable.name}
@@ -88,6 +120,7 @@ export function ApplicationVariables({ variables, onChangeVariable, sx }: Applic
 
   return (
     <BasicAccordion
+      data-testid="application-variables"
       showMode="left"
       slotSx={{ accordion: accordionSx, ...(sx !== undefined ? { root: sx } : {}) }}
       items={accordionItems}

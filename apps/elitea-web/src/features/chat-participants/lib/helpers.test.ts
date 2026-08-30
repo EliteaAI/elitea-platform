@@ -134,3 +134,33 @@ describe('isParticipantsEqual', () => {
     expect(isParticipantsEqual(a, b, ChatParticipantType.Applications, 'id')).toBe(true);
   });
 });
+
+describe('transformParticipant version resolution', () => {
+  const detailRow = {
+    id: 'a1',
+    name: 'RustProbe',
+    project_id: 'p1',
+    version_details: { id: 34, name: 'latest', variables: [{ name: 'topic' }] },
+    versions: [{ id: 33, name: 'v1' }, { id: 34, name: 'latest' }],
+  };
+
+  it('takes version_id from the detail row version_details for an application', () => {
+    const result = transformParticipant(ChatParticipantType.Applications, detailRow);
+    expect(result.entity_settings?.version_id).toBe(34);
+  });
+
+  it('takes version_id from the detail row version_details for a pipeline', () => {
+    const result = transformParticipant(ChatParticipantType.Pipelines, { ...detailRow, agent_type: 'pipeline' });
+    expect(result.entity_settings?.version_id).toBe(34);
+  });
+
+  it('prefers an explicit entity_settings.version_id over version_details', () => {
+    const result = transformParticipant(ChatParticipantType.Applications, { ...detailRow, entity_settings: { version_id: '7' } });
+    expect(result.entity_settings?.version_id).toBe('7');
+  });
+
+  it('leaves version_id absent on a list row, which carries no version at all', () => {
+    const listRow = { id: 'a1', name: 'RustProbe', project_id: 'p1', agent_type: 'openai' };
+    expect(transformParticipant(ChatParticipantType.Applications, listRow).entity_settings).not.toHaveProperty('version_id');
+  });
+});

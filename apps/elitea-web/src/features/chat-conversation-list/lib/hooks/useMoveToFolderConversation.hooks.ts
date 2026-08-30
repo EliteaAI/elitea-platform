@@ -8,6 +8,7 @@ import { DEFAULT_FOLDER_NAME, folderApi } from '@/entities/folder';
 import { conversationListErrorMessage } from '../errorMessage';
 import { sortConversations } from '../helpers/conversationList.helpers';
 import type { FolderListItem, NewFolderDraft } from './conversationListState.types';
+import { useLatestRef } from './useLatestRef';
 
 /**
  * Baseline: `useMoveToFolderConversation.hooks.js:113-165`'s
@@ -78,10 +79,27 @@ export function useMoveToFolderConversation(params: UseMoveToFolderConversationP
   const [editError, setEditError] = useState<unknown>(undefined);
   const [createError, setCreateError] = useState<unknown>(undefined);
 
+  /**
+   * "Does a playback conversation exist RIGHT NOW?" is answered when the move
+   * is attempted, not when the handler was built — and these two lists are the
+   * very containers this hook mutates, so a captured pair goes stale within a
+   * single gesture. `useDragAndDrop`'s `moveDraggedConversationsToTarget` awaits
+   * ONE captured `onMoveToFolderConversation` reference once per dragged
+   * conversation in sequence, so from the second item on, the guard consulted a
+   * snapshot taken before the first move; `moveTargetConversationToNewFolder`
+   * re-enters it after `await folderApi.create` for the same reason. Read live,
+   * per `processes/chat/model/useConversationSidebar.ts`'s ref doc block, which
+   * also drops both lists from every dependency array downstream of this
+   * callback.
+   */
+  const conversationsRef = useLatestRef(conversations);
+  const foldersRef = useLatestRef(folders);
+
   const hasPlaybackConversations = useCallback(
     (originalConversationId: string): boolean =>
-      hasPlaybackConversation(conversations, originalConversationId) || folders.some((folder) => hasPlaybackConversation(folder.conversations, originalConversationId)),
-    [conversations, folders],
+      hasPlaybackConversation(conversationsRef.current, originalConversationId) ||
+      foldersRef.current.some((folder) => hasPlaybackConversation(folder.conversations, originalConversationId)),
+    [conversationsRef, foldersRef],
   );
 
   const moveConversationToFolder = useCallback(

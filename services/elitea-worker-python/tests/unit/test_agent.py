@@ -1131,6 +1131,102 @@ def test_sdk_adapter_resumes_one_exact_hitl_without_deleting_checkpoint(
 
 
 @pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_resumes_a_clarification_with_its_decoded_answer(
+    application: bool,
+) -> None:
+    """The `ask_user` answer, admitted and handed over as a MAPPING.
+
+    Measured before this: `_require_in_process_hitl_resume` admitted
+    {approve, reject, edit, block_with_comment} for a decision with no
+    `guardrail_type`, and elitea-main omits that field for every root pause
+    (`json:"guardrail_type,omitempty"`), so an answered clarification came back
+    as `{"code":"UNSUPPORTED_CAPABILITY","safe_message":"The HITL action is not
+    supported."}`. The SDK's own resume handler for it
+    (`langraph_agent.py`, `guardrail_type == 'clarifying_question'`) was never
+    reached, the run never finished, and the conversation was left holding a
+    stale interrupt that refused every later turn.
+
+    The value is asserted DECODED. The SDK's `_format_answer` maps answers onto
+    the questions it asked only when it receives a mapping; handed the encoded
+    string it renders the wire format into the model's tool result instead.
+    """
+
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [("paused-task", "__interrupt__", {"type": "hitl"})]
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    answer = '{"environment": "Staging", "regions": ["eu", "us"]}'
+    payload = _request(application=application).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", "answer")
+    object.__setattr__(payload, "hitl_value", answer)
+    object.__setattr__(
+        payload,
+        "hitl_decisions",
+        [{"interrupt_id": "interrupt-1", "action": "answer", "value": answer}],
+    )
+
+    if application:
+        adapter.execute_application(payload)
+        invoke_input, _ = client.application_executor.calls[0]
+    else:
+        adapter.execute_adhoc(payload)
+        invoke_input, _ = client.adhoc_executor.calls[0]
+
+    assert memory.deleted_threads == []
+    assert invoke_input["hitl_resume"] is True
+    assert invoke_input["hitl_action"] == "answer"
+    assert invoke_input["hitl_value"] == {
+        "environment": "Staging",
+        "regions": ["eu", "us"],
+    }
+    # The decision list is the audit record of what the user sent and stays
+    # byte-identical to it.
+    assert invoke_input["hitl_decisions"] == [
+        {"interrupt_id": "interrupt-1", "action": "answer", "value": answer}
+    ]
+
+
+def test_sdk_adapter_rejects_a_clarification_answer_with_no_answer() -> None:
+    """An empty answer would resume the run with "User did not provide an answer."."""
+
+    payload = _request().payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", "answer")
+    object.__setattr__(payload, "hitl_value", "")
+    object.__setattr__(
+        payload,
+        "hitl_decisions",
+        [{"interrupt_id": "interrupt-1", "action": "answer", "value": ""}],
+    )
+
+    with pytest.raises(UnsupportedCapability, match="value is required"):
+        _adapter(_Client()).execute_application(payload)
+
+
+def test_sdk_adapter_still_rejects_an_action_outside_the_root_set() -> None:
+    """Admitting `answer` must not admit whatever else a caller invents."""
+
+    payload = _request().payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", "answer_all")
+    object.__setattr__(payload, "hitl_value", "yes")
+    object.__setattr__(
+        payload,
+        "hitl_decisions",
+        [{"interrupt_id": "interrupt-1", "action": "answer_all", "value": "yes"}],
+    )
+
+    with pytest.raises(UnsupportedCapability, match="action is not supported"):
+        _adapter(_Client()).execute_application(payload)
+
+
+@pytest.mark.parametrize("application", [True, False])
 @pytest.mark.parametrize("action", ["authorize", "skip"])
 def test_sdk_adapter_forwards_normalized_delegated_authorization_decision(
     application: bool,

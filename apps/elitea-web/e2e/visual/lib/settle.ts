@@ -12,7 +12,7 @@
  * is the point: two copies drifting apart would mean two suites claiming the
  * same guarantees while enforcing different ones.
  */
-import type { Locator, Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 
 /**
  * Regions whose content is legitimately different on every run — timestamps,
@@ -33,6 +33,50 @@ export function volatileRegions(page: Page): Locator[] {
     // nothing on the other routes is a no-op there.
     page.locator('[data-testid="analytics-date-range"]'),
   ];
+}
+
+/**
+ * The MAIN app's shell landmark — every `/app/**` shot in this suite waits on
+ * it before the shutter opens.
+ *
+ * Both halves are required: the nav link proves the permission query resolved
+ * (and so the nav is at full length), the project name proves the project list
+ * resolved (and so the switcher is not showing its "No projects" fallback).
+ *
+ * `Credentials` is chosen over the other gated items only because it is gated
+ * and unambiguous; any of `PERMISSION_GROUPS`' entries would do. `Applications`
+ * and `Skills` would NOT — `requiredPermissionsFor` returns undefined for them,
+ * so they render during load too.
+ *
+ * MEASURED (shell-allowed stall vs. full stall, on
+ * `/settings/create-personal-token`, which has no data of its own):
+ *   Credentials nav link       loaded YES  stalled no   <- permission-gated
+ *   resolved project name      loaded YES  stalled no
+ *   "No projects" fallback     loaded no   stalled YES
+ *   Applications nav link      loaded YES  stalled YES  <- ungated, no good
+ *   sidebar-create-button      loaded YES  stalled YES  <- always present
+ * The first two are the landmark; the last two are why the obvious choices are
+ * not. See `../routes.visual.spec.ts`'s header for the full method note.
+ *
+ * It lives HERE, beside `settle()` and the base mask list, for the reason that
+ * file's header gives for those: two spec files need the identical guarantee,
+ * and a spec file cannot be imported from another spec file without re-running
+ * its `test()` registrations. Two copies would be two suites claiming the same
+ * guarantee while enforcing different ones.
+ *
+ * The ADMIN SPA does NOT use this — its nav is not query-driven, so it has a
+ * different guard of its own (`adminShellSettled` in `../admin.visual.spec.ts`).
+ */
+export async function shellSettled(page: Page): Promise<void> {
+  await expect(page.getByRole('link', { name: 'Credentials', exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  // The seeded tenant's only project (`scripts/e2e-stack.sh seed`). Asserting
+  // the NAME, not merely that the switcher exists: the switcher renders either
+  // way, and its loading text is the literal "No projects".
+  await expect(page.locator('button').filter({ hasText: 'Default Project' }).first()).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 /**

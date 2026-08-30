@@ -76,6 +76,97 @@ func TestGatewayConnectionChecker_SuccessRoundTrip(t *testing.T) {
 	}
 }
 
+// TestGatewayConnectionChecker_ForwardsCloudCredentialFields proves the
+// amazon_bedrock and vertex_ai credential fields actually reach the gateway.
+//
+// They are the ONLY thing those two types authenticate with: they carry no
+// api_base and no api_key, so a body that forwarded api_base/api_key alone
+// would make the gateway answer "this credential is missing ..." for a
+// perfectly valid credential — a real failure reported for a working
+// credential, which is the mirror image of the false success #319 removed.
+// The wire field names are the gateway's own (checkConnectionRequest).
+func TestGatewayConnectionChecker_ForwardsCloudCredentialFields(t *testing.T) {
+	t.Run("amazon_bedrock", func(t *testing.T) {
+		gw := newFakeGateway(func(w http.ResponseWriter) {
+			writeGatewayJSON(w, http.StatusOK, map[string]any{"success": true, "reason": "ok"})
+		})
+		defer gw.Close()
+
+		checker := handler.NewGatewayConnectionChecker(gw.URL, http.DefaultTransport, "")
+		if _, err := checker.Check(context.Background(), "amazon_bedrock", map[string]any{
+			"aws_access_key_id":     "AKIAIOSFODNN7EXAMPLE",
+			"aws_secret_access_key": "secret-value",
+			"aws_region_name":       "eu-central-1",
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		for field, want := range map[string]string{
+			"aws_access_key_id":     "AKIAIOSFODNN7EXAMPLE",
+			"aws_secret_access_key": "secret-value",
+			"aws_region_name":       "eu-central-1",
+		} {
+			if got := gw.lastRequest[field]; got != want {
+				t.Errorf("gateway received %s=%v, want %q", field, got, want)
+			}
+		}
+	})
+
+	t.Run("vertex_ai", func(t *testing.T) {
+		gw := newFakeGateway(func(w http.ResponseWriter) {
+			writeGatewayJSON(w, http.StatusOK, map[string]any{"success": true, "reason": "ok"})
+		})
+		defer gw.Close()
+
+		checker := handler.NewGatewayConnectionChecker(gw.URL, http.DefaultTransport, "")
+		if _, err := checker.Check(context.Background(), "vertex_ai", map[string]any{
+			"vertex_project":     "elitea-test-project",
+			"vertex_location":    "us-central1",
+			"vertex_credentials": `{"type":"service_account"}`,
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if got := gw.lastRequest["vertex_project"]; got != "elitea-test-project" {
+			t.Errorf("gateway received vertex_project=%v", got)
+		}
+		if got := gw.lastRequest["vertex_location"]; got != "us-central1" {
+			t.Errorf("gateway received vertex_location=%v", got)
+		}
+		if got := gw.lastRequest["vertex_credentials"]; got != `{"type":"service_account"}` {
+			t.Errorf("gateway received vertex_credentials=%v", got)
+		}
+	})
+
+	// The service-account document reaches this handler as a nested OBJECT
+	// from one of the two screens that write it. Forwarding it as-is (rather
+	// than through a string coercion that would silently drop it) is what
+	// keeps that shape working; the gateway accepts both forms.
+	t.Run("vertex_ai credentials as a nested object", func(t *testing.T) {
+		gw := newFakeGateway(func(w http.ResponseWriter) {
+			writeGatewayJSON(w, http.StatusOK, map[string]any{"success": true, "reason": "ok"})
+		})
+		defer gw.Close()
+
+		checker := handler.NewGatewayConnectionChecker(gw.URL, http.DefaultTransport, "")
+		if _, err := checker.Check(context.Background(), "vertex_ai", map[string]any{
+			"vertex_project":     "elitea-test-project",
+			"vertex_location":    "us-central1",
+			"vertex_credentials": map[string]any{"type": "service_account"},
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		doc, ok := gw.lastRequest["vertex_credentials"].(map[string]any)
+		if !ok {
+			t.Fatalf("gateway received vertex_credentials=%#v, want the object forwarded intact", gw.lastRequest["vertex_credentials"])
+		}
+		if doc["type"] != "service_account" {
+			t.Errorf("forwarded document = %v", doc)
+		}
+	})
+}
+
 // TestGatewayConnectionChecker_FailureRoundTrip proves a gateway-reported
 // failure surfaces as ConnectionCheckResult{Success:false} with a safe
 // message, not an error and not success.

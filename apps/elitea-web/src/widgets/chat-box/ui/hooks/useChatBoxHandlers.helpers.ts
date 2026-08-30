@@ -121,10 +121,19 @@ export interface ChatBoxHandlerDeps {
  *
  * `rejected` — the turn cannot succeed and the reason is already known. The
  * socket fallback must NOT run, because it only hides the reason.
+ *
+ * `retry-later` — the server refused this attempt and said so is temporary
+ * (regeneration only: HTTP 409 `agent_regeneration_pending`, `retryable: true`,
+ * `Retry-After: 1`). Neither a fallback nor a failure: repeat the SAME request
+ * after a short wait. Mirrors `AgentStreamStartAttempt` in
+ * `features/chat-messages/model/useChatStreamRunStarters.ts`, which produces it
+ * — the two types are structurally identical on purpose, so a transport result
+ * is a `StreamStartOutcome` without a mapping step.
  */
 export type StreamStartOutcome =
   | { readonly started: true }
   | { readonly started: false; readonly reason: 'no-transport' }
+  | { readonly started: false; readonly reason: 'retry-later' }
   | { readonly started: false; readonly reason: 'rejected'; readonly message: string };
 /** The run is live server-side; the SSE transport owns it. */
 export const STREAM_STARTED: StreamStartOutcome = { started: true };
@@ -314,7 +323,34 @@ export function buildOptimisticUserMessage(questionId: string, question: string,
     ...(participantId !== undefined ? { participantId: String(participantId) } : {}),
   };
 }
-export const resolveUploadConversationId = (createdConversation: { readonly id?: string | number } | undefined, fallbackId: string | number | undefined): string | number | undefined => createdConversation?.id ?? fallbackId;
+/**
+ * The identifier this send's attachments are UPLOADED under: the
+ * conversation's UUID, and never its numeric id.
+ *
+ * WHY THE UUID, when every sibling conversation route accepts either. The
+ * upload endpoint keys the stored object `{this value}/{filename}`
+ * (`finalizeAttachment`, services/elitea-main/internal/api/v2/conversations/
+ * attachments.go), and admission then REFUSES any attachment reference whose
+ * name is not prefixed by the conversation's UUID
+ * (internal/application/agentexecution/attachments.go, `currentTurnAttachments`
+ * — "this file was uploaded to this conversation"). That check is an
+ * authorisation check, not a filing convention, so the client is the half that
+ * has to agree with it.
+ *
+ * Sending the numeric id was not a cosmetic mismatch: the upload answered 201,
+ * the start that followed was refused 400 BEFORE `admissions.Submit` ran, and
+ * the whole turn — the user's question included — was lost, while the bytes sat
+ * in the bucket until retention expired them. The server now refuses a numeric
+ * id at the upload itself rather than storing an object no turn can use.
+ *
+ * BOTH PATHS, one rule. A conversation created by this very send carries its
+ * uuid on the create response (`createdConversation.uuid`); a pre-existing one
+ * has it on `deps.conversationUuid`, which the chat page fills from the
+ * conversation-details query. Reading the created conversation's `id` — which
+ * is what this used to do — silently produced the numeric key on exactly the
+ * path a first attachment takes.
+ */
+export const resolveUploadConversationId = (createdConversation: { readonly id?: string | number; readonly uuid?: string } | undefined, fallbackUuid: string | undefined): string | undefined => createdConversation?.uuid ?? fallbackUuid;
 export const buildSendResult = (createdConversation: { readonly id?: string | number; readonly uuid?: string } | undefined): SendResult => (createdConversation ? { success: true, createdConversation } : { success: true });
 /** `chatHistory.find` for the question a given answer replies to. */
 export function findQuestionForAnswer(chatHistory: readonly ChatMessage[], answer: ChatMessage | undefined): ChatMessage | undefined {

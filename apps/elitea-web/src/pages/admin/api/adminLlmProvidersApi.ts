@@ -37,6 +37,32 @@
  *
  * Not generated: `orval` builds from `v2.yaml`, which does not describe the
  * admin-panel routes.
+ *
+ * ## The two operations on a SAVED row: `check` and `revalidate`
+ *
+ * `POST /{id}/check` dials the real provider through the same stored-check
+ * path a project's own credentials use (`elitea-main`'s `stored_check.go`,
+ * reached here via `global_providers.go`'s `CheckGlobalProviderConnection`)
+ * and writes NOTHING. `POST /{id}/revalidate` re-runs ADMISSION — do the
+ * row's references still expand, do its secrets still redeem — and persists
+ * only `status_ok`; it never dials a provider. The server keeps the two
+ * separate so a provider outage cannot withdraw every platform credential at
+ * once, and this client mirrors that: `useCheckAdminLlmProvider` never
+ * touches the query cache, `useRevalidateAdminLlmProvider` never contacts a
+ * provider.
+ *
+ * `check`'s contract is the ONE place this file has to reach past
+ * `eliteaFetch`'s throw-on-non-2xx contract: the route answers
+ * `{"success":false,"message":...}` on ITS OWN 400 ("could not verify") and
+ * 404 ("configuration not found") — that is the real, renderable answer, not
+ * a transport failure — but both are non-2xx on the wire, so `eliteaFetch`
+ * throws for them regardless (`mutator.ts`'s own contract, shared by every
+ * hook here). `useCheckAdminLlmProvider` catches exactly that documented
+ * shape and resolves with it, the same duck-typed catch
+ * `pages/credentials/useCredentialConnectionTest.ts`'s `performStoredTest`
+ * uses for the project-scoped twin of this route. Anything else — a network
+ * failure, an auth redirect, a body this build does not recognise — is left
+ * to throw, so the mutation's `isError` still fires for those.
  */
 import {
   useMutation,
@@ -46,7 +72,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query';
 
-import { eliteaFetch } from '@/shared/api/generated/mutator';
+import { EliteaApiError, eliteaFetch } from '@/shared/api/generated/mutator';
 import { unwrapBody } from '@/shared/api/unwrap';
 
 const PROVIDERS_URL = '/admin/gateway/providers';
@@ -228,5 +254,132 @@ export function useDeleteAdminLlmProvider(): UseMutationResult<void, Error, numb
       await eliteaFetch<unknown>(`${PROVIDERS_URL}/${String(id)}`, { method: 'DELETE' });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: providerKeys.all }),
+  });
+}
+
+/**
+ * One live-check verdict — `POST /{id}/check`'s response, byte for byte
+ * (`success` always present; `message` and `unsupported` only when the row's
+ * own answer carried them). This is NOT `LlmProvider.status_ok`: that column
+ * is the ADMISSION decision (do this row's references expand, do its secrets
+ * redeem), computed at write time and re-derived only by revalidate. This is
+ * a real provider round trip, run on demand, and the two can disagree in
+ * either direction — see `LlmProxyProvidersPanel.tsx` for why both are shown.
+ */
+export interface LlmProviderCheckResult {
+  readonly success: boolean;
+  readonly message?: string;
+  /** The row's type has no working checker in this build — not a failed round trip. */
+  readonly unsupported?: boolean;
+}
+
+/** `body` narrowed to `LlmProviderCheckResult`, or `undefined` for a shape that is not this route's documented contract (neither the 200 nor the 400/404 form carries anything less than a `success` boolean). */
+function asProviderCheckResult(body: unknown): LlmProviderCheckResult | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const record = body as Record<string, unknown>;
+  if (typeof record['success'] !== 'boolean') return undefined;
+  const message = record['message'];
+  return {
+    success: record['success'],
+    ...(typeof message === 'string' && message !== '' ? { message } : {}),
+    ...(record['unsupported'] === true ? { unsupported: true } : {}),
+  };
+}
+
+/**
+ * `POST /admin/gateway/providers/{id}/check` — a real provider round trip for
+ * a row that is already saved, with no request body: the secret is sealed in
+ * the public project's vault, so this screen has no copy of it to resend, and
+ * the server reads and redeems the row itself.
+ *
+ * Resolves — never throws — for the route's own documented failures (the
+ * module header explains why `eliteaFetch`'s throw has to be caught here). A
+ * transport-level failure this route did not itself answer still rejects, so
+ * `isError` is exactly the signal for "the check could not be run" as
+ * distinct from "the check ran and failed".
+ */
+export function useCheckAdminLlmProvider(): UseMutationResult<LlmProviderCheckResult, Error, number> {
+  return useMutation({
+    mutationFn: async (id: number): Promise<LlmProviderCheckResult> => {
+      try {
+        const body = unwrapBody(
+          await eliteaFetch<unknown>(`${PROVIDERS_URL}/${String(id)}/check`, { method: 'POST' }),
+        );
+        const result = asProviderCheckResult(body);
+        if (result !== undefined) return result;
+      } catch (error) {
+        if (error instanceof EliteaApiError && error.failure.kind === 'http') {
+          const result = asProviderCheckResult(error.failure.body);
+          if (result !== undefined) return result;
+        }
+        throw error;
+      }
+      throw new Error(
+        `admin llm provider check: unrecognised response shape for configuration ${String(id)}`,
+      );
+    },
+  });
+}
+
+/** The fields of `POST /{id}/revalidate`'s response this panel reads — see `useRevalidateAdminLlmProvider` for why the rest of that object is not typed here. */
+export interface LlmProviderRevalidateResult {
+  readonly status_ok: boolean;
+  readonly status_logs: string;
+}
+
+function asRevalidateResult(body: unknown): LlmProviderRevalidateResult {
+  const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+  return {
+    status_ok: record['status_ok'] === true,
+    status_logs: typeof record['status_logs'] === 'string' ? record['status_logs'] : '',
+  };
+}
+
+/**
+ * `POST /admin/gateway/providers/{id}/revalidate` — re-runs admission for a
+ * saved row and persists `status_ok`. No provider is contacted.
+ *
+ * The response is the full `Configuration` row the delegated Go handler
+ * (`revalidate.go`) answers with — `{id, name, type, section, data,
+ * status_ok, ...}` — NOT the `LlmProvider` shape `useAdminLlmProviders` lists
+ * (`elitea_title`/`endpoint`/`settings`/`secrets`). The two disagree on field
+ * names (`name` vs `elitea_title`) and the listing's shape is a
+ * SERVER-SIDE REDACTION of `data` that this route's response never applies,
+ * so decoding the whole object into a row would either drop fields silently
+ * or need a second redaction layer here for a response this panel reads
+ * exactly one real answer from. `status_ok` (and `status_logs`, the
+ * admission decision's own account of why) are read, and the query cache is
+ * PATCHED rather than replaced with the response — everything else about the
+ * row (its endpoint, its settings, its secrets) came from the listing, and
+ * revalidation does not touch any of it.
+ */
+export function useRevalidateAdminLlmProvider(): UseMutationResult<
+  LlmProviderRevalidateResult,
+  Error,
+  number
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number): Promise<LlmProviderRevalidateResult> =>
+      asRevalidateResult(
+        unwrapBody(await eliteaFetch<unknown>(`${PROVIDERS_URL}/${String(id)}/revalidate`, { method: 'POST' })),
+      ),
+    onSuccess: (result, id) => {
+      // A patch, not an invalidation: the listing's OWN read redacts `data`
+      // into `endpoint`/`settings`/`secrets`, which this response does not
+      // carry at all, so refetching is the only way to get those back — this
+      // way the row keeps them and only the two admission fields move.
+      queryClient.setQueryData<LlmProviderList>(providerKeys.all, (current) => {
+        if (current === undefined) return current;
+        return {
+          ...current,
+          items: current.items.map((item) =>
+            item.id === id
+              ? { ...item, status_ok: result.status_ok, status_logs: result.status_logs }
+              : item,
+          ),
+        };
+      });
+    },
   });
 }

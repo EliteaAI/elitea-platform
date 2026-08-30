@@ -21,17 +21,36 @@ export interface MessageItemWire {
   readonly item_details?: { readonly content?: string };
 }
 
-/** A `users` array entry (lines 47, 53-62, 67-68, 72). */
+/**
+ * A `users` array entry (lines 47, 53-62, 67-68, 72). `id` is the
+ * chat_participants row id; the Go participants payload serialises it as a
+ * NUMBER while socket-era payloads carried strings, so both spellings are
+ * wire truth and every lookup against it compares through `String(...)`.
+ */
 export interface MessageAuthorWire {
-  readonly id: string;
+  readonly id: string | number;
   readonly meta?: { readonly user_name?: string; readonly user_avatar?: string };
-  readonly entity_meta?: { readonly email?: string; readonly id?: string };
+  readonly entity_meta?: { readonly email?: string; readonly id?: string | number };
 }
 
-/** A `participants` array entry (lines 48, 74-78, 128-129, 205). */
+/**
+ * A `participants` array entry (lines 48, 74-78, 128-129, 205).
+ *
+ * `entity_meta` carries the AUTH USER id (`entity_meta.id`), which is a
+ * different number from `id` (the chat_participants ROW id) — measured on the
+ * live stack, participant row `1` carries `entity_meta.id: 6`. It is declared
+ * here because the conversation-details payload serves it on every
+ * participant and this app already relies on that: `convertMessagesToChatHistory`
+ * and `useSyncChatMessage`'s `filterUserParticipants` both hand the SAME
+ * participant objects to `normaliseUserMessage` as its `users:
+ * MessageAuthorWire[]` argument, whose `userOptionalFields` reads
+ * `entity_meta.id` off them. Same optionality and same `string | number`
+ * union as `MessageAuthorWire` above, for the same reason.
+ */
 export interface MessageParticipantWire {
   readonly id: string;
   readonly meta?: { readonly tools?: readonly MessageParticipantToolWire[]; readonly user_name?: string; readonly user_avatar?: string };
+  readonly entity_meta?: { readonly email?: string; readonly id?: string | number };
 }
 
 /** `foundParticipant.meta.tools[]` (line 205). */
@@ -128,16 +147,34 @@ export interface MessageGroupMetaWire {
 }
 
 /**
- * A persisted `message_group` row (lines 36-46, 112-126). `id`/`reply_to_id`/
- * `question_id` are only ever equality-compared in the source (never
- * arithmetic), so their wire numeric-vs-string type is genuinely
- * unevidenced — kept as the defensive `string | number` union rather than
- * guessing one.
+ * A persisted `message_group` row (lines 36-46, 112-126).
+ *
+ * `id`/`reply_to_id`/`question_id` are no longer an unevidenced guess: BOTH
+ * spellings are wire truth, and ONE payload carries both. The transcript
+ * route `GET /elitea_core/messages/prompt_lib/{project}/{conversation}`
+ * answers `{"id": "1121", ...}` beside `{"id": "1122", "reply_to_id": 1121}`
+ * — measured on the live stack, project 90106 conversation 471 — because Go
+ * types the row id `Message.ID string` (`strconv.Itoa` of the DB int) and the
+ * FK `ReplyToID *int`
+ * (services/elitea-main/internal/api/v2/conversations/handler.go:41,57),
+ * while the other producer, `ListMessageGroups`, numbers BOTH
+ * (internal/infra/db/repos/conversations.go:1618,1631).
+ *
+ * No producer emits `question_id` on a persisted row at all — the only writer
+ * in this app is `pages/chat/useChatPageData.ts`'s adapter, which synthesises
+ * it from a sibling row's `id` and so carries whichever spelling that row
+ * had. So the union stays, and every comparison against these three goes
+ * through `isMessageRow` in lib/normalise.ts rather than `===`.
  */
 export interface MessageGroupWire {
   readonly id: string | number;
   readonly uuid: string;
-  readonly author_participant_id?: string;
+  /**
+   * The author's chat_participants row id. The Go transcript endpoint
+   * (`GET /elitea_core/messages/...`) serialises it as a NUMBER; the
+   * message-groups shape carried strings. Absent = the row states no author.
+   */
+  readonly author_participant_id?: string | number;
   readonly content: string;
   readonly message_items?: readonly MessageItemWire[];
   readonly created_at: string;
@@ -146,7 +183,7 @@ export interface MessageGroupWire {
   readonly question_id?: string | number;
   readonly task_id?: string;
   readonly is_streaming?: boolean;
-  readonly sent_to_id?: string;
+  readonly sent_to_id?: string | number;
   readonly sent_to?: { readonly entity_name?: string };
   readonly likes?: number;
   readonly meta?: MessageGroupMetaWire;

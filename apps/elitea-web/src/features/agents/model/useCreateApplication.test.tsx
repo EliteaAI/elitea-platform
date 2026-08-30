@@ -26,6 +26,7 @@ const baseVersion: CreateApplicationInput['version'] = {
   conversationStarters: [],
   variables: [],
   meta: { step_limit: 25, internal_tools: ['internal_mcp'] },
+  llmSettings: undefined,
   tags: [],
   tools: [],
   pipelineSettings: undefined,

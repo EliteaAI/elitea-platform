@@ -29,6 +29,7 @@
  * `useState`, anything) and supplies `values`/`onFieldChange` however it
  * likes.
  */
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 
 /** One `version_details.variables[]` entry — `apps/elitea-ui/src/components/VariableList.jsx:7-24`. */
 export interface AgentVariable {
@@ -78,6 +79,12 @@ interface AgentVersionDetails {
   readonly variables?: readonly AgentVariable[] | undefined;
   readonly tools?: readonly AgentToolRef[] | undefined;
   readonly meta?: AgentVersionMeta | undefined;
+  /**
+   * The model this version runs on. Typed as the shared `AgentLlmSettings`
+   * rather than an opaque record so the form cannot author a key the worker
+   * refuses — see `shared/api/agentLlmSettings.ts` for the closed key list.
+   */
+  readonly llm_settings?: AgentLlmSettings | undefined;
 }
 
 /** The full `CreateAgentForm`-level draft — `formik.values` at the top level. */

@@ -37,9 +37,19 @@ describe('getConfirmContent', () => {
 });
 
 describe('cleanupNodeReferences', () => {
-  it('clears a transition pointing at the deleted node', () => {
+  it('repairs a transition pointing at the deleted node to END, not to blank', () => {
+    // `validate_target('')` fails (`router.rs:331` via `yaml.rs:372`), so a
+    // blanked transition refuses the whole document; END is always legal.
     const result = cleanupNodeReferences({ id: 'A', transition: 'B' }, 'B');
-    expect(result.transition).toBe('');
+    expect(result.transition).toBe('END');
+  });
+
+  it('leaves a node that declares no transition without one (does not materialise the key)', () => {
+    // `RawRouterNodeDefinition` is `#[serde(deny_unknown_fields)]` and has no
+    // `transition` (`router.rs:31-43`), so injecting `transition: ''` on a
+    // Router while deleting an unrelated node refused the whole pipeline.
+    const result = cleanupNodeReferences({ id: 'R', type: 'router', routes: ['L'], default_output: 'END' }, 'Orphan');
+    expect('transition' in result).toBe(false);
   });
 
   it('leaves a transition pointing elsewhere untouched', () => {
@@ -47,39 +57,56 @@ describe('cleanupNodeReferences', () => {
     expect(result.transition).toBe('C');
   });
 
-  it('clears condition.default_output when it references the deleted node', () => {
+  it('repairs condition.default_output to END when it references the deleted node', () => {
     const result = cleanupNodeReferences({ id: 'A', type: 'condition', condition: { default_output: 'B' } }, 'B');
-    expect(result.condition?.default_output).toBe('');
+    expect(result.condition?.default_output).toBe('END');
   });
 
-  it('treats a condition with no default_output at all as already blank (does not throw, stays blank)', () => {
+  it('leaves a condition that declares no default_output absent (does not materialise the key)', () => {
     const result = cleanupNodeReferences({ id: 'A', type: 'condition', condition: {} }, 'B');
-    expect(result.condition?.default_output).toBe('');
+    expect(result.condition?.default_output).toBeUndefined();
   });
 
-  it('treats a decision with no default_output at all as already blank (does not throw, stays blank)', () => {
+  it('leaves a legacy decision that declares no default_output absent', () => {
     const result = cleanupNodeReferences({ id: 'D', decision: {} }, 'B');
-    expect(result.decision?.default_output).toBe('');
+    expect(result.decision?.default_output).toBeUndefined();
   });
 
-  it('for a new-style Decision node with no default_output field at all, does not throw and leaves it blank', () => {
+  it('for a new-style Decision node with no default_output field, leaves the key absent', () => {
+    // `decision.rs:48` gives `default_output` `#[serde(default = "default_output")]`
+    // = "END", so an absent key is legal; materialising `''` made an already-legal
+    // stored pipeline unsaveable when an unrelated node was deleted.
     const result = cleanupNodeReferences({ id: 'D2', type: 'decision' }, 'B');
-    expect(result.default_output).toBe('');
+    expect('default_output' in result).toBe(false);
   });
 
-  it('for a Hitl node with no routes field at all, does not throw (treats it as an empty route map)', () => {
+  it('for a Hitl node with no routes field at all, does not throw and does not invent a route map', () => {
     const result = cleanupNodeReferences({ id: 'H', type: 'hitl' }, 'B');
-    expect(result.routes).toEqual({});
+    expect(result.routes).toBeUndefined();
     expect(result.transition).toBeUndefined();
   });
 
-  it('for a Hitl node, blanks any route pointing at the deleted node and clears transition', () => {
+  it('for a Hitl node, repairs a route pointing at the deleted node to END and clears transition', () => {
+    // `validate_routes` (`hitl.rs:459-466`) refuses `''`; `approve: 'END'` still
+    // counts towards `has_action` (`hitl.rs:468-472`), so the node stays saveable.
     const result = cleanupNodeReferences(
       { id: 'H', type: 'hitl', routes: { approve: 'B', edit: 'C', reject: 'END' } },
       'B',
     );
-    expect(result.routes).toEqual({ approve: '', edit: 'C', reject: 'END' });
+    expect(result.routes).toEqual({ approve: 'END', edit: 'C', reject: 'END' });
     expect(result.transition).toBeUndefined();
+  });
+
+  it('for a Hitl node, REMOVES an edit route pointing at the deleted node rather than pointing it at END', () => {
+    // An `edit` route equal to END does not count towards `has_action`
+    // (`hitl.rs:470`), and `HITLNode.parts.tsx:352` reads any truthy `routes.edit`
+    // as configured, so `'END'` would paint the red "Provide an edit state key"
+    // error on a node whose neighbour was merely deleted.
+    const result = cleanupNodeReferences(
+      { id: 'H', type: 'hitl', routes: { approve: 'END', edit: 'B' } },
+      'B',
+    );
+    expect(result.routes).toEqual({ approve: 'END' });
   });
 
   it('leaves a router node\'s inline condition untouched (the `type !== Router` guard on the condition branch)', () => {
@@ -93,14 +120,14 @@ describe('cleanupNodeReferences', () => {
     expect(result.transition).toBe('X');
   });
 
-  it('clears decision.default_output when it references the deleted node', () => {
+  it('repairs decision.default_output to END when it references the deleted node', () => {
     const result = cleanupNodeReferences({ id: 'D', decision: { default_output: 'B' } }, 'B');
-    expect(result.decision?.default_output).toBe('');
+    expect(result.decision?.default_output).toBe('END');
   });
 
-  it('for a new-style Decision node (default_output directly on the node), clears it when it references the deleted node', () => {
+  it('for a new-style Decision node (default_output directly on the node), repairs it to END', () => {
     const result = cleanupNodeReferences({ id: 'D2', type: 'decision', default_output: 'B' }, 'B');
-    expect(result.default_output).toBe('');
+    expect(result.default_output).toBe('END');
   });
 
   it('for a new-style Decision node, leaves default_output untouched when it points elsewhere', () => {
@@ -136,7 +163,7 @@ describe('handleNormalNodeDeletion', () => {
   it('cleans up references from every remaining node', () => {
     const doc: YamlPipelineDocument = { nodes: [{ id: 'A' }, { id: 'B', transition: 'A' }] };
     const result = handleNormalNodeDeletion(flowNode('A'), doc);
-    expect(result.nodes?.[0]).toMatchObject({ id: 'B', transition: '' });
+    expect(result.nodes?.[0]).toMatchObject({ id: 'B', transition: 'END' });
   });
 });
 
@@ -161,14 +188,26 @@ describe('processEdgeDeletion', () => {
     expect(result.flowNodes.map(n => n.id)).toEqual(['A']);
   });
 
-  it('edge from a HITL handle: blanks the named route', () => {
+  it('edge from a HITL handle: repairs the named route to END', () => {
     const flowNodes = [flowNode('H', 'hitl'), flowNode('B')];
     const doc: YamlPipelineDocument = { nodes: [{ id: 'H', type: 'hitl', routes: { approve: 'B' } }, { id: 'B' }] };
     const edge: FlowEdge = { id: 'e1', source: 'H', target: 'B', sourceHandle: 'hitlNode_approve' };
 
     const result = processEdgeDeletion(edge, flowNodes, doc, flowNodes);
 
-    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'H')?.routes).toEqual({ approve: '' });
+    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'H')?.routes).toEqual({ approve: 'END' });
+  });
+
+  it('edge from a HITL edit handle: REMOVES the edit route rather than pointing it at END', () => {
+    const flowNodes = [flowNode('H', 'hitl'), flowNode('B')];
+    const doc: YamlPipelineDocument = {
+      nodes: [{ id: 'H', type: 'hitl', routes: { approve: 'END', edit: 'B' } }, { id: 'B' }],
+    };
+    const edge: FlowEdge = { id: 'e1', source: 'H', target: 'B', sourceHandle: 'hitlNode_edit' };
+
+    const result = processEdgeDeletion(edge, flowNodes, doc, flowNodes);
+
+    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'H')?.routes).toEqual({ approve: 'END' });
   });
 
   it('edge from a HITL handle whose action strips to empty: leaves the yaml untouched', () => {
@@ -291,14 +330,14 @@ describe('processEdgeDeletion', () => {
     expect(result.yamlJsonObject.nodes?.find(n => n.id === 'Dec')?.nodes).toEqual(['C']);
   });
 
-  it('edge from a new-style decision node on the default-output handle: blanks default_output directly on the node', () => {
+  it('edge from a new-style decision node on the default-output handle: repairs default_output to END', () => {
     const flowNodes = [flowNode('Dec', 'decision'), flowNode('B')];
     const doc: YamlPipelineDocument = { nodes: [{ id: 'Dec', type: 'decision', default_output: 'B' }] };
     const edge: FlowEdge = { id: 'e1', source: 'Dec', target: 'B', sourceHandle: 'decision_default_output' };
 
     const result = processEdgeDeletion(edge, flowNodes, doc, flowNodes);
 
-    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'Dec')?.default_output).toBe('');
+    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'Dec')?.default_output).toBe('END');
   });
 
   it('edge from a router handle on a non-default output: removes the target from routes[]', () => {
@@ -311,13 +350,13 @@ describe('processEdgeDeletion', () => {
     expect(result.yamlJsonObject.nodes?.find(n => n.id === 'R')?.routes).toEqual(['C']);
   });
 
-  it('edge from a router handle on the default output: blanks default_output', () => {
+  it('edge from a router handle on the default output: repairs default_output to END', () => {
     const flowNodes = [flowNode('R', 'router'), flowNode('B')];
     const doc: YamlPipelineDocument = { nodes: [{ id: 'R', routes: ['B'] }] };
     const edge: FlowEdge = { id: 'e1', source: 'R', target: 'B', sourceHandle: 'routerNode_default_output' };
 
     const result = processEdgeDeletion(edge, flowNodes, doc, flowNodes);
 
-    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'R')?.default_output).toBe('');
+    expect(result.yamlJsonObject.nodes?.find(n => n.id === 'R')?.default_output).toBe('END');
   });
 });

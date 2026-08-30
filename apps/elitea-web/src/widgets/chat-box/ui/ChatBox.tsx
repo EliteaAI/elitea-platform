@@ -39,7 +39,7 @@ import {
   resolveConversationStarters,
 } from './ChatBox.helpers';
 import type { ChatBoxEditorCallbacks } from './ChatBox.helpers';
-import type { ChatBoxConversationProp } from './ChatBox.props';
+import type { ChatBoxAgentEventSink, ChatBoxConversationProp } from './ChatBox.props';
 import { unwrapChatBoxConversation } from './ChatBox.props';
 import type { ChatBoxHandle } from './ChatBox.types';
 import { buildChatBoxInputSlots } from './ChatBoxInputSlots';
@@ -48,7 +48,7 @@ import { ChatBoxDeleteModal } from './ChatBoxDeleteModal';
 import { ChatEmptyGreeting } from './ChatEmptyGreeting';
 import { chatColumnSx, chatShellSx } from './ChatBox.layout';
 import { useChatBoxData } from './hooks/useChatBoxData';
-import { useChatBoxState } from './hooks/useChatBoxState';
+import { useChatBoxState, type ConversationStarter } from './hooks/useChatBoxState';
 import { useChatBoxHandlers } from './hooks/useChatBoxHandlers';
 import { useChatBoxParticipant } from './hooks/useChatBoxParticipant';
 import { useChatBoxModelSelection } from './hooks/useChatBoxModelSelection';
@@ -57,6 +57,7 @@ import { useChatBoxVersioning } from './hooks/useChatBoxVersioning';
 import { useChatBoxMentions } from './hooks/useChatBoxMentions';
 import { useChatBoxActions } from './hooks/useChatBoxActions';
 import { useAddEntityParticipant } from './hooks/useAddEntityParticipant';
+import { useActiveParticipantSelection } from './hooks/useActiveParticipantSelection';
 import { useSessionDeclinedMcpServersRef } from './hooks/useSessionDeclinedMcpServersRef';
 import { useChatBoxSend } from './hooks/useChatBoxSend';
 import { useStableRef } from './hooks/useStableRef';
@@ -82,7 +83,7 @@ export interface ChatBoxProps {
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly participant?: { readonly active?: unknown; readonly onChange?: (participant: unknown) => void };
   readonly setChatHistory?: React.Dispatch<React.SetStateAction<readonly unknown[]>>;
-  readonly conversationStarters?: readonly { id: string; text: string }[];
+  readonly conversationStarters?: readonly ConversationStarter[];
   readonly isAgentsPage?: boolean;
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly llm?: { readonly settings?: Readonly<Record<string, unknown>>; readonly onSetSettings?: (settings: Readonly<Record<string, unknown>>) => void };
@@ -94,6 +95,7 @@ export interface ChatBoxProps {
     readonly editorCallbacks?: ChatBoxEditorCallbacks;
     /** Real lists for the composer's "+" menu — see `processes/chat/model/usePlusMenuEntities.ts`, which is the only layer allowed to fetch them. */
     readonly entitySubmenus?: PlusChatButtonEntitySubmenus;
+    readonly onAgentEvent?: ChatBoxAgentEventSink | undefined; // The run of the turn, not only its answer — see `ChatBoxAgentEventSink`.
   };
 }
 
@@ -117,13 +119,13 @@ const ChatBoxInner = memo(function ChatBox({
   onDelete,
   extensions,
 }: ChatBoxProps) {
-  const { editorCallbacks, entitySubmenus } = extensions ?? {};
-  const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
+  const { editorCallbacks, entitySubmenus, onAgentEvent } = extensions ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
   const { activeConversation, isLoadingConversation, onConversationCreated } = unwrapChatBoxConversation(conversation);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
+  const { activeParticipant, onChangeParticipant } = useActiveParticipantSelection(participant, conversationParticipants);
 
   // Data layer
   const data = useChatBoxData(buildChatBoxDataParams({ activeConversation, activeParticipant, projectId, userId, userName, userAvatar, isAgentsPage }));
@@ -180,7 +182,6 @@ const ChatBoxInner = memo(function ChatBox({
   const { mutateAsync: deleteMessageMutateAsync } = conversationApi.useDeleteMessage();
   const { mutateAsync: deleteAllMessagesMutateAsync } = conversationApi.useDeleteAllMessages();
   const { mutateAsync: stopChatTaskMutateAsync } = conversationApi.useStopTask();
-  const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant });
 
   // Everything one send needs: the SSE transport (issue #93) plus the
   // create-conversation-first and upload-attachments-first adapters.
@@ -190,8 +191,10 @@ const ChatBoxInner = memo(function ChatBox({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
     setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage, conversationUuid,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
-    llmSettings, model: data.selectedModel, userId,
+    llmSettings, model: data.selectedModel, userId, onAgentEvent,
   });
+  // After `useChatBoxSend`: a "+" pick on a chat with no conversation has to create one first, and it reuses the adapter the first send would have used, so an eagerly created conversation is seeded exactly like a send-created one.
+  const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant, createConversation: () => createConversationForSend(''), ...(onConversationCreated ? { onConversationCreated } : {}) });
   // `isStreamingNow` is derived from the PERSISTED message groups, which carry
   // no in-flight flag while an SSE turn runs — without the transport's own flag
   // the composer never offers Stop for the very turn Stop exists to cancel (#328).
@@ -325,7 +328,7 @@ const ChatBoxInner = memo(function ChatBox({
       <Box sx={chatColumnSx(isEmptyConversation)}>
         <ChatMessageList
           emptyState={<ChatEmptyGreeting userName={userName} />}
-          chatHistory={messages} isStreaming={isStreaming} userId={userId ?? ''}
+          chatHistory={messages} isStreaming={isStreaming} userId={userId ?? ''} projectId={projectIdString}
           messageActions={{
             onCopyToClipboard: handleCopy,
             onDeleteAnswer: handleDeleteAnswer,

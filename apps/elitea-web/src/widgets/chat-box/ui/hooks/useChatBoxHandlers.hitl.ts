@@ -14,15 +14,53 @@ import type { ChatMessage } from '@/features/chat-messages';
 
 import type { HitlInterruptAction } from './useChatBoxHandlers.helpers';
 
-/** The four `hitl_action` values the Go route admits (`currentRootHITLAction`). */
-const ROOT_HITL_ACTIONS: readonly string[] = ['approve', 'reject', 'edit', 'block_with_comment'];
+/** The five `hitl_action` values the Go route admits (`currentRootHITLAction`). */
+const ROOT_HITL_ACTIONS: readonly string[] = ['approve', 'reject', 'edit', 'block_with_comment', 'answer'];
 
-/** One entry of the `hitl_decisions` array. The route admits these four keys and no other. */
+/** The actions whose decision carries a `hitl_value`; the route REFUSES an empty one. */
+const VALUED_HITL_ACTIONS: readonly string[] = ['edit', 'block_with_comment', 'answer'];
+
+/**
+ * The `hitl_value` of a clarification answer — STRUCTURED, not prose.
+ *
+ * `currentHITLValue` (services/elitea-main/internal/api/v2/agentexecution/
+ * route.go) admits a JSON object or a JSON string for `answer` and refuses
+ * anything else, then canonicalises what it admitted; the worker parses that
+ * canonical text back with `AskUserRequest::format_answer`. The card encodes
+ * its `{questionId: answer}` object into `value` because every layer between
+ * the two types the value as a string, so it is decoded here — sending the
+ * ENCODED string would reach the model as one JSON blob quoted at it rather
+ * than as the answers to its questions.
+ *
+ * An input that is not JSON (or is JSON of a shape the route refuses, e.g. an
+ * array) travels on as the plain string it already is: that is the one other
+ * shape the route admits, and it beats refusing the resume outright.
+ */
+function hitlAnswerValue(raw: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'string') return parsed;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed;
+  } catch {
+    return raw;
+  }
+  return raw;
+}
+
+/**
+ * One entry of the `hitl_decisions` array. The route admits these four keys
+ * and no other.
+ *
+ * `value` is `unknown` rather than `string` because the route runs the SAME
+ * `currentHITLValue` over a decision's value as over the root `hitl_value`:
+ * an `answer` decision carries the structured answers, everything else a
+ * string.
+ */
 interface HitlDecision {
   readonly interrupt_id: string;
   readonly tool_call_id: string;
   readonly action: string;
-  readonly value: string;
+  readonly value: unknown;
 }
 
 export interface HitlContinueBodyParams {
@@ -82,7 +120,10 @@ function hitlFanoutDecision(params: HitlContinueBodyParams): HitlDecision | unde
     interrupt_id: params.interruptId,
     tool_call_id: params.action.toolCallId ?? '',
     action: params.action.action,
-    value: params.action.value ?? '',
+    value:
+      params.action.action === 'answer'
+        ? hitlAnswerValue(params.action.value ?? '')
+        : (params.action.value ?? ''),
   };
 }
 
@@ -106,8 +147,13 @@ export function buildHitlContinueBody(params: HitlContinueBodyParams): Record<st
     return decision === undefined ? undefined : { ...base, hitl_decisions: [decision] };
   }
   if (!ROOT_HITL_ACTIONS.includes(params.action.action)) return undefined;
-  const withValue = params.action.action === 'edit' || params.action.action === 'block_with_comment'
-    ? { hitl_value: params.action.value ?? '' }
+  const withValue = VALUED_HITL_ACTIONS.includes(params.action.action)
+    ? {
+        hitl_value:
+          params.action.action === 'answer'
+            ? hitlAnswerValue(params.action.value ?? '')
+            : (params.action.value ?? ''),
+      }
     : {};
   return { ...base, hitl_action: params.action.action, ...withValue };
 }

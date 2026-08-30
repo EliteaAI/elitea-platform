@@ -42,6 +42,7 @@ import { load as loadYaml } from 'js-yaml';
 import { LAYOUT_VERSION, ORIENTATION } from '../lib/flow-editor/constants/flowEditor.constants';
 import { doLayout } from '../lib/flow-editor/helpers/layout.helpers';
 import { parseYaml } from '../lib/flow-editor/helpers/parsePipeline.helpers';
+import { judgeLivePipelineGraph, type LivePipelineGraphAdmission } from '../lib/livePipelineGraphAdmission';
 import type { YamlPipelineDocument } from '../lib/flow-editor/helpers/pipelineFlow.types';
 import type { FlowEdge, FlowNode } from '../lib/flow-editor/reactFlowTypes';
 import { usePipelineEditorStore } from './pipelineEditorStore';
@@ -51,6 +52,22 @@ import { usePipelineYamlStore } from './pipelineYamlStore';
 export interface PipelineGraphDraft {
   /** The live pipeline YAML — the baseline's `instructions: yamlCode` for a pipeline save. */
   readonly instructions: string;
+  /**
+   * Whether the native runtime would accept `instructions`, judged on the
+   * SAME string this reader is about to hand to the PUT.
+   *
+   * It rides here rather than on its own hook because the caller that needs
+   * it — `pages/pipelines/lib/useEditPipelineForm.ts`'s `handleSave` — needs
+   * it at CLICK time and must not subscribe the whole editor page to every
+   * keystroke in the YAML editor (this module's own reason for returning a
+   * reader instead of a value). The save gate's RHF `root.*` veto is not
+   * enough on its own: `handleSubmit` deletes every `root.*` error before
+   * deciding whether to submit (react-hook-form 7.83,
+   * `dist/index.esm.mjs:3002`), so the veto is enforced only by the disabled
+   * button — and the button can be enabled while the gate is unmounted, which
+   * `ConfigurationTab` does whenever the detail refetch errors.
+   */
+  readonly admission: LivePipelineGraphAdmission;
   readonly pipelineSettings: {
     readonly nodes: readonly unknown[];
     readonly edges: readonly unknown[];
@@ -105,6 +122,7 @@ export function usePipelineGraphDraft(): () => PipelineGraphDraft | undefined {
     const { nodes, edges } = calculateNodesAndEdges(yamlCode, flowNodes);
     return {
       instructions: yamlCode,
+      admission: judgeLivePipelineGraph(yamlCode),
       pipelineSettings: {
         nodes,
         edges,

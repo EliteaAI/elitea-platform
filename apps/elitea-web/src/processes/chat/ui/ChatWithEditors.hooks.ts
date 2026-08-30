@@ -1,8 +1,8 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 
 import { agentEditorHooks } from '@/features/agents';
 import { useEditPipeline, usePipelineCreation } from '@/features/pipelines';
-import { toolkitEditorHooks } from '@/features/toolkits';
+import { toolkitEditorHooks, useToolkitCreate, useToolkitEdit } from '@/features/toolkits';
 import type { Participant } from '@/entities/participant';
 import { useEditorStateStore } from '@/shared/lib/editorState';
 import { t } from '@/shared/i18n';
@@ -156,7 +156,17 @@ function useToolkitEditing(isEditingToolkit: boolean) {
     addNewParticipants: async () => {},
   });
 
-  return { editToolkit, toolkitCreation };
+  // The REAL create/save mutations for `<ToolkitEditor>`'s non-optional
+  // `deps.createToolkit`/`deps.saveToolkit`. These used to be a
+  // reject-with-"no backend endpoint yet" stub — stale since Phase 1c made
+  // both generated operations real (`features/toolkits/api/toolkits.ts`'s
+  // CORRECTION; `pages/toolkits` already saves through the same hooks), so
+  // every toolkit create/save FROM CHAT failed by construction.
+  const createToolkit = useToolkitCreate();
+  const saveToolkit = useToolkitEdit();
+  const toolkitWriteDeps = useMemo(() => ({ createToolkit, saveToolkit }), [createToolkit, saveToolkit]);
+
+  return { editToolkit, toolkitCreation, toolkitWriteDeps };
 }
 
 export interface ChatWithEditorsWiring {
@@ -193,6 +203,8 @@ export interface ChatWithEditorsWiring {
   readonly pipelineCreation: ReturnType<typeof usePipelineEditing>['pipelineCreation'];
   readonly editToolkit: ReturnType<typeof useToolkitEditing>['editToolkit'];
   readonly toolkitCreation: ReturnType<typeof useToolkitEditing>['toolkitCreation'];
+  /** The real generated create/save mutations for `<ToolkitEditor deps>` — see `useToolkitEditing`'s own comment. */
+  readonly toolkitWriteDeps: ReturnType<typeof useToolkitEditing>['toolkitWriteDeps'];
   readonly mutex: ReturnType<typeof useEditorMutex>;
   readonly handleShowAgentEditor: (participant: Participant) => void;
   readonly handleShowPipelineEditor: (participant: Participant) => void;
@@ -228,7 +240,7 @@ export function useChatWithEditors(): ChatWithEditorsWiring {
 
   const { editAgent, agentCreation } = useAgentEditing(isEditingAgent);
   const { editPipeline, pipelineCreation } = usePipelineEditing(isEditingPipeline);
-  const { editToolkit, toolkitCreation } = useToolkitEditing(isEditingToolkit);
+  const { editToolkit, toolkitCreation, toolkitWriteDeps } = useToolkitEditing(isEditingToolkit);
 
   const canvasEditorRef = useRef<{ readonly save?: () => void } | null>(null);
   const onShowCanvasEditor = useCallback((_info: CanvasEditPayload) => {}, []);
@@ -319,6 +331,7 @@ export function useChatWithEditors(): ChatWithEditorsWiring {
     pipelineCreation,
     editToolkit,
     toolkitCreation,
+    toolkitWriteDeps,
     mutex,
     handleShowAgentEditor,
     handleShowPipelineEditor,

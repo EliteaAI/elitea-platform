@@ -17,6 +17,34 @@ import type { ChatMessage } from './convertMessagesToChatHistory';
 import { SocketMessageType, type ChatStreamFrame } from './chatStreamFrame';
 
 /**
+ * Match a roster participant against an id the frame states.
+ *
+ * String-normalised on BOTH sides, exactly as the persisted path does
+ * (`entities/message/lib/normalise.ts`'s `normaliseUserMessage`:
+ * `String(user.id) === String(messageGroup.author_participant_id)`). The two
+ * spellings genuinely coexist on the wire — the Go payloads state participant
+ * ids as NUMBERS while the socket-era payloads this frame vocabulary was
+ * captured from stated them as STRINGS, which is why `ChatStreamFrame` types
+ * `author_participant_id`/`sent_to_id` as `string | number` while
+ * `MessageParticipantWire.id` is typed `string`. A strict `===` across the two
+ * resolves NO participant, silently.
+ *
+ * That single comparison governs three things together, so its failure is not
+ * a cosmetic degradation: `name`, `avatar` AND `userId` all come off the
+ * participant it finds, and a missing `userId` is what the edit and delete
+ * controls gate on (`ChatMessageList`, `entities/message`'s
+ * `canDeleteMessage`) — the live question loses its author's name, its avatar
+ * and its own controls at once.
+ *
+ * `undefined` never matches: a frame that states no id must resolve nobody,
+ * not a participant whose id stringifies to `"undefined"`.
+ */
+function isParticipant(participantId: string | number | undefined, statedId: string | number | undefined): boolean {
+  if (participantId === undefined || statedId === undefined) return false;
+  return String(participantId) === String(statedId);
+}
+
+/**
  * Reduce one message-sync frame, or return `undefined` for a frame this family
  * does not own so the dispatcher can offer it to the next one.
  */
@@ -36,9 +64,32 @@ export function reduceMessageSyncFrame(
       const id = frame.uuid;
       if (!id) return history;
       const participants = context.participants ?? [];
-      const author = participants.find((participant) => participant.id === frame.author_participant_id);
-      const sentTo = participants.find((participant) => participant.id === frame.sent_to_id);
+      const author = participants.find((participant) => isParticipant(participant.id, frame.author_participant_id));
+      // Same normalisation, same reason: `sent_to_id` crosses the same wire in
+      // the same two spellings, and this row already writes
+      // `participantId: String(frame.sent_to_id)` a few lines below — leaving
+      // the LOOKUP strict while stringifying the value it stores was an
+      // inconsistency inside one object literal.
+      const sentTo = participants.find((participant) => isParticipant(participant.id, frame.sent_to_id));
       const createdAt = frame.created_at;
+      // `ChatMessage.userId` is the AUTH USER id everywhere else in this app,
+      // NOT the chat_participants row id `author_participant_id` states — the
+      // two are different numbers (measured: participant row 1 carries
+      // entity_meta.id 6). The persisted path
+      // (`normalise.ts`'s `userOptionalFields`) writes
+      // `String(foundUser.entity_meta.id)` and the optimistic path
+      // (`useChatBoxHandlers.helpers.ts`'s `buildOptimisticUserMessage`) writes
+      // `useGetCurrentAuthor().data.id`; every reader — `ChatMessageList`'s
+      // edit/delete gating and `entities/message`'s `canDeleteMessage` —
+      // compares against the same auth id. Writing the participant id here
+      // instead produced a live question that could never match its own
+      // author, silently losing its edit and delete controls.
+      //
+      // Resolved off the roster the author lookup above already did, and
+      // OMITTED when it does not resolve: an unattributed row is the honest
+      // answer, and falling back to the participant id would restate the very
+      // mismatch this fixes.
+      const authorUserId = author?.entity_meta?.id;
 
       const question: ChatMessage = {
         id,
@@ -56,7 +107,7 @@ export function reduceMessageSyncFrame(
         // different timestamp format for a live question than for a replayed one.
         createdAt: typeof createdAt === 'string' ? convertTime(createdAt) : nowIso(context),
         ...(frame.message_items !== undefined ? { messageItems: frame.message_items } : {}),
-        ...(frame.author_participant_id !== undefined ? { userId: String(frame.author_participant_id) } : {}),
+        ...(authorUserId !== undefined ? { userId: String(authorUserId) } : {}),
         ...(frame.sent_to_id !== undefined ? { participantId: String(frame.sent_to_id) } : {}),
         ...(sentTo !== undefined ? { sentTo } : {}),
       };

@@ -276,8 +276,24 @@ WHERE id = 1`); err != nil {
 	}{
 		{
 			name: "application internal tools",
+			// The catalogue names (attachments, planner, ...) are ADMITTED
+			// since the gates widened to the authorable set; what the version
+			// gate still refuses is a name outside the catalogue. The same
+			// synthetic name is the Rust corpus's refusal fixture.
 			apply: `UPDATE application_versions
-SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
+SET meta = jsonb_set(meta, '{internal_tools}', '["not_a_platform_tool"]'::jsonb)
+WHERE id = 41`,
+			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
+		},
+		{
+			// The non-array shape, held against the SELECTED application's own
+			// gate rather than the adhoc negative branch. It must classify
+			// (pgx.ErrNoRows -> 422), never raise 22023 -> 500. The clause it
+			// exercises already wraps `jsonb_array_elements` in the CASE; this
+			// pins that it keeps doing so.
+			name: "application internal tools scalar",
+			apply: `UPDATE application_versions
+SET meta = jsonb_set(meta, '{internal_tools}', '"planner"'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
 		},
@@ -928,8 +944,42 @@ WHERE id = 30`,
 		},
 		{
 			name: "child internal tools",
+			// See the application gate above: catalogue names are admitted
+			// now, so the refusal fixture must sit outside the catalogue.
 			apply: `UPDATE application_versions
-SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
+SET meta = jsonb_set(meta, '{internal_tools}', '["not_a_platform_tool"]'::jsonb)
+WHERE id = 41`,
+			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
+		},
+		// The next three fixtures are not more names to refuse: they are the
+		// three NON-ARRAY shapes `meta.internal_tools` can hold. Each one has
+		// to come back as pgx.ErrNoRows — a classification the caller answers
+		// 422 with — and NOT as SQLSTATE 22023 "cannot extract elements from a
+		// scalar", which the caller can only answer 500. The negative
+		// participant branches of ResolveCurrentAdhocTurn and
+		// InsertCurrentAdhocTurn feed the same value to
+		// `jsonb_array_elements`, and a bare `OR jsonb_typeof(...) <> 'array'`
+		// beside that call is not a guard: PostgreSQL does not promise the
+		// arms of an OR are evaluated in written order, so the CASE the
+		// positive clauses use is required there too.
+		{
+			name: "child internal tools scalar string",
+			apply: `UPDATE application_versions
+SET meta = jsonb_set(meta, '{internal_tools}', '"planner"'::jsonb)
+WHERE id = 41`,
+			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
+		},
+		{
+			name: "child internal tools json null",
+			apply: `UPDATE application_versions
+SET meta = jsonb_set(meta, '{internal_tools}', 'null'::jsonb)
+WHERE id = 41`,
+			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
+		},
+		{
+			name: "child internal tools object",
+			apply: `UPDATE application_versions
+SET meta = jsonb_set(meta, '{internal_tools}', '{"planner": true}'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
 		},
@@ -1671,6 +1721,143 @@ WHERE response.uuid = $1`, responseID).Scan(
 	}
 }
 
+// TestPostgresCurrentAuthorizationContinuationClassifiesNonArrayRequests holds
+// the authorization pair to the same contract every other refusal here obeys:
+// a response whose `meta.authorization_requests` is not an array must come back
+// as pgx.ErrNoRows — a classification the caller answers 422 — and never as a
+// database error, which it can only answer 500.
+//
+// The distinction is not theoretical for these two queries. Their type test
+// (`AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'`) is
+// a SIBLING qual, and PostgreSQL costs and reorders the quals of an AND
+// (order_qual_clauses); on PostgreSQL 16 the length test was already being
+// evaluated first, so each of the three shapes below raised SQLSTATE 22023
+// ("cannot get array length of a scalar" / "of a non-array") straight through
+// this path. Every array function in both queries now reads a CASE-materialized
+// value instead, so the type test decides the answer rather than deciding
+// whether the statement survives.
+func TestPostgresCurrentAuthorizationContinuationClassifiesNonArrayRequests(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000062"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000062",
+		"40000000-0000-4000-8000-000000000062",
+		"list SharePoint sites", "execution-authorization-nonarray",
+	)
+
+	for _, shape := range []struct {
+		name  string
+		value string
+	}{
+		{name: "json null", value: `null`},
+		{name: "scalar string", value: `"mcp_auth_sharepoint-1"`},
+		{name: "object", value: `{"interrupt_id": "mcp_auth_sharepoint-1"}`},
+		// An empty array is a valid array and still has to be refused, by the
+		// BETWEEN rather than by the type test — the branch the CASE's ELSE arm
+		// lands on, so this pins that the guard refuses rather than admits.
+		{name: "empty array", value: `[]`},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = meta || jsonb_build_object(
+        'thread_id', 'thread-authorization-nonarray',
+        'execution_generation', $2::text,
+        'authorization_requests', $3::jsonb
+    )
+WHERE uuid = $1`, responseID, questionID, shape.value); err != nil {
+				t.Fatal(err)
+			}
+
+			resolve := sqlcgen.ResolveCurrentAuthorizationContinuationParams{
+				ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+				ResponseMessageID: responseID, AuthorizationRequestID: "",
+			}
+			if _, err := queries.ResolveCurrentAuthorizationContinuation(
+				t.Context(), resolve,
+			); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("resolve error=%v", err)
+			}
+			// The single-request selector reaches a second array_length and an
+			// element scan, so it is exercised separately.
+			resolve.AuthorizationRequestID = "mcp_auth_sharepoint-1"
+			if _, err := queries.ResolveCurrentAuthorizationContinuation(
+				t.Context(), resolve,
+			); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("targeted resolve error=%v", err)
+			}
+
+			resume := sqlcgen.ResumeCurrentAgentAuthorizationParams{
+				ActorUserID: 11, ProjectID: 1, TargetParticipantID: 21,
+				ApplicationID: 31, ApplicationVersionID: 41,
+				ContinuationKind:    "application",
+				ConversationUuid:    conversationID,
+				QuestionID:          mustCurrentPGUUID(t, questionID),
+				ResponseMessageID:   responseID,
+				ExecutionGeneration: questionID,
+				ThreadID:            "thread-authorization-nonarray",
+				HitlDecisions: []byte(`[
+  {"interrupt_id":"mcp_auth_sharepoint-1","tool_call_id":"call-sharepoint-search-1","guardrail_type":"mcp_auth","action":"authorize"}
+]`),
+				ExecutionID: "execution-authorization-nonarray-resumed",
+			}
+			if _, err := queries.ResumeCurrentAgentAuthorization(
+				t.Context(), resume,
+			); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("resume error=%v", err)
+			}
+		})
+	}
+
+	// A real pending array still resolves: the guard refused the shapes above
+	// on their shape, not by refusing everything.
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = meta || jsonb_build_object(
+        'thread_id', 'thread-authorization-nonarray',
+        'execution_generation', $2::text,
+        'authorization_requests', jsonb_build_array(
+            jsonb_build_object(
+                'interrupt_id', 'mcp_auth_sharepoint-1',
+                'tool_call_id', 'call-sharepoint-search-1',
+                'server_url', 'https://sharepoint.example.test',
+                'toolkit_name', 'SharePoint'
+            )
+        )
+    )
+WHERE uuid = $1`, responseID, questionID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := queries.ResolveCurrentAuthorizationContinuation(
+		t.Context(),
+		sqlcgen.ResolveCurrentAuthorizationContinuationParams{
+			ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+			ResponseMessageID: responseID, AuthorizationRequestID: "",
+		},
+	)
+	if err != nil {
+		t.Fatalf("array authorization request remained refused: %v", err)
+	}
+	if !json.Valid([]byte(resolved.AuthorizationRequestsJson)) {
+		t.Fatalf("resolved=%+v", resolved)
+	}
+}
+
 func insertPostgresSupportContext(
 	t *testing.T,
 	tx pgx.Tx,
@@ -1792,6 +1979,21 @@ CREATE TABLE p_1.entity_tool_mapping (
     id SERIAL PRIMARY KEY, tool_id INTEGER NOT NULL, entity_id INTEGER NOT NULL,
     entity_version_id INTEGER NOT NULL, entity_type VARCHAR NOT NULL,
     selected_tools JSONB
+);
+-- The version's AUTHORED variables. This is the store the shared
+-- application_version_details_json projection reads its variables key from, so
+-- a seed without it makes every query that carries that projection fail with
+-- 42P01 rather than answer a wrong list. Same shape as
+-- internal/infra/db/migrations/001_initial.sql, which is where the real tenant
+-- schema gets it.
+CREATE TABLE p_1.application_variables (
+    id SERIAL PRIMARY KEY,
+    application_version_id INTEGER NOT NULL REFERENCES p_1.application_versions(id) ON DELETE CASCADE,
+    name VARCHAR NOT NULL,
+    value VARCHAR,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP,
+    CONSTRAINT _application_version_variable_name_uc UNIQUE (application_version_id, name)
 );
 -- skills / skill_versions are created by newMigratedPostgresIntegrationPool,
 -- which every caller of this seed runs first (#249 put them there so the

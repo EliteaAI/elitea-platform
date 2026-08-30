@@ -8,6 +8,7 @@ SELECT conversation.id AS conversation_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
        COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
        COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)::text AS internal_tools_json,
+       -- BEGIN shared application_version_details_json projection
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -133,8 +134,95 @@ SELECT conversation.id AS conversation_id,
                  AND skill_mapping.entity_type = 'agent'
            ), '[]'::jsonb),
            'tags', '[]'::jsonb,
-           'variables', '[]'::jsonb
+           -- The version's AUTHORED variable list, and no longer `'[]'::jsonb`.
+           --
+           -- This key was hardcoded empty, and it is the SDK worker's PRIMARY
+           -- variable source: at the revision
+           -- `services/elitea-worker-python/elitea-sdk.lock.json` pins
+           -- (elitea-sdk 0.9.8 @ b5113a12), `assistant.py:557-576` builds
+           -- `prompt_variables` out of `data['variables']` -- a LIST of
+           -- `{name, value}` rows -- and `:597-657` renders `instructions`
+           -- through Jinja2 with that map. With the list always empty, every
+           -- authored `{{name}}` reached the model UNSUBSTITUTED, as the
+           -- literal `{{ name }}` its `DebugUndefined` prints.
+           --
+           -- The SDK's only OTHER source cannot rescue it: `assistant.py:574`
+           -- guards `meta['variables']` with `isinstance(..., dict)` while
+           -- this platform stores an ARRAY, so that branch never runs here.
+           -- Filling THIS key is what makes substitution work against the
+           -- PINNED SDK unpatched -- the worker's patch set is cherry-picked
+           -- from upstream commits (`services/elitea-worker-python/
+           -- Containerfile`), so a third patch would have to be landed in
+           -- another repository first.
+           --
+           -- WHICH STORE. A version's variables have TWO of them, and this key
+           -- used to read the wrong one. `p_<id>.application_variables` is the
+           -- authoritative one:
+           --
+           --   * it is the ONLY store the legacy product has -- pylon's
+           --     `ApplicationVersion.variables` is a relationship to
+           --     `ApplicationVariable`, and `update_version` dumps its payload
+           --     with `exclude={'tags', 'variables', 'tools'}`, so a variable
+           --     can never reach `meta` there
+           --     (legacy/plugins/elitea_core/utils/application_utils.py,
+           --     utils/create_utils.py);
+           --   * every other reader in this repository already reads it -- the
+           --     version-detail GET the agent editor reloads through
+           --     (`fetchVersionDetails`), the runtime-facing
+           --     `GetVersionExpanded` (`versionVariables`), and the export
+           --     (`exportedVersionVariables`), which is what puts the
+           --     `variables` array into a portable document at all;
+           --   * so it is the store a FORKED agent has and the `meta` mirror
+           --     does not: the fork copies `meta` verbatim out of the export,
+           --     and an export of a legacy agent -- or of any agent this
+           --     platform imported -- carries no `meta.variables` to copy.
+           --     Reading the mirror alone gave every such agent an empty list.
+           --
+           -- `meta -> 'variables'` is a MIRROR, folded in by
+           -- `internal/api/v2/applications/handler.go` (`versionFromBody`) so
+           -- that endpoint's own 201 echo can report what it saved, and read
+           -- as a fallback by both worker-side decoders. It is kept here as
+           -- the second COALESCE branch, and ONLY as that: it is what an agent
+           -- imported before `ExportImportPost` learned to write the rows has,
+           -- and dropping it would take those agents' variables away a second
+           -- time. Rows win whenever a version has any.
+           --
+           -- The fallback is type-gated rather than COALESCEd. Only an ARRAY is
+           -- projected, so a `meta.variables` written as an OBJECT still
+           -- projects `[]` here and is left to the two decoders that accept
+           -- that spelling -- the SDK's own dict branch and the native
+           -- runtime's `variables::capture_variables` -- both of which reach it
+           -- through the `meta` key this projection already carries. A `meta`
+           -- that is SQL NULL, jsonb `null` or any non-object yields NULL from
+           -- `->`, whose `jsonb_typeof` is NULL and therefore not `'array'`, so
+           -- it takes the same empty branch instead of erroring.
+           --
+           -- `{name, value}` and not the `{id, name, value}` that
+           -- `GetVersionExpanded` emits: it is the shape the fallback branch
+           -- carries, and one key set for both branches is what stops a worker
+           -- seeing two different documents for the same agent. `value` is
+           -- COALESCEd to '' because the column is nullable and both decoders
+           -- type it as a string.
+           'variables', COALESCE(
+               (
+                   SELECT jsonb_agg(
+                       jsonb_build_object(
+                           'name', authored_variable.name,
+                           'value', COALESCE(authored_variable.value, '')
+                       )
+                       ORDER BY authored_variable.id
+                   )
+                   FROM application_variables AS authored_variable
+                   WHERE authored_variable.application_version_id = application_version.id
+               ),
+               CASE
+                   WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
+                   THEN application_version.meta::jsonb -> 'variables'
+                   ELSE '[]'::jsonb
+               END
+           )
        )::text AS application_version_details_json
+       -- END shared application_version_details_json projection
 FROM chat_conversations AS conversation
 JOIN chat_participant_mapping AS author_mapping
   ON author_mapping.conversation_id = conversation.id
@@ -354,11 +442,54 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
           END
       ) AS internal_tool(value)
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+         OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
   )
-  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
-      '[]'::jsonb,
-      '["ask_user"]'::jsonb
+  -- The version's own internal-tool list, admitted by the SAME rule as the
+  -- conversation's list above rather than by a literal-array match.
+  --
+  -- The old rule was `IN ('[]', '["ask_user"]')`, and it refused two things it
+  -- did not mean to. `internal_mcp` is one: the previous create-agent form
+  -- seeded it into every new version, so every agent authored through the
+  -- product's own UI resolved zero rows here and answered 422 on every send —
+  -- while the conversation clause four lines up admits that exact name, and
+  -- `currentRuntimeInternalTools` (internal/application/agentexecution/start.go)
+  -- accepts it and drops it, because internal MCP reaches the worker through
+  -- the frozen tools projection instead. A whole-array match also refused a
+  -- list that merely repeated or reordered admitted names.
+  --
+  -- The freeze removes `internal_mcp` from the snapshot before the runtime sees
+  -- it (normalizeCurrentAgentRuntimeProfile), so admitting it here does not
+  -- claim a capability the runtime lacks: it lets an already-saved agent run.
+  AND jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+          CASE
+              WHEN jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+              THEN COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)
+              ELSE '[]'::jsonb
+          END
+      ) AS version_internal_tool(value)
+      WHERE jsonb_typeof(version_internal_tool.value) <> 'string'
+         OR version_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -491,6 +622,256 @@ SELECT application_version.id AS application_version_id,
 FROM application_versions AS application_version
 WHERE application_version.id = sqlc.arg(application_version_id)::integer;
 
+-- name: ResolveCurrentApplicationVersionDetails :one
+SELECT application_version.id AS application_version_id,
+       application_version.application_id,
+       -- BEGIN shared application_version_details_json projection
+       jsonb_build_object(
+           'id', application_version.id,
+           'application_id', application_version.application_id,
+           'name', application_version.name,
+           'status', application_version.status,
+           'created_at', application_version.created_at,
+           'agent_type', application_version.agent_type,
+           'instructions', COALESCE(application_version.instructions, ''),
+           'welcome_message', COALESCE(application_version.welcome_message, ''),
+           'llm_settings', COALESCE(NULLIF(application_version.llm_settings::jsonb, 'null'::jsonb), '{}'::jsonb),
+           'meta', COALESCE(NULLIF(application_version.meta::jsonb, 'null'::jsonb), '{}'::jsonb),
+           'conversation_starters', COALESCE(NULLIF(application_version.conversation_starters::jsonb, 'null'::jsonb), '[]'::jsonb),
+           'pipeline_settings', COALESCE(NULLIF(application_version.pipeline_settings::jsonb, 'null'::jsonb), '{}'::jsonb),
+           'author_id', application_version.author_id,
+           'tools', COALESCE((
+               SELECT jsonb_agg(
+                   jsonb_build_object(
+                       'id', tool.id,
+                       'type', tool.type,
+                       'name', tool.name,
+                       'description', tool.description,
+                       'author_id', tool.author_id,
+                       'settings', CASE
+                           WHEN jsonb_typeof(tool.settings -> 'selected_tools') = 'array'
+                            AND jsonb_array_length(tool.settings -> 'selected_tools') > 0
+                           THEN tool.settings
+                                || jsonb_build_object(
+                                       'available_tools', tool.settings -> 'selected_tools'
+                                   )
+                                || CASE
+                                       WHEN jsonb_typeof(application_tool_mapping.selected_tools) = 'array'
+                                        AND jsonb_array_length(application_tool_mapping.selected_tools) > 0
+                                       THEN jsonb_build_object(
+                                           'selected_tools', CASE
+                                               WHEN jsonb_array_length(selected_tools_intersection.value) > 0
+                                               THEN selected_tools_intersection.value
+                                               ELSE application_tool_mapping.selected_tools
+                                           END
+                                       )
+                                       ELSE '{}'::jsonb
+                                   END
+                           WHEN jsonb_typeof(application_tool_mapping.selected_tools) = 'array'
+                            AND jsonb_array_length(application_tool_mapping.selected_tools) > 0
+                           THEN tool.settings || jsonb_build_object(
+                               'selected_tools', application_tool_mapping.selected_tools
+                           )
+                           ELSE tool.settings
+                       END,
+                       'meta', tool.meta,
+                       'created_at', tool.created_at,
+                       'toolkit_name', tool.name,
+                       'author', NULL,
+                       'agent_type', CASE
+                           WHEN tool.type = 'application'
+                           THEN (
+                               SELECT child_application_version.agent_type
+                               FROM application_versions AS child_application_version
+                               WHERE child_application_version.id = CASE
+                                   WHEN tool.settings ->> 'application_version_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_version_id')::integer
+                                   ELSE NULL
+                               END
+                                 AND child_application_version.application_id = CASE
+                                   WHEN tool.settings ->> 'application_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_id')::integer
+                                   ELSE NULL
+                               END
+                           )
+                           ELSE NULL
+                       END,
+                       'online', NULL,
+                       'icon_meta', NULL,
+                       'variables', '[]'::jsonb,
+                       'is_pinned', FALSE,
+                       'indexes_count', NULL
+                   )
+                   ORDER BY application_tool_mapping.id
+               )
+               FROM entity_tool_mapping AS application_tool_mapping
+               JOIN elitea_tools AS tool
+                 ON tool.id = application_tool_mapping.tool_id
+               LEFT JOIN LATERAL (
+                   SELECT COALESCE(
+                       jsonb_agg(selected.value ORDER BY selected.ordinality),
+                       '[]'::jsonb
+                   ) AS value
+                   FROM jsonb_array_elements_text(
+                       CASE
+                           WHEN jsonb_typeof(application_tool_mapping.selected_tools) = 'array'
+                           THEN application_tool_mapping.selected_tools
+                           ELSE '[]'::jsonb
+                       END
+                   ) WITH ORDINALITY AS selected(value, ordinality)
+                   WHERE jsonb_typeof(tool.settings -> 'selected_tools') = 'array'
+                     AND tool.settings -> 'selected_tools' ? selected.value
+               ) AS selected_tools_intersection ON TRUE
+               WHERE application_tool_mapping.entity_version_id = application_version.id
+                 AND application_tool_mapping.entity_id = application_version.application_id
+                 AND application_tool_mapping.entity_type = 'agent'
+           ), '[]'::jsonb),
+           'skills', COALESCE((
+               SELECT jsonb_agg(
+                   jsonb_build_object(
+                       'skill_id', skill_mapping.skill_id,
+                       'skill_version_id', skill_mapping.skill_version_id,
+                       'name', skill.name,
+                       'description', skill.description,
+                       'version_name', COALESCE(skill_version.name, 'unknown'),
+                       'icon_meta', CASE
+                           WHEN skill_version.id IS NULL THEN 'null'::jsonb
+                           ELSE COALESCE(skill_version.meta -> 'icon_meta', 'null'::jsonb)
+                       END,
+                       'instructions', COALESCE(skill_version.instructions, '')
+                   )
+                   ORDER BY skill_mapping.id
+               )
+               FROM entity_skill_mapping AS skill_mapping
+               JOIN skills AS skill
+                 ON skill.id = skill_mapping.skill_id
+               LEFT JOIN skill_versions AS skill_version
+                 ON skill_version.id = skill_mapping.skill_version_id
+               WHERE skill_mapping.entity_version_id = application_version.id
+                 AND skill_mapping.entity_type = 'agent'
+           ), '[]'::jsonb),
+           'tags', '[]'::jsonb,
+           -- The version's AUTHORED variable list, and no longer `'[]'::jsonb`.
+           --
+           -- This key was hardcoded empty, and it is the SDK worker's PRIMARY
+           -- variable source: at the revision
+           -- `services/elitea-worker-python/elitea-sdk.lock.json` pins
+           -- (elitea-sdk 0.9.8 @ b5113a12), `assistant.py:557-576` builds
+           -- `prompt_variables` out of `data['variables']` -- a LIST of
+           -- `{name, value}` rows -- and `:597-657` renders `instructions`
+           -- through Jinja2 with that map. With the list always empty, every
+           -- authored `{{name}}` reached the model UNSUBSTITUTED, as the
+           -- literal `{{ name }}` its `DebugUndefined` prints.
+           --
+           -- The SDK's only OTHER source cannot rescue it: `assistant.py:574`
+           -- guards `meta['variables']` with `isinstance(..., dict)` while
+           -- this platform stores an ARRAY, so that branch never runs here.
+           -- Filling THIS key is what makes substitution work against the
+           -- PINNED SDK unpatched -- the worker's patch set is cherry-picked
+           -- from upstream commits (`services/elitea-worker-python/
+           -- Containerfile`), so a third patch would have to be landed in
+           -- another repository first.
+           --
+           -- WHICH STORE. A version's variables have TWO of them, and this key
+           -- used to read the wrong one. `p_<id>.application_variables` is the
+           -- authoritative one:
+           --
+           --   * it is the ONLY store the legacy product has -- pylon's
+           --     `ApplicationVersion.variables` is a relationship to
+           --     `ApplicationVariable`, and `update_version` dumps its payload
+           --     with `exclude={'tags', 'variables', 'tools'}`, so a variable
+           --     can never reach `meta` there
+           --     (legacy/plugins/elitea_core/utils/application_utils.py,
+           --     utils/create_utils.py);
+           --   * every other reader in this repository already reads it -- the
+           --     version-detail GET the agent editor reloads through
+           --     (`fetchVersionDetails`), the runtime-facing
+           --     `GetVersionExpanded` (`versionVariables`), and the export
+           --     (`exportedVersionVariables`), which is what puts the
+           --     `variables` array into a portable document at all;
+           --   * so it is the store a FORKED agent has and the `meta` mirror
+           --     does not: the fork copies `meta` verbatim out of the export,
+           --     and an export of a legacy agent -- or of any agent this
+           --     platform imported -- carries no `meta.variables` to copy.
+           --     Reading the mirror alone gave every such agent an empty list.
+           --
+           -- `meta -> 'variables'` is a MIRROR, folded in by
+           -- `internal/api/v2/applications/handler.go` (`versionFromBody`) so
+           -- that endpoint's own 201 echo can report what it saved, and read
+           -- as a fallback by both worker-side decoders. It is kept here as
+           -- the second COALESCE branch, and ONLY as that: it is what an agent
+           -- imported before `ExportImportPost` learned to write the rows has,
+           -- and dropping it would take those agents' variables away a second
+           -- time. Rows win whenever a version has any.
+           --
+           -- The fallback is type-gated rather than COALESCEd. Only an ARRAY is
+           -- projected, so a `meta.variables` written as an OBJECT still
+           -- projects `[]` here and is left to the two decoders that accept
+           -- that spelling -- the SDK's own dict branch and the native
+           -- runtime's `variables::capture_variables` -- both of which reach it
+           -- through the `meta` key this projection already carries. A `meta`
+           -- that is SQL NULL, jsonb `null` or any non-object yields NULL from
+           -- `->`, whose `jsonb_typeof` is NULL and therefore not `'array'`, so
+           -- it takes the same empty branch instead of erroring.
+           --
+           -- `{name, value}` and not the `{id, name, value}` that
+           -- `GetVersionExpanded` emits: it is the shape the fallback branch
+           -- carries, and one key set for both branches is what stops a worker
+           -- seeing two different documents for the same agent. `value` is
+           -- COALESCEd to '' because the column is nullable and both decoders
+           -- type it as a string.
+           'variables', COALESCE(
+               (
+                   SELECT jsonb_agg(
+                       jsonb_build_object(
+                           'name', authored_variable.name,
+                           'value', COALESCE(authored_variable.value, '')
+                       )
+                       ORDER BY authored_variable.id
+                   )
+                   FROM application_variables AS authored_variable
+                   WHERE authored_variable.application_version_id = application_version.id
+               ),
+               CASE
+                   WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
+                   THEN application_version.meta::jsonb -> 'variables'
+                   ELSE '[]'::jsonb
+               END
+           )
+       )::text AS application_version_details_json
+       -- END shared application_version_details_json projection
+-- The projection above is ResolveCurrentApplicationTurn's
+-- `application_version_details_json` block, copied verbatim rather than shared.
+-- Both copies sit between the `-- BEGIN/END shared
+-- application_version_details_json projection` markers, and
+-- TestSharedApplicationVersionDetailsProjectionsAreIdentical
+-- (internal/db/sqlcgen/agent_chat_shared_projection_test.go) extracts both and
+-- fails the build if a single byte between the markers diverges. Keep the
+-- markers on their own lines and edit the two blocks together.
+-- Both documents are read by the SAME decoder in the native
+-- runtime (`OrdinaryNoToolProfile::from_nested_version` and
+-- `FrozenToolSnapshot::from_version_details`,
+-- services/elitea-worker-rust/src/agents/assembly.rs) and frozen by the SAME
+-- freeze (`FreezeCurrentApplicationVersion`,
+-- internal/application/agentexecution/tools.go), so a parent's definition and a
+-- nested child's must have one shape. What is deliberately absent is everything
+-- the turn projection derives from a conversation — chat history, participants,
+-- the conversation's own internal-tool list — because a nested child has no
+-- conversation: it is invoked as a tool inside the parent's turn.
+--
+-- BOTH identity arguments are filters, and that is load-bearing rather than
+-- defensive. The worker names the pair in its request path
+-- (`/runtime-context/applications/{application_id}/versions/{version_id}`,
+-- services/elitea-worker-rust/src/transport/runtime_context.rs:448-469) and
+-- validates the pair it gets back (:554-564). Keying on the version alone would
+-- let a stored reference whose `application_id` disagrees with its
+-- `application_version_id` still resolve a definition — the exact mismatch
+-- `materializeCurrentApplicationToolNestedSkills` refuses on the start path
+-- (internal/infra/db/repos/agent_nesting.go).
+FROM application_versions AS application_version
+WHERE application_version.id = sqlc.arg(application_version_id)::integer
+  AND application_version.application_id = sqlc.arg(application_id)::integer;
+
 -- name: ResolveCurrentAdhocTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
@@ -589,9 +970,32 @@ LEFT JOIN LATERAL (
           AND application_participant.entity_meta ->> 'project_id'
               = (sqlc.arg(project_id)::integer)::text
           AND COALESCE(application_participant.meta ->> 'name', '') <> ''
-          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) IN (
-              '[]'::jsonb,
-              '["ask_user"]'::jsonb
+          -- Admitted by the same rule as the conversation's own list: `internal_mcp`
+          -- is dropped from the snapshot by the freeze
+          -- (normalizeCurrentAgentRuntimeProfile), not refused here, or every agent the
+          -- previous create form seeded it into stops answering. See the fuller note on
+          -- ResolveCurrentApplicationTurn's copy of this clause.
+          AND jsonb_typeof(COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                  CASE
+                      WHEN jsonb_typeof(COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                      THEN COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb)
+                      ELSE '[]'::jsonb
+                  END
+              ) AS nested_internal_tool(value)
+              WHERE jsonb_typeof(nested_internal_tool.value) <> 'string'
+                 OR nested_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
           )
     ) AS current_tool
 ) AS current_tools ON TRUE
@@ -793,7 +1197,16 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
           END
       ) AS internal_tool(value)
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+         OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -847,9 +1260,37 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
                 IS DISTINCT FROM (sqlc.arg(project_id)::integer)::text
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
-            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
-                '[]'::jsonb,
-                '["ask_user"]'::jsonb
+            OR jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) <> 'array'
+            -- The CASE repeats the type test the disjunct above already made, and
+            -- it is not redundant: PostgreSQL does not promise the terms of an OR
+            -- are evaluated in written order, so a `meta.internal_tools` that is
+            -- JSON null, a string, a number or an object can reach
+            -- `jsonb_array_elements` and raise 22023 "cannot extract elements from
+            -- a scalar" — turning this deliberate participant REFUSAL (a 422
+            -- classification) into a 500. The ELSE arm cannot change the answer:
+            -- whenever it is taken the preceding disjunct is already true, so the
+            -- participant stays invalid. Same guard shape as the positive clauses
+            -- in ResolveCurrentApplicationTurn / ResolveCurrentAdhocTurn.
+            OR EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                    CASE
+                        WHEN jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                        THEN COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                        ELSE '[]'::jsonb
+                    END
+                ) AS invalid_internal_tool(value)
+                WHERE jsonb_typeof(invalid_internal_tool.value) <> 'string'
+                   OR invalid_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
             )
         )
   )
@@ -936,6 +1377,42 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
   )
 ORDER BY target_participant.id
 LIMIT 1;
+
+-- name: CurrentConversationResponseSettling :one
+--
+-- Is a response in this conversation still marked as being written?
+--
+-- WHY THIS EXISTS, and why it is not the overlap gate itself. The overlap gate
+-- lives twice, in the WHERE of ResolveCurrentApplicationTurn /
+-- ResolveCurrentAdhocTurn and again in InsertCurrentApplicationTurn /
+-- InsertCurrentAdhocTurn, where it is race-free. Neither can say WHY it matched
+-- nothing: both simply return no rows, and the caller answers 422
+-- `unsupported_agent_execution` for all ~25 reasons at once.
+--
+-- One of those reasons is not a refusal at all, it is a WINDOW. The browser
+-- ends a turn on the `pipeline_finish` node event (the client predicate is
+-- apps/elitea-web/src/features/chat-messages/lib/chatStreamTurnEnd.ts) and
+-- re-enables the composer there. `is_streaming` is only cleared later, by
+-- FinalizeCurrentAgentFullMessage, when the WORKER's separate terminal output
+-- frame is projected. Measured on the standalone stack: `pipeline_finish`
+-- durable at 21:53:47.319, composer released at ~.55, second send at .621,
+-- `is_streaming` cleared at .824 — the second turn was refused 422 inside a
+-- ~500ms window in which the product had already invited it.
+--
+-- This probe answers only "is that window open", so the start path can WAIT for
+-- it to close rather than refusing a turn the user was invited to send. It is
+-- deliberately BROADER than the gate (no newest-response or retried-question
+-- narrowing): a superset only ever costs a bounded wait that then falls through
+-- to the same answer, whereas restating those sub-clauses would put a third
+-- copy of the gate in the tree for them to drift apart.
+SELECT EXISTS (
+    SELECT 1
+    FROM chat_conversations AS conversation
+    JOIN chat_message_group AS response
+      ON response.conversation_id = conversation.id
+    WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
+      AND response.is_streaming
+)::boolean AS settling;
 
 -- name: ResolveCurrentRegeneration :one
 SELECT conversation.uuid AS conversation_uuid,
@@ -1400,6 +1877,24 @@ JOIN LATERAL (
     ORDER BY item.order_index DESC, item.id DESC
     LIMIT 1
 ) AS question_text ON TRUE
+-- The pending set is materialized through a CASE, exactly as
+-- ResolveCurrentContinuation / ResumeCurrentAgentHITL do for `pending_hitl`,
+-- and for a reason those queries only imply. A sibling
+-- `AND jsonb_typeof(...) = 'array'` is NOT a guard: PostgreSQL costs and
+-- reorders the quals of an AND (order_qual_clauses), and on PostgreSQL 16 it
+-- already evaluates the length test first — so a `meta.authorization_requests`
+-- holding JSON null, a scalar or an object raises 22023 ("cannot get array
+-- length of a scalar" / "of a non-array") and turns this deliberate REFUSAL,
+-- which the caller answers 422, into a 500. The CASE cannot change any
+-- admitted row: whenever the ELSE arm is taken the typeof qual beside it is
+-- already false, and an empty array fails `BETWEEN 1 AND 16` anyway.
+CROSS JOIN LATERAL (
+    SELECT CASE
+        WHEN jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+            THEN response.meta -> 'authorization_requests'
+        ELSE '[]'::jsonb
+    END AS value
+) AS pending_authorization
 WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
   AND response.uuid = sqlc.arg(response_message_id)::uuid
   AND NOT response.is_streaming
@@ -1415,14 +1910,14 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-  AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+  AND jsonb_array_length(pending_authorization.value) BETWEEN 1 AND 16
   AND (
       sqlc.arg(authorization_request_id)::text = ''
       OR (
-          jsonb_array_length(response.meta -> 'authorization_requests') = 1
+          jsonb_array_length(pending_authorization.value) = 1
           AND EXISTS (
               SELECT 1
-              FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+              FROM jsonb_array_elements(pending_authorization.value) AS request(value)
               WHERE COALESCE(
                   NULLIF(request.value ->> 'interrupt_id', ''),
                   NULLIF(request.value ->> 'tool_run_id', ''),
@@ -1457,6 +1952,19 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = sqlc.arg(application_id)::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    -- Same CASE, same reason as ResolveCurrentAuthorizationContinuation above,
+    -- and the same shape `pending` already has in ResumeCurrentAgentHITL: the
+    -- `jsonb_typeof` qual below is a rule, not a guard, and every array
+    -- function here must read the materialized value instead of the raw key or
+    -- a non-array `meta.authorization_requests` answers 500 where it must
+    -- answer 422.
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+                THEN response.meta -> 'authorization_requests'
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS pending
     CROSS JOIN LATERAL (
         SELECT CASE
             WHEN jsonb_typeof(sqlc.arg(hitl_decisions)::jsonb) = 'array'
@@ -1471,16 +1979,16 @@ WITH resolved AS MATERIALIZED (
       AND response.meta ->> 'execution_generation' = sqlc.arg(execution_generation)::text
       AND response.meta ->> 'thread_id' = sqlc.arg(thread_id)::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-      AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
-      AND jsonb_array_length(submitted.value) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND jsonb_array_length(pending.value) BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(pending.value)
       AND (
           SELECT count(DISTINCT COALESCE(
               NULLIF(request.value ->> 'interrupt_id', ''),
               NULLIF(request.value ->> 'tool_run_id', ''),
               request.value ->> 'tool_call_id'
           ))
-          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      ) = jsonb_array_length(response.meta -> 'authorization_requests')
+          FROM jsonb_array_elements(pending.value) AS request(value)
+      ) = jsonb_array_length(pending.value)
       AND (
           SELECT count(DISTINCT decision.value ->> 'interrupt_id')
           FROM jsonb_array_elements(submitted.value) AS decision(value)
@@ -1496,7 +2004,7 @@ WITH resolved AS MATERIALIZED (
       )
       AND NOT EXISTS (
           SELECT 1
-          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+          FROM jsonb_array_elements(pending.value) AS request(value)
           WHERE jsonb_typeof(request.value) <> 'object'
              OR COALESCE(
                  NULLIF(request.value ->> 'interrupt_id', ''),
@@ -1692,11 +2200,43 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS internal_tool(value)
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+             OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
       )
-      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
-          '[]'::jsonb,
-          '["ask_user"]'::jsonb
+      -- Admitted by the same rule as the conversation's own list: `internal_mcp`
+      -- is dropped from the snapshot by the freeze
+      -- (normalizeCurrentAgentRuntimeProfile), not refused here, or every agent the
+      -- previous create form seeded it into stops answering. See the fuller note on
+      -- ResolveCurrentApplicationTurn's copy of this clause.
+      AND jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+              CASE
+                  WHEN jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+                  THEN COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)
+                  ELSE '[]'::jsonb
+              END
+          ) AS admitted_internal_tool(value)
+          WHERE jsonb_typeof(admitted_internal_tool.value) <> 'string'
+             OR admitted_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -1932,7 +2472,16 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS internal_tool(value)
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+             OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -1986,9 +2535,37 @@ WITH resolved AS MATERIALIZED (
                     IS DISTINCT FROM (sqlc.arg(project_id)::integer)::text
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
-                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
-                    '[]'::jsonb,
-                    '["ask_user"]'::jsonb
+                OR jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) <> 'array'
+                -- The CASE repeats the type test the disjunct above already made, and
+                -- it is not redundant: PostgreSQL does not promise the terms of an OR
+                -- are evaluated in written order, so a `meta.internal_tools` that is
+                -- JSON null, a string, a number or an object can reach
+                -- `jsonb_array_elements` and raise 22023 "cannot extract elements from
+                -- a scalar" — turning this deliberate participant REFUSAL (a 422
+                -- classification) into a 500. The ELSE arm cannot change the answer:
+                -- whenever it is taken the preceding disjunct is already true, so the
+                -- participant stays invalid. Same guard shape as the positive clauses
+                -- in ResolveCurrentApplicationTurn / ResolveCurrentAdhocTurn.
+                OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                        CASE
+                            WHEN jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                            THEN COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                            ELSE '[]'::jsonb
+                        END
+                    ) AS invalid_admitted_internal_tool(value)
+                    WHERE jsonb_typeof(invalid_admitted_internal_tool.value) <> 'string'
+                       OR invalid_admitted_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
                 )
             )
       )

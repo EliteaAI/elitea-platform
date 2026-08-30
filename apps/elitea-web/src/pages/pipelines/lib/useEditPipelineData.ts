@@ -27,6 +27,20 @@ export interface EditPipelineData {
    * configuration panel visible for a deleted/invalid pipeline id.
    */
   readonly isDetailNotFound: boolean;
+  /**
+   * The version id the SEPARATE `getApplicationVersionDetail` query is keyed
+   * on, or `undefined` when the URL names no version and `activeVersion` comes
+   * straight off the application detail instead.
+   *
+   * Exposed rather than re-derived by the caller because a cache
+   * invalidation has to name the EXACT key this hook used — two independent
+   * "which id is the explicit one" rules would silently drift, and the failure
+   * mode is invisible (an invalidation that matches nothing looks exactly like
+   * one that had nothing to do). `useRefetchPipelineAfterSave` needs it: with
+   * only the application detail invalidated, a save made on a `:version` route
+   * never re-seeded the editor at all.
+   */
+  readonly explicitVersionId: number | undefined;
 }
 
 /** Split out purely to keep `useEditPipelineData`'s own branch count under the oxlint complexity budget — see `EditPipelineData.isDetailNotFound`'s own doc comment for the full citation trail. */
@@ -116,5 +130,6 @@ export function useEditPipelineData(
     isFetching: combineQueryFlag(detailQuery.isFetching, needsExplicit, versionQuery.isFetching),
     isError: combineQueryFlag(detailQuery.isError, needsExplicit, versionQuery.isError),
     isDetailNotFound: isNotFoundApiError(detailQuery.error),
+    explicitVersionId: needsExplicit ? explicitVersionId : undefined,
   };
 }

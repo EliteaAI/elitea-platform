@@ -17,6 +17,7 @@ import type { RenderResult } from '@testing-library/react';
 import { SocketClientContext } from '@/shared/api/socket/client';
 import { createTestSocketClient } from '@/shared/api/socket/testing';
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
+import { NavBlockerDialog } from '@/widgets/app-shell';
 
 /**
  * Small, self-contained `pages/pipelines`-scoped router fixture — same
@@ -26,33 +27,51 @@ import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/sh
  * `/pipelines/$tab/$agentId`, `/pipelines/create`), NOT `src/routes/**`
  * (outside this unit's ownership fence).
  */
+/**
+ * Whether to mount the app-wide unsaved-changes guard over the fixture.
+ *
+ * `AppShell` mounts `NavBlockerDialog` under EVERY real page, and it holds a
+ * TanStack `useBlocker` that intercepts any pathname change while the guard
+ * is raised. This fixture never mounted it, which is exactly why the unit
+ * suite could not see that the pipeline editor's own post-save and
+ * post-delete navigations were being blocked by the guard the page itself
+ * armed. A test that wants to prove a navigation SURVIVES the guard has to
+ * mount the thing that would block it.
+ */
 function buildTestRouter(
   initialPath: string,
   content: ReactElement,
   projectId: string | undefined,
   withSocket: boolean,
+  withNavBlocker: boolean,
 ): AnyRouter {
   const rootRoute = createRootRoute({
-    // `EditPipeline`'s real `<ConfigurationTab>` mount (adversarial-review
-    // fix) reads `useSocketClient()` several layers down
-    // (`usePipelineChat`/`usePipelineMCPToolsStatusMonitor`) — same
+    // `EditPipeline`'s real `<ConfigurationTab>` mount reads
+    // `useSocketClient()` several layers down (`usePipelineChat`/
+    // `usePipelineMCPToolsStatusMonitor`, and now `ChatBox` itself) — same
     // in-memory double `pages/toolkits/__tests__/testRouter.tsx` already
-    // wraps its own tree with, for the identical reason. `withSocket=false`
-    // (`renderPipelinesRouteWithoutSocket`) deliberately reproduces this
-    // app's real, current, un-fixed gap instead — no
-    // `SocketClientContext.Provider` exists anywhere in the real app tree
-    // yet (verified: `grep -rn "SocketClientContext.Provider" src
-    // --include=*.tsx | grep -v test` — zero hits) — so
-    // `EditPipeline.test.tsx` can assert `PipelineConfigurationTabBoundary`'s
-    // fallback actually fires instead of crashing the page.
-    component: () =>
-      withSocket ? (
-        <SocketClientContext.Provider value={createTestSocketClient()}>
+    // wraps its own tree with, for the identical reason.
+    //
+    // `withSocket=false` (`renderPipelinesRouteWithoutSocket`) is NOT a
+    // reproduction of the real app tree, and the comment that used to say so
+    // was wrong: `src/app/providers/AppProviders.tsx` mounts a real
+    // `SocketClientContext.Provider` around every page. It is simply the
+    // cheapest way to make the editor subtree throw on its first render, so
+    // `EditPipeline.test.tsx` can assert `PipelineConfigurationTabBoundary`
+    // contains that throw instead of the page unmounting.
+    component: () => {
+      const tree = (
+        <>
+          {withNavBlocker && <NavBlockerDialog />}
           <Outlet />
-        </SocketClientContext.Provider>
+        </>
+      );
+      return withSocket ? (
+        <SocketClientContext.Provider value={createTestSocketClient()}>{tree}</SocketClientContext.Provider>
       ) : (
-        <Outlet />
-      ),
+        tree
+      );
+    },
   });
 
   const tabRoute = createRoute({
@@ -94,7 +113,17 @@ function buildTestRouter(
     component: () => content,
   });
 
-  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_]);
+  // Where `ChatWithPipelineButton` lands — the destination itself is outside
+  // this unit (the real page is `processes/chat`'s), so the fixture renders
+  // nothing there: a test asserts on `router.state.location.pathname` alone.
+  // Same shape `pages/agents/__tests__/testRouter.tsx` gained for its twin.
+  const chatRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/chat/$conversationId',
+    component: () => null,
+  });
+
+  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_, chatRoute]);
 
   return createRouter({
     routeTree,
@@ -119,14 +148,21 @@ export interface RenderPipelinesRouteResult extends RenderResult {
   readonly queryClient: QueryClient;
 }
 
+export interface RenderPipelinesRouteOptions {
+  readonly queryClient?: QueryClient;
+  readonly projectId?: string;
+  /** Mount `widgets/app-shell`'s `NavBlockerDialog` over the fixture — see `buildTestRouter`. */
+  readonly withNavBlocker?: boolean;
+}
+
 function renderWithTestRouter(
   content: ReactElement,
   initialPath: string,
-  options: { queryClient?: QueryClient; projectId?: string },
+  options: RenderPipelinesRouteOptions,
   withSocket: boolean,
 ): RenderPipelinesRouteResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
-  const router = buildTestRouter(initialPath, content, options.projectId, withSocket);
+  const router = buildTestRouter(initialPath, content, options.projectId, withSocket, options.withNavBlocker ?? false);
 
   const view = render(
     <QueryClientProvider client={queryClient}>
@@ -145,7 +181,7 @@ function renderWithTestRouter(
 export function renderPipelinesRoute(
   content: ReactElement,
   initialPath = '/pipelines/latest',
-  options: { queryClient?: QueryClient; projectId?: string } = {},
+  options: RenderPipelinesRouteOptions = {},
 ): RenderPipelinesRouteResult {
   return renderWithTestRouter(content, initialPath, options, true);
 }
@@ -159,7 +195,7 @@ export function renderPipelinesRoute(
 export function renderPipelinesRouteWithoutSocket(
   content: ReactElement,
   initialPath = '/pipelines/latest',
-  options: { queryClient?: QueryClient; projectId?: string } = {},
+  options: RenderPipelinesRouteOptions = {},
 ): RenderPipelinesRouteResult {
   return renderWithTestRouter(content, initialPath, options, false);
 }

@@ -379,13 +379,55 @@ func (w *currentToolkitSettingsWalker) resolveConfigurationField(
 	fieldPath string,
 	depth int,
 ) error {
-	value, exists := settings[plan.name]
+	value := settings[plan.name]
 	if currentToolkitJSONFalsy(value) {
-		// The current implementation assigns settings.get(field) back after
-		// expansion, so an absent configuration field becomes an explicit null.
-		if !exists {
-			settings[plan.name] = nil
+		// NO CREDENTIAL: freeze the EMPTY OBJECT, never a JSON null.
+		//
+		// The reference implementation assigns settings.get(field) back after
+		// expansion, so an absent configuration field arrived at the runtime as
+		// an explicit null and a stored null stayed one. Every toolkit that
+		// reads such a field then has to normalize it, and the current SDK
+		// toolkits all do — `settings.get('openapi_configuration') or {}`
+		// (elitea_sdk/tools/openapi/__init__.py:440,594, which additionally
+		// replaces any non-dict with `{}`), `**kwargs['github_configuration']`
+		// (which raises on a null and reports a missing field on `{}`),
+		// `if settings.get('pgvector_configuration')` (falsy either way). `{}`
+		// is what all three already mean by "no credential", so freezing it is
+		// the shape the runtime contract is written against, not a new one.
+		//
+		// The native worker does NOT normalize, and that is what made this a
+		// turn-killing defect rather than a cosmetic difference. Its OpenAPI
+		// family reads
+		//
+		//   if let Some(configuration) = settings.get("openapi_configuration") {
+		//       let configuration = configuration.as_object().ok_or_else(invalid_configuration)?;
+		//
+		// (services/elitea-worker-rust/src/toolkits/families/openapi/config.rs,
+		// merged_auth_settings). A null is Some(Value::Null), `as_object` fails,
+		// and the WHOLE turn ends at toolset materialization with
+		// `native_agent.invalid_configuration` — stored as an empty assistant
+		// row flagged is_error, which renders like an answer. `{}` merges
+		// nothing, so `parse_auth` finds no api_key/client_id/oauth endpoint and
+		// returns OpenApiAuth::Anonymous: exactly right for an anonymous API.
+		// The create form does offer a credential picker for the field (the
+		// served type schema carries it, PR #352 / issue #330), but leaving it
+		// empty is a legitimate answer for an API that needs no key — and it
+		// stores no key at all, which is how the field goes missing here.
+		//
+		// openapi is the one built-in family whose credential is genuinely
+		// optional. The others require it and require fields INSIDE it
+		// (github's base_url, sql's host/username/password), so `{}` refuses
+		// there exactly as null did — one line later, with the same code.
+		//
+		// The empty object carries no CurrentFrozenConfigurationMarker: nothing
+		// was expanded, no vault was consulted, and the claim-time materializer
+		// reads an unmarked, owner-less object as an ordinary map and leaves it
+		// alone (currentFrozenConfigurationOwner in
+		// internal/infra/storage/configurations_materializer.go).
+		if err := w.budget.addContainer(0); err != nil {
+			return err
 		}
+		settings[plan.name] = map[string]any{}
 		return nil
 	}
 	reference, ok := value.(map[string]any)

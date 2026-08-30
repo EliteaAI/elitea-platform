@@ -110,6 +110,47 @@ function toolkitAttachMockHandler(onRequest?: (body: unknown, params: Readonly<R
   });
 }
 
+interface FakeToolkitRow {
+  readonly id: string;
+  readonly type: string;
+  readonly name: string;
+}
+
+/** One `elitea_tools` row in the shape `listToolkitInstances` serves. */
+function toolkitRow(row: FakeToolkitRow) {
+  return { ...row, description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 };
+}
+
+/**
+ * A msw handler that PAGES like the real listing endpoint does
+ * (`internal/api/v2/toolkits/handler.go`): it honours `limit`/`offset`, returns
+ * the corresponding slice and the full `total`, and — critically — is ordered
+ * by name, so `all` must already be name-sorted. `onOffset` records each offset
+ * requested, letting a test assert that paging actually happened.
+ *
+ * This is what makes the pagination-defect tests real: a static
+ * `{rows, total}` handler serves the SAME rows for every offset and so cannot
+ * reproduce a section whose rows sort past the first page.
+ */
+function paginatedToolkitInstances(all: readonly FakeToolkitRow[], onOffset?: (offset: number) => void) {
+  return getListToolkitInstancesMockHandler((info) => {
+    const url = new URL(info.request.url);
+    const limit = Number(url.searchParams.get('limit') ?? '20');
+    const offset = Number(url.searchParams.get('offset') ?? '0');
+    onOffset?.(offset);
+    return { rows: all.slice(offset, offset + limit).map(toolkitRow), total: all.length };
+  });
+}
+
+/** `count` name-sorted rows of `type`, named `${prefix}-00`, `${prefix}-01`, … so array order equals server (name) order. */
+function toolkitRows(prefix: string, type: string, count: number): readonly FakeToolkitRow[] {
+  return Array.from({ length: count }, (_unused, index) => ({
+    id: `${prefix}-${index}`,
+    type,
+    name: `${prefix}-${String(index).padStart(2, '0')}`,
+  }));
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
   server.use(getGetPlatformSettingsMockHandler(platformSettings(true)));
@@ -537,22 +578,21 @@ describe('ToolMenu — saved entity', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
   });
 
-  it('requests more toolkit instances (increases the page limit) when the dropdown is scrolled near its end', async () => {
-    let lastLimit: string | null = null;
-    server.use(
-      getListToolkitInstancesMockHandler((info) => {
-        const url = new URL(info.request.url);
-        lastLimit = url.searchParams.get('limit');
-        return { rows: [{ id: 'tk-1', type: 'github', name: 'GitHub', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }], total: 1 };
-      }),
-    );
+  it('pages the listing by OFFSET (not a growing limit) when the dropdown is scrolled near its end', async () => {
+    const requestedOffsets: number[] = [];
+    // 40 toolkits — two 20-row pages — so the first page fills the dropdown
+    // (no auto-paging) and only a scroll fetches the second.
+    server.use(paginatedToolkitInstances(toolkitRows('kit', 'github', 40), (offset) => requestedOffsets.push(offset)));
     server.use(getGetApplicationMockHandler(applicationDetail()));
 
     renderToolMenu({ applicationId: 42 });
     await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).not.toBeDisabled());
     fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
-    await screen.findByText('GitHub');
-    await waitFor(() => expect(lastLimit).toBe('20'));
+    await screen.findByText('kit-00');
+    // The first page fills the list; nothing past offset 0 is fetched until a scroll.
+    await waitFor(() => expect(requestedOffsets).toContain(0));
+    expect(requestedOffsets).not.toContain(20);
+    expect(screen.queryByText('kit-39')).not.toBeInTheDocument();
 
     const menu = screen.getByRole('menu');
     const paper = menu.parentElement as HTMLElement;
@@ -561,6 +601,69 @@ describe('ToolMenu — saved entity', () => {
     Object.defineProperty(paper, 'scrollTop', { value: 90, configurable: true });
     fireEvent.scroll(paper);
 
-    await waitFor(() => expect(lastLimit).toBe('40'));
+    // Reverted-bug guard: the old mechanism grew a single `limit` (`limit=40`);
+    // this pages by OFFSET (`limit` stays 20), which is what survives the
+    // server's `limit > 100 → reset to 20` clamp past 100 rows.
+    await waitFor(() => expect(requestedOffsets).toContain(20));
+    expect(await screen.findByText('kit-39')).toBeInTheDocument();
+  });
+
+  // ── the pagination defect this change fixes ────────────────────────────────
+  // The listing endpoint has no server-side type or name filter (only
+  // limit/offset, ordered by name), so a section whose rows sort ENTIRELY past
+  // the first page used to be unreachable: the dropdown filtered one fetched
+  // page, and the scroll-to-load-more trigger never fired on its 0–2 row list.
+
+  it('surfaces every MCP in the MCP section even when 25 non-MCP toolkits sort ahead of them (auto-pages past the first page)', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    // Name order puts all 25 non-MCP toolkits (`kit-*`) on pages 1–2 before the
+    // 3 MCP connections (`zzz-mcp-*`) — page 1 holds ZERO MCP rows.
+    server.use(paginatedToolkitInstances([...toolkitRows('kit', 'github', 25), ...toolkitRows('zzz-mcp', 'mcp', 3)]));
+
+    renderToolMenu({ applicationId: 42 });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'MCP' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }));
+
+    // All three MCP connections are reachable despite none being on the first page.
+    expect(await screen.findByText('zzz-mcp-00')).toBeInTheDocument();
+    expect(screen.getByText('zzz-mcp-01')).toBeInTheDocument();
+    expect(screen.getByText('zzz-mcp-02')).toBeInTheDocument();
+    // The MCP section shows ONLY MCP rows — a non-MCP toolkit never leaks in.
+    expect(screen.queryByText('kit-00')).not.toBeInTheDocument();
+  });
+
+  it('surfaces every toolkit in the Toolkit section even when 25 MCP connections sort ahead of them (the reverse case)', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    server.use(paginatedToolkitInstances([...toolkitRows('aaa-mcp', 'mcp', 25), ...toolkitRows('zzz-kit', 'github', 3)]));
+
+    renderToolMenu({ applicationId: 42 });
+    await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
+
+    expect(await screen.findByText('zzz-kit-00')).toBeInTheDocument();
+    expect(screen.getByText('zzz-kit-01')).toBeInTheDocument();
+    expect(screen.getByText('zzz-kit-02')).toBeInTheDocument();
+    expect(screen.queryByText('aaa-mcp-00')).not.toBeInTheDocument();
+  });
+
+  it('a name search reaches a toolkit that sits past the first fetched page', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    // 25 toolkits: `kit-24` is the 25th row, on the SECOND page (offset 20).
+    server.use(paginatedToolkitInstances(toolkitRows('kit', 'github', 25)));
+
+    renderToolMenu({ applicationId: 42 });
+    await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
+    // First page shown; the target is not among the first 20 rows.
+    await screen.findByText('kit-00');
+    expect(screen.queryByText('kit-24')).not.toBeInTheDocument();
+
+    // Typing a term that matches only a row on a later page must still reach it:
+    // the section pages until the filtered list is non-empty (searchDebounceMs
+    // default applies, so give the debounce + fetch room).
+    fireEvent.change(screen.getByPlaceholderText('Search toolkits...'), { target: { value: 'kit-24' } });
+    expect(await screen.findByText('kit-24', {}, { timeout: 3000 })).toBeInTheDocument();
+    // The search is a real filter — unrelated first-page rows are gone.
+    expect(screen.queryByText('kit-00')).not.toBeInTheDocument();
   });
 });

@@ -43,10 +43,11 @@ func TestPostgresRuntimeContextRequiresExactActiveClaimSessionAndFence(t *testin
 		}
 		require.Equal(t, []any{"claim-1", "execution-1", uint64(3), identity.String(), fence}, args)
 		return contentRowFunc(func(dest ...any) error {
-			require.Len(t, dest, 3)
+			require.Len(t, dest, 4)
 			*dest[0].(*int64) = 42
 			*dest[1].(*string) = "17"
 			*dest[2].(*string) = runtimeContextInitiatorUser
+			*dest[3].(*string) = ""
 			return nil
 		})
 	})
@@ -81,15 +82,20 @@ func TestPostgresRuntimeContextAuthorizesAgentClaimAsInteractiveActor(t *testing
 			"a.execution_id IS NOT NULL",
 			"c.released_at IS NULL",
 			"j.desired_state = 'RUNNING'",
+			// The conversation the attachment object route authorizes on. It
+			// is projected from the agent row, never from the request — see
+			// RuntimeContextAuthorization.ConversationID.
+			"COALESCE(a.client_stream_id, '') AS conversation_id",
 		} {
 			require.Contains(t, query, predicate)
 		}
 		require.Equal(t, []any{"claim-agent", "execution-agent", uint64(5), identity.String(), fence}, args)
 		return contentRowFunc(func(dest ...any) error {
-			require.Len(t, dest, 3)
+			require.Len(t, dest, 4)
 			*dest[0].(*int64) = 84
 			*dest[1].(*string) = "19"
 			*dest[2].(*string) = runtimeContextInitiatorUser
+			*dest[3].(*string) = "5f5a1ad4-2b30-4a54-9b7f-2d05a0d3f6c1"
 			return nil
 		})
 	})
@@ -107,6 +113,7 @@ func TestPostgresRuntimeContextAuthorizesAgentClaimAsInteractiveActor(t *testing
 	require.EqualValues(t, 84, authorization.ResourceProjectID)
 	require.Equal(t, "19", authorization.ActorID)
 	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
+	require.Equal(t, "5f5a1ad4-2b30-4a54-9b7f-2d05a0d3f6c1", authorization.ConversationID)
 }
 
 func TestPostgresRuntimeContextHidesInactiveOrMismatchedClaims(t *testing.T) {
@@ -163,10 +170,15 @@ func TestPostgresRuntimeContextAuthorizationIntegration(t *testing.T) {
     initiator TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
 )`,
+		// client_stream_id is chat_conversations.uuid, and it is NOT NULL in
+		// the real table (0055_agent_execution_admission.sql). The attachment
+		// object route authorizes on it, so a fixture without it would let a
+		// query that stopped projecting it still pass here.
 		`CREATE TABLE elitea_runtime.agent_execution_jobs (
     execution_id TEXT NOT NULL,
     generation BIGINT NOT NULL,
     capability_id TEXT NOT NULL,
+    client_stream_id TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
 )`,
 		`CREATE TABLE elitea_runtime.workload_sessions (
@@ -213,8 +225,9 @@ VALUES ('execution-agent', 1, 42, '17', 'RUNNING', 'agent.execute.application.v1
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.agent_execution_jobs
-    (execution_id, generation, capability_id)
-VALUES ('execution-agent', 1, 'agent.execute.application.v1')`); err != nil {
+    (execution_id, generation, capability_id, client_stream_id)
+VALUES ('execution-agent', 1, 'agent.execute.application.v1',
+        '5f5a1ad4-2b30-4a54-9b7f-2d05a0d3f6c1')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.workload_sessions
@@ -246,6 +259,9 @@ VALUES ('claim-agent', 'execution-agent', 1, 'session-1', $1, 'producer-1', $2, 
 	require.EqualValues(t, 42, authorization.ResourceProjectID)
 	require.Equal(t, "17", authorization.ActorID)
 	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
+	// An index claim joins no agent row: the conversation is empty, which is
+	// exactly why the attachment route requires it rather than assuming it.
+	require.Empty(t, authorization.ConversationID)
 
 	agentAuthorization, err := repository.AuthorizeRuntimeContext(ctx, ContentClaim{
 		PeerCertificate: certificateWithURI(identity),
@@ -258,6 +274,11 @@ VALUES ('claim-agent', 'execution-agent', 1, 'session-1', $1, 'producer-1', $2, 
 	require.EqualValues(t, 42, agentAuthorization.ResourceProjectID)
 	require.Equal(t, "17", agentAuthorization.ActorID)
 	require.Equal(t, runtimeContextInitiatorUser, agentAuthorization.Initiator)
+	require.Equal(t,
+		"5f5a1ad4-2b30-4a54-9b7f-2d05a0d3f6c1",
+		agentAuthorization.ConversationID,
+		"the agent claim must carry its own conversation out of Postgres",
+	)
 
 	claim.FenceToken = bytes.Repeat([]byte{9}, sha256.Size)
 	_, err = repository.AuthorizeRuntimeContext(ctx, claim)

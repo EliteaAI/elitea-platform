@@ -74,10 +74,26 @@ function nonEmpty(value: string | undefined): string | undefined {
   return value !== undefined && value !== '' ? value : undefined;
 }
 
-/** attachment.helpers.js:44-52 `getAttachmentName`'s `item_details`-only fallback chain, split out to keep `getAttachmentName` itself under the §3.5 complexity budget. */
+/**
+ * attachment.helpers.js:44-52 `getAttachmentName`'s `item_details`-only
+ * fallback chain, split out to keep `getAttachmentName` itself under the
+ * §3.5 complexity budget.
+ *
+ * The trailing basename is display hygiene, not a contract change: a stored
+ * attachment item's `name` IS its object key, `{conversationUUID}/{file}`,
+ * by server design (DeleteMessage feeds it back to the object store), and
+ * rendering the key verbatim put a uuid in front of every filename in the
+ * transcript. A real filename cannot contain '/', so the last segment is
+ * always the human half.
+ */
 function nameFromRecord(attachment: AttachmentRecord): string | undefined {
-  const itemDetails = attachment.item_details;
-  return nonEmpty(itemDetails?.name) ?? nonEmpty(attachment.name) ?? nonEmpty(itemDetails?.filepath)?.split('/').pop();
+  const resolved =
+    nonEmpty(itemDetailsName(attachment)) ?? nonEmpty(attachment.name) ?? nonEmpty(attachment.item_details?.filepath);
+  return nonEmpty(resolved?.split('/').pop() ?? undefined);
+}
+
+function itemDetailsName(attachment: AttachmentRecord): string | undefined {
+  return attachment.item_details?.name;
 }
 
 /**

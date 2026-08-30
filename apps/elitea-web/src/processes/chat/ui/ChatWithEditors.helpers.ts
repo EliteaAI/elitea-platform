@@ -40,25 +40,3 @@ export function toCreatedResult(response: ApplicationCreatedResponse): {
     ),
   };
 }
-
-/**
- * **DISCLOSED GAP — no real toolkit create/save mutation exists anywhere in
- * this app yet.** `ToolkitEditor.tsx`'s own module doc comment already
- * establishes this: no generated `POST /elitea_core/tools/prompt_lib/
- * {projectId}` or `PUT /elitea_core/tool/prompt_lib/{projectId}/{toolId}`
- * endpoint exists (see `features/toolkits/api/toolkits.ts`'s own module doc
- * comment for the exhaustively-verified inventory) — this is a
- * pre-existing gap from that unit's own work, not something introduced
- * here. `ToolkitEditorDeps.createToolkit`/`.saveToolkit` are non-optional,
- * so mounting `<ToolkitEditor>` at all requires SOME value; this rejects
- * with a clear, catchable error rather than silently resolving a fake
- * success. `CreateToolkitButton`/`SaveToolkitButton` (this call's real
- * callers) already `try { await createToolkit(...) } catch (error) {
- * onError?.(error) }` — a rejection is handled the same way a slow/failed
- * real network call would be, not a crash.
- */
-export function rejectToolkitWrite(): Promise<never> {
-  return Promise.reject(
-    new Error('Toolkit create/save has no backend endpoint yet — see features/toolkits/api/toolkits.ts for the disclosed gap.'),
-  );
-}

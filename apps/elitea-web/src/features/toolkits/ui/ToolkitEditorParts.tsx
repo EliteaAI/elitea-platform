@@ -18,7 +18,7 @@ import { CreateToolkitButton } from './CreateToolkitButton';
 import { SaveToolkitButton } from './SaveToolkitButton';
 import type { ToolkitFormValues, ToolSchemaLike } from './SaveToolkitButton';
 import { ToolkitTypeSelector } from './ToolkitTypeSelector';
-import { ToolkitForm, type ToolkitFormEditDetail } from './form/ToolkitForm/ToolkitForm';
+import { ToolkitForm, type ToolkitFormEditDetail, type ToolkitValidationInjected } from './form/ToolkitForm/ToolkitForm';
 
 /**
  * `ToolkitEditor.tsx`'s own supporting pieces (prop-shape types, state
@@ -170,6 +170,8 @@ export interface ToolkitEditorBodyProps {
   readonly projectId: string | undefined;
   readonly revertCredentialsRef: { current: (() => void) | undefined };
   readonly onValidationStateChange: (state: { readonly hasErrors: boolean; readonly triggerValidation: () => void }) => void;
+  /** #613 — the server's per-field save refusal, produced by `ToolkitEditor`'s `useToolkitSaveValidation` from the `CreateToolkitButton`/`SaveToolkitButton` rejection below. */
+  readonly toolkitValidation: ToolkitValidationInjected;
 }
 
 export function ToolkitEditorBody({
@@ -183,6 +185,7 @@ export function ToolkitEditorBody({
   projectId,
   revertCredentialsRef,
   onValidationStateChange,
+  toolkitValidation,
 }: ToolkitEditorBodyProps): ReactNode {
   if (!editToolDetail) {
     if (!isCreating) {
@@ -229,6 +232,7 @@ export function ToolkitEditorBody({
       formInitialValues={formInitialValues}
       onValidationStateChange={onValidationStateChange}
       revertCredentialsRef={revertCredentialsRef}
+      toolkitValidation={toolkitValidation}
       onSave={unreachableToolkitFormSave}
     />
   );

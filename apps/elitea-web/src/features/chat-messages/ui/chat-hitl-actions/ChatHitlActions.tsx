@@ -15,6 +15,9 @@ import Collapse from '@mui/material/Collapse';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 
+import type { HitlQuestion } from '../../lib/hitlInterrupts';
+
+import { ClarifyingQuestionCard } from './AnswerQuestionsControl';
 import { BlockWithCommentControl } from './BlockWithCommentControl';
 import { EditControl } from './EditControl';
 
@@ -23,9 +26,20 @@ const SENSITIVE_PARAM_MASK = '***';
 /** @public The `available_actions` guardrail flags a sensitive-tool pause. */
 const SENSITIVE_GUARDRAIL_TYPES = new Set(['sensitive_tool', 'parallel_sensitive_tools']);
 
-/** @public The payload `ChatHitlActions` resumes a paused agent with. */
+/** The `available_actions` entry an `ask_user` clarification pause carries. */
+const ANSWER_ACTION = 'answer';
+
+/**
+ * @public The payload `ChatHitlActions` resumes a paused agent with.
+ *
+ * `answer` carries the clarification answers as a JSON-encoded `value` — the
+ * ONE action whose value is not free prose. `buildHitlContinueBody` parses it
+ * back into the structured `hitl_value` the continuation route canonicalises
+ * (`currentHITLValue`, agentexecution/route.go); every layer between here and
+ * there types the value as a string, so it travels as one.
+ */
 export interface HitlResumePayload {
-  readonly action: 'approve' | 'reject' | 'edit' | 'block_with_comment';
+  readonly action: 'approve' | 'reject' | 'edit' | 'block_with_comment' | 'answer';
   readonly value?: string | undefined;
   readonly toolCallId?: string | undefined;
 }
@@ -40,6 +54,8 @@ export interface HitlInterrupt {
   readonly tool_call_id?: string;
   /** `sensitive_tool` / `parallel_sensitive_tools` switch to the authorization-card branch. */
   readonly guardrail_type?: string;
+  /** The clarifying questions of an `ask_user` pause (`guardrail_type: 'clarifying_question'`). */
+  readonly questions?: readonly HitlQuestion[];
   readonly action_label?: string;
   readonly tool_args?: unknown;
   readonly policy_message?: string;
@@ -254,11 +270,27 @@ export function ChatHitlActions({
   const isSensitiveTool =
     hitlInterrupt.guardrail_type !== undefined && SENSITIVE_GUARDRAIL_TYPES.has(hitlInterrupt.guardrail_type);
 
+  // The clarification pause. Its `available_actions` is `['answer']` alone, so
+  // it matches none of the approve/reject/edit branches below and rendered a
+  // card with no controls at all until this branch existed.
+  const canAnswer = actions.includes(ANSWER_ACTION);
+  const handleAnswer = (value: string): void => onHitlResume?.({ action: 'answer', value, toolCallId });
   const handleApprove = (): void => onHitlResume?.({ action: 'approve', toolCallId });
   const handleReject = (): void => onHitlResume?.({ action: 'reject', toolCallId });
   const handleEditSubmit = (value: string): void => onHitlResume?.({ action: 'edit', value, toolCallId });
   const handleBlockWithComment = (comment: string): void =>
     onHitlResume?.({ action: 'block_with_comment', value: comment, toolCallId });
+
+  if (canAnswer) {
+    return (
+      <ClarifyingQuestionCard
+        questions={hitlInterrupt.questions ?? []}
+        message={hitlInterrupt.message}
+        disabled={disabled}
+        onSubmit={handleAnswer}
+      />
+    );
+  }
 
   if (isSensitiveTool) {
     return (

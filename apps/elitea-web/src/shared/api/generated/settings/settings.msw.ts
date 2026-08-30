@@ -80,6 +80,10 @@ export const getReplaceParticipantSettingsResponseMock = (
             faker.number.float({ fractionDigits: 2 }),
             undefined,
           ]),
+          reasoning_effort: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
         },
         undefined,
       ]),

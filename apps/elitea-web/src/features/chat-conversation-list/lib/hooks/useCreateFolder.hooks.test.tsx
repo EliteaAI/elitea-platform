@@ -42,6 +42,16 @@ function createWrapper(permissionNames: readonly string[]): { readonly wrapper: 
   return { wrapper: Wrapper, client };
 }
 
+/**
+ * Applies whatever `setFolders` was handed — a functional updater or (pre-fix)
+ * a ready-made array — to `prev`, so an assertion states the LIST THE SIDEBAR
+ * ENDS UP WITH rather than the shape of the call. Both stale-closure repros
+ * below depend on that distinction being invisible to the assertion.
+ */
+function applyFolderWrite(write: unknown, prev: readonly FolderListItem[]): readonly FolderListItem[] {
+  return typeof write === 'function' ? (write as (p: readonly FolderListItem[]) => readonly FolderListItem[])(prev) : (write as readonly FolderListItem[]);
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
 });
@@ -70,7 +80,7 @@ describe('useCreateFolder', () => {
 
     expect(setActiveFolder).toHaveBeenNthCalledWith(1, draft);
     expect(setActiveFolder).toHaveBeenNthCalledWith(2, { id: 'f1', name: 'New folder', conversations: [] });
-    expect(setFolders).toHaveBeenCalledWith([{ id: 'f1', name: 'New folder', conversations: [] }, existing]);
+    expect(applyFolderWrite(setFolders.mock.calls.at(-1)?.[0], [draft, existing])).toEqual([{ id: 'f1', name: 'New folder', conversations: [] }, existing]);
     expect(onCreated).toHaveBeenCalledWith({ id: 'f1', name: 'New folder', conversations: [] });
   });
 
@@ -137,6 +147,46 @@ describe('useCreateFolder', () => {
     await result.current.onCreateFolder(draft);
 
     expect(toastError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * DEFECT (render-time snapshot, written a round trip later): the post-create
+   * write REPLACED the folder list with `[created, ...folders]`, where `folders`
+   * was this hook's render-time parameter — but the write runs after `await
+   * folderApi.create`. `useQueryFoldersList` populates that same container
+   * asynchronously, so its first page landing during the POST (the common case
+   * on a cold sidebar: the folder list request and a fast create overlap) was
+   * discarded wholesale — the folders were on screen, then gone, with no error.
+   *
+   * Repro shape from `processes/chat/model/useConversationSidebar.test.tsx`:
+   * capture the handler while the list is empty, THEN let the list arrive, THEN
+   * invoke that exact reference.
+   */
+  it('keeps folders that arrived during the POST, from a handler captured while the list was empty (stale-closure repro)', async () => {
+    server.use(http.post(`${BASE}/elitea_core/folder/prompt_lib/7`, () => HttpResponse.json({ id: 'f1', name: 'New folder' })));
+
+    const setFolders = vi.fn();
+    const draft = mkFolder({ id: 'draft-1', isNew: true });
+    const arrived = mkFolder({ id: 'from-listing' });
+
+    const { wrapper } = createWrapper(['models.chat.folders.create']);
+    const { result, rerender } = renderHook(
+      ({ folders }: { folders: readonly FolderListItem[] }) =>
+        useCreateFolder({ projectId: '7', folders, setActiveFolder: vi.fn(), setFolders, toastError: vi.fn() }),
+      { wrapper, initialProps: { folders: [] as readonly FolderListItem[] } },
+    );
+
+    // Captured while the sidebar had nothing in it.
+    const staleCreate = result.current.onCreateFolder;
+
+    // The listing lands AFTER the handler was captured.
+    rerender({ folders: [arrived] });
+
+    await staleCreate(draft);
+
+    // A pre-fix build hands `setFolders` the array `[created]`, so `arrived` is
+    // gone; the live write amends whatever the container holds at commit time.
+    expect(applyFolderWrite(setFolders.mock.calls.at(-1)?.[0], [draft, arrived]).map((folder) => folder.id)).toEqual(['f1', 'from-listing']);
   });
 
   /**

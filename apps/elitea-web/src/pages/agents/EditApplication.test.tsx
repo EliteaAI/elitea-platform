@@ -8,6 +8,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { resetConfigForTests } from '@/shared/config/get-config';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
+import { NavBlockerDialog, useNavBlockerStore } from '@/widgets/app-shell';
 
 import { EditApplication } from './EditApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
@@ -86,8 +87,47 @@ function detailWithTools() {
   };
 }
 
+/**
+ * The model catalogue the Advanced-settings picker reads. Served for every
+ * test here — the page mounts the picker unconditionally, and
+ * `src/test/setup.ts` runs msw with `onUnhandledRequest: 'error'`.
+ * `project_id` is spelled as a string because that is what `ConfigModel`
+ * declares, while the Go catalogue marshals an int32.
+ */
+const CATALOGUE = {
+  items: [
+    { name: 'gpt-4o', display_name: 'GPT-4o', project_id: '9', default: true },
+    { name: 'qwen3.5', display_name: 'Qwen 3.5', project_id: '9' },
+  ],
+  default_model_name: 'gpt-4o',
+};
+
+/** Answers both save calls `useSaveVersion` issues, capturing the version PUT's body. */
+function captureVersionSave(sink: Record<string, unknown>[]): void {
+  server.use(
+    http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+      sink.push((await request.json()) as Record<string, unknown>);
+      return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+    }),
+    http.put('*/elitea_core/application/prompt_lib/:projectId/:id', () => HttpResponse.json({ id: '42' }, { status: 201 })),
+  );
+}
+
+/** Opens the model menu and picks a row by its catalogue display name. */
+async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName: string): Promise<void> {
+  await user.click(await screen.findByTestId('model-selector-name'));
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(displayName) }));
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  server.use(
+    http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)),
+    // The Chat button resolves the signed-in user to add the USER participant
+    // (the resolver's author join needs it), so every render of this page now
+    // issues the author read.
+    http.get('*/social/author*', () => HttpResponse.json({ id: '6', name: 'E2E Chat Driver', avatar: '' })),
+  );
 });
 
 afterEach(() => {
@@ -566,5 +606,257 @@ describe('EditApplication', () => {
     await screen.findByTestId('agent-toolkit-card', {}, { timeout: 5_000 });
     expect(screen.queryByTestId('agent-add-toolkit-button')).not.toBeInTheDocument();
     expect(screen.getByTestId('agent-toolkit-delete-button')).toBeDisabled();
+  }, 15_000);
+
+  /*
+   * The picker's own behaviour lives in `widgets/agent-model-settings`; what
+   * these pin is this page's wiring — the slot is mounted, a stored model
+   * comes back on load, a picked one reaches the version PUT, and the nav
+   * blocker can see the change. A slot prop that is declared and never
+   * rendered is this codebase's recurring defect (#126/#129/#134).
+   */
+  it('mounts the model picker, showing the project default for a version that pins none', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    expect(await screen.findByText('GPT-4o', {}, { timeout: 5_000 })).toBeVisible();
+  }, 15_000);
+
+  it('reads a stored model back onto the picker instead of the project default', async () => {
+    const base = detail();
+    server.use(
+      getGetApplicationMockHandler({
+        ...base,
+        version_details: {
+          ...base.version_details,
+          llm_settings: { model_name: 'qwen3.5', model_project_id: 9, max_tokens: -1, temperature: 0.6 },
+        },
+      }),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    expect(await screen.findByText('Qwen 3.5', {}, { timeout: 5_000 })).toBeVisible();
+  }, 15_000);
+
+  it('sends a newly picked model in the version PUT body, with a NUMERIC model_project_id', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const bodies: Record<string, unknown>[] = [];
+    captureVersionSave(bodies);
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    // The whole form renders `disabled` until the detail fetch settles, so a
+    // click before then is dropped — wait for a field the response populates.
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await chooseModel(user, 'Qwen 3.5');
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const settings = bodies[0]?.['llm_settings'] as Record<string, unknown> | undefined;
+    expect(settings?.['model_name']).toBe('qwen3.5');
+    expect(settings?.['model_project_id']).toBe(9);
+    expect(typeof settings?.['model_project_id']).toBe('number');
+  }, 20_000);
+
+  it('leaves llm_settings off the PUT body for a version that names no model and was not re-pointed', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const bodies: Record<string, unknown>[] = [];
+    captureVersionSave(bodies);
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    // Rendering the catalogue default must not author it: an empty
+    // `llm_settings` is what leaves the platform's own fallback in charge,
+    // and that fallback is why agent chat works today.
+    expect(bodies[0]).not.toHaveProperty('llm_settings');
+  }, 20_000);
+
+  it('arms the unsaved-changes guard when only the model is changed (#133)', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+
+    await chooseModel(user, 'Qwen 3.5');
+
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
+  }, 20_000);
+});
+
+describe('leaving the editor', () => {
+  /**
+   * Measured defect: Cancel opened the "discard changes?" dialog, Discard
+   * reverted the fields, and the user was STILL on the edit page — the modal
+   * closed editing in neither of its two buttons. Confirming the discard now
+   * leaves for the list, matching the create page's Cancel.
+   */
+  it('confirming the discard dialog navigates back to the agents list', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    const description = await screen.findByTestId('agent-description-input', {}, { timeout: 5_000 });
+    await user.type(description, ' edited');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    // The dialog's confirm is 'Discard'; the tab bar's own trigger is
+    // 'Cancel', so the confirm name is what disambiguates the two.
+    await user.click(await screen.findByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/agents/all');
+    });
+    // #133 — the discard itself must not be prompted about: the navigation
+    // happened, so the app-wide blocker was disarmed first.
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+  }, 15_000);
+
+  it('dismissing the discard dialog stays on the edit page', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    // The form's inputs render before the detail fetch settles, but the
+    // toolbar (and its Cancel) waits for `!isFetching` — await the BUTTON,
+    // not a form field, or this races the fetch.
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }, { timeout: 5_000 }));
+    await screen.findByText('Are you sure you want to discard changes?');
+    // Two 'Cancel' buttons exist now — the tab bar's own trigger and the
+    // dialog's dismiss. The dialog renders in a portal at the END of the
+    // body, so the last match is its button.
+    const cancels = screen.getAllByRole('button', { name: 'Cancel' });
+    await user.click(cancels[cancels.length - 1] as HTMLElement);
+
+    expect(router.state.location.pathname).toBe('/agents/all/42');
+  }, 15_000);
+});
+
+describe('talking to the agent', () => {
+  /**
+   * "How to talk to agent?" — the page used to offer no way at all. The Chat
+   * button creates a conversation, attaches THIS agent as a participant, and
+   * lands in the chat surface. The participant body is the assertion that
+   * matters: `entity_settings.version_id` is what the agent resolver joins
+   * the version through (`agent_chat.sql`), and a participant without it
+   * answers 422 on every turn.
+   */
+  it('the Chat button creates a conversation with the agent attached and navigates to it', async () => {
+    const participantBodies: unknown[] = [];
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      // RAW bodies, no `{data:…}` envelope: `eliteaFetch` wraps the parsed
+      // body itself (`mutator.ts` returns `{data: result.data, …}`), so a
+      // mock that pre-wraps lands DOUBLE-wrapped and the client reads
+      // `conversation.id === undefined` — the #132 shape, from the other side.
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () =>
+        HttpResponse.json({ id: '7', name: 'My Agent' }, { status: 201 }),
+      ),
+      http.post('*/elitea_core/participants/prompt_lib/:projectId/:conversationId', async ({ request, params }) => {
+        participantBodies.push({ conversationId: String(params['conversationId']), body: await request.json() });
+        return HttpResponse.json([], { status: 200 });
+      }),
+    );
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('chat-with-agent-button', {}, { timeout: 5_000 }));
+
+    await waitFor(() => {
+      expect(participantBodies).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/chat/7');
+    });
+    const captured = participantBodies[0] as { conversationId: string; body: readonly Record<string, unknown>[] };
+    expect(captured.conversationId).toBe('7');
+    // TWO entries, user first: nothing server-side creates the user mapping
+    // on the REST path, and the resolver's author join refuses a
+    // conversation without it — the same pair the adhoc send posts.
+    expect(captured.body).toHaveLength(2);
+    expect(captured.body[0]).toMatchObject({ entity_name: 'user', entity_meta: { id: 6 } });
+    expect(captured.body[1]).toMatchObject({
+      entity_name: 'application',
+      entity_meta: { id: '42', project_id: '9' },
+      entity_settings: { version_id: '1' },
+    });
+  }, 15_000);
+
+  it('a failed conversation create surfaces an error and stays on the page', async () => {
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () => HttpResponse.json({}, { status: 500 })),
+    );
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('chat-with-agent-button', {}, { timeout: 5_000 }));
+
+    expect(await screen.findByText('Failed to open a chat with this agent.')).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/agents/all/42');
+  }, 15_000);
+
+  /**
+   * Audit (handoff brief) — same finding as the pipelines twin
+   * (`EditPipeline.test.tsx`'s identically-named test, whose doc comment
+   * traces the exact TanStack Router/history mechanism): a BLOCKED
+   * `navigate()` that the user then CANCELS never commits, so the promise
+   * `ChatWithAgentButton` used to `await` never settled either. Measured
+   * against the unfixed button: `isStarting` stayed `true` forever the
+   * instant Cancel was clicked on the guard's own dialog — "Opening chat…"
+   * with no way back short of leaving the page.
+   */
+  it('recovers the button instead of hanging on "Opening chat…" when the nav-blocker dialog is cancelled', async () => {
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () =>
+        HttpResponse.json({ id: '7', name: 'My Agent' }, { status: 201 }),
+      ),
+      http.post('*/elitea_core/participants/prompt_lib/:projectId/:conversationId', () =>
+        HttpResponse.json([], { status: 200 }),
+      ),
+    );
+    const user = userEvent.setup();
+    // `NavBlockerDialog` isn't part of this fixture's route tree (the real
+    // mount point is `AppShell`) — mounted alongside `EditApplication` here
+    // so the guard this page arms actually has a consumer to block against,
+    // same as the app's real composition.
+    const { router } = renderAgentsRoute(
+      <>
+        <EditApplication />
+        <NavBlockerDialog />
+      </>,
+      '/agents/all/42',
+      { projectId: '9' },
+    );
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await chooseModel(user, 'Qwen 3.5');
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
+
+    await user.click(await screen.findByTestId('chat-with-agent-button', {}, { timeout: 5_000 }));
+
+    // The conversation + participant IS created — the Chat action's own work
+    // completed; only the navigation itself is what the guard intercepts.
+    await waitFor(() => expect(screen.getByTestId('nav-blocker-dialog')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('nav-blocker-dialog')).not.toBeInTheDocument());
+
+    // Still on the edit page — the guard did its job.
+    expect(router.state.location.pathname).toBe('/agents/all/42');
+    // The button must recover rather than stay wedged on "Opening chat…"
+    // forever. A short window is enough: nothing further is ever scheduled
+    // to resolve the old code's stuck state, so if this hasn't flipped by
+    // now it never will.
+    await waitFor(() => expect(screen.getByTestId('chat-with-agent-button')).toBeEnabled(), { timeout: 2_000 });
+    expect(screen.getByTestId('chat-with-agent-button')).toHaveTextContent('Chat');
   }, 15_000);
 });

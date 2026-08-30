@@ -80,6 +80,33 @@ type Querier interface {
 	// a fact about a key, not a setting that changes under a running integration
 	// (spec-llm-project-scope §4).
 	CreateTokenProjectBinding(ctx context.Context, arg CreateTokenProjectBindingParams) error
+	//
+	// Is a response in this conversation still marked as being written?
+	//
+	// WHY THIS EXISTS, and why it is not the overlap gate itself. The overlap gate
+	// lives twice, in the WHERE of ResolveCurrentApplicationTurn /
+	// ResolveCurrentAdhocTurn and again in InsertCurrentApplicationTurn /
+	// InsertCurrentAdhocTurn, where it is race-free. Neither can say WHY it matched
+	// nothing: both simply return no rows, and the caller answers 422
+	// `unsupported_agent_execution` for all ~25 reasons at once.
+	//
+	// One of those reasons is not a refusal at all, it is a WINDOW. The browser
+	// ends a turn on the `pipeline_finish` node event (the client predicate is
+	// apps/elitea-web/src/features/chat-messages/lib/chatStreamTurnEnd.ts) and
+	// re-enables the composer there. `is_streaming` is only cleared later, by
+	// FinalizeCurrentAgentFullMessage, when the WORKER's separate terminal output
+	// frame is projected. Measured on the standalone stack: `pipeline_finish`
+	// durable at 21:53:47.319, composer released at ~.55, second send at .621,
+	// `is_streaming` cleared at .824 — the second turn was refused 422 inside a
+	// ~500ms window in which the product had already invited it.
+	//
+	// This probe answers only "is that window open", so the start path can WAIT for
+	// it to close rather than refusing a turn the user was invited to send. It is
+	// deliberately BROADER than the gate (no newest-response or retried-question
+	// narrowing): a superset only ever costs a bounded wait that then falls through
+	// to the same answer, whereas restating those sub-clauses would put a third
+	// copy of the gate in the tree for them to drift apart.
+	CurrentConversationResponseSettling(ctx context.Context, conversationUuid pgtype.UUID) (bool, error)
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
 	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
 	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
@@ -452,6 +479,46 @@ type Querier interface {
 	// contract, and silently reshaping stored content here would make the
 	// projection disagree with what the transcript renders.
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
+	// The projection above is ResolveCurrentApplicationTurn's
+	// `application_version_details_json` block, copied verbatim rather than shared.
+	// Both copies sit between the `-- BEGIN/END shared
+	// application_version_details_json projection` markers, and
+	// TestSharedApplicationVersionDetailsProjectionsAreIdentical
+	// (internal/db/sqlcgen/agent_chat_shared_projection_test.go) extracts both and
+	// fails the build if a single byte between the markers diverges. Keep the
+	// markers on their own lines and edit the two blocks together.
+	// Both documents are read by the SAME decoder in the native
+	// runtime (`OrdinaryNoToolProfile::from_nested_version` and
+	// `FrozenToolSnapshot::from_version_details`,
+	// services/elitea-worker-rust/src/agents/assembly.rs) and frozen by the SAME
+	// freeze (`FreezeCurrentApplicationVersion`,
+	// internal/application/agentexecution/tools.go), so a parent's definition and a
+	// nested child's must have one shape. What is deliberately absent is everything
+	// the turn projection derives from a conversation — chat history, participants,
+	// the conversation's own internal-tool list — because a nested child has no
+	// conversation: it is invoked as a tool inside the parent's turn.
+	//
+	// BOTH identity arguments are filters, and that is load-bearing rather than
+	// defensive. The worker names the pair in its request path
+	// (`/runtime-context/applications/{application_id}/versions/{version_id}`,
+	// services/elitea-worker-rust/src/transport/runtime_context.rs:448-469) and
+	// validates the pair it gets back (:554-564). Keying on the version alone would
+	// let a stored reference whose `application_id` disagrees with its
+	// `application_version_id` still resolve a definition — the exact mismatch
+	// `materializeCurrentApplicationToolNestedSkills` refuses on the start path
+	// (internal/infra/db/repos/agent_nesting.go).
+	ResolveCurrentApplicationVersionDetails(ctx context.Context, arg ResolveCurrentApplicationVersionDetailsParams) (ResolveCurrentApplicationVersionDetailsRow, error)
+	// The pending set is materialized through a CASE, exactly as
+	// ResolveCurrentContinuation / ResumeCurrentAgentHITL do for `pending_hitl`,
+	// and for a reason those queries only imply. A sibling
+	// `AND jsonb_typeof(...) = 'array'` is NOT a guard: PostgreSQL costs and
+	// reorders the quals of an AND (order_qual_clauses), and on PostgreSQL 16 it
+	// already evaluates the length test first — so a `meta.authorization_requests`
+	// holding JSON null, a scalar or an object raises 22023 ("cannot get array
+	// length of a scalar" / "of a non-array") and turns this deliberate REFUSAL,
+	// which the caller answers 422, into a 500. The CASE cannot change any
+	// admitted row: whenever the ELSE arm is taken the typeof qual beside it is
+	// already false, and an empty array fails `BETWEEN 1 AND 16` anyway.
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
 	ResolveCurrentOutputLimitContinuation(ctx context.Context, arg ResolveCurrentOutputLimitContinuationParams) (ResolveCurrentOutputLimitContinuationRow, error)

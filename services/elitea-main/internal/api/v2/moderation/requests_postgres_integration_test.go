@@ -737,6 +737,370 @@ func TestATokenPrincipalCannotFileARequest(t *testing.T) {
 	}
 }
 
+/* ── the model-connection request (Settings › AI Configuration) ─────────── */
+
+// The vocabulary the AI Configuration panel's "Request a model connection"
+// dialog files, spelled out here rather than imported from the client or the
+// handler: these tests assert what travels on the WIRE, and a shared constant
+// would move with whichever side changed it instead of failing.
+//
+// The dialog adds no route and no column. It reuses the catalogue's create
+// call unchanged — same method, same path, same body — and differs only in
+// these two values. That is the property worth pinning: "a model connection"
+// is not a second mechanism, it is a second `issue_type` in the one queue an
+// operator already reads.
+const (
+	modelConnectionIssueType = "Model Connection Request"
+	providerConnectionEntity = "provider:anthropic"
+	modelConnectionEntity    = "model:claude-opus-4"
+)
+
+// configurationsFixture is the state the clerical pin measures against: two
+// rows of the project's OWN AI configuration, one of which has passed its
+// connection check. `status_ok` is the column a "this connection works" badge
+// reads, and it is the one a provisioning side effect would most plausibly
+// touch without adding a row.
+const configurationsFixture = `
+INSERT INTO p_1.configuration (project_id, elitea_title, label, type, section, data, status_ok) VALUES
+    (1, 'OpenAI GPT-4o',     'openai', 'openai', 'llm',       '{"name":"gpt-4o"}',           true),
+    (1, 'OpenAI Embeddings', 'openai', 'openai', 'embedding', '{"name":"text-embedding-3"}', false);
+`
+
+func prepareConfigurations(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), configurationsFixture); err != nil {
+		t.Fatalf("seed configurations: %v", err)
+	}
+}
+
+// configurationSnapshot renders every configuration row of project 1 as
+// comparable text. `type` and `status_ok` are both in it on purpose: a
+// provisioning side effect would either ADD a row for the requested provider
+// or FLIP an existing row's connection state, and a COUNT alone cannot see the
+// second.
+func configurationSnapshot(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+SELECT elitea_title || '/' || type || '/' || section || '/status_ok=' || status_ok
+FROM p_1.configuration ORDER BY id`)
+	if err != nil {
+		t.Fatalf("read configurations: %v", err)
+	}
+	defer rows.Close()
+
+	snapshot := make([]string, 0)
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("scan configuration: %v", err)
+		}
+		snapshot = append(snapshot, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read configurations: %v", err)
+	}
+	return snapshot
+}
+
+func countNotifications(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var total int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM centry.notifications`).Scan(&total); err != nil {
+		t.Fatalf("count notifications: %v", err)
+	}
+	return total
+}
+
+// fileModelConnectionRequest posts one through the product's own create
+// handler and returns the row it answered with.
+func fileModelConnectionRequest(
+	t *testing.T, router chi.Router, entityID, description string,
+) requestRow {
+	t.Helper()
+	recorder := moderationDo(t, router, http.MethodPost, entityURL(1, entityID), map[string]any{
+		"issue_type":  modelConnectionIssueType,
+		"description": description,
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("POST %s = %d, want 201 (body %s)", entityID, recorder.Code, recorder.Body.String())
+	}
+	var row requestRow
+	if err := json.Unmarshal(recorder.Body.Bytes(), &row); err != nil {
+		t.Fatalf("decode create response %q: %v", recorder.Body.String(), err)
+	}
+	return row
+}
+
+// TestAModelConnectionRequestReachesTheQueueUnderItsOwnIssueType.
+//
+// The two surfaces that file into `centry.moderation_state` — the App
+// Catalogue's "Request Access" card and Settings › AI Configuration's "Request
+// a model connection" dialog — are one table, and `issue_type` is the ONLY
+// thing that separates an operator's two queues. If the filter did not
+// discriminate, the model-connection queue would be the app-access queue with
+// extra rows in it, and neither operator could work from either.
+//
+// The `provider:`/`model:` entity_id shape is asserted end to end because it
+// travels as a PATH segment: a colon is legal there, but the value that comes
+// back is the only proof the route did not mangle it.
+func TestAModelConnectionRequestReachesTheQueueUnderItsOwnIssueType(t *testing.T) {
+	pool := newModerationPool(t)
+	prepareUsers(t, pool)
+	router := moderationRouter(moderation.NewHandler(pool), ada)
+
+	provider := fileModelConnectionRequest(t, router, providerConnectionEntity,
+		"We would like Anthropic models connected to this project.")
+	model := fileModelConnectionRequest(t, router, modelConnectionEntity,
+		"claude-opus-4 specifically, for the review pipeline.")
+	if provider.EntityID != providerConnectionEntity || model.EntityID != modelConnectionEntity {
+		t.Fatalf("entity_id came back as %q/%q, want %q/%q — the colon-prefixed address must survive the path",
+			provider.EntityID, model.EntityID, providerConnectionEntity, modelConnectionEntity)
+	}
+
+	// A catalogue request on the same wire, so the filter below has something
+	// to exclude rather than an empty table to agree with.
+	if recorder := moderationDo(t, router, http.MethodPost, entityURL(1, "inventory"), map[string]any{
+		"issue_type": "Inventory", "description": "Asset tracking for the hardware lab.",
+	}); recorder.Code != http.StatusCreated {
+		t.Fatalf("POST the catalogue request = %d, want 201 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	filtered := readQueue(t, router, "issue_type="+url.QueryEscape(modelConnectionIssueType))
+	if filtered.Total != 2 || len(filtered.Rows) != 2 {
+		t.Fatalf("issue_type=%q returned %d rows / total %d, want 2/2",
+			modelConnectionIssueType, len(filtered.Rows), filtered.Total)
+	}
+	for _, row := range filtered.Rows {
+		if row.IssueType != modelConnectionIssueType {
+			t.Errorf("a row of issue_type %q survived the filter", row.IssueType)
+		}
+		if !strings.HasPrefix(row.EntityID, "provider:") && !strings.HasPrefix(row.EntityID, "model:") {
+			t.Errorf("entity_id = %q, want a provider:/model: address", row.EntityID)
+		}
+	}
+
+	// The filter narrows the ANSWER; it does not describe the table. Without
+	// this the assertion above would also pass on a queue that lost the
+	// catalogue row.
+	if all := readQueue(t, router, ""); all.Total != 3 {
+		t.Fatalf("unfiltered queue total = %d, want 3", all.Total)
+	}
+	if catalogue := readQueue(t, router, "issue_type=Inventory"); catalogue.Total != 1 {
+		t.Fatalf("the catalogue's own queue total = %d, want 1", catalogue.Total)
+	}
+
+	// And through the per-entity read the REQUESTING client uses, whose
+	// `issue_type` query parameter is the same discriminator applied to one
+	// address at a time.
+	recorder := moderationDo(t, router, http.MethodGet,
+		entityURL(1, providerConnectionEntity)+"?issue_type="+url.QueryEscape(modelConnectionIssueType), nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("per-entity read = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	var listing requestListing
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listing); err != nil {
+		t.Fatalf("decode per-entity body %q: %v", recorder.Body.String(), err)
+	}
+	if listing.Total != 1 || listing.Rows[0].EntityID != providerConnectionEntity {
+		t.Fatalf("per-entity read = %+v, want the one provider request", listing.Rows)
+	}
+	if listing.Rows[0].Status != statusPendingLiteral {
+		t.Errorf("a fresh model-connection request is %q, want pending", listing.Rows[0].Status)
+	}
+}
+
+// TestApprovingAModelConnectionRequestNotifiesTheRequester.
+//
+// Approval grants NOTHING here (see TestApprovingAModelConnectionProvisionsNothing),
+// so the notification is the entire outcome the requester ever sees. A
+// decision they are never told about is, to them, indistinguishable from no
+// decision — and the 200 the PUT answers with says nothing about the row in
+// `centry.notifications`, so it is read back server-side.
+func TestApprovingAModelConnectionRequestNotifiesTheRequester(t *testing.T) {
+	pool := newModerationPool(t)
+	prepareUsers(t, pool)
+	handler := moderation.NewHandler(pool)
+
+	filed := fileModelConnectionRequest(t, moderationRouter(handler, ada), providerConnectionEntity,
+		"We would like Anthropic models connected to this project.")
+	if notifications := countNotifications(t, pool); notifications != 0 {
+		t.Fatalf("filing a request notified %d times; only a decision notifies", notifications)
+	}
+
+	moderator := moderationRouter(handler, grace)
+	if recorder := moderationDo(t, moderator, http.MethodPut, decisionURL,
+		map[string]any{"id": filed.ID, "status": "approved"}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	if status, _, _ := requestSQL(t, pool, filed.ID); status != "approved" {
+		t.Fatalf("row status = %q after approving, want approved", status)
+	}
+
+	var eventType, meta string
+	var notifiedUser, notifiedProject int64
+	var isSeen bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT event_type, user_id, project_id, is_seen, meta::text
+FROM centry.notifications ORDER BY id DESC LIMIT 1`).
+		Scan(&eventType, &notifiedUser, &notifiedProject, &isSeen, &meta); err != nil {
+		t.Fatalf("no notification was written for the model-connection decision: %v", err)
+	}
+	if eventType != "moderation_approved" {
+		t.Errorf("event_type = %q, want moderation_approved", eventType)
+	}
+	// Ada filed it, Grace decided it. The notification is delivered to the
+	// AUTHOR, never to the person who answered.
+	if notifiedUser != 4001 {
+		t.Errorf("notification went to user %d, want the requester 4001", notifiedUser)
+	}
+	if notifiedProject != 1 {
+		t.Errorf("notification project_id = %d, want 1", notifiedProject)
+	}
+	if isSeen {
+		t.Error("the notification was written already seen")
+	}
+	// Neither frontend's notification renderer has a branch for this event
+	// type, so what the requester reads has to travel on the row — including
+	// WHICH request was answered.
+	for _, want := range []string{modelConnectionIssueType, providerConnectionEntity, "has been approved"} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("notification meta = %s, want it to carry %q", meta, want)
+		}
+	}
+	if notifications := countNotifications(t, pool); notifications != 1 {
+		t.Errorf("the decision wrote %d notifications, want exactly 1", notifications)
+	}
+}
+
+// TestAModelConnectionDecisionCannotRetypeTheRequest.
+//
+// The generic refusal is already pinned by
+// TestDecisionRefusesToRewriteWhatWasRequested; this is the same boundary read
+// from the new issue_type's side, because that is where retyping would be
+// TEMPTING rather than obviously wrong: `issue_type` is now the queue
+// selector, so an operator who could rewrite it could move a request out of
+// their queue and into someone else's — or approve an app-access request as a
+// model connection — and the row would carry no trace of either.
+func TestAModelConnectionDecisionCannotRetypeTheRequest(t *testing.T) {
+	pool := newModerationPool(t)
+	prepareUsers(t, pool)
+	handler := moderation.NewHandler(pool)
+
+	filed := fileModelConnectionRequest(t, moderationRouter(handler, ada), providerConnectionEntity,
+		"We would like Anthropic models connected to this project.")
+	moderator := moderationRouter(handler, grace)
+
+	for _, body := range []map[string]any{
+		{"id": filed.ID, "status": "approved", "issue_type": "Application Access Request"},
+		{"id": filed.ID, "status": "approved", "entity_id": "provider:openai"},
+		{"id": filed.ID, "status": "rejected", "rejection_comment": "wrong queue", "issue_type": "Wikis"},
+	} {
+		recorder := moderationDo(t, moderator, http.MethodPut, decisionURL, body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("decision carrying %v = %d, want 400", body, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), "not editable by the person answering it") {
+			t.Errorf("the refusal read %q, want the immutable-record reason", recorder.Body.String())
+		}
+	}
+
+	// Refused, and refused WHOLE: not the status, not the fields the bodies
+	// named, and no notification telling the requester they were answered.
+	if status, _, _ := requestSQL(t, pool, filed.ID); status != statusPendingLiteral {
+		t.Fatalf("a refused decision moved the row to %q", status)
+	}
+	row := readQueue(t, moderator, "").Rows[0]
+	if row.IssueType != modelConnectionIssueType || row.EntityID != providerConnectionEntity {
+		t.Fatalf("a refused decision rewrote the request: %+v", row)
+	}
+	if notifications := countNotifications(t, pool); notifications != 0 {
+		t.Fatalf("a refused decision notified the requester %d times", notifications)
+	}
+}
+
+// TestApprovingAModelConnectionProvisionsNothing — the CLERICAL PIN.
+//
+// Approval here is a clerical act: it moves `status` and it notifies the
+// author. It connects no provider, creates no configuration, and enables no
+// model. Somebody reading "Model Connection Request → approved" will
+// reasonably assume the opposite, which is exactly why the absence is asserted
+// rather than left to the reader: an approval hook added later would make this
+// test fail, and that is the point at which the product would owe the operator
+// an explanation of what approving now does.
+//
+// A COUNT of new rows is not enough on its own. `status_ok` is the column a
+// "connection verified" badge reads, and flipping it needs no new row — so the
+// snapshot covers both shapes of side effect.
+func TestApprovingAModelConnectionProvisionsNothing(t *testing.T) {
+	pool := newModerationPool(t)
+	prepareUsers(t, pool)
+	prepareConfigurations(t, pool)
+	handler := moderation.NewHandler(pool)
+
+	before := configurationSnapshot(t, pool)
+	if len(before) != 2 {
+		t.Fatalf("the fixture seeded %d configuration rows, want 2 — the pin below would assert nothing", len(before))
+	}
+
+	filed := fileModelConnectionRequest(t, moderationRouter(handler, ada), providerConnectionEntity,
+		"We would like Anthropic models connected to this project.")
+	moderator := moderationRouter(handler, grace)
+	if recorder := moderationDo(t, moderator, http.MethodPut, decisionURL,
+		map[string]any{"id": filed.ID, "status": "approved"}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	// The approval really happened — without this the absences below would
+	// also hold for a decision that silently did nothing at all.
+	if status, _, _ := requestSQL(t, pool, filed.ID); status != "approved" {
+		t.Fatalf("row status = %q after approving, want approved", status)
+	}
+
+	var provisioned int
+	if err := pool.QueryRow(context.Background(), `
+SELECT COUNT(*) FROM p_1.configuration
+WHERE type ILIKE '%anthropic%' OR label ILIKE '%anthropic%'
+   OR elitea_title ILIKE '%anthropic%' OR data::text ILIKE '%claude%'`).Scan(&provisioned); err != nil {
+		t.Fatalf("look for a provisioned configuration: %v", err)
+	}
+	if provisioned != 0 {
+		t.Fatalf("approving a model-connection request created %d configuration row(s) for the requested entity",
+			provisioned)
+	}
+
+	after := configurationSnapshot(t, pool)
+	if len(after) != len(before) {
+		t.Fatalf("the approval changed the configuration count from %d to %d", len(before), len(after))
+	}
+	for index := range before {
+		if before[index] != after[index] {
+			t.Fatalf("configuration row %d changed across the approval: %q -> %q",
+				index, before[index], after[index])
+		}
+	}
+
+	// Stated separately from the snapshot comparison so a failure names the
+	// column. `p_1` is the only tenant schema a fresh 001_initial.sql creates,
+	// so this IS "anywhere" on this database.
+	var verified int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM p_1.configuration WHERE status_ok`).Scan(&verified); err != nil {
+		t.Fatalf("count verified configurations: %v", err)
+	}
+	if verified != 1 {
+		t.Fatalf("%d configurations report status_ok after the approval, want the 1 the fixture seeded", verified)
+	}
+
+	// What the approval IS allowed to have done, so this test cannot pass by
+	// the decision having failed outright.
+	if notifications := countNotifications(t, pool); notifications != 1 {
+		t.Fatalf("the approval wrote %d notifications, want exactly 1", notifications)
+	}
+	if total := countRequests(t, pool); total != 1 {
+		t.Fatalf("the approval left %d moderation rows, want the 1 that was filed", total)
+	}
+}
+
 /* ── the gate ──────────────────────────────────────────────────────────── */
 
 // gatedModerationRouter mounts the two administration routes WITH the

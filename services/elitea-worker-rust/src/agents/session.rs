@@ -36,6 +36,7 @@ use super::application_tools::{
     install_nested_application_resume, prepare_nested_application_resume,
 };
 use super::assembly::OrdinaryNoToolProfile;
+use super::attachments;
 use super::context_management::ContextManagementPlan;
 use super::direct_hitl::{
     DirectDelegatedAuthorizationContinuation, DirectHitlDecision, DirectHitlDecisionSet,
@@ -97,6 +98,42 @@ fn output_continuation_prompt(original_request: &str, visible_content: &str) -> 
     format!(
         "The previous assistant output was cut off by its output-token limit after approximately {visible_words} visible words. Continue exactly where it stopped. Output only the missing ending. Do not repeat or restart content. Preserve the original request constraints and any leading whitespace required at the seam. The exact visible assistant output is included because it might not be present in durable model history. Continue after its final character.\n\nOriginal request:\n{original_request}\n\nExact visible assistant output so far:\n<visible-assistant-output>\n{visible_content}\n</visible-assistant-output>"
     )
+}
+
+/// Build the turn's human message: the user's own text, then this turn's
+/// attachment chunks (#606).
+///
+/// The attachments are spliced AFTER the user's text, the order the model reads
+/// them in, mirroring the SDK adapter (`sdk_adapter.py:926-937`,
+/// `human_message_content`). With no attachments this is a bare
+/// `Content::new("user").with_text(..)`, so an ordinary turn is untouched.
+///
+/// `attachments` is the RESOLVED chunk list, not `payload.input_attachments`:
+/// the assembly reads each pending document over the live claim first and
+/// splices its text in beside its header (`attachments::read_attachment_documents`
+/// → `attachments::resolved_attachment_chunks`). It defaults to the payload's
+/// own list, so any path that performs no read renders exactly what arrived —
+/// which is also what makes a file the platform will not serve reach the model
+/// as its name alone rather than failing the turn.
+fn ordinary_user_content(
+    request: &AgentExecutionRequest,
+    output_continuation: bool,
+    user_text: String,
+    attachments: &[Value],
+) -> Content {
+    let base = Content::new("user").with_text(if output_continuation {
+        output_continuation_prompt(
+            &user_text,
+            request
+                .payload
+                .truncated_content
+                .as_deref()
+                .unwrap_or_default(),
+        )
+    } else {
+        user_text
+    });
+    attachments::append_attachment_parts(base, attachments)
 }
 
 /// Dispatch policy chosen from the complete frozen root tool snapshot.
@@ -428,26 +465,33 @@ pub(crate) struct OrdinaryNativeAgentPlan {
 }
 
 impl OrdinaryNativeAgentPlan {
+    /// `attachments` is the RESOLVED chunk list for this turn — see
+    /// [`ordinary_user_content`]. Callers that performed no read pass
+    /// `&request.payload.input_attachments`, which renders exactly what
+    /// admission stored.
     pub(crate) fn from_authorized(
         request: &AgentExecutionRequest,
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
+        attachments: &[Value],
     ) -> Result<Self, NativeAgentAssemblyError> {
-        Self::from_authorized_mode(request, profile, binding, None, false)
+        Self::from_authorized_mode(request, profile, binding, attachments, None, false)
     }
 
     pub(crate) fn from_authorized_output_continuation(
         request: &AgentExecutionRequest,
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
+        attachments: &[Value],
     ) -> Result<Self, NativeAgentAssemblyError> {
-        Self::from_authorized_mode(request, profile, binding, None, true)
+        Self::from_authorized_mode(request, profile, binding, attachments, None, true)
     }
 
     pub(crate) fn from_authorized_pipeline(
         request: &AgentExecutionRequest,
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
+        attachments: &[Value],
         should_continue: bool,
         hitl_resume: bool,
     ) -> Result<Self, NativeAgentAssemblyError> {
@@ -455,6 +499,7 @@ impl OrdinaryNativeAgentPlan {
             request,
             profile,
             binding,
+            attachments,
             Some((should_continue, hitl_resume)),
             false,
         )
@@ -464,6 +509,7 @@ impl OrdinaryNativeAgentPlan {
         request: &AgentExecutionRequest,
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
+        attachments: &[Value],
         pipeline_resume: Option<(bool, bool)>,
         output_continuation: bool,
     ) -> Result<Self, NativeAgentAssemblyError> {
@@ -529,21 +575,14 @@ impl OrdinaryNativeAgentPlan {
             super::request::AgentExecutionKind::Application => APPLICATION_CAPABILITY_ID,
             super::request::AgentExecutionKind::Adhoc => ADHOC_CAPABILITY_ID,
         };
+        // #606: the turn's own attachments are spliced into the human message
+        // after the user's text by `ordinary_user_content`.
+        let user_content =
+            ordinary_user_content(request, output_continuation, user_text, attachments);
         Ok(Self {
             user_id,
             session_id,
-            user_content: Content::new("user").with_text(if output_continuation {
-                output_continuation_prompt(
-                    &user_text,
-                    request
-                        .payload
-                        .truncated_content
-                        .as_deref()
-                        .unwrap_or_default(),
-                )
-            } else {
-                user_text
-            }),
+            user_content,
             generation_config: GenerateContentConfig {
                 temperature: profile.temperature(),
                 max_output_tokens: profile

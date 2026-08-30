@@ -1,13 +1,24 @@
-import { renderHook } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PipelineNodeTypes } from '../lib/flow-editor/constants/flowEditor.constants';
+import * as NewNodeRevealHelpers from '../lib/flow-editor/helpers/newNodeReveal.helpers';
 import type { FlowNode } from '../lib/flow-editor/reactFlowTypes';
 import { useFlowEditorNodeOperations } from './useFlowEditorNodeOperations';
 
 function makeNode(id: string, type: string, x = 0, y = 0): FlowNode {
   return { id, type, position: { x, y }, data: {} };
 }
+
+/*
+ * Unconditional, because the restore used to be the LAST line of each
+ * fake-timer test: an assertion that threw skipped it and left fake timers
+ * installed for the rest of the file, turning one real failure into a
+ * cascade of unrelated timeouts.
+ */
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('useFlowEditorNodeOperations', () => {
   it('onNodeCreateAtPosition creates a YAML node, sets it as flow node, and marks entry_point on the first non-Condition node', () => {
@@ -21,6 +32,7 @@ describe('useFlowEditorNodeOperations', () => {
         setYamlJsonObject,
         yamlJsonObjectRef: { current: {} },
         getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter: vi.fn(),
         getZoom: () => 1,
         editorRef: { current: null },
         editorWidth: 800,
@@ -49,6 +61,7 @@ describe('useFlowEditorNodeOperations', () => {
         setYamlJsonObject,
         yamlJsonObjectRef: { current: {} },
         getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter: vi.fn(),
         getZoom: () => 1,
         editorRef: { current: null },
         editorWidth: 800,
@@ -73,6 +86,7 @@ describe('useFlowEditorNodeOperations', () => {
         setYamlJsonObject,
         yamlJsonObjectRef: { current: { entry_point: 'Existing 1' } },
         getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter: vi.fn(),
         getZoom: () => 1,
         editorRef: { current: null },
         editorWidth: 800,
@@ -96,6 +110,7 @@ describe('useFlowEditorNodeOperations', () => {
         setYamlJsonObject,
         yamlJsonObjectRef: { current: {} },
         getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter: vi.fn(),
         getZoom: () => 1,
         editorRef: { current: null },
         editorWidth: 800,
@@ -109,6 +124,100 @@ describe('useFlowEditorNodeOperations', () => {
     expect(created.position).toEqual({ x: 170, y: 100 });
   });
 
+  it('onAddNode pans the viewport onto a card that the End-node stacking rule pushed below the fold', () => {
+    // A pipeline canvas is never empty: an End node sits at the viewport
+    // centre, so the FIRST added card is always stacked below it (End is 60
+    // tall + a 40 gap => y=200) and most of its 460px body falls under the
+    // 600px fold. Nothing used to bring it back into view.
+    vi.useFakeTimers();
+    const setCenter = vi.fn();
+    const { result } = renderHook(() =>
+      useFlowEditorNodeOperations({
+        flowNodes: [makeNode('END', PipelineNodeTypes.End, 170, 100)],
+        setFlowNodes: vi.fn(),
+        setFlowEdges: vi.fn(),
+        setYamlJsonObject: vi.fn(),
+        yamlJsonObjectRef: { current: {} },
+        getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter,
+        getZoom: () => 1,
+        editorRef: { current: null },
+        editorWidth: 800,
+        editorHeight: 600,
+      }),
+    );
+
+    const created = result.current.onAddNode(PipelineNodeTypes.Agent);
+    act(() => {
+      vi.advanceTimersByTime(NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
+    });
+
+    expect(created.position).toEqual({ x: 170, y: 200 });
+    // Centre of the new card (460 wide x 460 tall), at the CURRENT zoom —
+    // not a fitView, which would rescale a canvas the user may have zoomed.
+    expect(setCenter).toHaveBeenCalledWith(400, 430, { zoom: 1 });
+  });
+
+  it('onAddNode measures the LIVE pane at reveal time, not the size it had during the add', () => {
+    // Adding an inadmissible node opens the graph-admission panel, which
+    // re-flows the canvas: the pane is narrower a moment later than the
+    // `editorWidth`/`editorHeight` the placement formula saw. Reusing those
+    // stale numbers zooms the card wider than the pane it lands in.
+    vi.useFakeTimers();
+    const setCenter = vi.fn();
+    const editorRef = { current: { offsetWidth: 480, offsetHeight: 600 } as unknown as HTMLElement };
+    const { result } = renderHook(() =>
+      useFlowEditorNodeOperations({
+        flowNodes: [makeNode('END', PipelineNodeTypes.End, 170, 100)],
+        setFlowNodes: vi.fn(),
+        setFlowEdges: vi.fn(),
+        setYamlJsonObject: vi.fn(),
+        yamlJsonObjectRef: { current: {} },
+        getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter,
+        getZoom: () => 1,
+        editorRef,
+        editorWidth: 800,
+        editorHeight: 600,
+      }),
+    );
+
+    result.current.onAddNode(PipelineNodeTypes.Agent);
+    act(() => {
+      vi.advanceTimersByTime(NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
+    });
+
+    // (480 - 48) / 460 — the shrunken pane's width, not the 800 above.
+    expect(setCenter).toHaveBeenCalledWith(400, 430, { zoom: (480 - 2 * NewNodeRevealHelpers.NEW_NODE_REVEAL_MARGIN) / 460 });
+  });
+
+  it('onAddNode leaves the viewport alone when the new card is already fully visible', () => {
+    vi.useFakeTimers();
+    const setCenter = vi.fn();
+    const { result } = renderHook(() =>
+      useFlowEditorNodeOperations({
+        flowNodes: [],
+        setFlowNodes: vi.fn(),
+        setFlowEdges: vi.fn(),
+        setYamlJsonObject: vi.fn(),
+        yamlJsonObjectRef: { current: {} },
+        getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter,
+        getZoom: () => 1,
+        editorRef: { current: null },
+        editorWidth: 800,
+        editorHeight: 600,
+      }),
+    );
+
+    result.current.onAddNode(PipelineNodeTypes.Agent);
+    act(() => {
+      vi.advanceTimersByTime(NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
+    });
+
+    expect(setCenter).not.toHaveBeenCalled();
+  });
+
   it('calculateLayoutNodes re-parses the YAML into the canvas via setFlowNodes/setFlowEdges updaters', () => {
     const setFlowNodes = vi.fn();
     const setFlowEdges = vi.fn();
@@ -120,6 +229,7 @@ describe('useFlowEditorNodeOperations', () => {
         setYamlJsonObject: vi.fn(),
         yamlJsonObjectRef: { current: {} },
         getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter: vi.fn(),
         getZoom: () => 1,
         editorRef: { current: null },
         editorWidth: 800,
@@ -149,6 +259,7 @@ describe('useFlowEditorNodeOperations', () => {
         setYamlJsonObject: vi.fn(),
         yamlJsonObjectRef: { current: {} },
         getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        setCenter: vi.fn(),
         getZoom: () => 1,
         editorRef: { current: null },
         editorWidth: 800,

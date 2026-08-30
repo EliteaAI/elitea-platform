@@ -213,6 +213,7 @@ export function ApplicationTools({
                     {pipelineVisibleTools.map((tool) => (
                       <AgentInternalToolSwitch
                         key={tool.name}
+                        name={tool.name}
                         title={tool.title}
                         icon={tool.icon}
                         checked={internalTools.includes(tool.name)}

@@ -1,10 +1,7 @@
 /** Binds ChatBox send, continuation, and regeneration to the REST/SSE transport. */
 import { useCallback } from "react";
 
-import {
-  useChatStreamTransport,
-  type ChatMessage,
-} from "@/features/chat-messages";
+import { useChatStreamTransport, type ChatMessage } from "@/features/chat-messages";
 import { conversationApi } from "@/entities/conversation";
 import { useAddParticipantMutation } from "@/entities/participant";
 // Deep, still-legal import: `UploadedAttachment` is deliberately not on the
@@ -20,12 +17,11 @@ import type { useUploadAttachments } from "@/entities/conversation";
 // no-deep-slice-import-cross-slice violation (dependency-cruiser, "Layer +
 // cycle gate"). Deriving keeps the single public entry point without spending
 // two of the cap's remaining slots on types only this call site needs.
-type UploadAttachments = ReturnType<
-  typeof useUploadAttachments
->["uploadAttachments"];
+type UploadAttachments = ReturnType<typeof useUploadAttachments>["uploadAttachments"];
 type UploadAttachmentsParams = Parameters<UploadAttachments>[0];
 type UploadAttachmentsOutcome = Awaited<ReturnType<UploadAttachments>>;
 import { getConfig } from "@/shared/config";
+import type { ExecutionEventData } from "@/shared/api/sse";
 import { t } from "@/shared/i18n";
 
 import { pickIdAndUuid } from "../ChatBox.helpers";
@@ -96,6 +92,8 @@ export interface UseChatBoxSendParams {
   readonly participants?: readonly unknown[] | undefined;
   readonly userName?: string | undefined;
   readonly userAvatar?: string | undefined;
+  /** Graph frames, for a host that also renders a run timeline (the pipeline editor's canvas). Passed straight to `useChatStreamTransport`, which owns the WHICH-frames filter (`shouldForwardAgentEvent`); no second gate here, which would only be a copy that could drift. */
+  readonly onAgentEvent?: ((frame: ExecutionEventData) => void) | undefined;
 }
 
 /** @public */
@@ -156,8 +154,9 @@ export function useChatBoxSend(
       ? { conversationUuid: params.conversationUuid }
       : {}),
     context: buildChatStreamContext(params),
+    onAgentEvent: params.onAgentEvent,
   });
-  const { startDetailed, resume, regenerate } = transport;
+  const { startDetailed, resume, regenerateDetailed } = transport;
 
   const startStreamedExecution = useCallback(
     async ({
@@ -280,16 +279,17 @@ export function useChatBoxSend(
           : {}),
       });
       if (body === undefined) return NO_STREAM_TRANSPORT;
-      const started = await regenerate({
+      // Verbatim, not collapsed to a boolean — see `regenerateStreamedWithRetry`
+      // (`useChatBoxHandlers.regenerate.ts`) for the one refusal it carries.
+      return regenerateDetailed({
         projectId,
         conversationUuid: params.conversationUuid,
         responseMessageId: input.messageId,
         body,
       });
-      return started ? STREAM_STARTED : NO_STREAM_TRANSPORT;
     },
     [
-      regenerate,
+      regenerateDetailed,
       projectId,
       projectIdString,
       params.conversationUuid,

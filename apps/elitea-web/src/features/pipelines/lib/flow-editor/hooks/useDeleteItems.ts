@@ -92,20 +92,23 @@ export function useDeleteItems({
         }
       }
 
-      // Process flow nodes update
-      setFlowNodes(prev => {
-        let newFlowNodes = prev.filter(node => !filteredNodes.find(nodeDel => nodeDel.id === node.id));
+      // The edge repairs below mutate `newYamlJsonObject`, and that document is
+      // published by the `setYamlJsonObject` call underneath. Computing it here
+      // — BEFORE any setter runs — rather than inside a `setFlowNodes` updater
+      // is what makes the publish deterministic: React only evaluates a
+      // function updater eagerly when the owning fiber has no pending lanes,
+      // so in the other ordering the updater ran during the later render pass
+      // and `setYamlJsonObject` stored a document without any of the edge
+      // repairs (`transition: END`, route pruning) — intermittently, depending
+      // on what else scheduled an update on FlowEditor's fiber in the same tick.
+      let newFlowNodes = flowNodes.filter(node => !filteredNodes.find(nodeDel => nodeDel.id === node.id));
+      for (const edge of edges) {
+        const result = DeletionOperationsHelpers.processEdgeDeletion(edge, flowNodes, newYamlJsonObject, newFlowNodes);
+        newYamlJsonObject = result.yamlJsonObject;
+        newFlowNodes = result.flowNodes;
+      }
 
-        // Process edge deletions
-        for (const edge of edges) {
-          const result = DeletionOperationsHelpers.processEdgeDeletion(edge, flowNodes, newYamlJsonObject, newFlowNodes);
-          newYamlJsonObject = result.yamlJsonObject;
-          newFlowNodes = result.flowNodes;
-        }
-
-        return newFlowNodes;
-      });
-
+      setFlowNodes(newFlowNodes);
       setYamlJsonObject(newYamlJsonObject);
       setFlowEdges(prev => prev.filter(edge => !edges.find(edgeDel => edgeDel.id === edge.id)));
       setNodesToDelete([]);
@@ -184,6 +187,37 @@ interface UseDeleteKeyTriggerArgs {
  * purely to keep `useDeleteItems` under §3.5's prop/complexity budgets
  * while staying a faithful line-for-line port of `useDeleteItems.
  * hooks.js:23-25,120-131`.
+ *
+ * ## The one deliberate deviation from that port, and what it cost
+ *
+ * The baseline queued for deletion only the edges the user had SELECTED. The
+ * other two delete paths do not: React Flow hands `onBeforeDelete` the deleted
+ * nodes' connected edges (the Backspace path), and `handleDeleteNode` gathers
+ * them itself (the node card's own Delete menu item). Only the `Delete` key
+ * dropped them -- and dropping them changes the resulting document, because
+ * the edge deletion is what REPAIRS the source node.
+ *
+ * Measured on the standalone stack, on a two-node graph authored on the canvas
+ * (`LLM_1 --transition--> LLM_2`), deleting `LLM_2` three ways:
+ *
+ *  - Backspace          -> `LLM_1.transition: END`, Save enabled.
+ *  - node card > Delete -> `LLM_1.transition: END`, Save enabled.
+ *  - Delete key         -> `LLM_1.transition: ''`, Save DISABLED, with
+ *    "This pipeline cannot be saved ... See the errors on node LLM_1".
+ *
+ * `''` comes from `cleanupNodeReferences`'s `clearFieldIfMatchesNodeId`, which
+ * blanks a reference to the deleted node; `handleEdgeFromNormalNode`
+ * (`deletionOperations.helpers.ts`) is what then re-points it at `END`, and it
+ * only runs for an edge that was queued. An empty target is neither `END` nor a
+ * `valid_graph_id`, so the editor's own admission gate refuses the graph
+ * (`graphAdmission.nodes.ts`'s `node.route-target`, `router.rs:331`) and the
+ * user is left holding a pipeline they cannot save, blamed on a field they
+ * never touched.
+ *
+ * So the doomed nodes' connected edges are queued here too. The confirm COPY
+ * still describes only what the user selected -- the same split
+ * `onBeforeDelete` above already makes, where React Flow's expanded edge list
+ * is deleted but `getConfirmContent` is fed the selected subset.
  */
 function useDeleteKeyTrigger({
   display,
@@ -199,11 +233,22 @@ function useDeleteKeyTrigger({
   useEffect(() => {
     if (display !== 'none' && deletePressed) {
       const nodes = flowNodes.filter(node => node.selected);
-      const edges = flowEdges.filter(edge => edge.selected);
-      if (nodes.length || edges.length) {
+      const selectedEdges = flowEdges.filter(edge => edge.selected);
+      if (nodes.length || selectedEdges.length) {
+        // Only nodes that will actually be DELETED may pull their edges in.
+        // `onDelete` filters the End node out (it is a normal selectable React
+        // Flow node, `parsePipelineTraversal.helpers.ts:127-132`), so building
+        // this set from the raw selection meant selecting End and pressing
+        // Delete queued every edge terminating at END — wiping them from the
+        // canvas and blanking the Router `default_output` / HITL routes that
+        // pointed there, while no YAML node was removed.
+        const doomedNodeIds = new Set(nodes.filter(node => node.type !== PipelineNodeTypes.End).map(node => node.id));
+        const edges = flowEdges.filter(
+          edge => edge.selected || doomedNodeIds.has(edge.source) || doomedNodeIds.has(edge.target),
+        );
         setEdgesToDelete(edges);
         setNodesToDelete(nodes);
-        setConfirmContent(DeletionOperationsHelpers.getConfirmContent(nodes, edges));
+        setConfirmContent(DeletionOperationsHelpers.getConfirmContent(nodes, selectedEdges));
         setShowDeleteConfirmDlg(true);
       }
     }

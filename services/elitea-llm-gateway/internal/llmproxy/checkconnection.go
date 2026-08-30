@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,48 @@ type checkConnectionRequest struct {
 	APIBase    string `json:"api_base"`
 	APIKey     string `json:"api_key"`
 	APIVersion string `json:"api_version"`
+
+	// amazon_bedrock carries no api_base at all: its endpoint is DERIVED from
+	// the region, exactly as account/credentials.go's schemas.BedrockKeyConfig
+	// is built from these same three fields (issue #454).
+	AWSAccessKeyID     string `json:"aws_access_key_id"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key"`
+	AWSSessionToken    string `json:"aws_session_token"`
+	AWSRegionName      string `json:"aws_region_name"`
+
+	// vertex_ai likewise derives its endpoint from the location, and
+	// authenticates with the Google service-account document rather than an
+	// api_key — the same three fields schemas.VertexKeyConfig is built from
+	// (issue #453). VertexCredentials is a jsonTextField because the platform
+	// stores that document as an escaped JSON STRING on one screen and as a
+	// nested JSON OBJECT on another (account/credentials.go's jsonText).
+	VertexProject     string        `json:"vertex_project"`
+	VertexLocation    string        `json:"vertex_location"`
+	VertexCredentials jsonTextField `json:"vertex_credentials"`
+}
+
+// jsonTextField decodes a field that arrives either as a JSON string or as a
+// nested JSON object, yielding the document text either way. It mirrors
+// account/credentials.go's jsonText: a plain `string` field makes the object
+// form fail to decode, and a failed decode would refuse a credential that is
+// in fact perfectly valid.
+type jsonTextField string
+
+func (t *jsonTextField) UnmarshalJSON(raw []byte) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		*t = ""
+		return nil
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		*t = jsonTextField(s)
+		return nil
+	}
+	*t = jsonTextField(raw)
+	return nil
 }
 
 // checkConnectionResponse is the gateway → elitea-main wire contract. Reason
@@ -87,10 +130,19 @@ const (
 	checkConnectionReasonOK          = "ok"
 	checkConnectionReasonUnsupported = "unsupported_type"
 	checkConnectionReasonMissingBase = "missing_api_base"
-	checkConnectionReasonEgress      = "egress_not_allowed"
-	checkConnectionReasonUnauth      = "unauthorized"
-	checkConnectionReasonUnreachable = "unreachable"
-	checkConnectionReasonUpstream    = "upstream_error"
+	// checkConnectionReasonMissingFields covers a credential class whose
+	// endpoint is NOT an api_base (amazon_bedrock, vertex_ai): the field that
+	// is missing or malformed is named in Detail instead, because
+	// elitea-main's message table keys off "missing_api_base" with an
+	// api_base-specific sentence that would be wrong here. An unmapped reason
+	// falls through to Detail in elitea-main's connectionCheckMessageFor, so
+	// the user sees the accurate field list — and Detail never carries a
+	// VALUE, only a field name.
+	checkConnectionReasonMissingFields = "missing_credential_fields"
+	checkConnectionReasonEgress        = "egress_not_allowed"
+	checkConnectionReasonUnauth        = "unauthorized"
+	checkConnectionReasonUnreachable   = "unreachable"
+	checkConnectionReasonUpstream      = "upstream_error"
 )
 
 // defaultAzureAPIVersion is used when the caller supplies no api_version for
@@ -103,7 +155,20 @@ const defaultAzureAPIVersion = "2023-05-15"
 
 // checkConnectionProvider describes one credential type's minimal, real probe.
 type checkConnectionProvider struct {
-	probe func(ctx context.Context, client *http.Client, req checkConnectionRequest) error
+	// dialTargets returns EVERY base URL this provider's probe will contact,
+	// so CheckConnection can put all of them through the operator's egress
+	// allowlist before any one of them is dialled. It is the single
+	// enforcement point: a probe must not reach a host that did not come back
+	// from here.
+	//
+	// Most types dial exactly the tenant's api_base
+	// (checkConnectionAPIBaseTargets). amazon_bedrock and vertex_ai carry no
+	// api_base at all — their endpoint is derived from the region/location —
+	// and vertex_ai contacts TWO hosts (Google's OAuth token endpoint and the
+	// Vertex API host), which is precisely why this returns a slice rather
+	// than a single string.
+	dialTargets func(req checkConnectionRequest) ([]string, error)
+	probe       func(ctx context.Context, client *http.Client, req checkConnectionRequest) error
 	// selfHosted marks provider classes whose api_base legitimately targets a
 	// private network (mirrors GetConfigForProvider's vLLM/Ollama carve-out).
 	// Private destinations are still refused unless the operator has ALSO
@@ -111,28 +176,58 @@ type checkConnectionProvider struct {
 	selfHosted bool
 }
 
-// checkConnectionProviders is deliberately narrower than
-// account/credentials.go's providerConfigTypes: amazon_bedrock (AWS SigV4)
-// and vertex_ai (GCP service-account JWT) are NOT probed here. Implementing
-// their auth schemes is materially different work from an HTTP GET with a
-// bearer/api-key header, and guessing at it without a real provider to test
-// against risks a WRONG verdict either way. Per #319 ("Or drop it... make the
-// code and the catalogue agree"), those two types fall through to
-// elitea-main's honest "not supported yet" response instead of a fabricated
-// check — never a fabricated success.
+// checkConnectionFieldError is a pre-dial refusal: the payload itself cannot
+// name a legitimate destination (no api_base, no region, a malformed region,
+// a credential document that is not a Google service account). It carries the
+// reason/detail pair verbatim, so a field problem is never misreported as an
+// "unreachable provider".
+type checkConnectionFieldError struct {
+	reason string
+	detail string
+}
+
+func (e *checkConnectionFieldError) Error() string {
+	if e.detail == "" {
+		return e.reason
+	}
+	return e.reason + ": " + e.detail
+}
+
+// checkConnectionAPIBaseTargets is the dialTargets function for every
+// credential class whose endpoint IS the tenant-authored api_base. It keeps
+// the original contract: an empty api_base is refused before any dial.
+func checkConnectionAPIBaseTargets(req checkConnectionRequest) ([]string, error) {
+	if strings.TrimSpace(req.APIBase) == "" {
+		return nil, &checkConnectionFieldError{reason: checkConnectionReasonMissingBase}
+	}
+	return []string{req.APIBase}, nil
+}
+
+// checkConnectionProviders now covers every ai_credentials type
+// account/credentials.go's providerConfigTypes can build a bifrost key for —
+// the same six legacy's LiteLLM check covered. amazon_bedrock and vertex_ai
+// were the last two holdouts (they need AWS SigV4 and a Google
+// service-account token exchange rather than a bearer/api-key header); they
+// live in checkconnection_cloud.go and reuse the credential shapes
+// account/credentials.go already stores for them.
 var checkConnectionProviders = map[string]checkConnectionProvider{
 	// OpenAI's own credential type: GET /models is OpenAI's documented,
 	// canonical way to validate a key (no billed completion).
-	"open_ai": {probe: probeOpenAICompatibleModels},
+	"open_ai": {dialTargets: checkConnectionAPIBaseTargets, probe: probeOpenAICompatibleModels},
 	// azure_open_ai and ai_dial both map to schemas.Azure in
 	// account/credentials.go's providerConfigTypes — AI DIAL is explicitly an
 	// Azure-OpenAI-API-compatible proxy, so both list deployments the same
 	// way.
-	"azure_open_ai": {probe: probeAzureDeployments},
-	"ai_dial":       {probe: probeAzureDeployments},
+	"azure_open_ai": {dialTargets: checkConnectionAPIBaseTargets, probe: probeAzureDeployments},
+	"ai_dial":       {dialTargets: checkConnectionAPIBaseTargets, probe: probeAzureDeployments},
 	// Ollama is self-hosted: its api_base routinely names a private address,
 	// exactly like account.go's vLLM/Ollama carve-out.
-	"ollama": {probe: probeOllamaTags, selfHosted: true},
+	"ollama": {dialTargets: checkConnectionAPIBaseTargets, probe: probeOllamaTags, selfHosted: true},
+	// amazon_bedrock: SigV4-signed GET bedrock.{region}.amazonaws.com/foundation-models.
+	"amazon_bedrock": {dialTargets: checkConnectionBedrockTargets, probe: probeBedrockFoundationModels},
+	// vertex_ai: service-account token exchange, then GET
+	// {location}-aiplatform.googleapis.com/v1beta1/publishers/google/models.
+	"vertex_ai": {dialTargets: checkConnectionVertexTargets, probe: probeVertexPublisherModels},
 }
 
 // CheckConnection performs a real, minimal round trip to the named provider
@@ -159,22 +254,53 @@ func (h *Handler) CheckConnection(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if strings.TrimSpace(req.APIBase) == "" {
+	// Resolve every host the probe will contact BEFORE anything is dialled.
+	// A payload that cannot name a legitimate destination at all (no
+	// api_base, no aws_region_name, a credential document that is not a
+	// service account) is refused here, with the offending FIELD named and no
+	// value echoed.
+	targets, err := provider.dialTargets(req)
+	if err != nil {
+		var fe *checkConnectionFieldError
+		if errors.As(err, &fe) {
+			writeJSON(w, http.StatusOK, checkConnectionResponse{
+				Success: false, Reason: fe.reason, Detail: fe.detail,
+			})
+			return
+		}
+		h.logger.WarnContext(r.Context(), "check_connection: could not resolve a probe target",
+			"type", req.Type, "err", err)
 		writeJSON(w, http.StatusOK, checkConnectionResponse{
-			Success: false, Reason: checkConnectionReasonMissingBase,
+			Success: false, Reason: checkConnectionReasonUnreachable,
+			Detail: "could not reach the provider",
 		})
 		return
 	}
 
 	// Fail closed: no policy wired (a Handler built without WithEgressPolicy)
-	// refuses every request rather than silently skipping the gate.
-	if h.egressPolicy == nil || !h.egressPolicy.EgressAllows(req.APIBase) {
-		h.logger.WarnContext(r.Context(), "check_connection: api_base host is not on the egress allowlist",
+	// refuses every request rather than silently skipping the gate. An empty
+	// target list is refused for the same reason — a probe with no gated
+	// destination is a probe with no gate.
+	if h.egressPolicy == nil || len(targets) == 0 {
+		h.logger.WarnContext(r.Context(), "check_connection: no egress policy or no gated target",
 			"type", req.Type)
 		writeJSON(w, http.StatusOK, checkConnectionResponse{
 			Success: false, Reason: checkConnectionReasonEgress,
 		})
 		return
+	}
+	// EVERY host the probe touches goes through the allowlist, not just the
+	// first: vertex_ai contacts Google's token endpoint as well as the Vertex
+	// API host, and a gate on one of two hosts is not a gate.
+	for _, target := range targets {
+		if !h.egressPolicy.EgressAllows(target) {
+			h.logger.WarnContext(r.Context(), "check_connection: probe host is not on the egress allowlist",
+				"type", req.Type)
+			writeJSON(w, http.StatusOK, checkConnectionResponse{
+				Success: false, Reason: checkConnectionReasonEgress,
+			})
+			return
+		}
 	}
 
 	allowPrivate := provider.selfHosted && h.egressPolicy.EgressAllowlistConfigured()
@@ -282,7 +408,16 @@ func checkConnectionProbeGET(ctx context.Context, client *http.Client, rawURL st
 			httpReq.Header.Set(k, v)
 		}
 	}
+	return checkConnectionProbeDo(client, httpReq)
+}
 
+// checkConnectionProbeDo sends an already-built probe request and turns the
+// outcome into the file's error vocabulary. It is split out of
+// checkConnectionProbeGET because the amazon_bedrock probe must build and
+// SIGN its request before it is sent (a header added after signing that the
+// signature covers would invalidate it), and it must still classify the
+// answer exactly like every other checker.
+func checkConnectionProbeDo(client *http.Client, httpReq *http.Request) error {
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return &checkConnectionProbeError{err: err}

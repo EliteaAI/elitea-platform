@@ -301,9 +301,19 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * src/entities/toolkit/api/toolkitToolsApi.ts, so no manifest entry is added
  * and none changes source — the two existing entries only gain the
  * `operationId` the reverse check matches on.
+ *
+ * 159 -> 162, MANIFEST_ENTRY_COUNT 186 -> 189, when the stored
+ * model-connection checks landed (checkStoredConfigurationConnection,
+ * batchCheckStoredConfigurationConnections, revalidateConfiguration). The
+ * same reverse-check pressure as the 157 -> 159 step: elitea-main's
+ * conformance gate demanded spec coverage for the three endpoints the app
+ * now calls, describing them makes orval generate a hook each, and the app
+ * keeps calling through the hand-written
+ * src/features/credentials/api/configurations.ts — so the three manifest
+ * entries are handwritten, carrying operationIds for the reverse check.
  */
-const GENERATED_OPERATION_COUNT = 159;
-const MANIFEST_ENTRY_COUNT = 186;
+const GENERATED_OPERATION_COUNT = 162;
+const MANIFEST_ENTRY_COUNT = 189;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {

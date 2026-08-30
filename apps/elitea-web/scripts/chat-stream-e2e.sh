@@ -5,6 +5,16 @@
 #   apps/elitea-web/scripts/chat-stream-e2e.sh            # up + seed + run
 #   apps/elitea-web/scripts/chat-stream-e2e.sh --keep     # leave the stack up
 #   CHAT_STREAM_REPEAT=3 …/chat-stream-e2e.sh            # flake check
+#   STANDALONE_WORKER=rust …/chat-stream-e2e.sh          # native Rust runtime
+#
+# STANDALONE_WORKER is read by deploy/scripts/standalone-stack.sh, not by this
+# script, and reaches it through the environment every `run_stack` call
+# inherits. It is written down here because the journeys are the only thing
+# that can tell the two runtimes apart: the same UI drives both, and a change
+# that admits one and refuses the other passes every unit suite. Use a distinct
+# CHAT_STREAM_PROJECT and CHAT_STREAM_PORT when running both on one host — the
+# oidc-mock port is fixed at 9400 and cannot be shared, so they cannot be up at
+# the same time.
 #
 # Why not the E2E stack: `docker-compose.e2e-standalone.yml` has no runtime
 # plane, no worker and no model backend, so the journey would fail there for a
@@ -52,7 +62,7 @@ run_stack() {
 echo "→ Runtime PKI + secrets (idempotent)…"
 run_stack certs
 
-echo "→ Bringing up ${PROJECT} on :${PORT} (mock chunk delay ${DELAY_MS}ms)…"
+echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python}, mock chunk delay ${DELAY_MS}ms)…"
 # `up` reuses an image that already exists, so a source change lands only if
 # the build is asked for explicitly. That is not a nicety here: the whole
 # incremental-render assertion depends on the mock's per-chunk delay actually
@@ -186,17 +196,51 @@ REPEAT_ARGS=""
 # tag hardcoded in this script would escape that gate. Locally the variable is
 # normally unset and the host npx path runs; set CONTAINER_BIN=podman alongside
 # the image to use the container path off-runner.
+#
+# ── `--workers=1` is the thing that makes this project serial ────────────────
+#
+# elitea-main admits FOUR concurrent replay streams per principal
+# (services/elitea-main/internal/api/v2/executions/events_admission.go), and
+# every chat-stream spec signs in as the same chat persona. Each holds an
+# execution stream for the length of a turn while the app also holds its
+# notifications stream, so running the specs against each other sits on that
+# budget and answers 429 — a failure that reads as "the browser cannot read the
+# stream", i.e. as a statement about the feature rather than about the harness.
+#
+# `fullyParallel: false` on the project in playwright.config.ts does NOT
+# achieve this and must not be mistaken for it: it orders tests WITHIN a file,
+# and each chat-stream spec holds exactly one test in a file of its own, so the
+# config's `workers: 4` under CI still started all three files at once. The
+# worker count is the only lever that crosses files, it cannot be set
+# per-project in the config, and this script is the single entry point every
+# run goes through — both ci-web-e2e.yml jobs (`chat-stream` and
+# `chat-stream-rust`) invoke it with no Playwright flags of their own. So the
+# pin lives here, once.
+# E2E_WORKER tells the specs WHICH runtime answers the turns. The two legs
+# pin different contracts on purpose — the pipeline/HITL journeys author the
+# native runtime's shapes — so a spec must know its leg, and this script is
+# the one place that knows it authoritatively.
+#
+# `chat.variables.spec.ts` USED to be on that list and no longer is: it proved
+# substitution on the native leg alone while Main's version projection built an
+# empty `variables` list (the SDK reads `meta.variables` only when it is a
+# dict, so the same agent answered on the python leg with its placeholder
+# intact). The projection now carries the version's real list, so that spec
+# runs one assertion on BOTH legs.
+E2E_WORKER="${STANDALONE_WORKER:-python}"
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
     -v "$WEB_DIR":/work -w /work \
     -e CI="${CI:-}" \
     -e E2E_REUSE_STACK=1 \
+    -e E2E_WORKER="$E2E_WORKER" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
-    npx playwright test --project=chat-stream $REPEAT_ARGS
+    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
 else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
-    npx playwright test --project=chat-stream $REPEAT_ARGS
+  E2E_WORKER="$E2E_WORKER" \
+    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
 fi

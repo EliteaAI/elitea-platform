@@ -8,17 +8,13 @@
 import type { ChangeEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
-import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
-import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 import { MessageAttachmentList } from '../attachments/MessageAttachmentList';
+import { UserMessageActions } from './UserMessageActions';
 
 import type { Attachment } from '@/entities/attachment/model/types';
 
@@ -76,6 +72,13 @@ export interface UserMessageProps {
   readonly onSubmit?: ((messageId: string, updatedItems: readonly UserMessageUpdatedItem[]) => void) | undefined;
   /** Called when the user confirms removing an attachment from this message. */
   readonly onRemoveAttachment?: ((fileName: string, fromStorage: boolean) => void) | undefined;
+  /**
+   * Required to download an artifact-storage-backed attachment —
+   * `NormalAttachment`'s storage branch refuses (via its error report) when
+   * this is absent, so leaving it unthreaded made every storage-backed
+   * download a silent no-op.
+   */
+  readonly projectId?: string | undefined;
 }
 
 /**
@@ -104,62 +107,38 @@ function getItemTextContent(item: Record<string, unknown> | undefined): string |
   return details?.content;
 }
 
-/** The hover-revealed Copy/Edit/Delete action row — each button only renders when its handler is supplied. */
-function UserMessageActions({
-  onCopy,
-  onEdit,
-  onDelete,
-}: {
-  readonly onCopy?: (() => void) | undefined;
-  readonly onEdit?: (() => void) | undefined;
-  readonly onDelete?: (() => void) | undefined;
-}): ReactNode {
-  return (
-    <Box className="actionButtons" sx={{ display: 'flex', gap: 0.5, mt: 0.5, visibility: 'hidden' }}>
-      {onCopy && (
-        // eslint-disable-next-line i18next/no-literal-string — tooltip label
-        <Tooltip title="Copy to clipboard" placement="top">
-          <IconButton
-            size="small"
-            color="tertiary"
-            onClick={onCopy}
-            // eslint-disable-next-line i18next/no-literal-string — accessible name
-            aria-label="Copy to clipboard"
-          >
-            <ContentCopyIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      )}
-      {onEdit && (
-        // eslint-disable-next-line i18next/no-literal-string — tooltip label
-        <Tooltip title="Edit the message and regenerate answer" placement="top">
-          <IconButton
-            size="small"
-            color="tertiary"
-            onClick={onEdit}
-            // eslint-disable-next-line i18next/no-literal-string — accessible name
-            aria-label="Edit the message and regenerate answer"
-          >
-            <EditOutlinedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      )}
-      {onDelete && (
-        // eslint-disable-next-line i18next/no-literal-string — tooltip label
-        <Tooltip title="Delete" placement="top">
-          <IconButton
-            size="small"
-            color="tertiary"
-            onClick={onDelete}
-            // eslint-disable-next-line i18next/no-literal-string — accessible name
-            aria-label="Delete"
-          >
-            <DeleteOutlinedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      )}
-    </Box>
-  );
+/**
+ * Who to caption a question with: whoever the message NAMES, and nobody
+ * otherwise.
+ *
+ * `message.name` covers every author the transcript actually states —
+ * including the literal "User No Longer Available" that `entities/message`'s
+ * normaliser produces for an author id that resolves to nobody, which is a
+ * real fact about the message and must not be overwritten.
+ *
+ * It is empty only when the message names no author AT ALL, which is exactly
+ * what the persisted message-list endpoint returns for EVERY row: `GET
+ * /elitea_core/messages/prompt_lib/{project}/{conversation}` answers
+ * `{id, uid, conversation_id, role, content, ...}` with no author field
+ * (see `getMessageAuthorName` in `entities/message/lib/normalise.ts`).
+ *
+ * There is deliberately no signed-in-user fallback here. Nothing in such a
+ * row tells the reader's own question apart from anyone else's, so
+ * substituting the reader's name captioned EVERY user bubble of a reloaded
+ * SHARED conversation — other people's included — with whoever happened to
+ * open it. `userId` could not guard against that either: the endpoint omits
+ * that field too, so the guard only ever fired on the live paths, which
+ * already carry a name of their own — the send path stamps the signed-in
+ * user's name onto the optimistic row (`buildOptimisticUserMessage` reading
+ * `buildUserParticipant`, off the same `GET /social/author` this row used to
+ * re-read), and the socket echo resolves its author from the conversation's
+ * participants (`chatStreamMessageSyncFrames.ts`).
+ *
+ * An empty caption renders as NO caption line (the `Typography` below is
+ * gated on it), which is honest; an invented one is not.
+ */
+function resolveAuthorCaption(message: ChatMessage): string {
+  return message.name || '';
 }
 
 /**
@@ -179,7 +158,9 @@ export function UserMessage({
   onDelete,
   onSubmit,
   onRemoveAttachment,
+  projectId,
 }: UserMessageProps): ReactNode {
+  const authorCaption = resolveAuthorCaption(message);
   const questionItem = useMemo(() => findQuestionItem(message.messageItems), [message.messageItems]);
   const attachmentItems = useMemo(() => findAttachmentItems(message.messageItems), [message.messageItems]);
   const resolvedContent = useMemo(
@@ -189,6 +170,16 @@ export function UserMessage({
 
   const [value, setValue] = useState(resolvedContent);
   const [isEditing, setIsEditing] = useState(false);
+  // The attachment cards report download/image failures through a callback
+  // that used to be dropped on the floor here — with no toast infrastructure
+  // in this app, the message row itself surfaces the last failure as an
+  // inline `role="alert"` line (the same pattern
+  // `pages/agents/EditApplication.tsx:336` uses for its save errors).
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+
+  const handleAttachmentError = useCallback((message: string) => {
+    setAttachmentError(message);
+  }, []);
 
   const handleEditClick = useCallback(() => {
     setValue(resolvedContent);
@@ -233,12 +224,12 @@ export function UserMessage({
           width: isEditing ? '100%' : undefined,
         }}
       >
-        {message.name && (
+        {authorCaption && (
           <Typography
             variant="caption"
             sx={{ mb: 0.5, color: 'text.secondary' }}
           >
-            {message.name}
+            {authorCaption}
           </Typography>
         )}
         {isEditing ? (
@@ -264,6 +255,8 @@ export function UserMessage({
               <MessageAttachmentList
                 items={attachmentItems}
                 {...(onRemoveAttachment !== undefined ? { onRemoveAttachment } : {})}
+                {...(projectId !== undefined ? { projectId } : {})}
+                onError={handleAttachmentError}
               />
             )}
             <Box sx={{ display: 'flex', flexDirection: 'row-reverse', gap: 1, mt: 1 }}>
@@ -317,6 +310,8 @@ export function UserMessage({
             <MessageAttachmentList
               items={attachmentItems}
               {...(onRemoveAttachment !== undefined ? { onRemoveAttachment } : {})}
+              {...(projectId !== undefined ? { projectId } : {})}
+              onError={handleAttachmentError}
             />
             <UserMessageActions
               onCopy={onCopy}
@@ -324,6 +319,17 @@ export function UserMessage({
               onDelete={onDelete}
             />
           </>
+        )}
+        {attachmentError !== null && (
+          <Typography
+            variant="caption"
+            color="error"
+            role="alert"
+            data-testid="attachment-error"
+            sx={{ mt: 0.5 }}
+          >
+            {attachmentError}
+          </Typography>
         )}
       </Box>
     </Box>

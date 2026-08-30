@@ -9,6 +9,7 @@ import { PERMISSIONS } from '@/shared/lib/permissions';
 import { conversationListErrorMessage } from '../errorMessage';
 import { useHasPermission } from '../useHasPermission';
 import type { FolderListItem } from './conversationListState.types';
+import { useLatestRef } from './useLatestRef';
 
 export interface UseEditFolderParams {
   readonly projectId: string | undefined;
@@ -62,6 +63,21 @@ export interface UseEditFolderResult {
 export function useEditFolder(params: UseEditFolderParams): UseEditFolderResult {
   const { projectId, activeFolder, setActiveFolder, setFolders, toastError } = params;
   const hasUpdatePermission = useHasPermission(projectId, PERMISSIONS.chat.folders.update);
+  /**
+   * "Is the folder I just renamed the SELECTED one?" is answered when the
+   * rename is confirmed — and, since the answer is used after `await
+   * folderApi.update`, a whole round trip after that. Read live, per
+   * `processes/chat/model/useConversationSidebar.ts`'s ref doc block.
+   *
+   * The captured value was wrong in both directions. Stale `undefined` (the
+   * closure a `FolderItem` rendered before the folder was selected carries):
+   * renaming the selected folder left `activeFolder` holding the OLD name, so
+   * every consumer of the active folder kept showing it. Stale
+   * `folder-that-was-selected`: renaming that folder after the user moved on
+   * called `setActiveFolder` and CLOBBERED the selection they had since made.
+   * Both disappear once the comparison happens at call time.
+   */
+  const activeFolderRef = useLatestRef(activeFolder);
   const [editError, setEditError] = useState<unknown>(undefined);
   const queryClient = useQueryClient();
 
@@ -89,10 +105,12 @@ export function useEditFolder(params: UseEditFolderParams): UseEditFolderResult 
         }
       }
 
-      if (activeFolder !== undefined && folder.id === activeFolder.id) setActiveFolder(folder);
+      // Live, not the render-time `activeFolder`: this line runs after the PUT.
+      const active = activeFolderRef.current;
+      if (active !== undefined && folder.id === active.id) setActiveFolder(folder);
       setFolders((prev) => prev.map((item) => (item.id === folder.id ? folder : item)));
     },
-    [projectId, hasUpdatePermission, activeFolder, setActiveFolder, setFolders, queryClient, toastError],
+    [projectId, hasUpdatePermission, activeFolderRef, setActiveFolder, setFolders, queryClient, toastError],
   );
 
   const onPinFolder = useCallback(

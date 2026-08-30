@@ -34,11 +34,68 @@ export function convertTime(time: string): string {
   return `${time}Z`;
 }
 
+/**
+ * Match a participant (or `users[]` author) row against an id a message states.
+ *
+ * String-normalised on BOTH sides, because both spellings are wire truth: the
+ * Go payloads state participant ids as NUMBERS — `author_participant_id` and
+ * `sent_to_id` on the transcript rows, and the ids on the participants payload
+ * alike — while the socket-era payloads carried STRINGS. That is why
+ * `MessageAuthorWire.id` and `MessageGroupWire.author_participant_id`/
+ * `sent_to_id` are all declared `string | number` in `./wire`. A strict `===`
+ * across the two spellings resolves NO participant, silently.
+ *
+ * Its failure is not cosmetic, because one comparison governs a whole
+ * identity: the author lookup decides `name`, `avatar` AND `userId` together,
+ * and a missing `userId` is what the edit and delete controls gate on
+ * (`ChatMessageList`, `entities/message`'s `canDeleteMessage`). An unresolved
+ * author captions the reader's own question "User No Longer Available" and
+ * takes the message's own controls with it.
+ *
+ * `undefined` never matches: a row that states no id must resolve nobody, not
+ * a participant whose id stringifies to `"undefined"`.
+ *
+ * The live-stream path applies the same rule to the same two spellings —
+ * `features/chat-messages/lib/chatStreamMessageSyncFrames.ts`.
+ */
+export function isParticipant(
+  participantId: string | number | undefined,
+  statedId: string | number | undefined,
+): boolean {
+  if (participantId === undefined || statedId === undefined) return false;
+  return String(participantId) === String(statedId);
+}
+
 // ── convertToUserQuestion (lines 35-82) ────────────────────────────────────
 
-/** `getUserName` (lines 53-62), ported verbatim. */
-function getMessageAuthorName(user: MessageAuthorWire | undefined): string {
-  if (!user) return 'User No Longer Available';
+/**
+ * `getUserName` (lines 53-62), ported — with the source's single "no user"
+ * branch split in two, because the two things it conflated are not the same
+ * claim.
+ *
+ * The source only ever reached that branch from a `message_group` that NAMED
+ * an `author_participant_id` the `users` array could not resolve, which is
+ * what "no longer available" asserts: this message had an author, and that
+ * author is gone. `GET /elitea_core/messages/prompt_lib/{project}/{id}` —
+ * what a conversation reload reads — answers flat rows carrying no author
+ * field at all (measured: `{id, uid, conversation_id, role, content,
+ * content_type, metadata, created_at}`), so every reloaded transcript fell
+ * into it and captioned the reader's own question as a departed user.
+ *
+ * An author the endpoint never states is unknown, not absent, and '' says so
+ * — the same value the LIVE path already produces for an unresolved author
+ * (features/chat-messages/lib/chatStreamMessageSyncFrames.ts:51).
+ *
+ * '' is where the attribution STOPS: the renderer must not substitute one.
+ * These rows carry no author identity of any kind (`userId` is omitted too,
+ * below), so nothing downstream can tell the reader's own question apart from
+ * anyone else's, and the reader's name on every bubble of a reloaded SHARED
+ * conversation is a worse answer than no caption — see
+ * `resolveAuthorCaption` in
+ * `features/chat-messages/ui/chat-box/UserMessage.tsx`.
+ */
+function getMessageAuthorName(user: MessageAuthorWire | undefined, statesAnAuthor: boolean): string {
+  if (!user) return statesAnAuthor ? 'User No Longer Available' : '';
   if (user.meta?.user_name) return user.meta.user_name;
   if (user.entity_meta?.email) return user.entity_meta.email;
   if (user.entity_meta?.id) return `User ${user.entity_meta.id}`;
@@ -75,8 +132,8 @@ function userOptionalFields(
 ): UserOptionalFields {
   return {
     ...(messageGroup.message_items !== undefined ? { messageItems: messageGroup.message_items } : {}),
-    ...(foundUser?.entity_meta?.id !== undefined ? { userId: foundUser.entity_meta.id } : {}),
-    ...(messageGroup.sent_to_id !== undefined ? { participantId: messageGroup.sent_to_id } : {}),
+    ...(foundUser?.entity_meta?.id !== undefined ? { userId: String(foundUser.entity_meta.id) } : {}),
+    ...(messageGroup.sent_to_id !== undefined ? { participantId: String(messageGroup.sent_to_id) } : {}),
     ...(sentTo !== undefined ? { sentTo } : {}),
     ...(messageGroup.likes !== undefined ? { likes: messageGroup.likes } : {}),
     ...(messageGroup.meta?.interaction_uuid !== undefined
@@ -90,14 +147,23 @@ export function normaliseUserMessage(
   users: readonly MessageAuthorWire[],
   participants: readonly MessageParticipantWire[],
 ): UserMessage {
-  const foundUser = users.find((user) => user.id === messageGroup.author_participant_id);
-  const foundParticipant = participants.find((participant) => participant.id === messageGroup.sent_to_id);
+  const statesAnAuthor = messageGroup.author_participant_id !== undefined && messageGroup.author_participant_id !== '';
+  // Both lookups go through `isParticipant`: the author one always did (in its
+  // own inline form), while `sent_to_id` — which crosses the SAME wire in the
+  // same two spellings — was left strict, so a row whose author resolved could
+  // still lose the `sentTo` participant beside it. Stringifying one side of an
+  // object literal (`participantId: String(sent_to_id)`, below) while
+  // comparing the other strictly was the asymmetry.
+  const foundUser = users.find((user) => isParticipant(user.id, messageGroup.author_participant_id));
+  const foundParticipant = participants.find((participant) =>
+    isParticipant(participant.id, messageGroup.sent_to_id),
+  );
   const sentTo = resolveSentTo(messageGroup, foundParticipant);
 
   return {
     id: messageGroup.uuid,
     role: ROLES.User,
-    name: getMessageAuthorName(foundUser),
+    name: getMessageAuthorName(foundUser, statesAnAuthor),
     avatar: foundUser?.meta?.user_avatar || '',
     content: messageGroup.content,
     createdAt: convertTime(messageGroup.created_at),
@@ -107,10 +173,31 @@ export function normaliseUserMessage(
 
 // ── convertToAIAnswer (lines 111-313) ──────────────────────────────────────
 
+/**
+ * Match a message-group row against a row id another row states — a DIFFERENT id family from
+ * `isParticipant` above (chat_message_group ROW ids), normalised for its own measured reason:
+ * ONE payload spells the same id BOTH ways. `GET /elitea_core/messages/prompt_lib/{p}/{c}`
+ * answers the question `{"id": "1121"}` and its answer `{"id": "1122", "reply_to_id": 1121}`
+ * (measured, project 90106 conversation 471) — Go serialises `Message.ID` as a STRING
+ * (`strconv.Itoa` of the row id) and `ReplyToID` as `*int`, conversations/handler.go:41,57. The
+ * other producer, `ListMessageGroups`, numbers both; hence `string | number` on all three fields
+ * in `./wire`. Not cosmetic: `questionId` is how `ChatMessageList`'s `canDeleteAiMessage` finds
+ * the question an answer replies to, to check the reader wrote it — unresolved, it finds no
+ * question, reads no `userId`, and refuses delete on every answer of a reloaded conversation.
+ *
+ * `undefined` never matches on EITHER side — the second half of the same defect, not mere
+ * hardening: under `===`, `undefined === undefined` is TRUE, so an answer stating no reply
+ * linked itself to whatever row stated no id.
+ */
+function isMessageRow(rowId: string | number | undefined, statedId: string | number | undefined): boolean {
+  if (rowId === undefined || statedId === undefined) return false;
+  return String(rowId) === String(statedId);
+}
+
 /** `foundQuestion` lookup + `question_id` resolution (lines 127, 295). */
 function resolveQuestionId(messageGroup: MessageGroupWire, messageGroups: readonly MessageGroupWire[]): string | undefined {
   const foundQuestion = messageGroups.find(
-    (item) => item.id === messageGroup.reply_to_id || messageGroup.question_id === item.id,
+    (item) => isMessageRow(item.id, messageGroup.reply_to_id) || isMessageRow(item.id, messageGroup.question_id),
   );
   if (!foundQuestion) return undefined;
   return foundQuestion.uuid || String(foundQuestion.id);
@@ -158,10 +245,29 @@ function hitlInterruptCoreFields(raw: HitlInterruptRawWire): Record<string, unkn
   };
 }
 
+/**
+ * The clarifying questions of a stored `ask_user` pause, or `[]`.
+ *
+ * Read through an assertion rather than off `HitlInterruptRawWire`: the field
+ * post-dates that wire type (it is the native runtime's `ask_user` payload,
+ * `services/elitea-worker-rust/src/agents/internal_tools.rs`), and the
+ * assertion is confined here so the rest of the reader keeps its declared
+ * shape. Anything that is not an array is dropped — the card iterates this.
+ */
+function hitlQuestionsField(raw: HitlInterruptRawWire): readonly unknown[] {
+  const questions = (raw as { readonly questions?: unknown }).questions;
+  return Array.isArray(questions) ? questions : [];
+}
+
 /** chat.helpers.js:88-105 `buildHitlInterruptFromRaw`, ported (remaining fields — split for complexity). */
 function buildHitlInterruptFromRaw(raw: HitlInterruptRawWire): Record<string, unknown> {
   return {
     ...hitlInterruptCoreFields(raw),
+    // A pause reloaded from the store must render the same controls the live
+    // stream rendered. Without this the answer card came back after a refetch
+    // with its question and no way to answer it.
+    questions: hitlQuestionsField(raw),
+    interrupt_id: (raw as { readonly interrupt_id?: string }).interrupt_id ?? '',
     toolkit_type: raw.toolkit_type || '',
     action_label: raw.action_label || '',
     tool_args: raw.tool_args ?? null,
@@ -257,7 +363,12 @@ export function normaliseAssistantMessage(
   const meta = messageGroup.meta;
   const { isError, isSummarized, references } = resolveAssistantSummaryFields(meta);
   const { thinkingSteps, toolCalls, firstToolTimestampStart } = resolveAssistantToolInputs(meta);
-  const foundParticipant = participants?.find((participant) => participant.id === messageGroup.author_participant_id);
+  // Same lookup, same two spellings — this one feeds `buildToolActions`' tools
+  // fallback, so a strict === costs every tool row its `toolkit_type` (and the
+  // icon that reads it) whenever the payload numbers its participant ids.
+  const foundParticipant = participants?.find((participant) =>
+    isParticipant(participant.id, messageGroup.author_participant_id),
+  );
 
   const toolActions = buildToolActions(
     thinkingSteps,

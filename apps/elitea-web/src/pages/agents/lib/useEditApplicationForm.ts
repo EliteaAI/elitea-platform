@@ -68,8 +68,9 @@ export function useEditApplicationForm(
   /*
    * #307 — this used to call `entities/application-form`'s
    * `useSaveApplicationVersion`, which issues the version PUT alone and,
-   * through `ApplicationVersionDraft`, carries no `welcome_message` field at
-   * all. The page therefore sent `conversation_starters` and nothing else: a
+   * at the time, had no `welcome_message` key in `ApplicationVersionDraft`
+   * (the draft carries one now, for the CREATE paths).
+   * The page therefore sent `conversation_starters` and nothing else: a
    * user could edit the name, the instructions or the welcome message, watch
    * the Save button succeed, and lose all of it.
    *

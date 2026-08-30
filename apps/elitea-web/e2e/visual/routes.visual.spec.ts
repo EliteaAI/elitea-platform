@@ -73,30 +73,20 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
-import { SNAPSHOT_TOLERANCE, settle, volatileRegions } from './lib/settle';
+import { SNAPSHOT_TOLERANCE, settle, shellSettled, volatileRegions } from './lib/settle';
 
-/**
- * The shell landmark — see this file's header for the measurement. Both halves
- * are required: the nav link proves the permission query resolved (and so the
- * nav is at full length), the project name proves the project list resolved
- * (and so the switcher is not showing its "No projects" fallback).
+/*
+ * `shellSettled()` now lives in `./lib/settle.ts`, imported above.
  *
- * `Credentials` is chosen over the other gated items only because it is gated
- * and unambiguous; any of `PERMISSION_GROUPS`' entries would do. `Applications`
- * and `Skills` would NOT — `requiredPermissionsFor` returns undefined for them,
- * so they render during load too.
+ * It moved there when a THIRD main-app spec (`pipeline-editor.visual.spec.ts`)
+ * needed the identical guard: that file cannot import it from here, because
+ * importing a `*.spec.ts` re-runs this file's `test()` registrations inside the
+ * importer and every route below would be snapshotted twice under two names.
+ * Copying it would have left two definitions of the same guarantee free to
+ * drift — the exact thing `lib/settle.ts`'s own header exists to prevent for
+ * `settle()` and the base mask list. The measurement that chose the two halves
+ * of that landmark moved with it, unchanged.
  */
-async function shellSettled(page: Page): Promise<void> {
-  await expect(page.getByRole('link', { name: 'Credentials', exact: true })).toBeVisible({
-    timeout: 20_000,
-  });
-  // The seeded tenant's only project (`scripts/e2e-stack.sh seed`). Asserting
-  // the NAME, not merely that the switcher exists: the switcher renders either
-  // way, and its loading text is the literal "No projects".
-  await expect(page.locator('button').filter({ hasText: 'Default Project' }).first()).toBeVisible({
-    timeout: 20_000,
-  });
-}
 
 interface VisualRoute {
   readonly name: string;

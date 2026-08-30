@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApplicationCreationInput } from '@/entities/application-form';
 import { getGetApplicationQueryKey } from '@/shared/api/generated/applications/applications';
 import type { ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
+import { useNavBlockerStore } from '@/widgets/app-shell';
 
 import { renderAgentsRoute } from '../__tests__/testRouter';
 
@@ -87,11 +88,17 @@ function Probe({ starters, isReadOnly, isFetching, applicationId, version, edits
       >
         saved
       </button>
+      <button
+        data-testid="deleted"
+        onClick={() => state.versionDelete?.onVersionDeleted()}
+      >
+        deleted
+      </button>
     </div>
   );
 }
 
-function renderProbe(overrides: Partial<ProbeProps> = {}, queryClient?: QueryClient) {
+function renderProbe(overrides: Partial<ProbeProps> = {}, queryClient?: QueryClient, withNavBlocker = false, initialPath = '/agents/my/42') {
   const props: ProbeProps = {
     starters: ['start here'],
     isReadOnly: false,
@@ -100,8 +107,9 @@ function renderProbe(overrides: Partial<ProbeProps> = {}, queryClient?: QueryCli
     version: activeVersion,
     ...overrides,
   };
-  return renderAgentsRoute(<Probe {...props} />, '/agents/my/42', {
+  return renderAgentsRoute(<Probe {...props} />, initialPath, {
     projectId: '9',
+    withNavBlocker,
     ...(queryClient === undefined ? {} : { queryClient }),
   });
 }
@@ -110,6 +118,8 @@ let queryClient: QueryClient;
 
 beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  useNavBlockerStore.getState().setBlockNav(false);
+  return () => useNavBlockerStore.getState().setBlockNav(false);
 });
 
 describe('useEditApplicationVersionControls', () => {
@@ -138,6 +148,10 @@ describe('useEditApplicationVersionControls', () => {
       welcome_message: 'hi',
       conversation_starters: ['typed but unsaved'],
       variables: [{ name: 'k', value: 'v' }],
+      // The create path DOES read `meta` (`versionFromBody`,
+      // `applications/handler.go:504`), so the clone carries it — otherwise a
+      // Save-As-Version resets `step_limit` and drops `internal_tools`.
+      meta: { internal_tools: [] },
     });
   });
 
@@ -178,6 +192,49 @@ describe('useEditApplicationVersionControls', () => {
     expect(getByTestId('id-text').textContent).toBe('[]');
 
     await userEvent.click(getByTestId('select'));
+    expect(router.state.location.pathname).toBe('/agents/my/42');
+  });
+  /**
+   * #133 — `EditApplication` arms the app-wide unsaved-changes guard off its
+   * own dirty state, and `NavBlockerDialog`'s `shouldBlockFn` blocks ANY
+   * pathname change while it is raised, including the two this hook owns.
+   * The fixture mounts the real dialog (`withNavBlocker`) because a router
+   * without it cannot fail — that absence is why the unit suite never saw it.
+   *
+   * Without `disarmUnsavedChangesNavBlocker()` the user got a modal asking
+   * whether to discard the changes that had just been persisted, and Cancel
+   * left the URL on the old version while the new one silently held the work.
+   */
+  it('lands on the created version even while the page has the unsaved-changes guard armed', async () => {
+    useNavBlockerStore.getState().setBlockNav(true);
+    const { findByTestId, router } = renderProbe({}, undefined, true);
+
+    await userEvent.click(await findByTestId('saved'));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents/my/42/7'));
+  });
+
+  /** Same disarm on the escape path, where a block strands the user on a version that no longer exists. */
+  it('escapes the deleted version even while the unsaved-changes guard is armed', async () => {
+    useNavBlockerStore.getState().setBlockNav(true);
+    // Opened ON the version, which is the only case where the escape is a
+    // real pathname CHANGE — `shouldBlockFn` ignores same-pathname
+    // navigations, so starting at `/agents/my/42` cannot fail either way.
+    const { findByTestId, router } = renderProbe({}, undefined, true, '/agents/my/42/1');
+
+    await userEvent.click(await findByTestId('deleted'));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents/my/42'));
+  });
+
+  /** An ORDINARY version switch must still be guarded — the user really would lose unsaved work. */
+  it('still blocks an ordinary version switch while the guard is armed', async () => {
+    useNavBlockerStore.getState().setBlockNav(true);
+    const { findByTestId, getByTestId, router } = renderProbe({}, undefined, true);
+
+    await userEvent.click(await findByTestId('select'));
+
+    await waitFor(() => expect(getByTestId('nav-blocker-dialog')).toBeInTheDocument());
     expect(router.state.location.pathname).toBe('/agents/my/42');
   });
 });

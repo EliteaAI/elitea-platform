@@ -54,7 +54,11 @@ func runtimeContextUnavailableStage(err error) string {
 		runtimeContextStageActorPATIssuance,
 		runtimeContextStageSystemPATIssuance,
 		runtimeContextStagePATValidation,
-		runtimeContextStagePrincipalBinding:
+		runtimeContextStagePrincipalBinding,
+		runtimeContextStageNestedVersionRead,
+		runtimeContextStageNestedVersionFreeze,
+		runtimeContextStageAttachmentRead,
+		runtimeContextStageAttachmentConversation:
 		return unavailable.stage
 	default:
 		return "unknown"
@@ -67,6 +71,19 @@ type RuntimeContextAuthorization struct {
 	ResourceProjectID int64
 	ActorID           string
 	Initiator         string
+	// ConversationID is the claimed AGENT execution's own conversation —
+	// agent_execution_jobs.client_stream_id, which is chat_conversations.uuid
+	// (the join every current-chat projection makes, e.g.
+	// repos/configuration_validation_results.go). It is empty for an index
+	// ingest claim, which has no conversation, so a route that needs it must
+	// require it rather than assume it.
+	//
+	// It exists because one route authorizes on it: chat attachments are keyed
+	// `{conversationUUID}/{filename}` and the object-read route refuses any key
+	// outside the claim's own conversation (runtime_attachment_object.go). The
+	// value is read from the claimed row for exactly that reason — a
+	// conversation the REQUEST named would authorize nothing.
+	ConversationID string
 }
 
 // RuntimeContextAuthorizer applies the same workload-certificate, session,

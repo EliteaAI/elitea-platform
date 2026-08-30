@@ -311,9 +311,15 @@ func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationRefere
 	toolProjectID, validProjectID := positiveCurrentAgentJSONInteger(tool["project_id"])
 	applicationID, validApplicationID := positiveCurrentAgentJSONInteger(toolSettings["application_id"])
 	versionID, validVersionID := positiveCurrentAgentJSONInteger(toolSettings["application_version_id"])
+	// `agent`, not the authored `openai`: normalizeCurrentAgentRuntimeProfile
+	// rewrites the stored direct-agent name to the one the runtime matches on,
+	// for nested references as well as the top level — the runtime applies the
+	// same rule to a nested agent
+	// (services/elitea-worker-rust/src/agents/application_tools.rs:1043), so
+	// leaving the child alone would refuse every agent that calls another agent.
 	if tool["type"] != "application" || tool["id"] != nil ||
 		tool["name"] != "release-notes" || tool["toolkit_name"] != "release-notes" ||
-		tool["agent_type"] != "openai" || !validProjectID || toolProjectID != 7 ||
+		tool["agent_type"] != "agent" || !validProjectID || toolProjectID != 7 ||
 		!validApplicationID || applicationID != 3 || !validVersionID || versionID != 4 ||
 		len(settings.requests) != 0 || len(names.requests) != 0 {
 		t.Fatalf("tool=%#v settings=%+v names=%+v", tool, settings.requests, names.requests)
@@ -617,6 +623,95 @@ func TestCurrentApplicationToolSnapshotPreservesProviderAutoMaxTokens(t *testing
 			maxTokens, valid := currentAgentJSONInteger(settings["max_tokens"])
 			if !valid || maxTokens != test.wantMaxTokens {
 				t.Fatalf("max_tokens=%v, want %d", settings["max_tokens"], test.wantMaxTokens)
+			}
+		})
+	}
+}
+
+// TestCurrentApplicationToolSnapshotAlwaysCarriesATemperature pins the key the
+// SDK worker reads with a subscript.
+//
+// `elitea_sdk` 0.9.8's `runtime/clients/client.py` builds its model config with
+// `"temperature": data['llm_settings']['temperature']` -- not `.get`. A frozen
+// version that carries no such key therefore ends the turn in a bare
+// `builtins.KeyError`, surfaced to the browser as an empty `is_error` row. The
+// native Rust runtime reads the same document and does not need the key, so a
+// stack running that worker cannot see this at all.
+//
+// The absent-key shape is not exotic: the agent editor's picker writes at most
+// ONE of `temperature`/`reasoning_effort`, so it is what a reasoning-model
+// version stores, and any API caller that sends `llm_settings` without one
+// stores it too. Before this, the freeze normalized the family only when the
+// model fell back to the catalogue default, or when a temperature was already
+// present AND conflicted with a reasoning effort -- never for the shape that
+// actually breaks.
+func TestCurrentApplicationToolSnapshotAlwaysCarriesATemperature(t *testing.T) {
+	tests := []struct {
+		name              string
+		supportsReasoning bool
+		settings          string
+		wantTemperature   any
+	}{
+		{
+			name:            "a plain model with no temperature is given the platform default",
+			settings:        `{"model_name":"model"}`,
+			wantTemperature: json.Number("0.7"),
+		},
+		{
+			// The reasoning family's answer is an explicit null, not 0.7: the
+			// two are mutually exclusive on the wire, and `None` is what the
+			// SDK's subscript must find.
+			name:              "a reasoning model with no temperature is given an explicit null",
+			supportsReasoning: true,
+			settings:          `{"model_name":"model","reasoning_effort":"medium"}`,
+			wantTemperature:   nil,
+		},
+		{
+			// Unchanged: a version that already carries one keeps its own
+			// value. This normalization fills a hole; it does not re-decide.
+			name:            "a stored temperature is left exactly as authored",
+			settings:        `{"model_name":"model","temperature":0.15}`,
+			wantTemperature: json.Number("0.15"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			compatible := true
+			models := &currentAgentModelCatalogStub{response: configurationapp.CurrentModelCatalogResponse{
+				Items: []configurationapp.CurrentModelCatalogItem{{
+					Name: "model", ProjectID: 7, OpenAICompatible: &compatible,
+					SupportsReasoning: &test.supportsReasoning,
+				}},
+			}}
+			service, err := NewCurrentApplicationToolSnapshotService(
+				&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models,
+				&currentAgentGuardrailStub{}, 1,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.FreezeCurrentApplicationVersion(
+				context.Background(), CurrentApplicationVersionFreezeRequest{
+					ProjectID: 7, ActorUserID: 11,
+					VersionDetails: json.RawMessage(
+						`{"llm_settings":` + test.settings + `,"tools":[]}`,
+					),
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := decodeCurrentApplicationVersion(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := version["llm_settings"].(map[string]any)
+			temperature, present := settings["temperature"]
+			if !present {
+				t.Fatalf("llm_settings carries no temperature key at all: %v", settings)
+			}
+			if temperature != test.wantTemperature {
+				t.Fatalf("temperature=%#v, want %#v", temperature, test.wantTemperature)
 			}
 		})
 	}

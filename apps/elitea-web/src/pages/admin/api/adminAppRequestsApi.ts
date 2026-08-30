@@ -83,6 +83,14 @@ export interface AppRequestsQueryParams {
   readonly offset: number;
   readonly search?: string | undefined;
   readonly status?: AppRequestStatus | undefined;
+  /**
+   * `issue_type` is the label the requesting client showed for the catalogue
+   * entry — free text, not an enum the server declares anywhere (unlike
+   * `status`). The Go handler has always accepted this filter
+   * (`internal/api/v2/moderation/requests.go`'s `queueFilters`); nothing on
+   * the client sent it until the issue-type filter control did.
+   */
+  readonly issueType?: string | undefined;
   readonly sortBy?: string | undefined;
   readonly sortOrder?: 'asc' | 'desc' | undefined;
 }
@@ -135,6 +143,7 @@ function buildQueueUrl(params: AppRequestsQueryParams): string {
   });
   if (params.search) query.set('search', params.search);
   if (params.status) query.set('status', params.status);
+  if (params.issueType) query.set('issue_type', params.issueType);
   if (params.sortBy) query.set('sort_by', params.sortBy);
   if (params.sortOrder) query.set('sort_order', params.sortOrder);
   return `${QUEUE_URL}?${query.toString()}`;

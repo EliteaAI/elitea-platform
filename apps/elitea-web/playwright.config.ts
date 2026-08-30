@@ -24,16 +24,26 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Where the per-persona signed-in states live. Overridable because cookies
+ * minted against one stack reach every stack: the cookie domain is bare
+ * `localhost`, which is PORT-AGNOSTIC, so two concurrent Playwright runs
+ * against two local stacks overwrite each other's sessions through this
+ * directory and fail each other's requests with 401 mid-run (measured).
+ * A run against its own stack sets E2E_STATE_DIR to keep its states private.
+ */
+const STATE_DIR = process.env['E2E_STATE_DIR'] ?? path.join(__dirname, '.playwright-state');
+
 export const STORAGE_STATE = {
-  member: path.join(__dirname, '.playwright-state', 'member.json'),
-  admin: path.join(__dirname, '.playwright-state', 'admin.json'),
+  member: path.join(STATE_DIR, 'member.json'),
+  admin: path.join(STATE_DIR, 'admin.json'),
   /**
    * The #284 chat driver. A persona of its own because it OWNS a personal
    * project, and the app selects the signed-in user's personal project over
    * the one `auth.setup.ts` writes to storage — handing member/admin one moves
    * every other journey off project 1 (measured, see the seeder's note).
    */
-  chat: path.join(__dirname, '.playwright-state', 'chat.json'),
+  chat: path.join(STATE_DIR, 'chat.json'),
 };
 
 /**
@@ -47,7 +57,7 @@ export const STORAGE_STATE = {
  * thing: per-run provisioning output, written by the seed, read by the tests,
  * gitignored, and inside the directory CI mounts into the Playwright container.
  */
-export const AUDIT_FIXTURE_ANCHOR = path.join(__dirname, '.playwright-state', 'audit-fixture.json');
+export const AUDIT_FIXTURE_ANCHOR = path.join(STATE_DIR, 'audit-fixture.json');
 
 // Default 8082 locally: centry legacy stack occupies 8080; CI sets E2E_PORT=8080.
 export const BASE_URL = process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8082';
@@ -213,6 +223,34 @@ export default defineConfig({
       // holds two journeys with DIFFERENT seeding needs, and a broad match here
       // would hand the index journey to a runner that never ran `seed-index`.
       testMatch: /streaming\/chat\..+\.spec\.ts/,
+      /*
+       * Serial, for the same class of reason as `index-stream` below and one
+       * specific number: elitea-main admits FOUR concurrent replay streams per
+       * principal (`internal/api/v2/executions/events_admission.go`), and every
+       * journey in this project signs in as the same chat persona. Each one
+       * holds an execution stream for the length of a turn while the app also
+       * holds its notifications stream, so two of them in parallel sit on the
+       * edge of that budget. Measured: run together over three workers, the
+       * second journey's `/executions/{id}/events` answered 429 and the failure
+       * read as "the browser cannot read the stream" — a statement about the
+       * harness, not the feature. Serially, they pass.
+       *
+       * WHERE THE SERIALISATION ACTUALLY COMES FROM: `--workers=1`, passed on
+       * the `chat-stream` invocation in `scripts/chat-stream-e2e.sh`. That
+       * script is the ONLY entry point — both continuous-integration jobs
+       * (`chat-stream` and `chat-stream-rust` in .github/workflows/ci-web-e2e.yml)
+       * run it, and so does every local run — so the pin lives there once and
+       * covers all of them.
+       *
+       * `fullyParallel: false` does NOT do it, and it is important not to read
+       * this line as if it did. It orders tests WITHIN a file. Every spec this
+       * project matches holds exactly ONE test in a file of its own, so there
+       * has never been anything for it to order, and `workers: 4` above still
+       * started all three files at once — against the very budget this note is
+       * about. It is kept because it costs nothing and becomes correct the
+       * moment one of those files grows a second test.
+       */
+      fullyParallel: false,
     },
 
     /*

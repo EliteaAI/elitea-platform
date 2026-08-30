@@ -5,14 +5,13 @@
 //! claim; future artifact read/write grants belong here as additional typed
 //! capabilities rather than being hidden inside toolkits or model clients.
 
-#![allow(dead_code)] // Production composition remains capability-gated.
-
 use std::sync::Arc;
 
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 
 use super::runtime_context::{
-    ClaimScopedEliteaContext, RuntimeApplicationVersion, RuntimeContextClient, RuntimeContextError,
+    ClaimScopedEliteaContext, RuntimeApplicationVersion, RuntimeAttachmentObject,
+    RuntimeContextClient, RuntimeContextError,
 };
 
 /// Shared platform transport facade. Invocation authority is always supplied
@@ -37,9 +36,14 @@ impl PlatformClient {
 
     /// Resolve one exact child application/version using the live claim.
     ///
-    /// Main must return a frozen, claim-materialized definition. Until that
-    /// private route is implemented, nested applications remain an explicit
-    /// activation gap rather than falling back to mutable public reads.
+    /// Main serves the frozen, claim-materialized definition on the private
+    /// mTLS content route (`PostApplicationVersion`,
+    /// `internal/infra/storage/content_server.go`), and this is the only way
+    /// the runtime reads a nested application: there is deliberately no
+    /// fallback to a mutable public read, so a child either resolves under the
+    /// live claim or the turn fails with a stated reason. A claim that was
+    /// accepted for a version main no longer has comes back as a TERMINAL
+    /// `RuntimeContextError::NotFound`, not a retryable dependency failure.
     pub(crate) async fn resolve_application_version(
         &self,
         authority: &ClaimBoundRuntimeContextAuthority,
@@ -48,6 +52,30 @@ impl PlatformClient {
     ) -> Result<RuntimeApplicationVersion, RuntimeContextError> {
         self.runtime_context
             .load_application_version(authority, application_id, version_id)
+            .await
+    }
+
+    /// Read one of this turn's attached documents using the live claim.
+    ///
+    /// Main serves it from the same private mTLS content route family and
+    /// authorizes on the claim's own project AND conversation
+    /// (`PostAttachmentObject`), so this facade passes the reference through
+    /// unchanged and adds no scope of its own — there is nothing here that
+    /// could widen what the claim already permits.
+    ///
+    /// Unlike `resolve_application_version`, a failure of this call is NOT a
+    /// failure of the turn. Its caller (`agents::attachments`) treats every
+    /// error as "unreadable", announces the file by name and continues, which
+    /// is pylon's own rule for a file the platform cannot read
+    /// (`rpc/chat_all.py:384-386`).
+    pub(crate) async fn read_attachment_object(
+        &self,
+        authority: &ClaimBoundRuntimeContextAuthority,
+        bucket: &str,
+        name: &str,
+    ) -> Result<RuntimeAttachmentObject, RuntimeContextError> {
+        self.runtime_context
+            .load_attachment_object(authority, bucket, name)
             .await
     }
 }

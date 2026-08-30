@@ -2,11 +2,22 @@
 import { conversationApi } from '@/entities/conversation';
 import type { ChatStreamContext } from '@/features/chat-messages';
 
-import type { UseChatBoxSendParams } from './useChatBoxSend';
+/**
+ * The slice of `useChatBoxSend`'s params this pure module reads. Declared
+ * here, structurally, so the hook depends on its helpers and never the other
+ * way around — importing the hook's own param type back into this file made
+ * the pair circular (the layer gate's no-circular rule).
+ */
+export interface ChatStreamContextSource {
+  readonly activeParticipant?: unknown;
+  readonly participants?: readonly unknown[] | undefined;
+  readonly userName?: string | undefined;
+  readonly userAvatar?: string | undefined;
+}
 
 /** Builds the participant identity consumed by the stream reducer. */
 export function buildChatStreamContext(
-  params: UseChatBoxSendParams,
+  params: ChatStreamContextSource,
 ): ChatStreamContext {
   const target = resolveTargetParticipant(
     params.activeParticipant,
@@ -45,7 +56,7 @@ function isAdhocModelParticipant(participant: unknown): boolean {
 }
 
 /** The execution-loop bound is not a provider/model parameter. */
-export function modelRequestSettings(
+function modelRequestSettings(
   settings: Readonly<Record<string, unknown>> | undefined,
 ): Readonly<Record<string, unknown>> {
   const { steps_limit: _stepsLimit, ...modelSettings } = settings ?? {};

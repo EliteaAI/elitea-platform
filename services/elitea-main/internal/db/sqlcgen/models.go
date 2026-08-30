@@ -8,6 +8,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type ApplicationVariable struct {
+	ID                   int32            `db:"id" json:"id"`
+	ApplicationVersionID int32            `db:"application_version_id" json:"application_version_id"`
+	Name                 string           `db:"name" json:"name"`
+	Value                *string          `db:"value" json:"value"`
+	CreatedAt            pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt            pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
 type ApplicationVersion struct {
 	ID                   int32            `db:"id" json:"id"`
 	ApplicationID        int32            `db:"application_id" json:"application_id"`

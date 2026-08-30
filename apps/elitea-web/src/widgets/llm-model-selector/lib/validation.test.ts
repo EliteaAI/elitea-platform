@@ -42,6 +42,37 @@ describe('validateMaxTokens', () => {
       VALIDATION_RULE.EXCEEDS_MODEL_LIMIT,
     );
   });
+
+  /*
+   * #611-review-2. `0` used to validate, so the dialog's Apply button stayed
+   * enabled, the version saved with a 200 — and then EVERY turn was refused
+   * `invalid_profile`, because `assembly.rs`'s `normalized_max_tokens` sends
+   * anything but `-1` through `positive_u32` (`*value > 0`).
+   */
+  it('returns BELOW_MIN_TOKENS for 0, which the worker refuses', () => {
+    expect(validateMaxTokens(0, { max_output_tokens: 8192 })).toBe(VALIDATION_RULE.BELOW_MIN_TOKENS);
+    expect(validateMaxTokens('0', { max_output_tokens: 8192 })).toBe(VALIDATION_RULE.BELOW_MIN_TOKENS);
+  });
+
+  it('returns BELOW_MIN_TOKENS for a negative that is not the Auto sentinel', () => {
+    expect(validateMaxTokens(-5, { max_output_tokens: 8192 })).toBe(VALIDATION_RULE.BELOW_MIN_TOKENS);
+    expect(validateMaxTokens(DEFAULT_MAX_TOKENS, { max_output_tokens: 8192 })).toBe(VALIDATION_RULE.VALID);
+  });
+
+  /*
+   * The two shapes the field itself produces before the user has typed
+   * anything real. Flagging either would paint the input red for a value
+   * nobody entered — `LLMSettings` seeds Auto on mount and resets a cleared
+   * field to Auto on blur.
+   */
+  it('leaves an absent or blank field VALID rather than flagging it as below the minimum', () => {
+    expect(validateMaxTokens(undefined, { max_output_tokens: 8192 })).toBe(VALIDATION_RULE.VALID);
+    expect(validateMaxTokens('', { max_output_tokens: 8192 })).toBe(VALIDATION_RULE.VALID);
+  });
+
+  it('explains the minimum in the helper text', () => {
+    expect(getMaxTokensHelperText(VALIDATION_RULE.BELOW_MIN_TOKENS)).toContain('at least 1');
+  });
 });
 
 describe('getMaxTokensHelperText', () => {

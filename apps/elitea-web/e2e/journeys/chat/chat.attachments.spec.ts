@@ -62,7 +62,20 @@ const MAX_ATTACHMENTS = 10;
 /** CHUNK_SIZE (src/shared/api/upload.ts:22). */
 const CHUNK_SIZE = 5 * 1024 * 1024;
 
-const uploadUrlRe = new RegExp(`/elitea_core/attachments/prompt_lib/${DEFAULT_PROJECT_ID}/(\\d+)$`);
+/**
+ * The upload target is the conversation's UUID, not its numeric id.
+ *
+ * That is not cosmetic and not a client preference: the endpoint keys the
+ * stored object `{this segment}/{filename}`, and admission refuses any
+ * attachment reference whose name is not prefixed by the conversation's UUID
+ * (services/elitea-main/internal/application/agentexecution/attachments.go,
+ * `currentTurnAttachments` — an authorisation check). The composer used to send
+ * the numeric id here, which stored bytes no turn could ever be admitted with;
+ * elitea-main now refuses a numeric id at this route outright, so a regression
+ * shows up as a 400 rather than as an unmatched pattern.
+ */
+const UUID_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const uploadUrlRe = new RegExp(`/elitea_core/attachments/prompt_lib/${DEFAULT_PROJECT_ID}/(${UUID_SEGMENT})$`);
 
 /**
  * Opens the composer's "+" menu and returns the attach row inside it.
@@ -161,7 +174,7 @@ test('J12: attach a small file to a chat message', async ({ page }) => {
     const { request: req, body } = uploads[0]!;
     expect(req.url()).toMatch(uploadUrlRe);
     const convId = uploadUrlRe.exec(req.url())?.[1];
-    expect(convId).toMatch(/^\d+$/);
+    expect(convId, 'the upload must be keyed by the conversation uuid').toMatch(new RegExp(`^${UUID_SEGMENT}$`));
     createdConversationId = convId;
 
     // Single-shot multipart body (upload.ts uploadSmallFile): `file` +
@@ -283,7 +296,7 @@ test('J13: attach a large file chunked upload with progress', async ({ page }) =
     expect(first.url()).toBe(second.url());
     expect(first.url()).toMatch(uploadUrlRe);
     const convId = uploadUrlRe.exec(first.url())?.[1];
-    expect(convId).toMatch(/^\d+$/);
+    expect(convId, 'the upload must be keyed by the conversation uuid').toMatch(new RegExp(`^${UUID_SEGMENT}$`));
     createdConversationId = convId;
 
     // Intermediate chunk → 202 in-progress ack. Its body echoes the very form

@@ -41,6 +41,20 @@ export interface UseReorderFoldersResult {
  * `useEditFolder.ts`'s own doc comment discloses: this codebase's `Folder`
  * has no `meta` field (pinned state moved to `folderApi.updatePin`).
  *
+ * **`folders` stays render-scoped, deliberately (stale-closure audit).** Every
+ * other hook in this slice that took a state container as a parameter now reads
+ * it live; this one does not, and the difference is what the parameter MEANS
+ * here. `previousOrder` is not a question about the present ("which folder is
+ * selected?", "does a playback conversation exist?") — it is the baseline the
+ * caller's `newOrder` ARGUMENT was computed from, and the rollback is only
+ * truthful if the two share a provenance. `useDragAndDrop`'s
+ * `handleFolderReordering` derives `newOrder` from its own `folders` and calls
+ * this handler in the very next statement, reaching it through a `useLatestRef`
+ * so the reference invoked is always the current render's; the snapshot is then
+ * read synchronously, before any `await`, and exactly once per drop (no
+ * captured-reference loop like `moveDraggedConversationsToTarget`'s). There is
+ * no window in which the render-time value and a live read could disagree.
+ *
  * **Preserved double-toast quirk (not a bug in this port):** a single
  * folder's PUT failure is toasted TWICE — once with a per-folder message
  * (inside the `Promise.all` map, before re-throwing) and once more with the

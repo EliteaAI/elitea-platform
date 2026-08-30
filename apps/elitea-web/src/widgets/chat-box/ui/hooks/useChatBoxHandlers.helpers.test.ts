@@ -284,13 +284,30 @@ describe('buildOptimisticUserMessage', () => {
   });
 });
 
+/**
+ * The identifier an attachment is uploaded under decides whether the turn it
+ * rides can be admitted at all: the object is keyed `{this}/{filename}` and
+ * admission refuses any name not prefixed by the conversation's UUID. Both
+ * branches are asserted as "is the uuid" AND "is not the id", because the
+ * defect this replaced was a value that looked perfectly valid.
+ */
 describe('resolveUploadConversationId', () => {
-  it('prefers created conversation id', () => {
-    expect(resolveUploadConversationId({ id: 99 }, 1)).toBe(99);
+  it('returns the CREATED conversation’s uuid, not its numeric id', () => {
+    expect(resolveUploadConversationId({ id: 99, uuid: 'created-uuid' }, 'existing-uuid')).toBe('created-uuid');
+    expect(resolveUploadConversationId({ id: 99, uuid: 'created-uuid' }, 'existing-uuid')).not.toBe(99);
   });
 
-  it('falls back to fallbackId', () => {
-    expect(resolveUploadConversationId(undefined, 'fb')).toBe('fb');
+  it('returns the EXISTING conversation’s uuid when the send created none', () => {
+    expect(resolveUploadConversationId(undefined, 'existing-uuid')).toBe('existing-uuid');
+  });
+
+  /**
+   * A created conversation that answered without a uuid must not silently
+   * fall back to the id — there is nothing to key by, and uploading to a
+   * wrong key stores bytes no turn can ever use.
+   */
+  it('is undefined when neither conversation states a uuid', () => {
+    expect(resolveUploadConversationId({ id: 99 }, undefined)).toBeUndefined();
   });
 });
 

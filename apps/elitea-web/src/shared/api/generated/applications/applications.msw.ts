@@ -213,6 +213,10 @@ export const getCreateApplicationResponseMock = (
             faker.number.float({ fractionDigits: 2 }),
             undefined,
           ]),
+          reasoning_effort: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
         },
         undefined,
       ]),
@@ -433,6 +437,10 @@ export const getCreateApplicationResponseMock = (
           ]),
           top_p: faker.helpers.arrayElement([
             faker.number.float({ fractionDigits: 2 }),
+            undefined,
+          ]),
+          reasoning_effort: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
             undefined,
           ]),
         },
@@ -762,6 +770,10 @@ export const getGetApplicationResponseMock = (
             faker.number.float({ fractionDigits: 2 }),
             undefined,
           ]),
+          reasoning_effort: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
         },
         undefined,
       ]),
@@ -993,6 +1005,10 @@ export const getEditApplicationResponseMock = (
             faker.number.float({ fractionDigits: 2 }),
             undefined,
           ]),
+          reasoning_effort: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
         },
         undefined,
       ]),
@@ -1215,6 +1231,10 @@ export const getGetPublicApplicationResponseMock = (
         max_tokens: faker.helpers.arrayElement([faker.number.int(), undefined]),
         top_p: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        reasoning_effort: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
           undefined,
         ]),
       },
@@ -1654,6 +1674,10 @@ export const getGetApplicationVersionDetailResponseMock = (
         faker.number.float({ fractionDigits: 2 }),
         undefined,
       ]),
+      reasoning_effort: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
     },
     undefined,
   ]),
@@ -1863,6 +1887,10 @@ export const getUpdateApplicationVersionResponseMock = (
       max_tokens: faker.helpers.arrayElement([faker.number.int(), undefined]),
       top_p: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
+        undefined,
+      ]),
+      reasoning_effort: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
         undefined,
       ]),
     },
@@ -2077,6 +2105,10 @@ export const getGetApplicationVersionDetailExpandedResponseMock =
           ]),
           top_p: faker.helpers.arrayElement([
             faker.number.float({ fractionDigits: 2 }),
+            undefined,
+          ]),
+          reasoning_effort: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
             undefined,
           ]),
         },
@@ -2313,6 +2345,10 @@ export const getSaveApplicationNewVersionResponseMock = (
       max_tokens: faker.helpers.arrayElement([faker.number.int(), undefined]),
       top_p: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
+        undefined,
+      ]),
+      reasoning_effort: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
         undefined,
       ]),
     },
@@ -2553,6 +2589,10 @@ export const getExportApplicationResponseMock = (
         max_tokens: faker.helpers.arrayElement([faker.number.int(), undefined]),
         top_p: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        reasoning_effort: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
           undefined,
         ]),
       },
@@ -2832,6 +2872,10 @@ export const getImportWizardResponseMock = (
                   ]),
                   top_p: faker.helpers.arrayElement([
                     faker.number.float({ fractionDigits: 2 }),
+                    undefined,
+                  ]),
+                  reasoning_effort: faker.helpers.arrayElement([
+                    faker.string.alpha({ length: { min: 10, max: 20 } }),
                     undefined,
                   ]),
                 },
@@ -3130,6 +3174,10 @@ export const getImportWizardResponseMock = (
                   ]),
                   top_p: faker.helpers.arrayElement([
                     faker.number.float({ fractionDigits: 2 }),
+                    undefined,
+                  ]),
+                  reasoning_effort: faker.helpers.arrayElement([
+                    faker.string.alpha({ length: { min: 10, max: 20 } }),
                     undefined,
                   ]),
                 },
@@ -3580,6 +3628,10 @@ export const getForkAgentResponseMock = (
               ]),
               top_p: faker.helpers.arrayElement([
                 faker.number.float({ fractionDigits: 2 }),
+                undefined,
+              ]),
+              reasoning_effort: faker.helpers.arrayElement([
+                faker.string.alpha({ length: { min: 10, max: 20 } }),
                 undefined,
               ]),
             },

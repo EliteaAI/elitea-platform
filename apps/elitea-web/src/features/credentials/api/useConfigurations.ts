@@ -36,6 +36,7 @@ import type { UseMutationResult, UseQueryOptions, UseQueryResult } from '@tansta
 import { batchTestConfigurationConnection, testConfigurationConnection } from './configurationConnections';
 import type { BatchTestConnectionItem, BatchTestResultRow } from './configurationConnections';
 import {
+  checkStoredConfigurationConnection,
   createConfiguration,
   deleteConfiguration,
   getAvailableConfigurationsType,
@@ -50,6 +51,7 @@ import type {
   CreateConfigurationBody,
   GetAvailableConfigurationsTypeParams,
   GetConfigurationsListParams,
+  StoredConnectionCheckResult,
   UpdateConfigurationBody,
 } from './configurations';
 
@@ -204,5 +206,35 @@ export function useBatchTestConfigurationConnection(): UseMutationResult<
 > {
   return useMutation({
     mutationFn: ({ projectId, items }) => batchTestConfigurationConnection(projectId, items),
+  });
+}
+
+/* ── stored-connection check (no API-* id — see `./configurations.ts`'s
+   own "stored-connection-check family" comment for why this family has no
+   baseline precedent) ─────────────────────────────────────────────────── */
+
+/**
+ * The SAVED-row form of `useTestConfigurationConnection`.
+ *
+ * The two are not interchangeable. `useTestConfigurationConnection` posts the
+ * candidate payload — it can only test a credential whose secret the browser
+ * still holds, which is true exactly once: while the user is typing it. Every
+ * read path returns the stored secret sealed as a `{{secret.NAME}}`
+ * reference, so re-testing a saved row through that route would ask the
+ * provider to authenticate a literal template string. This hook posts NO BODY
+ * AT ALL: the server reads the row, redeems the reference through the
+ * project vault, and dials the provider itself.
+ *
+ * A failed check is HTTP 400 (`{success:false, message}`), so it arrives here
+ * as a thrown `EliteaApiError`, not as a resolved `{success:false}` —
+ * callers must read the message off `failure.body`.
+ */
+export function useCheckStoredConfigurationConnection(): UseMutationResult<
+  StoredConnectionCheckResult,
+  Error,
+  { projectId: string | number; configId: string | number }
+> {
+  return useMutation({
+    mutationFn: ({ projectId, configId }) => checkStoredConfigurationConnection(projectId, configId),
   });
 }

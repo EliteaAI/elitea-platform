@@ -8,6 +8,8 @@ import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArro
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
+
+import { GraphAdmissionGate } from './settings/GraphAdmissionGate';
 import type { ViewMode } from '@/shared/lib/enums';
 
 import { useIsSmallWindow } from '../lib/hooks/useIsSmallWindow';
@@ -111,6 +113,14 @@ export function GeneralFormPanel({ applicationId, onCollapsed, viewMode, renderC
           {!collapsed ? <KeyboardDoubleArrowLeftIcon fontSize="small" /> : <KeyboardDoubleArrowRightIcon fontSize="small" />}
         </IconButton>
       )}
+      {/*
+        The save gate. Mounted UNCONDITIONALLY (its summary is what the
+        collapse hides, not its veto) and here rather than in
+        `ConfigurationTab.tsx` because that file sits one line under the
+        §3.5 400-line budget. See `./settings/GraphAdmissionGate.tsx` for
+        how a graph the native runtime would refuse disables Save.
+      */}
+      <GraphAdmissionGate summaryHidden={collapsed} />
       {!collapsed && renderConfigurationForm({ applicationId, viewMode })}
     </Box>
   );

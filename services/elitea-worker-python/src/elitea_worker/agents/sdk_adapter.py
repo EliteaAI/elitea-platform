@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import re
 import sys
 import threading
+import unicodedata
 from contextlib import contextmanager, redirect_stdout
 from copy import deepcopy
 from dataclasses import dataclass
@@ -19,7 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from elitea_worker.agents.attachments import (
     ATTACHMENT_READ_TOOL_NAME,
@@ -36,6 +38,10 @@ from elitea_worker.agents.client_context import EliteaClientContext
 from elitea_worker.agents.configuration_registry import (
     ConfigurationRegistryShadow,
     RegistryLoader,
+)
+from elitea_worker.agents.internal_tools import (
+    ensure_sdk_state_directory,
+    serve_internal_tools,
 )
 from elitea_worker.constants import (
     CONFIGURATION_CATALOG_REVISION,
@@ -64,6 +70,36 @@ _NEXT_INPUT_SUGGESTION_PROMPT = (
     "Suggestion: NONE\n\n"
     "Assistant reply:\n{reply}\n\nSuggestion:"
 )
+
+# The root HITL actions this worker admits, and the ones that carry a value.
+#
+# Both mirror `validCurrentHITLDecision`
+# (services/elitea-main/internal/application/agentexecution/continue.go), the
+# only thing that ever populates a decision that reaches here.
+#
+# `answer` is the clarifying-question resume the SDK's own `AskUserTool`
+# pauses for. It arrives with a NON-EMPTY value and NO `guardrail_type` —
+# elitea-main declares that field `json:"guardrail_type,omitempty"` and sets it
+# for `mcp_auth` alone — so an admission list without `answer` refused every
+# clarification with UNSUPPORTED_CAPABILITY. Nothing else could clear the pause
+# afterwards either: the SDK returns the stale interrupt to the caller for any
+# input that is not a resume, so the conversation stayed parked on a question
+# it could never be told the answer to.
+_ROOT_HITL_ACTIONS = frozenset(
+    {"approve", "reject", "edit", "block_with_comment", "answer"}
+)
+_AUTHORIZATION_HITL_ACTIONS = frozenset({"authorize", "skip"})
+_VALUE_BEARING_HITL_ACTIONS = frozenset({"edit", "block_with_comment", "answer"})
+_HITL_ANSWER_ACTION = "answer"
+
+# The SDK module whose `AskUserTool` this adapter re-binds; see
+# `_install_ask_user_question_ids`.
+_ASK_USER_TOOL_MODULE = "elitea_sdk.runtime.tools.ask_user"
+# The native runtime's own bound (`MAX_QUESTION_ID_BYTES`,
+# services/elitea-worker-rust/src/agents/internal_tools.rs).
+_MAX_ASK_USER_QUESTION_ID_BYTES = 64
+_ask_user_question_ids_lock = threading.Lock()
+_ask_user_question_ids_installed = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,9 +429,12 @@ class EliteaSdkAgentAdapter:
     def execute_application(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
         _apply_toolkit_guardrails(payload)
+        ensure_sdk_state_directory()
+        _install_ask_user_question_ids()
         with self._execution_memory() as memory, _sdk_budget_boundary():
             application = payload.application
             version_details = deepcopy(application.get("version_details") or {})
+            _serve_version_internal_tools(version_details)
             llm_kwargs = _llm_kwargs(payload.llm)
             executor = self._client.application(
                 application_id=application.get("id"),
@@ -425,6 +464,9 @@ class EliteaSdkAgentAdapter:
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
         _apply_toolkit_guardrails(payload)
+        ensure_sdk_state_directory()
+        _install_ask_user_question_ids()
+        internal_tools = serve_internal_tools(payload.internal_tools)
         with self._execution_memory() as memory, _sdk_budget_boundary():
             llm_kwargs = _llm_kwargs(payload.llm)
             llm = self._client.get_llm(
@@ -451,8 +493,11 @@ class EliteaSdkAgentAdapter:
                 conversation_id=payload.conversation_id,
                 ignored_mcp_servers=list(payload.ignored_mcp_servers),
                 persona=payload.persona,
+                # `lazy_tools_mode` is read from the ORIGINAL list on purpose: it
+                # is a mode flag rather than a tool, nothing materialises it, and
+                # it is never one of the names `serve_internal_tools` can drop.
                 lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
-                internal_tools=list(payload.internal_tools),
+                internal_tools=internal_tools,
                 exception_handling_enabled=bool(payload.exception_handling_enabled),
                 context_settings=deepcopy(payload.context_settings),
                 step_limit=payload.steps_limit,
@@ -634,6 +679,193 @@ class EliteaSdkAgentAdapter:
             project_id=self._project_id,
         ) as memory:
             yield memory
+
+
+def _serve_version_internal_tools(version_details: dict[str, Any]) -> None:
+    """Drop the internal tools this image cannot build, in place.
+
+    The stored-agent path never hands ``payload.internal_tools`` to the SDK: the
+    SDK reads the authored set out of ``version_details['meta']`` instead, and
+    reads it TWICE — once in ``EliteAClient.application`` to decide which
+    middleware to construct, and once in ``LangChainAssistant`` to decide which
+    tools to build. Pruning the meta covers both, which pruning the payload
+    would not.
+
+    ``version_details`` is the adapter's own deep copy, so this mutates nothing
+    the platform sent. A meta that is not an object, or an ``internal_tools``
+    that is not a list, is left exactly as it is: this function exists to remove
+    names, not to repair a shape, and the SDK's own handling of a malformed
+    value is the current behavior.
+    """
+
+    meta = version_details.get("meta")
+    if not isinstance(meta, dict):
+        return
+    configured = meta.get("internal_tools")
+    if not isinstance(configured, list):
+        return
+    if not all(isinstance(name, str) for name in configured):
+        return
+    meta["internal_tools"] = serve_internal_tools(configured)
+
+
+def _install_ask_user_question_ids() -> None:
+    """Keep the question ids the MODEL chose on the SDK's ``ask_user`` tool.
+
+    ## What diverges without it
+
+    ``AskUserTool``'s argument schema (``AskUserQuestionSpec``) declares no
+    ``id`` field, so pydantic drops the one the model sent before
+    ``_normalize_questions`` ever runs and every question is re-keyed
+    positionally as ``q1``, ``q2``… The pause the browser renders carries those
+    ids, `AnswerQuestionsControl` keys its answer object by them, and the
+    answer therefore arrives as ``{"q1": "Staging"}`` where the native runtime
+    — which keeps the model's id and falls back to ``q{n}`` only when there is
+    none (``AskUserQuestion::normalize``,
+    services/elitea-worker-rust/src/agents/internal_tools.rs) — produces
+    ``{"environment": "Staging"}``.
+
+    ## Why the ids, and not a translation on the way back in
+
+    The browser ECHOES the ids the pause carried; it never invents them and it
+    has no way to know which runtime produced them. So the only way one browser
+    payload can answer both runtimes is for both to advertise the same ids for
+    the same model output. Rewriting the incoming map onto positional keys in
+    this adapter would have to infer which question each key belongs to from
+    its position in a JSON object — and `buildAnswerValue` OMITS a question the
+    user left blank, so the first skipped question would silently shift every
+    later answer onto the wrong one. It would also leave the two runtimes
+    STORING different pauses for the same model call, which is what makes a
+    transcript still readable after a runtime switch.
+
+    ## Why the seam is here and not in the SDK
+
+    This image builds ``elitea_sdk`` from a pinned upstream revision plus
+    cherry-picked upstream commits (``Containerfile``,
+    ``elitea-sdk.lock.json``), so a change inside the SDK is a change to
+    another repository's history first. The SDK imports the class lazily,
+    inside the branch that constructs it (``runtime/toolkits/tools.py``:
+    ``from ..tools.ask_user import AskUserTool``), so re-binding that module
+    attribute is a seam this worker owns and the SDK honours on the next
+    construction.
+
+    ## What it costs
+
+    The subclass ADVERTISES the optional ``id`` to the model, which the native
+    runtime tolerates but does not advertise (its parameter schema is
+    ``additionalProperties: false`` with no ``id`` property). The alternative —
+    accepting a key the schema hides — needs the generated JSON schema to be
+    rewritten behind pydantic's back, and a model that is never told it may
+    name a question will rarely name one, which leaves the positional keys in
+    place for every real model and fixes the divergence only for the scripted
+    one.
+
+    Idempotent, and callable on every run: it imports one module and re-binds
+    one attribute, under a lock because a worker process serves claims on more
+    than one thread.
+    """
+
+    global _ask_user_question_ids_installed
+
+    if _ask_user_question_ids_installed:
+        return
+    with _ask_user_question_ids_lock:
+        if _ask_user_question_ids_installed:
+            return
+        module = importlib.import_module(_ASK_USER_TOOL_MODULE)
+        module.AskUserTool = _identified_ask_user_tool(module)
+        _ask_user_question_ids_installed = True
+
+
+def _identified_ask_user_tool(module: Any) -> type[Any]:
+    """Build the ``AskUserTool`` subclass that carries a question ``id``.
+
+    Built from the module's own classes rather than from imports at the top of
+    this file, so the SDK artifact stays the single definition of what a
+    question is: only the ``id`` is added here, and ``_run`` still runs the
+    SDK's normalisation, interrupt payload and answer formatting.
+    """
+
+    base_tool = module.AskUserTool
+    base_question = module.AskUserQuestionSpec
+
+    class _IdentifiedAskUserQuestion(base_question):  # type: ignore[misc, valid-type]
+        id: str = Field(
+            default="",
+            description=(
+                "Stable identifier for this question, echoed back with the "
+                "user's answer. Use a short name for what is being decided "
+                "(for example 'environment'). Defaults to q1, q2… in order."
+            ),
+        )
+
+    class _IdentifiedAskUserInput(BaseModel):
+        questions: list[_IdentifiedAskUserQuestion] = Field(
+            description="1-4 questions to ask the user at once.",
+        )
+
+    class _IdentifiedAskUserTool(base_tool):  # type: ignore[misc, valid-type]
+        args_schema: type[BaseModel] = _IdentifiedAskUserInput
+
+        def _run(
+            self,
+            questions: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> str:
+            supplied = questions if questions is not None else kwargs.get("questions")
+            kwargs.pop("questions", None)
+            return super()._run(
+                questions=_ask_user_questions_with_ids(supplied),
+                run_manager=run_manager,
+                **kwargs,
+            )
+
+    return _IdentifiedAskUserTool
+
+
+def _ask_user_questions_with_ids(questions: Any) -> Any:
+    """Hand the SDK's normaliser plain dicts, carrying an admitted ``id``.
+
+    ``_normalize_questions`` reads ``id`` off a dict and off a question spec
+    alike, so this only has to decide WHICH ids survive. An id the native
+    runtime would refuse is REMOVED rather than refused, and the SDK's
+    positional default takes over for that question: a model that sends a
+    240-character id has produced a bad name for a question, not an
+    unanswerable pause, and the browser can still answer a ``q1``.
+    """
+
+    if not isinstance(questions, list):
+        return questions
+    prepared: list[Any] = []
+    for question in questions:
+        if isinstance(question, dict):
+            item = dict(question)
+        elif hasattr(question, "model_dump"):
+            item = question.model_dump()
+        else:
+            prepared.append(question)
+            continue
+        if not _is_admitted_ask_user_question_id(item.get("id")):
+            item.pop("id", None)
+        prepared.append(item)
+    return prepared
+
+
+def _is_admitted_ask_user_question_id(value: Any) -> bool:
+    """The native runtime's own rule for a question id, restated.
+
+    Non-empty, at most 64 UTF-8 bytes, and no control characters — the same
+    three conditions ``AskUserQuestion::normalize`` applies, in the same order.
+    The bound matters because the id becomes a KEY in the stored pause and in
+    the answer object the browser posts back.
+    """
+
+    if not isinstance(value, str) or not value:
+        return False
+    if len(value.encode("utf-8")) > _MAX_ASK_USER_QUESTION_ID_BYTES:
+        return False
+    return not any(unicodedata.category(character) == "Cc" for character in value)
 
 
 def _apply_toolkit_guardrails(payload: AgentExecutionPayload) -> None:
@@ -819,25 +1051,21 @@ def _require_in_process_hitl_resume(payload: AgentExecutionPayload) -> None:
             raise UnsupportedCapability("The HITL guardrail type is not supported.")
         action = decision.get("action")
         allowed_actions = (
-            {"authorize", "skip"}
+            _AUTHORIZATION_HITL_ACTIONS
             if guardrail_type == "mcp_auth"
-            else {"approve", "reject", "edit", "block_with_comment"}
+            else _ROOT_HITL_ACTIONS
         )
         if action not in allowed_actions:
             raise UnsupportedCapability("The HITL action is not supported.")
         value = decision.get("value", "")
         if not isinstance(value, str):
             raise UnsupportedCapability("The HITL decision value is malformed.")
-        if (
-            guardrail_type != "mcp_auth"
-            and action in {"edit", "block_with_comment"}
-            and not value
-        ):
+        carries_value = (
+            guardrail_type != "mcp_auth" and action in _VALUE_BEARING_HITL_ACTIONS
+        )
+        if carries_value and not value:
             raise UnsupportedCapability("The HITL decision value is required.")
-        if (
-            guardrail_type == "mcp_auth"
-            or action not in {"edit", "block_with_comment"}
-        ) and value:
+        if not carries_value and value:
             raise UnsupportedCapability("The HITL decision value is not allowed.")
 
 
@@ -851,6 +1079,70 @@ def _llm_kwargs(value: dict[str, Any]) -> dict[str, Any]:
         for key, item in kwargs.items()
         if key not in {"api_key", "api_extra_headers", "base_url", "deployment"}
     }
+
+
+def _hitl_resume_value(payload: AgentExecutionPayload) -> Any:
+    """The value the SDK hands back to the paused tool's ``interrupt()``.
+
+    Every action but ``answer`` resumes with the free text a reviewer typed, and
+    it stays exactly the string that arrived.
+
+    ``answer`` is the clarifying-question resume, and its value is one JSON
+    object keyed by question id: `AnswerQuestionsControl` encodes it, every
+    layer between the browser and here types `value` as a string, and the SDK's
+    ``AskUserTool._format_answer`` turns it into the tool result the model
+    reads. That renderer maps the answers onto the questions it asked ONLY when
+    it is handed a mapping — given the encoded string it falls through to
+    ``User answered: {"environment": "Staging"}`` and the model receives the
+    wire format instead of the question it asked. The native runtime decodes
+    first (``AskUserRequest::format_answer``,
+    services/elitea-worker-rust/src/agents/internal_tools.rs), so decoding here
+    is what makes the two runtimes answer the same model the same way.
+    """
+
+    value = payload.hitl_value or ""
+    if payload.hitl_action != _HITL_ANSWER_ACTION or not value:
+        return value
+    return _decoded_clarifying_answer(value)
+
+
+def _decoded_clarifying_answer(value: str) -> Any:
+    """Decode one clarification answer, or leave it exactly as it arrived.
+
+    Only the two shapes the browser produces are decoded: the ``{id: answer}``
+    object an answered question set submits, and the bare JSON string the
+    no-questions fallback submits. Anything else — a number, a bare array, an
+    object carrying something the renderer would print as a Python repr, or
+    text that is not JSON at all — is passed through unchanged.
+
+    Passing through rather than refusing is deliberate, and it is the ONE place
+    this deviates from the native runtime, which answers `InvalidInput` for
+    those shapes. A refusal here arrives as a dead conversation — the pause
+    stays parked and the next turn is refused as an overlap — whereas an
+    unrecognised shape reaching the model as the user's own words costs a
+    label. The value is already bounded and NUL-free by the time it gets here
+    (`validCurrentHITLDecision`).
+    """
+
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if isinstance(decoded, str):
+        return decoded
+    if isinstance(decoded, dict) and all(
+        _is_clarifying_answer_text(item) for item in decoded.values()
+    ):
+        return decoded
+    return value
+
+
+def _is_clarifying_answer_text(item: Any) -> bool:
+    """One question's answer: a string, or the list a multi-select submits."""
+
+    if isinstance(item, str):
+        return True
+    return isinstance(item, list) and all(isinstance(entry, str) for entry in item)
 
 
 def _invoke_initial_agent(
@@ -916,7 +1208,7 @@ def _invoke_initial_agent(
             "messages": messages,
             "hitl_resume": True,
             "hitl_action": payload.hitl_action,
-            "hitl_value": payload.hitl_value or "",
+            "hitl_value": _hitl_resume_value(payload),
             "hitl_decisions": deepcopy(payload.hitl_decisions),
         }
     else:

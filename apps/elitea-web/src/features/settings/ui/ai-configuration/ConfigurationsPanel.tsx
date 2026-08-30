@@ -13,8 +13,14 @@ import Typography from '@mui/material/Typography';
 import { isPublicProject } from '@/entities/project';
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
 
 import { useDefaultModelSaving } from '../../lib/ai-configuration/useDefaultModelSaving';
+import {
+  StoredConnectionHealthProvider,
+  collectConfigurationIds,
+  useStoredConnectionHealth,
+} from '../../lib/ai-configuration/useStoredConnectionHealth';
 
 import {
   EMPTY_MODELS_RESPONSE,
@@ -131,6 +137,18 @@ export default memo(function ConfigurationsPanel({
 
   const { saveErrors, handleDefaultChange } = useDefaultModelSaving(projectId);
 
+  /* Per-card connection health. NOTHING fires on mount — a project can hold
+     dozens of configurations and each check is a real provider round trip, so
+     the user asks for it with the button in the header below and presses it
+     again to refresh. */
+  const configurationIds = collectConfigurationIds(configurationsBySection);
+  const connectionHealth = useStoredConnectionHealth(projectId, configurationIds);
+  const { health, revalidate, revalidatingId, checkAll, isChecking, checkError } = connectionHealth;
+  const healthView = useMemo(
+    () => ({ health, revalidate, revalidatingId }),
+    [health, revalidate, revalidatingId],
+  );
+
   /* Default-setting labels with optional info tooltips (porting old-app pattern) */
   const renderInfoLabel = useCallback(
     (labelText: string) => {
@@ -193,103 +211,127 @@ export default memo(function ConfigurationsPanel({
           <Typography variant="headingMedium" sx={styles.sectionTitle}>
             {t('ai-configuration.configurations.title', 'Configurations')}
           </Typography>
-          {canCreateConfiguration && <AddModelButton />}
+          <Box sx={styles.headerActions}>
+            {checkError !== '' && (
+              <Typography variant="bodySmall" sx={styles.checkError} role="alert">
+                {checkError}
+              </Typography>
+            )}
+            <BaseBtn
+              variant="secondary"
+              size="small"
+              data-testid="check-connections"
+              disabled={isChecking || configurationIds.length === 0}
+              onClick={checkAll}
+            >
+              {isChecking
+                ? t('ai-configuration.health.checkingAll', 'Checking connections...')
+                : t('ai-configuration.health.checkAll', 'Check connections')}
+            </BaseBtn>
+            {canCreateConfiguration && <AddModelButton />}
+          </Box>
         </Box>
       </Box>
 
-      {/* LLM Models */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.llmModels', 'LLM Models')}
-        configurations={llmConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-        groupTheModelsByProvider
-        hasDefaultSetting
-        defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.default', 'Default'))}
-        defaultSettingValue={defaultValueOf(llmDefaults)}
-        defaultSettingOptions={modelOptions}
-        onChangeDefaultSetting={handleDefaultChange('llm')}
-        defaultSettingError={saveErrors['llm']}
-        additionalDefaultSettings={llmAdditionalSettings}
-      />
+      {/* Every card's health dot and its Re-validate action come from here.
+          Context, not a prop: `ConfigurationSection` already destructures 12
+          props — the §3.5 budget — and never reads this value, it only
+          forwards it to the cards. See `StoredConnectionHealthView`. */}
+      <StoredConnectionHealthProvider value={healthView}>
+        {/* LLM Models */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.llmModels', 'LLM Models')}
+          configurations={llmConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+          groupTheModelsByProvider
+          hasDefaultSetting
+          defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.default', 'Default'))}
+          defaultSettingValue={defaultValueOf(llmDefaults)}
+          defaultSettingOptions={modelOptions}
+          onChangeDefaultSetting={handleDefaultChange('llm')}
+          defaultSettingError={saveErrors['llm']}
+          additionalDefaultSettings={llmAdditionalSettings}
+        />
 
-      {/* Embedding Models */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.embeddingModels', 'Embedding Models')}
-        configurations={embeddingConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-        hasDefaultSetting
-        defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.default', 'Default'))}
-        defaultSettingValue={defaultValueOf(embeddingDefaults)}
-        defaultSettingOptions={embeddingOptions}
-        onChangeDefaultSetting={handleDefaultChange('embedding')}
-        defaultSettingError={saveErrors['embedding']}
-      />
+        {/* Embedding Models */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.embeddingModels', 'Embedding Models')}
+          configurations={embeddingConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+          hasDefaultSetting
+          defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.default', 'Default'))}
+          defaultSettingValue={defaultValueOf(embeddingDefaults)}
+          defaultSettingOptions={embeddingOptions}
+          onChangeDefaultSetting={handleDefaultChange('embedding')}
+          defaultSettingError={saveErrors['embedding']}
+        />
 
-      {/* Vector Storage */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.vectorStorage', 'Vector Storage')}
-        configurations={vectorStorageConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-        hasDefaultSetting
-        defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.default', 'Default'))}
-        defaultSettingValue={defaultValueOf(vectorStorageDefaults)}
-        defaultSettingOptions={vectorStorageOptions}
-        onChangeDefaultSetting={handleDefaultChange('vectorstorage')}
-        defaultSettingError={saveErrors['vectorstorage']}
-      />
+        {/* Vector Storage */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.vectorStorage', 'Vector Storage')}
+          configurations={vectorStorageConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+          hasDefaultSetting
+          defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.default', 'Default'))}
+          defaultSettingValue={defaultValueOf(vectorStorageDefaults)}
+          defaultSettingOptions={vectorStorageOptions}
+          onChangeDefaultSetting={handleDefaultChange('vectorstorage')}
+          defaultSettingError={saveErrors['vectorstorage']}
+        />
 
-      {/* Image Generation */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.imageGeneration', 'Image Generation')}
-        configurations={imageConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-        hasDefaultSetting
-        defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.imageDefault', 'Default image generation model:'))}
-        defaultSettingValue={defaultValueOf(imageDefaults)}
-        defaultSettingOptions={imageOptions}
-        onChangeDefaultSetting={handleDefaultChange('image_generation')}
-        defaultSettingError={saveErrors['image_generation']}
-      />
+        {/* Image Generation */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.imageGeneration', 'Image Generation')}
+          configurations={imageConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+          hasDefaultSetting
+          defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.imageDefault', 'Default image generation model:'))}
+          defaultSettingValue={defaultValueOf(imageDefaults)}
+          defaultSettingOptions={imageOptions}
+          onChangeDefaultSetting={handleDefaultChange('image_generation')}
+          defaultSettingError={saveErrors['image_generation']}
+        />
 
-      {/* Speech Recognition (ASR) */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.asr', 'Speech Recognition (ASR)')}
-        configurations={asrConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-        hasDefaultSetting
-        defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.asrDefault', 'Default ASR model:'))}
-        defaultSettingValue={defaultValueOf(asrDefaults)}
-        defaultSettingOptions={asrOptions}
-        onChangeDefaultSetting={handleDefaultChange('asr')}
-        defaultSettingError={saveErrors['asr']}
-      />
+        {/* Speech Recognition (ASR) */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.asr', 'Speech Recognition (ASR)')}
+          configurations={asrConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+          hasDefaultSetting
+          defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.asrDefault', 'Default ASR model:'))}
+          defaultSettingValue={defaultValueOf(asrDefaults)}
+          defaultSettingOptions={asrOptions}
+          onChangeDefaultSetting={handleDefaultChange('asr')}
+          defaultSettingError={saveErrors['asr']}
+        />
 
-      {/* Text to Speech (TTS) */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.tts', 'Text to Speech (TTS)')}
-        configurations={ttsConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-        hasDefaultSetting
-        defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.ttsDefault', 'Default TTS model:'))}
-        defaultSettingValue={defaultValueOf(ttsDefaults)}
-        defaultSettingOptions={ttsOptions}
-        onChangeDefaultSetting={handleDefaultChange('tts')}
-        defaultSettingError={saveErrors['tts']}
-      />
+        {/* Text to Speech (TTS) */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.tts', 'Text to Speech (TTS)')}
+          configurations={ttsConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+          hasDefaultSetting
+          defaultSettingLabel={renderInfoLabel(t('ai-configuration.section.ttsDefault', 'Default TTS model:'))}
+          defaultSettingValue={defaultValueOf(ttsDefaults)}
+          defaultSettingOptions={ttsOptions}
+          onChangeDefaultSetting={handleDefaultChange('tts')}
+          defaultSettingError={saveErrors['tts']}
+        />
 
-      {/* AI Credentials */}
-      <ConfigurationSection
-        title={t('ai-configuration.section.aiCredentials', 'AI Credentials')}
-        configurations={aiCredentialsConfigs}
-        projectId={projectId}
-        isLoading={isLoading}
-      />
+        {/* AI Credentials */}
+        <ConfigurationSection
+          title={t('ai-configuration.section.aiCredentials', 'AI Credentials')}
+          configurations={aiCredentialsConfigs}
+          projectId={projectId}
+          isLoading={isLoading}
+        />
+      </StoredConnectionHealthProvider>
     </Box>
   );
 });
@@ -329,6 +371,15 @@ function getStyles(theme: ReturnType<typeof useTheme>) {
       display: 'flex',
       alignItems: 'center',
       gap: '0.5rem',
+    },
+    headerActions: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '0.5rem',
+      flexShrink: 0,
+    },
+    checkError: {
+      color: t.vars.palette.status.rejectedText,
     },
     inlineDefaultLabel: {
       display: 'flex',

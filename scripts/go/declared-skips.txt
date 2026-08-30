@@ -68,3 +68,22 @@ github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/
 github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/gcs/PresignGetExpiresAfterTTL	The fake-gcs-server credential path reports no Presign capability.
 github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/gcs/NativeMultipartRoundTripsMatchingDigest	The fake-gcs-server credential path reports no NativeMultipart capability.
 github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/gcs/AbortMultipartLeavesNoListableObject	The fake-gcs-server credential path reports no NativeMultipart capability.
+
+# ── A local PostgreSQL without pgvector, and only that ───────────────────────
+#
+# These four run the project_pgvector step, which executes CREATE EXTENSION
+# vector. Against a stock postgres image they used to FAIL with "project
+# pgvector provisioning unavailable" — four red tests that named the code,
+# not the missing extension. They now say what is missing, in the words
+# internal/infra/pgvector already uses.
+#
+# This is answer 2 from the list above, not a hole in the gate: the Test job
+# in ci-go.yml runs a pgvector image AND sets
+# ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST=true, which turns the same guard into
+# a t.Fatal there. In CI these four lines are STALE, by construction. If they
+# ever stop being stale, the job has already failed.
+
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning	TestProvisionCreatesAVectorStoreAnIndexRunCanResolve	The ELITEA_TEST_DATABASE_URL server provides no vector extension. CI runs it for real against pgvector, with ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST failing the job instead of skipping.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning	TestProvisionCompensatesTheVectorStoreWhenALaterStepFails	The ELITEA_TEST_DATABASE_URL server provides no vector extension. CI runs it for real against pgvector, with ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST failing the job instead of skipping.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning	TestProvisionWritesVaultMaterialTheDeploymentMasterKeyCanOpen	The ELITEA_TEST_DATABASE_URL server provides no vector extension. CI runs it for real against pgvector, with ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST failing the job instead of skipping.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning	TestProvisionDeprovisionRemovesTheWrappedVault	The ELITEA_TEST_DATABASE_URL server provides no vector extension. CI runs it for real against pgvector, with ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST failing the job instead of skipping.

@@ -286,7 +286,14 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, ErrInvalidCurrentAgentStart
 	}
-	llm, err := currentApplicationRuntimeLLM(skills.versionDetails)
+	// One decode serves both readers below. The projection already decoded
+	// this document once to build it; decoding it again per reader put three
+	// full UseNumber passes over the same bytes on every turn start.
+	version, err := decodeCurrentApplicationVersion(skills.versionDetails)
+	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	llm, err := currentApplicationRuntimeLLM(version)
 	if err != nil {
 		return nil, err
 	}
@@ -294,10 +301,14 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, err
 	}
+	stepsLimit, err := currentApplicationStepsLimit(version)
+	if err != nil {
+		return nil, err
+	}
 	threadID := request.ConversationUUID
 	conversationID := request.ConversationUUID
 	executionGeneration := request.QuestionID
-	return &runtimev1.AgentExecutionInputV1{
+	input := &runtimev1.AgentExecutionInputV1{
 		SchemaRevision: "elitea.runtime.agent-execution-input.v1",
 		// Current chat history remains authoritative for ordinary turns. The
 		// shared LangGraph checkpoint stores resumable graph state for this stable
@@ -315,7 +326,77 @@ func currentApplicationInput(
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 		ToolkitGuardrails:   bytes.Clone(toolkitGuardrails),
-	}, nil
+	}
+	if stepsLimit != nil {
+		input.StepsLimit = stepsLimit
+	}
+	return input, nil
+}
+
+// currentApplicationStepsLimit lifts the authored step limit out of the frozen
+// version's meta and onto the execution input, which is where the runtime reads
+// it (services/elitea-worker-rust/src/agents/assembly.rs:152 —
+// `request.payload.steps_limit`). The adhoc path has always done this from the
+// conversation meta (adhoc.go:308,335-337); the application path did not, so a
+// stored agent ran on the runtime's default no matter what its author set.
+//
+// The key stays in `meta` as well, because the Python worker reads it from
+// exactly there to set the LangGraph recursion limit
+// (services/elitea-worker-python/src/elitea_worker/agents/sdk_adapter.py:910-912)
+// and both workers must keep honouring the same authored number.
+//
+// An unusable value is refused rather than dropped: a step limit that silently
+// became the default is how an agent that was deliberately given room to work
+// stops halfway through with no explanation.
+func currentApplicationStepsLimit(version map[string]any) (*int32, error) {
+	meta, ok := version["meta"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	value, exists := meta["step_limit"]
+	if !exists || value == nil {
+		return nil, nil
+	}
+	parsed, ok := positiveCurrentAgentJSONInteger(value)
+	if !ok || parsed > maxCurrentAgentStepLimit {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	bounded := int32(parsed)
+	return &bounded, nil
+}
+
+// maxCurrentAgentStepLimit mirrors MAX_AGENT_STEP_LIMIT
+// (services/elitea-worker-rust/src/agents/assembly.rs:22). Refusing here rather
+// than forwarding turns a runtime-side invalid_profile — which the browser sees
+// as a turn that starts and then stops — into a start that fails with a stated
+// reason.
+const maxCurrentAgentStepLimit = 1024
+
+// currentPlatformInternalTools is the agent form's own authorable catalogue
+// (apps/elitea-web/src/features/agents/lib/internalTools.ts) plus `ask_user`.
+// Membership here means "the product can do this", not "every worker can":
+// BOTH runtimes skip what they cannot serve, with a logged
+// `agent_internal_tool_skipped` — the native one for what it has not
+// implemented (services/elitea-worker-rust/src/agents/internal_tools.rs), and
+// the Python one for what its image cannot build, which today is `pyodide`,
+// whose sandbox needs a Deno runtime that image does not ship
+// (services/elitea-worker-python/src/elitea_worker/agents/internal_tools.py).
+// This layer FORWARDS rather than judges, because refusing here turned every
+// form toggle into an agent that stopped answering on both workers at once.
+//
+// Do not read the skip as "either worker serves everything". It was written
+// down here, and in two other files, that the Python worker served the whole
+// set; it did not, and the turn died in the SDK with an assistant row flagged
+// `is_error` and EMPTY content.
+var currentPlatformInternalTools = map[string]bool{
+	"ask_user":         true,
+	"attachments":      true,
+	"data_analysis":    true,
+	"image_generation": true,
+	"lazy_tools_mode":  true,
+	"planner":          true,
+	"pyodide":          true,
+	"swarm":            true,
 }
 
 func currentRuntimeInternalTools(raw json.RawMessage) ([]byte, error) {
@@ -326,16 +407,21 @@ func currentRuntimeInternalTools(raw json.RawMessage) ([]byte, error) {
 	if !validJSONArray(raw) || json.Unmarshal(raw, &configured) != nil {
 		return nil, ErrUnsupportedCurrentAgentStart
 	}
-	selected := make([]string, 0, 1)
+	selected := make([]string, 0, len(configured))
+	seen := make(map[string]bool, len(configured))
 	for _, name := range configured {
-		switch name {
-		case "internal_mcp":
+		switch {
+		case name == "internal_mcp":
 			// Internal MCP is materialized through the frozen tools projection.
-		case "ask_user":
-			if len(selected) == 0 {
+		case currentPlatformInternalTools[name]:
+			if !seen[name] {
+				seen[name] = true
 				selected = append(selected, name)
 			}
 		default:
+			// Off the platform catalogue entirely: this names nothing the
+			// product can do, so forwarding it would launder malformed
+			// configuration into a per-worker decision.
 			return nil, ErrUnsupportedCurrentAgentStart
 		}
 	}
@@ -395,11 +481,7 @@ func (service *CurrentApplicationStartService) resolveNextInputSuggestionPolicy(
 	return bytes.Clone(policy)
 }
 
-func currentApplicationRuntimeLLM(versionDetails json.RawMessage) ([]byte, error) {
-	version, err := decodeCurrentApplicationVersion(versionDetails)
-	if err != nil {
-		return nil, ErrUnsupportedCurrentAgentStart
-	}
+func currentApplicationRuntimeLLM(version map[string]any) ([]byte, error) {
 	settings, ok := version["llm_settings"].(map[string]any)
 	if !ok || settings == nil {
 		return nil, ErrUnsupportedCurrentAgentStart

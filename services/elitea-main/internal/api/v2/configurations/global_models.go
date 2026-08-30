@@ -254,7 +254,10 @@ func scanGlobalModel(
 ) (GlobalModel, error) {
 	var item GlobalModel
 	var data []byte
-	var createdAt, updatedAt time.Time
+	// Pointers, for the reason scanGlobalProvider's header gives: `updated_at`
+	// is nullable and a freshly created model leaves it NULL, so scanning it
+	// as a `time.Time` made one new model answer 500 for the whole listing.
+	var createdAt, updatedAt *time.Time
 	if err := scan(&item.ID, &item.UUID, &item.Name, &item.Type, &item.Section,
 		&data, &item.StatusOK, &item.StatusLogs, &createdAt, &updatedAt); err != nil {
 		return GlobalModel{}, err
@@ -273,8 +276,12 @@ func scanGlobalModel(
 	// and an absent link is not an unusable one.
 	item.CredentialResolves = !verified || item.CredentialName == "" ||
 		containsString(credentials, item.CredentialName)
-	item.CreatedAt = createdAt.Format(time.RFC3339)
-	item.UpdatedAt = updatedAt.Format(time.RFC3339)
+	if createdAt != nil {
+		item.CreatedAt = createdAt.Format(time.RFC3339)
+	}
+	if updatedAt != nil {
+		item.UpdatedAt = updatedAt.Format(time.RFC3339)
+	}
 	return item, nil
 }
 

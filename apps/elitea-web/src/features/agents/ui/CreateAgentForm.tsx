@@ -15,6 +15,20 @@ import { StyledInputEnhancer } from '@/shared/ui/StyledInputEnhancer';
 import { useCreateAgentFormState } from '../model/useCreateAgentFormState';
 import type { AgentDraftValues, AgentFieldChange } from '../model/types';
 
+import {
+  accordionContentSx,
+  accordionSx,
+  advanceSettingsSx,
+  conversationStartersSx,
+  descriptionCharactersLabelSx,
+  descriptionWrapperSx,
+  instructionsContainerSx,
+  nameCharactersLabelSx,
+  nameContainerSx,
+  nameWrapperInputSx,
+  rootContainerSx,
+  welcomeMessageInputSx,
+} from './CreateAgentForm.styles';
 import { ApplicationAdvanceSettings } from './ApplicationAdvanceSettings';
 import { ApplicationVariables } from './ApplicationVariables';
 import { ConversationStartersEditor } from './ConversationStartersEditor';
@@ -211,6 +225,15 @@ export interface CreateAgentFormProps {
   readonly generateAgentButtonSlot?: ReactNode | undefined;
   readonly iconSlot?: ReactNode | undefined;
   readonly tagsSlot?: ReactNode | undefined;
+  /**
+   * The model picker (`widgets/agent-model-settings`), rendered inside the
+   * "Advanced" panel where the baseline puts it. Injected rather than
+   * imported because it needs the project's model catalogue and
+   * `widgets/llm-model-selector`, and `.dependency-cruiser.cjs` forbids
+   * `features/` importing `widgets/` — the same reason
+   * `AgentEditor.tsx`'s `renderLlmModelSelector` is a slot.
+   */
+  readonly modelSettingsSlot?: ReactNode | undefined;
   readonly sx?: SxProps<Theme> | undefined;
 }
 
@@ -223,6 +246,7 @@ export function CreateAgentForm({
   generateAgentButtonSlot,
   iconSlot,
   tagsSlot,
+  modelSettingsSlot,
   sx,
 }: CreateAgentFormProps): ReactNode {
   const versionDetails = values.version_details;
@@ -328,73 +352,9 @@ export function CreateAgentForm({
         <ApplicationAdvanceSettings
           stepLimit={versionDetails?.meta?.step_limit}
           onStepLimitChange={state.onStepLimitChange}
+          modelSettingsSlot={modelSettingsSlot}
         />
       </Box>
     </Box>
   );
 }
-
-const rootContainerSx: SxProps<Theme> = {
-  margin: '0.75rem auto 0',
-  maxWidth: '40.1875rem',
-};
-
-const accordionSx: SxProps<Theme> = (theme: Theme) => ({
-  background: theme.vars.palette.background.tabPanel,
-});
-
-const accordionContentSx: SxProps<Theme> = {
-  paddingBottom: '1.5rem',
-};
-
-const nameContainerSx: SxProps<Theme> = {
-  display: 'flex',
-  alignItems: 'center',
-  height: '4.25rem',
-  width: '100%',
-  gap: '1rem',
-};
-
-const nameWrapperInputSx: SxProps<Theme> = {
-  width: '100%',
-  display: 'flex',
-  flexDirection: 'column',
-  position: 'relative',
-};
-
-const nameCharactersLabelSx: SxProps<Theme> = {
-  textAlign: 'right',
-  width: '100%',
-  position: 'absolute',
-  bottom: '3.5rem',
-};
-
-const descriptionWrapperSx: SxProps<Theme> = {
-  display: 'flex',
-  flexDirection: 'column',
-  position: 'relative',
-};
-
-const descriptionCharactersLabelSx: SxProps<Theme> = {
-  textAlign: 'right',
-  width: '100%',
-  position: 'relative',
-  top: '0.5rem',
-};
-
-const instructionsContainerSx: SxProps<Theme> = {
-  paddingBottom: '1rem',
-  marginTop: '1rem',
-};
-
-const welcomeMessageInputSx: SxProps<Theme> = {
-  marginTop: '1rem',
-};
-
-const conversationStartersSx: SxProps<Theme> = {
-  marginTop: '1rem',
-};
-
-const advanceSettingsSx: SxProps<Theme> = {
-  marginTop: '1rem',
-};

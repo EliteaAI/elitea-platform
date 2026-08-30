@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { useCheckStoredConfigurationConnection, useTestConfigurationConnection } from './api/useConfigurations';
 import { useCredentialWarningModal } from './model/useCredentialWarningModal';
+import { CredentialsControls } from './ui/CredentialsControls';
+import { CredentialsTabBar } from './ui/CredentialsTabBar';
 import { CredentialWarningBanner } from './ui/CredentialWarningBanner';
 import { CredentialWarningModal } from './ui/CredentialWarningModal';
 
@@ -28,6 +31,23 @@ import * as slice from './index';
  * test would have caught either regression — the original "not exported at
  * all" state, and a re-ungrouping that silently drops one of the three off
  * the object again.
+ *
+ * `CredentialsActions` groups `CredentialsTabBar` + `CredentialsControls`
+ * the same way, for the budget breach that grouping the warning trio left
+ * behind: three flat exports had become one, but the barrel was still at
+ * 21/20 and `node scripts/check-budgets.mjs` was failing on its
+ * `slice-public-api` row. That gate is not part of this suite, which is why
+ * the assertion below only ever sanity-checked the RUNTIME half and never
+ * saw the real breach — see `index.ts`'s own doc comment for why this pair
+ * is one unit.
+ *
+ * `CredentialConnectionChecks` is the third grouping, added when the SAVED-row
+ * check landed: `useTestConfigurationConnection` (payload form) and
+ * `useCheckStoredConfigurationConnection` (no-body form) are the two halves of
+ * one control, and the barrel was again at 20/20. The flat
+ * `useTestConfigurationConnection` export is gone on purpose — a caller that
+ * still reaches for it by name on a saved row is reaching for the form that
+ * cannot work there, so making it unavailable is part of the fix.
  */
 const PUBLIC_SURFACE = [
   'useAvailableConfigurationsType',
@@ -35,18 +55,17 @@ const PUBLIC_SURFACE = [
   'useConfigurationsList',
   'useCreateConfiguration',
   'useDeleteConfiguration',
-  'useTestConfigurationConnection',
   'useUpdateConfiguration',
+  'CredentialConnectionChecks',
   'classifySchemaField',
   'initialDataForSchema',
   'extractInformationFromCredentialError',
   'generateCredentialTagList',
   'normalizeCredentialPage',
   'useCredentialValidation',
-  'CredentialsControls',
   'CredentialsSelect',
-  'CredentialsTabBar',
   'CredentialWarning',
+  'CredentialsActions',
 ] as const;
 
 describe('features/credentials public surface (A7-api-model)', () => {
@@ -69,5 +88,25 @@ describe('features/credentials public surface (A7-api-model)', () => {
     expect(slice.CredentialWarning.useModal).toBe(useCredentialWarningModal);
     expect(slice.CredentialWarning.Modal).toBe(CredentialWarningModal);
     expect(slice.CredentialWarning.Banner).toBe(CredentialWarningBanner);
+  });
+
+  it('groups the credential actions row under CredentialsActions, wired to their real implementations', () => {
+    expect(slice.CredentialsActions.TabBar).toBe(CredentialsTabBar);
+    expect(slice.CredentialsActions.Controls).toBe(CredentialsControls);
+  });
+
+  it('groups the two connection checks under CredentialConnectionChecks, wired to their real implementations', () => {
+    expect(slice.CredentialConnectionChecks.useUnsaved).toBe(useTestConfigurationConnection);
+    expect(slice.CredentialConnectionChecks.useStored).toBe(useCheckStoredConfigurationConnection);
+  });
+
+  it('no longer exposes the two actions-row components as flat exports', () => {
+    // The whole point of the grouping is that it costs one budget slot
+    // instead of two; a re-added flat alias would silently put the
+    // `slice-public-api` row back over budget without failing any test here.
+    const exported: readonly string[] = Object.keys(slice);
+    expect(exported).not.toContain('CredentialsTabBar');
+    expect(exported).not.toContain('CredentialsControls');
+    expect(exported).not.toContain('useTestConfigurationConnection');
   });
 });

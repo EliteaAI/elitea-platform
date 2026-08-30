@@ -263,6 +263,143 @@ describe('LlmProxyProvidersPanel', () => {
 });
 
 
+describe('LlmProxyProvidersPanel — the live check and re-validate actions', () => {
+  // The STORED status_ok chip ("In use") never moves for a check — only a
+  // Re-validate writes anything server-side. This pins that a proven round
+  // trip renders its OWN, separate verdict rather than mutating the chip.
+  it('renders a tick beside the stored status on a proven round trip', async () => {
+    useProviders([SEALED_OPENAI]);
+    server.use(
+      http.post('*/admin/gateway/providers/4/check', () =>
+        HttpResponse.json({ success: true, message: 'Connection successful' }),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    await userEvent.click(await screen.findByTestId('admin-provider-check-4'));
+
+    expect(await screen.findByTestId('admin-provider-check-result-4')).toHaveTextContent(
+      'Live check: connected',
+    );
+    // The stored chip is untouched: a check writes nothing.
+    expect(screen.getByText('In use')).toBeVisible();
+  });
+
+  // check_stored_connection answers a real failure as HTTP 400
+  // {"success":false,"message":...} — the SAME shape its own 404 uses (see
+  // the next test). This is the ordinary failure path.
+  it('renders the failure message inline rather than a generic one', async () => {
+    useProviders([SEALED_OPENAI]);
+    server.use(
+      http.post('*/admin/gateway/providers/4/check', () =>
+        HttpResponse.json(
+          { success: false, message: 'Could not verify the connection right now. Please try again.' },
+          { status: 400 },
+        ),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    await userEvent.click(await screen.findByTestId('admin-provider-check-4'));
+
+    expect(await screen.findByTestId('admin-provider-check-result-4')).toHaveTextContent(
+      'Could not verify the connection right now',
+    );
+  });
+
+  // THE ENVELOPE TRAP: `eliteaFetch` throws for every non-2xx response,
+  // including the check route's OWN 404 ("Configuration not found" — a
+  // configID this admin surface's public project does not hold). That 404
+  // still carries `{"success":false,"message":...}`, the route's real,
+  // renderable answer — not a transport failure. `useCheckAdminLlmProvider`
+  // must catch exactly that shape and resolve with it: if this regresses to
+  // a bare `eliteaFetch` call, the promise rejects, react-query flips to
+  // `isError`, and the panel would either render nothing for this row or
+  // need a second error path — never the row's own message.
+  it("renders the check's own 404 message rather than throwing", async () => {
+    useProviders([SEALED_OPENAI]);
+    server.use(
+      http.post('*/admin/gateway/providers/4/check', () =>
+        HttpResponse.json({ success: false, message: 'Configuration not found' }, { status: 404 }),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    await userEvent.click(await screen.findByTestId('admin-provider-check-4'));
+
+    expect(await screen.findByTestId('admin-provider-check-result-4')).toHaveTextContent(
+      'Configuration not found',
+    );
+    // A thrown, unhandled rejection would have left the mutation `isError`
+    // with nothing rendered for this row, or torn down the table entirely —
+    // it is still here, and no top-level alert fired for what is a per-row
+    // result.
+    expect(screen.getByTestId('llm-providers-table')).toBeVisible();
+    expect(screen.queryByTestId('llm-providers-load-error')).toBeNull();
+  });
+
+  it("patches the row's status_ok from Re-validate's response, without a second read", async () => {
+    let requests = 0;
+    server.use(
+      http.get('*/admin/gateway/providers', () => {
+        requests += 1;
+        return HttpResponse.json({
+          items: [{ ...SEALED_OPENAI, status_ok: false }],
+          total: 1,
+          public_project_id: 1,
+          provider_types: PROVIDER_TYPES,
+        });
+      }),
+      http.post('*/admin/gateway/providers/4/revalidate', () =>
+        HttpResponse.json({
+          id: 4,
+          project_id: '1',
+          name: 'platform-openai',
+          type: 'open_ai',
+          section: 'ai_credentials',
+          shared: true,
+          status_ok: true,
+          status_logs: '',
+          source: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          updated_at: '2026-08-29T00:00:00Z',
+        }),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    expect(await screen.findByText('Not resolving')).toBeVisible();
+    await userEvent.click(screen.getByTestId('admin-provider-revalidate-4'));
+
+    expect(await screen.findByText('In use')).toBeVisible();
+    // The cache was PATCHED from the response, not invalidated — a second
+    // GET here would mean the row's endpoint/settings/secrets briefly
+    // vanish (revalidate's response carries none of them) before the refetch
+    // lands.
+    expect(requests).toBe(1);
+  });
+
+  it("surfaces revalidate's own refusal rather than a generic failure", async () => {
+    useProviders([SEALED_OPENAI]);
+    server.use(
+      http.post('*/admin/gateway/providers/4/revalidate', () =>
+        HttpResponse.json({ error: 'configuration not found' }, { status: 404 }),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    await userEvent.click(await screen.findByTestId('admin-provider-revalidate-4'));
+
+    expect(await screen.findByTestId('llm-providers-revalidate-error')).toHaveTextContent(
+      'configuration not found',
+    );
+    // The STORED status is unchanged: a failed revalidate must not be read
+    // as "revalidated and found broken".
+    expect(screen.getByText('In use')).toBeVisible();
+  });
+});
+
+
 describe('LlmProxyProvidersPanel — the gateway shared scope', () => {
   it('warns when the gateway reads a different project', async () => {
     useProviders([SEALED_OPENAI], 1);
@@ -362,5 +499,34 @@ describe('LlmProxyProvidersPanel — the offered provider types', () => {
     const options = await screen.findAllByRole('option');
     expect(options).toHaveLength(1);
     expect(options[0]).toHaveTextContent('OpenAI');
+  });
+
+  it('opens the adopt-models dialog for the row that was pressed', async () => {
+    useProviders([SEALED_OPENAI]);
+    server.use(
+      http.get('*/admin/gateway/platform_models', () =>
+        HttpResponse.json({
+          items: [],
+          total: 0,
+          public_project_id: 1,
+          model_types: ['llm_model'],
+          credential_names: ['platform-openai'],
+        }),
+      ),
+      http.post('*/admin/gateway/providers/4/models', () =>
+        HttpResponse.json({ models: ['gpt-4o'], total: 1, truncated: false, type: 'open_ai' }),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    // The wiring itself is the assertion. A dialog written, exported and never
+    // reachable from the row is the dead-wiring failure this repository keeps
+    // meeting: every unit test of the dialog passes while nothing opens it.
+    await userEvent.click(await screen.findByTestId('admin-provider-adopt-4'));
+
+    // The dialog names the credential it is adopting FROM: a platform model may
+    // only link to a published platform provider, and the title is the link.
+    expect(await screen.findByText(/Adopt models from platform-openai/)).toBeVisible();
+    expect(await screen.findByTestId('adopt-models-list')).toHaveTextContent('gpt-4o');
   });
 });

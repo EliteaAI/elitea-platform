@@ -101,6 +101,13 @@ func NewRouterWithLog(h *llmproxy.Handler, recorder *requestlog.Recorder) http.H
 		// going through the persisted-credential Account path. See
 		// llmproxy/checkconnection.go.
 		r.Post("/check_connection", h.CheckConnection)
+
+		// Model-discovery surface — the successor to legacy's
+		// `import_llm_models`. It is the check's own request, to the check's
+		// own hosts, through the check's own egress gate and SSRF-guarded
+		// dialer; the difference is that the provider's listing is parsed and
+		// its model ids are returned. See llmproxy/listprovidermodels.go.
+		r.Post("/list_provider_models", h.ListProviderModels)
 	})
 
 	return r

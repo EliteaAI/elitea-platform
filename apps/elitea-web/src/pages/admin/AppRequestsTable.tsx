@@ -20,6 +20,16 @@
  *    reason is write-only: the moderator types it, the requester is told, and
  *    the queue itself can never show it again. It is rendered here on the
  *    rejected rows.
+ *
+ * ## The model-connection request `entity_id` convention
+ *
+ * `entity_id` is genuinely opaque for most issue types (`wikis_Wikis`, a
+ * synthetic hash), so the subtitle above renders it verbatim. Model
+ * connection requests encode it as `provider:<type>` or `model:<name>`
+ * instead — `describeEntityId` below recognises those two prefixes and
+ * renders a readable label ("Provider: openai", "Model: gpt-4o"); anything
+ * that does not match either prefix falls through unchanged, which is every
+ * `entity_id` this deployment has ever produced before this convention.
  */
 import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
@@ -79,6 +89,40 @@ function formatTimestamp(value: string): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+/**
+ * Renders `provider:<type>` / `model:<name>` as a readable label; anything
+ * else (every non-model-request `entity_id` today) passes through unchanged.
+ * See this module's header for the convention.
+ *
+ * The name half is `encodeURIComponent`-ed at the point this address is built
+ * (`features/settings/ui/ai-configuration/RequestModelConnection.tsx`'s
+ * `buildModelConnectionEntityId` — `entity_id` travels as a raw path segment,
+ * so an unescaped `/` in a vendor-prefixed model id would split it), so it is
+ * decoded back here for display. `decodeURIComponent` throws on a malformed
+ * escape; falling back to the raw value on that keeps a corrupt one visible
+ * instead of blanking the row.
+ */
+function describeEntityId(entityId: string): string {
+  const separator = entityId.indexOf(':');
+  if (separator <= 0) return entityId;
+  const prefix = entityId.slice(0, separator);
+  const rawValue = entityId.slice(separator + 1);
+  if (!rawValue) return entityId;
+  let value = rawValue;
+  try {
+    value = decodeURIComponent(rawValue);
+  } catch {
+    // Malformed percent-encoding — show the raw value rather than throw.
+  }
+  if (prefix === 'provider') {
+    return `${t('pages.admin.appRequests.entity.provider', 'Provider')}: ${value}`;
+  }
+  if (prefix === 'model') {
+    return `${t('pages.admin.appRequests.entity.model', 'Model')}: ${value}`;
+  }
+  return entityId;
+}
+
 function ellipsised(text: string, title?: string): React.ReactElement {
   return (
     <Tooltip title={title ?? text} placement="top-start">
@@ -128,7 +172,7 @@ export const AppRequestsTable = memo(function AppRequestsTable({
               color="text.secondary"
               sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}
             >
-              {params.row.entity_id || '—'}
+              {describeEntityId(params.row.entity_id) || '—'}
             </Typography>
           </Box>
         ),

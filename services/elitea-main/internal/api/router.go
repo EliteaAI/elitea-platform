@@ -155,6 +155,19 @@ type RouterConfig struct {
 	// Unassigned, the endpoint serves no "$defs", and the web client's toolkit
 	// credential picker and index schedule credential select stay unreachable.
 	ToolkitSettingsDefinitions v2toolkits.ToolkitSettingsDefinitionSource
+	// ToolkitSettingsValidator resolves a toolkit's credential references before
+	// POST /elitea_core/tools/prompt_lib/{projectID} and PUT/PATCH
+	// /elitea_core/tool/prompt_lib/{projectID}/{toolkitID} persist them. It is
+	// injected for the same reason as the two sources above: the resolver is
+	// composed in internal/runtimecomposition, which imports this layer.
+	//
+	// LEFT NIL, BOTH ROUTES BEHAVE EXACTLY AS THEY DID BEFORE — a toolkit can be
+	// saved naming a credential that lives in another project or nowhere at all,
+	// and the reference is first read at chat time, where it kills the turn. The
+	// composition root supplies it only where the Configurations runtime exists
+	// (ELITEA_CONFIGURATIONS_ENABLED), so a default Helm install still takes the
+	// nil path; see cmd/elitea-main/main.go.
+	ToolkitSettingsValidator v2toolkits.ToolkitSettingsValidator
 	// ToolkitRegistry enumerates built-in toolkit types and their tools for
 	// `GET /admin/plugin_config_suggestions/administration/{key}`, which is what
 	// populates the guardrail fields' pickers on the admin Configuration page.
@@ -264,6 +277,12 @@ type RouterConfig struct {
 	// compatibility write routes store (#457). nil leaves every written row at
 	// the column default, false, which the LLM gateway refuses.
 	ConfigProviderAdmission v2configs.ProviderAdmission
+	// ConfigStoredResolver resolves a STORED row's references and hidden
+	// secrets, so /check_stored_connection(s) can test a saved credential
+	// without the client resending its api_key. nil leaves those two routes
+	// reporting an honest "not available" failure; it never checks the stored
+	// {{secret.NAME}} reference as though it were the key.
+	ConfigStoredResolver v2configs.StoredConfigurationResolver
 }
 
 type RuntimeRoutes struct {
@@ -882,6 +901,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		v2configs.WithPermissionResolver(coreResolver),
 		v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
 		v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
+		v2configs.WithStoredConfigurationResolver(cfg.ConfigStoredResolver),
 		v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
 		v2configs.WithPublicProjectID(apimw.PublicProjectID()),
 	)
@@ -1850,6 +1870,15 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
 					v2toolkits.WithSettingsDefinitions(cfg.ToolkitSettingsDefinitions),
 				}
+				// Guarded rather than appended unconditionally: an Option that
+				// stored a nil interface would still leave h.settingsValidator
+				// nil, but a caller that later boxes a typed nil pointer here
+				// would not, and the handler's own nil check is the whole
+				// fallback. Keep the nil out of the option list.
+				if cfg.ToolkitSettingsValidator != nil {
+					toolkitOptions = append(toolkitOptions,
+						v2toolkits.WithSettingsValidator(cfg.ToolkitSettingsValidator))
+				}
 				if guardrailPolicies, err := platformconfig.NewGuardrailPolicyAdapter(cfg.Pool); err == nil {
 					toolkitOptions = append(toolkitOptions, v2toolkits.WithGuardrails(guardrailPolicies))
 				}
@@ -2017,6 +2046,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
 					r.With(requireMessageDelete).
 						Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
+					// message.py declares BOTH verbs on one module, so the
+					// per-message read shares this DELETE's URL and its
+					// {messageID} param — pylon's `message_group_uid`, a
+					// message-GROUP uuid string (message.py:176-183). The read
+					// declares `models.chat.messages.details`
+					// (message.py:39), which is NOT a new name: it is the
+					// string message_trace.py already declares and 0063 already
+					// grants, so mounting this needs no migration and 403s
+					// nobody who could read the transcript.
+					//
+					// GetMessage was implemented and routed by nothing until
+					// now (#126's dead-wiring class). Its repository read is
+					// the only caller of ConversationsRepo.GetMessageByUUID,
+					// whose unconditional LEFT JOIN on chat_messages_canvas is
+					// what the fresh-install tenant migration made safe.
+					r.With(projectPermission("models.chat.messages.details")).
+						Get("/message/prompt_lib/{projectID}/{messageID}", convHandler.GetMessage)
 					r.With(requireMessageDelete).
 						Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
 					r.With(projectPermission("models.chat.participants.create")).
@@ -2222,8 +2268,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// module's read string.
 				r.With(projectPermission("models.applications.version.details")).
 					Get("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+				// PATCH used to be bound to ApplicationRelation — the READ
+				// handler — so UpdateApplicationRelation was unreachable and
+				// every agent-as-tool attach answered 200 while writing
+				// nothing. Found in a live browser: the + Agent picker's PATCH
+				// returned the relation LIST and no row appeared anywhere.
 				r.With(projectPermission("models.applications.application_relation.patch")).
-					Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+					Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.UpdateApplicationRelation)
 
 				// Recommendations — recommendations.py declares the agent LIST
 				// permission, since that is what it returns a slice of.

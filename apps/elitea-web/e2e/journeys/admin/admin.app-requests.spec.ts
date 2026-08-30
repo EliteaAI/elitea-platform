@@ -63,7 +63,7 @@
  *    delete the rows; nothing can. `scripts/e2e-stack.sh seed` removes the ones
  *    earlier runs left, which is the only place with a database to do it in.
  */
-import { test as adminTest, expect, request as apiRequest, type Page } from '@playwright/test';
+import { test as adminTest, expect, request as apiRequest, type APIRequestContext, type Page } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
@@ -495,4 +495,226 @@ adminTest('J34e: rejecting requires a reason, and the reason is rendered back', 
   expect((await probeRow(page, entity)).rejection_comment).toBe(reason);
 
   await checkA11y(page);
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * MODEL CONNECTION REQUESTS — the second kind of request this one queue holds
+ *
+ * Settings › AI Configuration files into `centry.moderation_state` over the
+ * SAME create call the App Catalogue's "Request Access" card uses. There is no
+ * new route and no new column; the ONLY thing separating the two populations is
+ * `issue_type`, which is why the operator's issue-type filter is part of the
+ * feature rather than a convenience — without it a model-connection request and
+ * an app-access request are indistinguishable rows in one list.
+ *
+ * The three assertions below are the ones nothing else in this repository can
+ * make:
+ *
+ *  - the filter narrows SERVER-side. `queueFilters` has always accepted
+ *    `issue_type`; no client sent it until this control existed, so a
+ *    client-side slice of one page would look identical on a short queue and
+ *    silently hide every match past the page boundary on a long one.
+ *  - the decision notifies the REQUESTER, who is not the person clicking. The
+ *    row carries a user id; the notification has to land on that user, in that
+ *    project, and it is read back through the requester's own session.
+ *  - approval is CLERICAL. Nothing is provisioned. That is the promise the
+ *    dialog makes to the requester ("it does not create the configuration for
+ *    you"), it is pinned server-side by
+ *    `TestApprovingAModelConnectionProvisionsNothing`, and it is pinned from
+ *    the outside here: no configuration row appears for the requested provider,
+ *    and no existing row's `status_ok` moves.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** The `issue_type` `RequestModelConnection.tsx` files under, byte for byte. */
+const MODEL_CONNECTION_ISSUE_TYPE = 'Model Connection Request';
+
+/** The requester's own notification list — the same route the app's bell reads. */
+const NOTIFICATIONS_URL =
+  '/api/v2/notifications/notifications/prompt_lib/1?limit=100&event_type=moderation_approved'; // #544: as narrow as the route filters; every row's meta.entity_id is then asserted below
+
+/** One notification as both registrations of that surface report it (`{total, rows}` either way). */
+interface NotificationRow {
+  readonly event_type: string;
+  readonly is_seen: boolean;
+  readonly project_id?: number;
+  readonly meta: { readonly entity_id?: string; readonly issue_type?: string; readonly message?: string } | null;
+}
+
+/**
+ * Every configuration this project can see, as `id → status_ok`.
+ *
+ * BOTH lists: a project's own rows and the platform-shared ones it inherits.
+ * The clerical pin is about what approving a request does to the configuration
+ * table, and a row appearing in either half would be provisioning.
+ */
+interface ConfigurationSnapshot {
+  readonly statusById: ReadonlyMap<string, boolean>;
+  readonly names: readonly string[];
+}
+
+async function readConfigurations(api: APIRequestContext): Promise<ConfigurationSnapshot> {
+  const response = await api.get('/api/v2/configurations/configurations/1?limit=100&offset=0'); // #544: unfiltered ON PURPOSE — the clerical pin must see EVERY row (an entity_id filter would hide the very row a provisioning bug would create); reads are id-intersected below
+  expect(response.status(), 'the clerical pin needs a readable configuration list').toBe(200);
+  const body = (await response.json()) as {
+    items?: { id?: number | string; name?: string; label?: string; status_ok?: boolean }[];
+    shared?: { items?: { id?: number | string; name?: string; label?: string; status_ok?: boolean }[] };
+  };
+  const rows = [...(body.items ?? []), ...(body.shared?.items ?? [])];
+  const statusById = new Map<string, boolean>();
+  const names: string[] = [];
+  for (const row of rows) {
+    if (row.id !== undefined) statusById.set(String(row.id), row.status_ok === true);
+    if (row.name !== undefined) names.push(row.name);
+    if (row.label !== undefined) names.push(row.label);
+  }
+  return { statusById, names };
+}
+
+/**
+ * Opens the issue-type filter and picks one label, returning the queue read the
+ * choice caused.
+ *
+ * The response is what the assertions are made against, not the grid: the grid
+ * would look the same whether the narrowing happened on the server or in the
+ * browser, and only one of those survives a queue longer than a page.
+ */
+async function selectIssueType(page: Page, issueType: string) {
+  const filter = page.getByTestId('admin-app-requests-issue-type-filter');
+  await expect(filter).toBeVisible();
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (candidate) =>
+        candidate.url().includes('/admin/moderation_statuses/administration') &&
+        candidate.url().includes('issue_type='),
+      { timeout: 20_000 },
+    ),
+    (async () => {
+      await filter.getByRole('combobox').click();
+      await page.getByRole('option', { name: issueType, exact: true }).click();
+    })(),
+  ]);
+  return response;
+}
+
+adminTest('J34f: a model-connection request is isolated by issue type, approved, and notifies its requester — while provisioning nothing', async ({ page }, testInfo) => {
+  // The MEMBER files it and the ADMIN decides it, which is the whole point of
+  // the notification assertion: the two are different people, and the row
+  // carries the requester's id rather than the decider's.
+  const providerType = `autotest_mc_${testInfo.project.name}_${RUN_ID}`;
+  const entity = `provider:${providerType}`;
+  const description = 'Journey 34f: the member persona needs this provider.';
+
+  const member = await apiRequest.newContext({ baseURL: BASE_URL, storageState: STORAGE_STATE.member });
+  try {
+    const filed = await member.post(`/api/v2/admin/moderation_status/default/1/${entity}`, {
+      data: { issue_type: MODEL_CONNECTION_ISSUE_TYPE, description },
+    });
+    expect(
+      filed.status(),
+      `the member must be able to file: ${(await filed.text()).slice(0, 300)}`,
+    ).toBe(201);
+    // Recorded next to the call that created it, so the file-level teardown
+    // decides it even if this test fails before the approve below.
+    filedEntities.push(entity);
+
+    // The clerical pin's BEFORE read, taken before the operator sees the queue.
+    const before = await readConfigurations(member);
+
+    await openAppRequests(page);
+
+    /* ── the filter narrows on the server ─────────────────────────────────── */
+    const filtered = await selectIssueType(page, MODEL_CONNECTION_ISSUE_TYPE);
+    expect(filtered.status(), 'the filtered queue read must be authorised').toBe(200);
+    const filteredBody = (await filtered.json()) as { rows?: { issue_type: string }[] };
+    const issueTypes = [...new Set((filteredBody.rows ?? []).map((row) => row.issue_type))];
+    expect(
+      issueTypes,
+      'the SERVER answered only rows of the chosen issue type — a client-side slice would carry the others too',
+    ).toEqual([MODEL_CONNECTION_ISSUE_TYPE]);
+
+    // The choice is shareable: it is mirrored into the URL with replaceState, so
+    // a reload restores it and an operator can hand the link to a colleague.
+    await expect(page).toHaveURL(/[?&]issue_type=Model\+Connection\+Request/);
+
+    /* ── the grid shows this request, and not the other population ────────── */
+    // `provider:<type>` is rendered as a readable "Provider: <type>" line —
+    // every other entity_id on this deployment passes through unchanged, so
+    // this string exists only because the convention was recognised.
+    const row = page.getByRole('row').filter({ hasText: `Provider: ${providerType}` });
+    await expect(row).toHaveCount(1, { timeout: 20_000 });
+    await expect(row.getByText(MODEL_CONNECTION_ISSUE_TYPE)).toBeVisible();
+    // The requester's ADDRESS, resolved by joining auth_core__user. The person
+    // reading this page is the admin, so this string can only be the join's.
+    await expect(row.getByText(REQUESTER)).toBeVisible();
+    // …and the app-access population is gone from the view. Asserting only the
+    // presence of the match above would pass against a filter that narrowed
+    // nothing at all.
+    await expect(
+      page.getByRole('row').filter({ hasText: seededEntity(testInfo.project.name) }),
+      'the app-access probe belongs to another issue type and must not be in this view',
+    ).toHaveCount(0);
+
+    await checkA11y(page);
+
+    /* ── the decision ─────────────────────────────────────────────────────── */
+    const [decision] = await Promise.all([
+      page.waitForResponse(
+        (candidate) =>
+          candidate.url().includes('/admin/moderation_status/administration') &&
+          candidate.request().method() === 'PUT',
+      ),
+      row.getByRole('button', { name: `Approve request: ${MODEL_CONNECTION_ISSUE_TYPE}` }).click(),
+    ]);
+    expect(decision.status(), 'the decision must be authorised server-side (admin.moderation.edit)').toBe(200);
+    await expect(page.getByTestId('admin-app-requests-saved')).toContainText('notified');
+
+    /* ── (a) the queue read-back ──────────────────────────────────────────── */
+    expect(
+      (await probeRow(page, entity)).status,
+      'the decision must have landed in the table, not only in the toast',
+    ).toBe('approved');
+
+    /* ── (b) the requester's notification ─────────────────────────────────── */
+    // Read through the MEMBER's session: `centry.notifications` is scoped to the
+    // caller in SQL, so a notification written to the wrong user is invisible
+    // here — which is exactly the failure this asserts against.
+    const notified = await member.get(NOTIFICATIONS_URL);
+    expect(notified.status(), 'the requester may list their own notifications').toBe(200);
+    const notifications = ((await notified.json()) as { rows?: NotificationRow[] }).rows ?? [];
+    const mine = notifications.filter((candidate) => candidate.meta?.entity_id === entity);
+    expect(
+      mine,
+      'the approval writes exactly one notification, addressed to the REQUESTER and naming what was decided',
+    ).toHaveLength(1);
+    const notification = mine[0] as NotificationRow;
+    expect(notification.event_type).toBe('moderation_approved');
+    expect(notification.meta?.issue_type).toBe(MODEL_CONNECTION_ISSUE_TYPE);
+    // Neither frontend's notification renderer has a branch for this event
+    // type, so the sentence has to travel with the row or the requester is
+    // shown an empty notification.
+    expect(String(notification.meta?.message ?? '')).toContain('approved');
+    expect(notification.is_seen, 'a notification written already-seen is one nobody is ever shown').toBe(false);
+
+    /* ── (c) approval is CLERICAL ─────────────────────────────────────────── */
+    const after = await readConfigurations(member);
+    expect(
+      after.names.filter((name) => name.includes(providerType)),
+      'approving a model-connection request must not create a configuration for the requested provider',
+    ).toEqual([]);
+    // Every row that existed before must still carry the SAME status_ok.
+    // Restricted to the ids present in both reads on purpose: other journeys
+    // create and delete their own configurations in this project concurrently,
+    // and their rows appearing or leaving is not this decision's doing.
+    const moved: string[] = [];
+    for (const [id, statusOk] of before.statusById) {
+      const now = after.statusById.get(id);
+      if (now !== undefined && now !== statusOk) moved.push(id);
+    }
+    expect(
+      moved,
+      'approving verifies no connection and admits no row — no existing status_ok may move',
+    ).toEqual([]);
+  } finally {
+    await member.dispose();
+  }
 });

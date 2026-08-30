@@ -709,6 +709,19 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
                 assembly.request().payload.toolkit_guardrails.as_ref(),
                 &self.tool_policy,
             )?;
+            // #606, the pipeline twin of the ordinary path's read. `platform`
+            // is optional here only because the injected-state test constructor
+            // has none; a stored pipeline that runs for real always does, and a
+            // missing client leaves attachments rendered by their headers, the
+            // same as an unreadable file.
+            let assembly = match self.platform.as_ref() {
+                Some(platform) => {
+                    assembly
+                        .resolve_attachment_contents(platform.as_ref())
+                        .await
+                }
+                None => assembly,
+            };
             let admitted = assembly.admit_pipeline_with_policy(tool_policy.as_ref())?;
             let (profile, plan, toolsets, mcp_tokens, start, runtime_context, session, lease) =
                 admitted.into_parts();

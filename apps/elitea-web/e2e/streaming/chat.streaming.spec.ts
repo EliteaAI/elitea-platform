@@ -36,6 +36,7 @@
 import { expect, test } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
+import { expectStoredAssistantAnswer } from '../fixtures/api';
 
 /**
  * Route shapes, matched WITHOUT pinning a project id.
@@ -50,8 +51,17 @@ const CONVERSATIONS_RE = /\/elitea_core\/conversations\/prompt_lib\/(\d+)$/;
 const START_RE = /\/elitea_core\/messages\/prompt_lib\/(\d+)\/[0-9a-f-]+/;
 const EVENTS_RE = /\/executions\/(\d+)\/[^/]+\/events/;
 
-/** The model `seed-llm` seeds into every personal project. */
-const MODEL_NAME = 'E2E-MOCK-MODEL';
+/**
+ * The model `seed-llm` seeds into every personal project.
+ *
+ * Overridable because the same stack can be seeded against a real provider —
+ * `LLM_PROVIDER=vllm deploy/scripts/standalone-stack.sh seed-llm` names its own
+ * model, and the picker then offers that instead. Continuous integration seeds
+ * the offline mock and never sets the variable, so the default is what runs
+ * there; locally it is what lets this journey be driven against the model the
+ * operator actually has.
+ */
+const MODEL_NAME = process.env['E2E_CHAT_MODEL'] ?? 'E2E-MOCK-MODEL';
 
 /** `ChatBox` names the conversation after the question, truncated to 50 chars. */
 const MAX_NAME = 50;
@@ -179,7 +189,20 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   // or misrouted response. Asserted BEFORE any reload: with the socket disabled
   // there is no other producer, so the text on screen came off the SSE stream
   // through the reducer.
-  await expect(answer, 'the streamed answer must echo THIS run’s prompt').toContainText(prompt, { timeout: 60_000 });
+  // The mock ECHOES the prompt, which is what makes this assertion prove the
+  // answer belongs to this run. A real model does not echo anything, so against
+  // one the assertion has to fall back to "the turn produced text" — stated
+  // here rather than silently weakened for everyone.
+  if (process.env['E2E_CHAT_MODEL'] === undefined) {
+    await expect(answer, 'the streamed answer must echo THIS run’s prompt').toContainText(prompt, { timeout: 60_000 });
+  } else {
+    await expect
+      .poll(async () => ((await answer.textContent()) ?? '').trim().length, {
+        timeout: 60_000,
+        message: 'the turn produced no answer text',
+      })
+      .toBeGreaterThan(0);
+  }
   expect(partial.length, 'the partial paint must be shorter than the finished answer').toBeLessThan(
     ((await answer.textContent()) ?? '').trim().length,
   );
@@ -194,28 +217,26 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   expect(sendRequests.some((entry) => entry.startsWith('POST'))).toBe(true);
 
   // ── Persistence ──
-  // Waited for EXPLICITLY, because the stream is ahead of the store: the
-  // browser renders the answer as tokens arrive, while the server writes the
-  // message group when the turn finalises. Measured — a read issued the moment
-  // the UI settled returned the assistant row with `content: ""`, and the same
-  // conversation carried the full text moments later. Navigating straight away
-  // therefore failed against a backend that was merely still writing.
+  // Waited for EXPLICITLY, because the stream is ahead of the store — the
+  // measurement behind that, and the `IS_ERROR` discrimination, are in
+  // `expectStoredAssistantAnswer`.
+  //
+  // `contains` is checked INSIDE the poll, and unconditionally — unlike the
+  // on-screen assertion above, which relaxes for a real model. The mock echoes
+  // this run's unique prompt, so the stored row must be THIS turn's answer and
+  // not merely some non-empty text. The relaxation is not repeated here
+  // because the reload assertion below filters by `prompt` too: an
+  // `E2E_CHAT_MODEL` run fails on that either way, and pretending otherwise in
+  // one of the three places would only make the file look real-model-ready
+  // when it is not.
   //
   // Asserting the STORED text here also makes the reload assertion below a
   // statement about rendering rather than a second, weaker persistence check.
-  await expect
-    .poll(
-      async () => {
-        const stored = await page.request.get(
-          `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${conversation.id ?? ''}`,
-        );
-        if (!stored.ok()) return '';
-        const body = (await stored.json()) as { items?: readonly { role?: string; content?: string }[] };
-        return body.items?.find((item) => item.role === 'assistant')?.content ?? '';
-      },
-      { timeout: 30_000, message: 'the assistant reply was streamed but never stored' },
-    )
-    .toContain(prompt);
+  await expectStoredAssistantAnswer(page, projectId, conversation.id ?? '', {
+    timeout: 30_000,
+    message: 'the assistant reply was streamed but never stored',
+    contains: prompt,
+  });
 
   // ── Persistence, through the UI ──
   // A FRESH load of the conversation's own URL re-reads everything from the

@@ -4,9 +4,9 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useParams } from '@tanstack/react-router';
+import { useNavigate, useParams } from '@tanstack/react-router';
 
-import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps, useToolkitCreate } from '@/features/toolkits';
+import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps, toolkitEditorHooks, useToolkitCreate } from '@/features/toolkits';
 import { t } from '@/shared/i18n';
 
 import { useToolkitCredentialPickerSlot } from './lib/credentialPickerSlots';
@@ -29,7 +29,7 @@ const contentSx: SxProps<Theme> = { flex: 1, minHeight: 0, overflowY: 'auto', pa
 const errorSx: SxProps<Theme> = { marginBottom: '1rem' };
 
 export interface CreateToolkitDeps {
-  /** No generated `POST /elitea_core/tools/prompt_lib/{projectId}` endpoint exists yet — see `features/toolkits`' `api/toolkits.ts` module doc comment. */
+  /** Same `UseToolkitCreateMutation` shape as `useToolkitCreate()` (`features/toolkits`' `api/toolkits.ts`, the real generated `POST /elitea_core/tools/prompt_lib/{projectId}`) — injected only by tests or callers wrapping the write. */
   readonly createToolkit: ToolkitEditorDeps['createToolkit'];
 }
 
@@ -62,6 +62,30 @@ function toolkitNameFromSettings(editToolDetail: EditToolDetail): string | undef
   return key === undefined ? undefined : (editToolDetail.settings?.[key] as string | undefined);
 }
 
+/**
+ * Local duplicate of `CreateToolkitToolTabBar.tsx`'s `isPrebuildMcpType`
+ * (`features/toolkits`, this same predicate) — not imported because that
+ * symbol is not on the slice's public API and `features/toolkits/index.ts`
+ * sits at its 20/20 §3.5 `slice-public-api` ceiling (its own budget-note
+ * comment); deep imports are barred by `no-deep-slice-import`. Pre-built MCP
+ * toolkit types are prefixed `mcp_`, while the bare `'mcp'` type means
+ * "remote MCP", not pre-built.
+ */
+function isPrebuildMcpType(toolkitType: string | undefined): boolean {
+  return typeof toolkitType === 'string' && toolkitType.startsWith('mcp_') && toolkitType !== 'mcp';
+}
+
+/**
+ * Which detail route a successful create lands on — the baseline's
+ * destination branch (`apps/elitea-ui/src/pages/Toolkits/
+ * CreateToolkitToolTabBar.jsx:148-156`): pre-built `mcp_*` types go to the
+ * MCP detail page even when created from `/toolkits/create`.
+ */
+export function createdEntityKind(isMCP: boolean, isApplication: boolean, toolkitType: string | undefined): 'mcp' | 'app' | 'toolkit' {
+  if (isMCP || isPrebuildMcpType(toolkitType)) return 'mcp';
+  return isApplication ? 'app' : 'toolkit';
+}
+
 function resolveCreateTitle(isApplication: boolean, isMCP: boolean): string {
   if (isApplication) return t('pages.toolkits.createToolkit.titleApplication', 'New Application');
   return isMCP ? t('pages.toolkits.createToolkit.titleMcp', 'New MCP') : t('pages.toolkits.createToolkit.titleToolkit', 'New Toolkit');
@@ -79,18 +103,19 @@ function resolveCreateTitle(isApplication: boolean, isMCP: boolean): string {
  *    explicit local state, matching every sibling `features/*`/`pages/*`
  *    port's "no Formik" convention this whole batch already established
  *    (`CreateApplication.tsx`'s own doc comment).
- *  - **No generated create-toolkit endpoint exists** (`POST /elitea_core/
- *    tools/prompt_lib/{projectId}` — see `features/toolkits`' `api/
- *    toolkits.ts` module doc comment for the full, exhaustively-verified
- *    inventory). `deps.createToolkit` is injected exactly like
- *    `ToolkitEditor.tsx`'s own `deps.createToolkit` — this page owns 100%
- *    real orchestration (type selection, dirty tracking, the save/cancel
- *    tab bar) around a network call a future route-wiring caller supplies
- *    once a real endpoint exists. There is no real caller today either way
- *    — route-to-page wiring itself is a separate, not-yet-landed pass (every
- *    route file under `src/routes/**` still renders `RouteShell` only, R1's
- *    own Wave-1 scope; confirmed directly against `src/routes/_shell/
- *    toolkits/create.$toolkitType.tsx`).
+ *  - **The create mutation is real** (`POST /elitea_core/tools/prompt_lib/
+ *    {projectId}` — `useToolkitCreate`, see `features/toolkits`' `api/
+ *    toolkits.ts` Phase-1c CORRECTION), supplied by this page itself;
+ *    `deps.createToolkit` remains only as a test/wrapper override. All three
+ *    live routes (`src/routes/_shell/{toolkits,mcps,apps}/create.tsx`)
+ *    render this page. On success the page REPLACES the create route with
+ *    the created entity's detail route (`createdEntityKind` above — the
+ *    baseline's `CreateToolkitToolTabBar.jsx:148-166` destination branch;
+ *    replace so Back does not reopen a stale, still-dirty create form).
+ *    NOT YET PORTED from that same baseline block: the `ReturnUrl`/
+ *    `SourceApplicationId` round-trip (returning to a source agent/pipeline
+ *    with `newToolkitId` for auto-association) — no create route in this
+ *    app declares those search params yet, so there is nothing to read.
  *  - **The baseline's `CreateToolkitToolTabBar` save button used to fire a
  *    global `eventEmitter` event another component listened for.** The
  *    ALREADY-PORTED `CreateToolkitToolTabBar.tsx` (this same unit) dropped
@@ -133,6 +158,7 @@ function resolveCreateTitle(isApplication: boolean, isMCP: boolean): string {
 export function CreateToolkit({ isMCP = false, isApplication = false, deps }: CreateToolkitProps): ReactNode {
   const defaultCreateToolkit = useToolkitCreate();
   const createToolkitMutation = deps?.createToolkit ?? defaultCreateToolkit;
+  const navigate = useNavigate();
   const params = useParams({ strict: false }) as CreateToolkitRouteParams;
   const projectId = useSelectedProjectId();
 
@@ -141,6 +167,14 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
   const [isDirty, setIsDirty] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown>(undefined);
+  /**
+   * #613. The server now refuses a save whose credential reference does not
+   * resolve, and answers with per-field `settings_errors`. Without this
+   * supplier the page swallowed that body whole: the catch below turned every
+   * 400 into the one fixed banner string, and `ToolkitForm`'s server-error
+   * channel had no producer anywhere in the app.
+   */
+  const saveValidation = toolkitEditorHooks.useToolkitSaveValidation();
 
   /*
    * #308 — the credential picker, supplied here for the same reason
@@ -168,10 +202,18 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
     setFormValues(updater);
   }, []);
 
-  const handleChangeToolDetail = useCallback((updater: (prev: EditToolDetail | null) => EditToolDetail | null) => {
-    setIsDirty(true);
-    setEditToolDetail(updater);
-  }, []);
+  const handleChangeToolDetail = useCallback(
+    (updater: (prev: EditToolDetail | null) => EditToolDetail | null) => {
+      setIsDirty(true);
+      setEditToolDetail(updater);
+      // The previous refusal described the PREVIOUS settings. Dropping it here
+      // is what re-arms Save: `handleSave` below refuses to re-issue a request
+      // whose recorded refusal is still on screen, so without this the gate
+      // would stay latched shut on an error the user has already fixed.
+      saveValidation.clearSaveErrors();
+    },
+    [saveValidation],
+  );
 
   const handleSetFormField = useCallback((field: string, value: unknown) => {
     setFormValues((prev) => ({ ...prev, [field]: value }));
@@ -185,12 +227,25 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
 
   const handleSave = useCallback(async () => {
     if (projectId === undefined || editToolDetail?.type === undefined) return;
+    // A refusal that is still on screen is not re-submitted: the body has not
+    // changed, so the answer would not either. Any real edit drops it
+    // (handleChangeToolDetail below), which is what re-arms Save.
+    //
+    // DISCLOSED, NOT FIXED HERE: this page still passes no
+    // `onValidationStateChange`, so LOCAL field errors — a blank name on a type
+    // whose schema requires one — do not gate Save the way they do on the other
+    // two save paths (`SaveToolkitButton`/`CreateToolkitButton`). Wiring that
+    // gate makes a nameless create impossible, which is a separate behaviour
+    // change from this one and breaks three existing tests that deliberately
+    // save without a name.
+    if (saveValidation.toolkitValidation.isError) return;
     setIsCreating(true);
     setCreateError(undefined);
+    saveValidation.clearSaveErrors();
     try {
       const name = toolkitNameFromSettings(editToolDetail) ?? (formValues['name'] as string | undefined);
       const description = formValues['description'] as string | undefined;
-      await createToolkitMutation({
+      const created = await createToolkitMutation({
         projectId,
         type: editToolDetail.type,
         ...(name !== undefined ? { name } : {}),
@@ -198,12 +253,31 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
         settings: editToolDetail.settings,
         meta: editToolDetail.meta,
       });
+      // A successful create used to be silently discarded here — the form
+      // stayed dirty and a second Save duplicated the toolkit. Baseline
+      // parity (`CreateToolkitToolTabBar.jsx:148-166`): REPLACE the create
+      // route with the created entity's detail route, so Back does not
+      // reopen a stale create form. See the module doc for the not-yet-
+      // ported `ReturnUrl`/`SourceApplicationId` round-trip.
+      setIsDirty(false);
+      const kind = createdEntityKind(isMCP, isApplication, editToolDetail.type);
+      const id = String(created.id);
+      if (kind === 'mcp') {
+        void navigate({ to: '/mcps/$tab/$mcpId', params: { tab: 'all', mcpId: id }, replace: true });
+      } else if (kind === 'app') {
+        void navigate({ to: '/apps/$tab/$appId', params: { tab: 'all', appId: id }, replace: true });
+      } else {
+        void navigate({ to: '/toolkits/$tab/$toolkitId', params: { tab: 'all', toolkitId: id }, replace: true });
+      }
     } catch (error) {
-      setCreateError(error);
+      // A refusal that names fields is shown ON those fields; the generic
+      // banner is kept for everything else (a 500, a dropped connection),
+      // where there is no field to point at.
+      setCreateError(saveValidation.reportSaveError(error) ? undefined : error);
     } finally {
       setIsCreating(false);
     }
-  }, [projectId, editToolDetail, formValues, createToolkitMutation]);
+  }, [projectId, editToolDetail, formValues, createToolkitMutation, navigate, isMCP, isApplication, saveValidation]);
 
   const title = useMemo(() => resolveCreateTitle(isApplication, isMCP), [isApplication, isMCP]);
 
@@ -249,6 +323,7 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
             hideOperationButtons
             isMCP={isMCP}
             onSave={noopSave}
+            toolkitValidation={saveValidation.toolkitValidation}
             slots={toolkitFormSlots}
           />
         ) : (

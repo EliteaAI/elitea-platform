@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 
 import { useQueryClient } from '@tanstack/react-query';
 
+import { toLlmSettingsBody } from '@/shared/api/agentLlmSettings';
 import {
   getCreateApplicationQueryOptions,
   getUpdateApplicationVersionQueryOptions,
@@ -58,12 +59,28 @@ function toVersionWriteRequest(draft: ApplicationVersionDraft): VersionWriteRequ
     name: draft.name,
     ...(draft.agentType !== undefined ? { agent_type: draft.agentType } : {}),
     instructions: draft.instructions,
+    // Omitted when the draft names none, for the reason `llm_settings` below
+    // gives; sent whenever it does, because until this key existed the create
+    // pages' typed welcome message reached the form and stopped there — see
+    // `ApplicationVersionDraft.welcomeMessage`. `versionFromBody` reads it on
+    // BOTH write paths (`internal/api/v2/applications/handler.go:500`), so the
+    // create POST stores it exactly as the edit PUT does.
+    ...(draft.welcomeMessage !== undefined ? { welcome_message: draft.welcomeMessage } : {}),
     conversation_starters: [...draft.conversationStarters],
     variables: draft.variables.map((variable) => ({ name: variable.name, value: variable.value })),
     // `internal_tools` is copied, not spread through: the draft holds it as a
     // `readonly string[]` and `VersionMeta` now models it as a mutable
     // `string[]` — same copy `conversation_starters` above already makes.
     meta: { ...draft.meta, internal_tools: [...draft.meta.internal_tools] },
+    // Omitted entirely — not sent as `undefined` — when the version names no
+    // model, for the same reason `pipeline_settings` is below and with more
+    // riding on it. `UpdateVersion`'s repository only adds `llm_settings` to
+    // its SET list when the decoded value is non-nil
+    // (`internal/infra/db/repos/applications.go`), so an absent key leaves the
+    // stored object alone, while an explicit empty one would overwrite a model
+    // the user had picked. On create, absence is what leaves the platform's
+    // catalogue-default fallback in charge.
+    ...(draft.llmSettings !== undefined ? { llm_settings: toLlmSettingsBody(draft.llmSettings) } : {}),
     // #135: omitted entirely when the draft has none, so a non-pipeline save
     // never sends the key and the server leaves the stored column alone.
     ...(draft.pipelineSettings !== undefined ? { pipeline_settings: { ...draft.pipelineSettings } } : {}),

@@ -98,21 +98,103 @@ export function isSkippedContainerParticipant(participant: Participant): boolean
 }
 
 /**
- * apps/elitea-ui/src/[fsd]/features/chat/participants/lib/helpers/
- * participants.helpers.js:64-77 `isParticipantStillActive`, ported verbatim.
+ * The RAW snake_case participant row, exactly as the conversation payload
+ * carries it (`services/elitea-main/internal/api/v2/conversations/
+ * handler.go`'s `Participant`: `id`/`entity_name`/`entity_meta`/
+ * `entity_settings`/`meta`, with `meta.user_name` overlaid by
+ * `ListParticipants`). `features/chat-participants` works on this shape end
+ * to end and never normalises it — see that slice's `lib/helpers.ts`, whose
+ * own CORRECTION note records the same camelCase/snake_case mismatch being
+ * found and fixed for `getChatParticipantUniqueId`/`getParticipantName`.
+ * `isParticipantStillActive` was the third selector of that trio and was
+ * left behind, so it is the one function here that accepts both shapes.
  */
-export function isParticipantStillActive(participant: Participant): boolean {
-  switch (participant.entityName) {
-    case 'application':
-    case 'skill':
-      return Boolean(participant.meta?.name);
-    case 'llm':
-      return Boolean(participant.entityMeta?.modelName);
-    case 'dummy':
-      return true;
-    case 'pipeline':
-    case 'toolkit':
-    case 'user':
-      return false;
-  }
+interface ParticipantWireRow {
+  readonly id?: string | number;
+  readonly entity_name?: string;
+  /**
+   * Open shapes, not the two keys this predicate happens to read: a wire row
+   * is handed over whole (`entity_meta` carries `id`/`project_id`/`name`/
+   * `integration_uid` besides `model_name`), and a closed literal type would
+   * reject every real row at the call site while accepting the trimmed
+   * fixture that hid the original defect.
+   */
+  readonly entity_meta?: Record<string, unknown>;
+  readonly entity_settings?: Record<string, unknown>;
+  readonly meta?: Record<string, unknown>;
+}
+
+/** Either shape this predicate accepts. */
+type LivenessInput = Participant | ParticipantWireRow;
+
+/**
+ * Both shapes at once. A participant row only ever carries ONE of each pair
+ * at runtime; the intersection exists so the reads below can name both keys
+ * without a per-key narrowing dance that TS cannot do on an optional-property
+ * union anyway.
+ */
+type EitherShape = Participant & ParticipantWireRow;
+
+function livenessEntityName(participant: LivenessInput): string | undefined {
+  const row = participant as EitherShape;
+  return row.entityName ?? row.entity_name;
+}
+
+/** `meta.name` is spelled the same in both shapes. */
+function hasMetaName(participant: LivenessInput): boolean {
+  return Boolean((participant as EitherShape).meta?.name);
+}
+
+function hasModelName(participant: LivenessInput): boolean {
+  const row = participant as EitherShape;
+  return Boolean(row.entityMeta?.modelName ?? row.entity_meta?.model_name);
+}
+
+/**
+ * `participants.helpers.js:64-77`'s four explicit cases, as a lookup table
+ * (same technique as `NAME_RESOLVERS` above, and for the same §3.5
+ * complexity reason). Every entity_name absent from this table — `user`,
+ * `toolkit`, `pipeline`, and anything unrecognised — is the baseline's
+ * `default: return false`.
+ */
+const LIVENESS_RESOLVERS: Readonly<Record<string, (participant: LivenessInput) => boolean>> = {
+  application: hasMetaName,
+  skill: hasMetaName,
+  llm: hasModelName,
+  dummy: () => true,
+};
+
+/**
+ * apps/elitea-ui/src/[fsd]/features/chat/participants/lib/helpers/
+ * participants.helpers.js:64-77 `isParticipantStillActive`.
+ *
+ * MEASURED BASELINE, because the `user` arm looks like a bug and is not.
+ * The old app calls this from exactly ONE place — `features/chat/ui/
+ * chat-box/ChatMessageWrapper.jsx:148`, gating the **Regenerate** control on
+ * the last message. "Still active" therefore means "this message's sender is
+ * an entity a new turn could be re-addressed to", which a user, a toolkit
+ * and a bare pipeline are not; `false` for those three is the answer the
+ * baseline gives and the answer this port keeps.
+ *
+ * It is NOT a visibility predicate. The baseline's participants rail
+ * (`ExpandedParticipantsList.jsx:50-56`) never calls it: it filters user
+ * participants by `entity_name === ChatParticipantType.Users` alone, so user
+ * rows DO render there. `features/chat-participants/ui/Participants.tsx`
+ * used it as a rail filter and dropped every user row twice over — once on
+ * the shape, once on this arm. That call site is gone; see its own comment.
+ *
+ * Two fidelity fixes over the first port, both in the "absence reads as
+ * correctness" class this repo keeps hitting:
+ *  - a `switch` over `ParticipantType` returned `undefined` (not `false`)
+ *    for anything outside the closed union — including a row whose
+ *    `entityName` was simply absent. The baseline has an explicit
+ *    `default: return false`; so does the table above.
+ *  - a raw wire row matched nothing at all. Both spellings are read now, so
+ *    handing this a `GET /conversation/...` participant answers the baseline
+ *    answer rather than silently answering "gone".
+ */
+export function isParticipantStillActive(participant: LivenessInput): boolean {
+  const entityName = livenessEntityName(participant);
+  const resolve = entityName === undefined ? undefined : LIVENESS_RESOLVERS[entityName];
+  return resolve !== undefined && resolve(participant);
 }

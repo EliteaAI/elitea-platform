@@ -1,8 +1,11 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { HttpResponse, http } from 'msw';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Participant } from '@/entities/participant';
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { useEditorStateStore } from '@/shared/lib/editorState';
+import { server } from '@/test/setup';
 import { useNavBlockerStore } from '@/widgets/app-shell';
 
 import { useChatWithEditors } from './ChatWithEditors.hooks';
@@ -130,6 +133,53 @@ describe('useChatWithEditors', () => {
       expect(result.current.isEditingPipeline).toBe(true);
     });
     expect(result.current.mutex.openEditingAlert).toBe(false);
+  });
+
+  describe('toolkitWriteDeps', () => {
+    beforeEach(() => {
+      configureGeneratedClient({ baseUrl: '/api/v2' });
+    });
+    afterEach(() => {
+      resetGeneratedClient();
+    });
+
+    // Regression: these two deps used to be `rejectToolkitWrite` — a stub
+    // rejecting with "no backend endpoint yet" that went stale once Phase 1c
+    // made the generated operations real, so EVERY toolkit create/save from
+    // chat failed by construction. Both must hit the real endpoints.
+    it('createToolkit POSTs the real generated create endpoint and returns its body', async () => {
+      const seen: { projectId?: string; body?: unknown } = {};
+      server.use(
+        http.post('/api/v2/elitea_core/tools/prompt_lib/:projectId', async ({ request, params }) => {
+          seen.projectId = String(params['projectId']);
+          seen.body = await request.json();
+          return HttpResponse.json({ id: '77', type: 'github', name: 'GitHub' });
+        }),
+      );
+      const { result } = renderHook(() => useChatWithEditors());
+
+      const created = await result.current.toolkitWriteDeps.createToolkit({ projectId: 'proj-1', type: 'github', settings: { key: 'v' } });
+
+      expect(created).toMatchObject({ id: '77', type: 'github' });
+      expect(seen.projectId).toBe('proj-1');
+      expect(seen.body).toMatchObject({ type: 'github', settings: { key: 'v' } });
+    });
+
+    it('saveToolkit PUTs the real generated update endpoint', async () => {
+      const seen: { toolId?: string } = {};
+      server.use(
+        http.put('/api/v2/elitea_core/tool/prompt_lib/:projectId/:toolId', ({ params }) => {
+          seen.toolId = String(params['toolId']);
+          return HttpResponse.json({ id: '77', type: 'github', name: 'GitHub renamed' });
+        }),
+      );
+      const { result } = renderHook(() => useChatWithEditors());
+
+      const saved = await result.current.toolkitWriteDeps.saveToolkit({ projectId: 'proj-1', toolId: '77', type: 'github', name: 'GitHub renamed' });
+
+      expect(saved).toMatchObject({ name: 'GitHub renamed' });
+      expect(seen.toolId).toBe('77');
+    });
   });
 
   it('canvas/artifact editor stubs are inert (no-op, no throw) — disclosed gap', () => {

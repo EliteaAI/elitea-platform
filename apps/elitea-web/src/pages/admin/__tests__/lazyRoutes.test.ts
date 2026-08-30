@@ -38,6 +38,15 @@ const ROUTER_FILE = 'src/pages/admin/router.tsx';
  */
 const adminModules = import.meta.glob<Record<string, unknown>>('../*.tsx');
 
+/**
+ * Each case transpiles and evaluates a whole admin page and its import graph.
+ * Measured cold in isolation, `./Users` takes 3.3s and `./Secrets` 2.8s, so
+ * vitest's 5s default leaves no room once the rest of the suite is competing
+ * for the same workers — the case then fails on the clock rather than on a
+ * broken binding, which is the one outcome this file must never report.
+ */
+const MODULE_LOAD_TIMEOUT_MS = 30_000;
+
 interface LazyBinding {
   /** The specifier passed to `import()`, e.g. `./Users`. */
   readonly specifier: string;
@@ -84,5 +93,6 @@ describe('admin lazy route components', () => {
         `${ROUTER_FILE} asks import('${specifier}') for '${exportName}', which it does not export`,
       ).toBe('function');
     },
+    MODULE_LOAD_TIMEOUT_MS,
   );
 });

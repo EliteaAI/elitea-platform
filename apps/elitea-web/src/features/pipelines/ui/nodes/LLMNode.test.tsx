@@ -149,9 +149,23 @@ describe('LLMNode', () => {
     const { findByText, getAllByRole } = renderLLMNode();
     await findByText('Node1');
 
-    for (const switchControl of getAllByRole('switch', { hidden: true })) {
-      expect(switchControl).not.toBeDisabled();
-    }
+    /*
+     * The two interrupt switches are permanently disabled — an intersection
+     * choice, not a per-node state: the native Rust runtime refuses any
+     * pipeline declaring static interrupts (`compiler.rs:470-474`) while the
+     * SDK worker honours them, so the editor authors only what both accept.
+     * See `ui/settings/CommonInterruptSettings.tsx`. Only the switches that
+     * really do track `disabled` are asserted here.
+     */
+    // `CommonInterruptSettings` renders exactly three switches, in order:
+    // interrupt-before, interrupt-after, structured-output. The first two are
+    // matched by position rather than by accessible name because inside the
+    // React-Flow canvas they are `visibility: hidden` in this environment
+    // (see the `hidden: true` option every query here already carries), and
+    // a hidden element computes an empty accessible name.
+    const switches = getAllByRole('switch', { hidden: true });
+    expect(switches).toHaveLength(3);
+    expect(switches[2]).not.toBeDisabled();
   });
 
   it('does not throw with no FlowEditorContext ancestor (NodeCard renders null)', async () => {

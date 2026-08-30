@@ -20,12 +20,14 @@
  * `useChatBoxHandlers` calls no React hook of its own — it only builds
  * closures over `deps` — so these tests invoke it directly.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatMessage } from "@/features/chat-messages";
+import { EliteaApiError } from "@/shared/api/generated/mutator";
 import { ROLES } from "@/shared/lib/enums";
 
 import { useChatBoxHandlers } from "./useChatBoxHandlers";
+import { regenerationStillFinalizingText } from "./useChatBoxHandlers.regenerate";
 import type {
   ChatBoxHandlerDeps,
   StreamStartOutcome,
@@ -88,9 +90,42 @@ describe("sendQuestion — a turn no transport accepted", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]?.role).toBe(ROLES.Assistant);
     expect(String(errors[0]?.exception)).toContain("was not sent");
-    expect(history.read().some((message) => message.role === ROLES.User)).toBe(
-      false,
+    // The question the person typed SURVIVES the refusal. The composer has
+    // already been cleared, so this bubble is the only copy of it, and the
+    // error message is anchored to it by `questionId`. Journeys 8, 9 and 12
+    // read exactly this out of `chat-message-list`.
+    const questions = history
+      .read()
+      .filter((message) => message.role === ROLES.User);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.content).toBe("hi");
+    expect(errors[0]?.questionId).toBe(questions[0]?.id);
+  });
+
+  it("keeps every failed turn's question, so a second refusal does not erase the first", async () => {
+    const history = makeHistory([]);
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        emitSocket: deadSocket(),
+        startStreamedExecution: () => Promise.resolve(noTransport),
+      }),
     );
+
+    await handlers.sendQuestion({ question: "hi" });
+    const [firstQuestion] = history
+      .read()
+      .filter((message) => message.role === ROLES.User);
+    await handlers.sendQuestion({ question: "hi again" });
+
+    const errors = history
+      .read()
+      .filter((message) => message.exception !== undefined);
+    expect(errors).toHaveLength(2);
+    expect(new Set(errors.map((message) => message.questionId)).size).toBe(2);
+    expect(
+      history.read().some((message) => message.id === firstQuestion?.id),
+    ).toBe(true);
   });
 
   it("keeps the turn silent-free but successful when the socket really delivers", async () => {
@@ -159,9 +194,11 @@ describe("sendQuestion — a turn no transport accepted", () => {
     expect(history.read().map((message) => message.exception)).toContain(
       "No model is configured.",
     );
-    expect(history.read().some((message) => message.role === ROLES.User)).toBe(
-      false,
-    );
+    // A refusal the route explained still keeps the question on screen: it is
+    // the only copy of the text, and the reason means nothing without it.
+    expect(
+      history.read().filter((message) => message.role === ROLES.User),
+    ).toHaveLength(1);
   });
 
   it("does not duplicate a persisted question when a retry is rejected", async () => {
@@ -287,6 +324,242 @@ describe("regenerateAnswer — the current REST and SSE contract", () => {
   });
 });
 
+/**
+ * THE 409 THAT REACHES THE USER'S CLICK, on the route that actually raises it.
+ *
+ * `agent_regeneration_pending` exists on ONE route: the contract route
+ * (`?execution_contract=agent.regenerate.v1`) that `regenerateStreamedExecution`
+ * posts to. The REST trigger `triggerRegenerate` posts no contract —
+ * `buildRegeneratePayload` has no such field — and elitea-main answers that 400
+ * before admission runs, so a retry attached to the REST trigger alone can
+ * never see this refusal: it is exercised only by a test that hands the REST
+ * trigger a 409 the real route would never send it.
+ *
+ * These cases drive the streamed path instead, through the outcome the
+ * transport really reports (`{started: false, reason: "retry-later"}`, produced
+ * by `useChatStreamRunStarters`' `regenerateDetailed` from the 409 body).
+ */
+describe("regenerateAnswer — the streamed 409 is retried, not swallowed", () => {
+  const question: ChatMessage = {
+    id: "00000000-0000-4000-8000-000000000031",
+    role: ROLES.User,
+    name: "User",
+    content: "try this again",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const answer: ChatMessage = {
+    id: "00000000-0000-4000-8000-000000000032",
+    role: ROLES.Assistant,
+    name: "Agent",
+    content: "first answer",
+    createdAt: "2026-01-01T00:00:01.000Z",
+    questionId: question.id,
+  };
+
+  const pending: StreamStartOutcome = { started: false, reason: "retry-later" };
+  const started: StreamStartOutcome = { started: true };
+
+  /**
+   * Deps for one regeneration click. Only the deps are built here — the hook
+   * itself is called inside each `it`, because `react-hooks/rules-of-hooks`
+   * (rightly) refuses a hook call from a plain lowercase helper.
+   */
+  const depsFor = (
+    history: ReturnType<typeof makeHistory>,
+    regenerateStreamedExecution: NonNullable<
+      ChatBoxHandlerDeps["regenerateStreamedExecution"]
+    >,
+    triggerRegenerate: NonNullable<ChatBoxHandlerDeps["triggerRegenerate"]>,
+  ): ChatBoxHandlerDeps =>
+    makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: [question, answer],
+      regenerateStreamedExecution,
+      triggerRegenerate,
+    });
+
+  /** Drive the click to completion, letting the retry ladder's timers run. */
+  const settle = async (pending: Promise<void>): Promise<void> => {
+    await vi.runAllTimersAsync();
+    await pending;
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries a 409 that clears and runs the regeneration, leaving no failure on the card", async () => {
+    const attempt = vi
+      .fn<NonNullable<ChatBoxHandlerDeps["regenerateStreamedExecution"]>>()
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce(started);
+    const triggerRegenerate = vi.fn().mockResolvedValue({});
+
+    const history = makeHistory([question, answer]);
+    const handlers = useChatBoxHandlers(depsFor(history, attempt, triggerRegenerate));
+    await settle(handlers.regenerateAnswer(answer.id));
+
+    expect(attempt).toHaveBeenCalledTimes(2);
+    // The run is live: the regenerating patch stands, the old answer is NOT
+    // put back, and nothing is reported to the user.
+    expect(history.read()[1]).toMatchObject({ id: answer.id, isStreaming: true });
+    expect(history.read()[1]?.exception).toBeUndefined();
+    // A started regeneration must never ALSO go out over the REST fallback:
+    // that would run the agent twice against the same answer.
+    expect(triggerRegenerate).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a persistent 409, restores the answer and says why on the card", async () => {
+    const attempt = vi
+      .fn<NonNullable<ChatBoxHandlerDeps["regenerateStreamedExecution"]>>()
+      .mockResolvedValue(pending);
+    const triggerRegenerate = vi.fn().mockResolvedValue({});
+
+    const history = makeHistory([question, answer]);
+    const handlers = useChatBoxHandlers(depsFor(history, attempt, triggerRegenerate));
+    await settle(handlers.regenerateAnswer(answer.id));
+
+    // One attempt per delay in the ladder, plus the first.
+    expect(attempt.mock.calls.length).toBeGreaterThan(1);
+    expect(history.read()[1]).toMatchObject({ id: answer.id, content: answer.content });
+    expect(history.read()[1]?.isStreaming).toBeFalsy();
+    expect(String(history.read()[1]?.exception)).toBe(regenerationStillFinalizingText());
+    // THE POINT OF THIS CASE. Falling through to the REST trigger would post
+    // the same regeneration with no `execution_contract` and collect a 400 —
+    // replacing the real reason with a wrong one.
+    expect(triggerRegenerate).not.toHaveBeenCalled();
+  });
+
+  it("does NOT retry an absent transport — that one falls straight through to REST", async () => {
+    const attempt = vi
+      .fn<NonNullable<ChatBoxHandlerDeps["regenerateStreamedExecution"]>>()
+      .mockResolvedValue({ started: false, reason: "no-transport" });
+    const triggerRegenerate = vi.fn().mockResolvedValue({});
+
+    const history = makeHistory([question, answer]);
+    const handlers = useChatBoxHandlers(depsFor(history, attempt, triggerRegenerate));
+    await settle(handlers.regenerateAnswer(answer.id));
+
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(triggerRegenerate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("regenerateAnswer — the still-finalizing 409 retries", () => {
+  const question: ChatMessage = {
+    id: "00000000-0000-4000-8000-000000000021",
+    role: ROLES.User,
+    name: "User",
+    content: "try this again",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const answer: ChatMessage = {
+    id: "00000000-0000-4000-8000-000000000022",
+    role: ROLES.Assistant,
+    name: "Agent",
+    content: "first answer",
+    createdAt: "2026-01-01T00:00:01.000Z",
+    questionId: question.id,
+  };
+
+  /** The retryable 409 the Go route returns while `is_streaming` is still TRUE. */
+  const regenerationPending = (): EliteaApiError =>
+    new EliteaApiError({
+      kind: "http",
+      status: 409,
+      url: "/elitea_core/regenerate/prompt_lib/1/x",
+      body: { error: "agent_regeneration_pending", retryable: true },
+    });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries the still-finalizing 409 and succeeds without restoring", async () => {
+    const history = makeHistory([question, answer]);
+    const triggerRegenerate = vi
+      .fn()
+      .mockRejectedValueOnce(regenerationPending())
+      .mockResolvedValueOnce({});
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [question, answer],
+        triggerRegenerate,
+      }),
+    );
+
+    const pending = handlers.regenerateAnswer(answer.id);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(triggerRegenerate).toHaveBeenCalledTimes(2);
+    // Success ⇒ the streaming patch stays; the old answer is NOT restored.
+    expect(history.read()[1]).toMatchObject({
+      id: answer.id,
+      isLoading: true,
+      isStreaming: true,
+    });
+  });
+
+  it("exhausts the budget on a persistent 409 and restores the old answer", async () => {
+    const history = makeHistory([question, answer]);
+    const triggerRegenerate = vi
+      .fn()
+      .mockRejectedValue(regenerationPending());
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [question, answer],
+        triggerRegenerate,
+      }),
+    );
+
+    const pending = handlers.regenerateAnswer(answer.id);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    // One initial attempt + three bounded retries.
+    expect(triggerRegenerate).toHaveBeenCalledTimes(4);
+    expect(history.read()[1]).toEqual(answer);
+    expect(history.read()[1]).not.toMatchObject({ isStreaming: true });
+  });
+
+  it("restores immediately on a non-retryable error", async () => {
+    const history = makeHistory([question, answer]);
+    const triggerRegenerate = vi.fn().mockRejectedValue(
+      new EliteaApiError({
+        kind: "http",
+        status: 500,
+        url: "/elitea_core/regenerate/prompt_lib/1/x",
+        body: { error: "boom" },
+      }),
+    );
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [question, answer],
+        triggerRegenerate,
+      }),
+    );
+
+    const pending = handlers.regenerateAnswer(answer.id);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(triggerRegenerate).toHaveBeenCalledTimes(1);
+    expect(history.read()[1]).toEqual(answer);
+  });
+});
+
 const pausedMessage: ChatMessage = {
   id: "answer-1",
   role: ROLES.Assistant,
@@ -400,6 +673,61 @@ describe("continueHitl — the REST continuation", () => {
     expect(call.body["mcp_tokens"]).toBeUndefined();
     expect(call.body["ignored_mcp_servers"]).toBeUndefined();
     expect(call.body["hitl_decisions"]).toBeUndefined();
+  });
+
+  it("sends a clarification answer as a STRUCTURED hitl_value, not as the encoded string", async () => {
+    // `currentHITLValue` (agentexecution/route.go) admits a JSON object or a
+    // JSON string for `answer` and canonicalises what it admitted; the worker
+    // parses that text back with `AskUserRequest::format_answer` and renders
+    // one line per answered question into the tool result the model reads.
+    // Passing the card's ENCODED string through unchanged would still be
+    // ADMITTED — as one JSON blob quoted at the model — so "the resume was
+    // accepted" cannot tell the two apart. The decoded shape is the assertion.
+    const history = makeHistory([pausedMessage]);
+    const emitSocket = vi.fn(() => true);
+    const seen = captureContinuations();
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [pausedMessage],
+        emitSocket,
+        continueStreamedExecution: seen.continueStreamedExecution,
+      }),
+    );
+
+    await handlers.continueHitl({
+      action: "answer",
+      value: JSON.stringify({ environment: "Staging", traits: ["Safe", "Fast"] }),
+      toolCallId: "call-1",
+    });
+
+    const call = seen.calls[0]!;
+    expect(call.contract).toBe("agent.continue.hitl.v1");
+    expect(call.body["hitl_action"]).toBe("answer");
+    expect(call.body["hitl_value"]).toEqual({ environment: "Staging", traits: ["Safe", "Fast"] });
+    // The root shape, not the decisions one: a single pause resumes with
+    // `hitl_action`, and the route REFUSES both in one body.
+    expect(call.body["hitl_decisions"]).toBeUndefined();
+    expect(emitSocket).not.toHaveBeenCalled();
+  });
+
+  it("sends a free-text answer as a JSON string the route also admits", async () => {
+    // The no-questions fallback. `currentHITLValue` refuses anything that is
+    // neither an object nor a string for `answer`, and a bare unquoted word is
+    // not valid JSON — so what travels is the string itself.
+    const history = makeHistory([pausedMessage]);
+    const seen = captureContinuations();
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [pausedMessage],
+        continueStreamedExecution: seen.continueStreamedExecution,
+      }),
+    );
+
+    await handlers.continueHitl({ action: "answer", value: JSON.stringify("Staging"), toolCallId: "call-1" });
+
+    expect(seen.calls[0]!.body["hitl_value"]).toBe("Staging");
   });
 
   it("falls back to the socket when the route refuses the resume", async () => {
@@ -633,6 +961,104 @@ describe("useChatBoxHandlers — deleteAnswer", () => {
       "question",
       "answer",
       "keep",
+    ]);
+  });
+});
+
+/**
+ * WHICH IDENTIFIER THE ATTACHMENT IS UPLOADED UNDER — asserted through the
+ * handler, not through `resolveUploadConversationId` alone.
+ *
+ * The pure resolver has its own tests next door; this one exists because the
+ * defect was in the WIRING. The resolver was handed `deps.conversationId`,
+ * both halves were internally consistent, and every unit test passed while the
+ * composer stored every attachment under a key admission would refuse (400,
+ * with the user's question lost before `admissions.Submit` ever ran).
+ */
+describe("sendQuestion — attachments are uploaded under the conversation UUID", () => {
+  const started: StreamStartOutcome = { started: true };
+
+  it("uploads to the EXISTING conversation's uuid, never its numeric id", async () => {
+    const history = makeHistory([]);
+    const uploadAttachments = vi.fn().mockResolvedValue({
+      success: true,
+      uploaded: [{ filepath: "/chat-attachments/conv-uuid-1/a.txt", sanitizedName: "a.txt" }],
+    });
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        conversationUuid: "conv-uuid-1",
+        conversationId: 77,
+        uploadAttachments,
+        startStreamedExecution: () => Promise.resolve(started),
+      }),
+    );
+
+    const file = new File(["x"], "a.txt");
+    await handlers.sendQuestion({ question: "hi", attachments: [file] });
+
+    expect(uploadAttachments).toHaveBeenCalledWith("conv-uuid-1", [file]);
+    expect(uploadAttachments).not.toHaveBeenCalledWith(77, [file]);
+  });
+
+  it("uploads to the uuid of a conversation this very send created", async () => {
+    const history = makeHistory([]);
+    const uploadAttachments = vi.fn().mockResolvedValue({
+      success: true,
+      uploaded: [{ filepath: "/chat-attachments/created-uuid/a.txt", sanitizedName: "a.txt" }],
+    });
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        // No conversation yet — the send creates one, and the created row is
+        // the ONLY source of its uuid. This is the path a first attachment
+        // takes, and the one the old resolver keyed by `id`.
+        conversationUuid: undefined,
+        conversationId: undefined,
+        createConversation: () => Promise.resolve({ id: 501, uuid: "created-uuid" }),
+        uploadAttachments,
+        startStreamedExecution: () => Promise.resolve(started),
+      }),
+    );
+
+    const file = new File(["x"], "a.txt");
+    const result = await handlers.sendQuestion({ question: "hi", attachments: [file] });
+
+    expect(uploadAttachments).toHaveBeenCalledWith("created-uuid", [file]);
+    expect(uploadAttachments).not.toHaveBeenCalledWith(501, [file]);
+    expect(result.success).toBe(true);
+  });
+
+  /**
+   * The uploaded entries — `{filepath, name}` — are what the start body's
+   * `payload.attachments` carries, and the filepath is what admission splits
+   * to recover the object key. A send that uploaded correctly and then sent
+   * nothing would fail in exactly the same place, so the payload is asserted
+   * too.
+   */
+  it("threads the uploaded entries into the turn's payload", async () => {
+    const history = makeHistory([]);
+    const startStreamedExecution = vi.fn().mockResolvedValue(started);
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        conversationUuid: "conv-uuid-1",
+        uploadAttachments: () =>
+          Promise.resolve({
+            success: true,
+            uploaded: [{ filepath: "/chat-attachments/conv-uuid-1/a.txt", sanitizedName: "a.txt" }],
+          }),
+        startStreamedExecution,
+      }),
+    );
+
+    await handlers.sendQuestion({ question: "hi", attachments: [new File(["x"], "a.txt")] });
+
+    const params = startStreamedExecution.mock.calls[0]?.[0] as {
+      readonly payload: Record<string, unknown>;
+    };
+    expect(params.payload["attachments"]).toEqual([
+      { filepath: "/chat-attachments/conv-uuid-1/a.txt", name: "a.txt" },
     ]);
   });
 });

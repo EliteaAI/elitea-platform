@@ -80,12 +80,17 @@ func doCheckConnection(t *testing.T, h *Handler, body checkConnectionRequest) *h
 // the fake provider's hit count stays at zero. A stub that always answers
 // success (the pre-#319 behaviour) would not distinguish this from a real
 // type at all, let alone leave the provider uncalled.
+//
+// The type used here is a TOOLKIT credential (github), which is checked
+// through legacy's applications_configuration_check_connection over the SDK
+// toolkit surface and has no /llm probe at all. It used to be amazon_bedrock,
+// which is now checkable (checkconnection_cloud.go).
 func TestCheckConnection_UnsupportedTypeNeverCallsProvider(t *testing.T) {
 	fp := newFakeProvider(http.StatusOK)
 	defer fp.Close()
 
 	h := newCheckConnectionHandler(fakeEgressPolicy{allow: true})
-	rec := doCheckConnection(t, h, checkConnectionRequest{Type: "amazon_bedrock", APIBase: fp.URL})
+	rec := doCheckConnection(t, h, checkConnectionRequest{Type: "github", APIBase: fp.URL})
 
 	resp := decodeCheckConnectionResponse(t, rec)
 	if resp.Success {

@@ -83,13 +83,15 @@ type ContentMaterializer interface {
 }
 
 type ContentServer struct {
-	authorizer   ContentAuthorizer
-	store        ContentStore
-	materializer ContentMaterializer
-	runtimeToken *EliteaClientTokenService
-	maxBytes     int64
-	requests     chan struct{}
-	logger       *slog.Logger
+	authorizer      ContentAuthorizer
+	store           ContentStore
+	materializer    ContentMaterializer
+	runtimeToken    *EliteaClientTokenService
+	runtimeVersions *RuntimeApplicationVersionService
+	runtimeObjects  *RuntimeAttachmentObjectService
+	maxBytes        int64
+	requests        chan struct{}
+	logger          *slog.Logger
 }
 
 func NewContentServer(authorizer ContentAuthorizer, store ContentStore, maxBytes int64) (*ContentServer, error) {
@@ -97,7 +99,7 @@ func NewContentServer(authorizer ContentAuthorizer, store ContentStore, maxBytes
 }
 
 func NewContentServerWithLimits(authorizer ContentAuthorizer, store ContentStore, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {
-	return newContentServer(authorizer, store, nil, nil, maxBytes, maxConcurrentRequests)
+	return newContentServer(authorizer, store, nil, nil, nil, nil, maxBytes, maxConcurrentRequests)
 }
 
 // NewMaterializingContentServerWithLimits extends the same private mTLS,
@@ -107,7 +109,7 @@ func NewMaterializingContentServerWithLimits(authorizer ContentAuthorizer, store
 	if materializer == nil {
 		return nil, errors.New("content materializer is required")
 	}
-	return newContentServer(authorizer, store, materializer, nil, maxBytes, maxConcurrentRequests)
+	return newContentServer(authorizer, store, materializer, nil, nil, nil, maxBytes, maxConcurrentRequests)
 }
 
 // NewRuntimeContentServerWithLimits enables the private Elitea client-token
@@ -125,7 +127,7 @@ func NewRuntimeContentServerWithLimits(
 	if runtimeToken == nil {
 		return nil, errors.New("runtime context is required")
 	}
-	return newContentServer(authorizer, store, nil, runtimeToken, maxBytes, maxConcurrentRequests)
+	return newContentServer(authorizer, store, nil, runtimeToken, nil, nil, maxBytes, maxConcurrentRequests)
 }
 
 // NewMaterializingRuntimeContentServerWithLimits composes generic
@@ -145,10 +147,104 @@ func NewMaterializingRuntimeContentServerWithLimits(
 	if runtimeToken == nil {
 		return nil, errors.New("runtime context is required")
 	}
-	return newContentServer(authorizer, store, materializer, runtimeToken, maxBytes, maxConcurrentRequests)
+	return newContentServer(authorizer, store, materializer, runtimeToken, nil, nil, maxBytes, maxConcurrentRequests)
 }
 
-func newContentServer(authorizer ContentAuthorizer, store ContentStore, materializer ContentMaterializer, runtimeToken *EliteaClientTokenService, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {
+// NewNestedAgentRuntimeContentServerWithLimits adds the nested application
+// (agent-as-tool) definition route to the same bounded private mTLS listener.
+//
+// It is a separate constructor rather than an extra argument on the one above
+// because the nested route is only meaningful where agent execution is
+// dispatched: the index path composes the identical listener and must not grow
+// a route it can never authorize. A nil version service leaves the route
+// unregistered, which is what the index composition wants and what every
+// pre-existing caller keeps.
+func NewNestedAgentRuntimeContentServerWithLimits(
+	authorizer ContentAuthorizer,
+	store ContentStore,
+	materializer ContentMaterializer,
+	runtimeToken *EliteaClientTokenService,
+	runtimeVersions *RuntimeApplicationVersionService,
+	maxBytes int64,
+	maxConcurrentRequests int,
+) (*ContentServer, error) {
+	if materializer == nil {
+		return nil, errors.New("content materializer is required")
+	}
+	if runtimeToken == nil {
+		return nil, errors.New("runtime context is required")
+	}
+	if runtimeVersions == nil {
+		return nil, errors.New("runtime application version context is required")
+	}
+	return newContentServer(
+		authorizer,
+		store,
+		materializer,
+		runtimeToken,
+		runtimeVersions,
+		nil,
+		maxBytes,
+		maxConcurrentRequests,
+	)
+}
+
+// NewAgentAttachmentRuntimeContentServerWithLimits adds the claim-scoped
+// attachment OBJECT-READ route on top of the nested-agent listener above.
+//
+// It is a third constructor rather than a nil-able argument on the second for
+// the same reason the second exists: the route must be absent, not merely
+// unreachable, wherever it cannot be served. It needs object storage, and this
+// service runs in deployments where the Go artifacts capability is off and
+// dependencies.ObjectStore is nil (mixed deployments keep Centry's artifacts
+// authoritative — see runtimecomposition's retention-sweep note). Making the
+// dependency required here, and choosing the constructor at composition time,
+// means a nil store yields a listener with no attachment route instead of one
+// whose route answers 503 forever.
+func NewAgentAttachmentRuntimeContentServerWithLimits(
+	authorizer ContentAuthorizer,
+	store ContentStore,
+	materializer ContentMaterializer,
+	runtimeToken *EliteaClientTokenService,
+	runtimeVersions *RuntimeApplicationVersionService,
+	runtimeObjects *RuntimeAttachmentObjectService,
+	maxBytes int64,
+	maxConcurrentRequests int,
+) (*ContentServer, error) {
+	if materializer == nil {
+		return nil, errors.New("content materializer is required")
+	}
+	if runtimeToken == nil {
+		return nil, errors.New("runtime context is required")
+	}
+	if runtimeVersions == nil {
+		return nil, errors.New("runtime application version context is required")
+	}
+	if runtimeObjects == nil {
+		return nil, errors.New("runtime attachment object context is required")
+	}
+	return newContentServer(
+		authorizer,
+		store,
+		materializer,
+		runtimeToken,
+		runtimeVersions,
+		runtimeObjects,
+		maxBytes,
+		maxConcurrentRequests,
+	)
+}
+
+func newContentServer(
+	authorizer ContentAuthorizer,
+	store ContentStore,
+	materializer ContentMaterializer,
+	runtimeToken *EliteaClientTokenService,
+	runtimeVersions *RuntimeApplicationVersionService,
+	runtimeObjects *RuntimeAttachmentObjectService,
+	maxBytes int64,
+	maxConcurrentRequests int,
+) (*ContentServer, error) {
 	if authorizer == nil || store == nil {
 		return nil, errors.New("content authorizer and store are required")
 	}
@@ -159,13 +255,15 @@ func newContentServer(authorizer ContentAuthorizer, store ContentStore, material
 		return nil, errors.New("content size and concurrency limits must be positive and bounded")
 	}
 	return &ContentServer{
-		authorizer:   authorizer,
-		store:        store,
-		materializer: materializer,
-		runtimeToken: runtimeToken,
-		maxBytes:     maxBytes,
-		requests:     make(chan struct{}, maxConcurrentRequests),
-		logger:       slog.Default(),
+		authorizer:      authorizer,
+		store:           store,
+		materializer:    materializer,
+		runtimeToken:    runtimeToken,
+		runtimeVersions: runtimeVersions,
+		runtimeObjects:  runtimeObjects,
+		maxBytes:        maxBytes,
+		requests:        make(chan struct{}, maxConcurrentRequests),
+		logger:          slog.Default(),
 	}, nil
 }
 
@@ -175,6 +273,24 @@ func (s *ContentServer) Routes() http.Handler {
 	r.Get("/executions/{executionID}/generations/{generation}/inputs/{contentID}/versions/{version}", s.Get)
 	if s.runtimeToken != nil {
 		r.Post("/executions/{executionID}/generations/{generation}/runtime-context/elitea-client-token", s.PostEliteaClientToken)
+	}
+	if s.runtimeVersions != nil {
+		r.Post(
+			"/executions/{executionID}/generations/{generation}/runtime-context/applications/{applicationID}/versions/{versionID}",
+			s.PostApplicationVersion,
+		)
+	}
+	if s.runtimeObjects != nil {
+		// {name} is ONE path parameter holding a key that contains slashes
+		// (`{conversationUUID}/{filename}`), percent-encoded by the client.
+		// chi routes on r.URL.RawPath when it is non-empty, so `%2F` stays one
+		// segment here and PostAttachmentObject unescapes it — the same
+		// mechanism the immutable input route already relies on for
+		// {contentID} and {version}, which is why claimPathPart exists.
+		r.Post(
+			"/executions/{executionID}/generations/{generation}/runtime-context/attachments/{bucket}/{name}",
+			s.PostAttachmentObject,
+		)
 	}
 	return r
 }
@@ -317,6 +433,162 @@ func (s *ContentServer) PostEliteaClientToken(w http.ResponseWriter, r *http.Req
 	_, _ = w.Write(encoded)
 }
 
+// PostApplicationVersion serves one frozen nested (agent-as-tool) child
+// definition under the live claim that already authorized the parent turn.
+//
+// It is the exact server twin of PostEliteaClientToken above — same claim
+// parsing, same concurrency gate, same private-no-cache headers, same error
+// taxonomy — and that symmetry is the point: the worker reaches both routes
+// over one mTLS channel with one authority, and a route that authorized
+// differently would be a second, weaker contract on the same connection.
+func (s *ContentServer) PostApplicationVersion(w http.ResponseWriter, r *http.Request) {
+	setPrivateNoCacheHeaders(w.Header())
+	if !s.acquire(w) {
+		return
+	}
+	defer s.release()
+	if s.runtimeVersions == nil || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	claim, err := parseExecutionClaim(r)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	applicationID, applicationIDOK := claimPathIdentity(r, "applicationID")
+	versionID, versionIDOK := claimPathIdentity(r, "versionID")
+	if !applicationIDOK || !versionIDOK {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	value, err := s.runtimeVersions.Resolve(r.Context(), claim, applicationID, versionID)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		switch {
+		case errors.Is(err, ErrContentUnauthorized):
+			status = http.StatusForbidden
+		case errors.Is(err, ErrContentNotFound):
+			// The claim was good and the agent/version pair was not. Kept
+			// distinct from 403 so an operator can tell a stale nested
+			// reference from a rejected claim; the worker collapses both into
+			// its own failure taxonomy either way.
+			status = http.StatusNotFound
+		case errors.Is(err, ErrContentUnavailable):
+			s.logger.WarnContext(
+				r.Context(),
+				"nested application version unavailable",
+				"stage",
+				runtimeContextUnavailableStage(err),
+			)
+		}
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) == 0 || len(encoded) > maxRuntimeApplicationVersionResponseBytes {
+		// Refused, never trimmed: the body is one indivisible definition, and a
+		// truncated one would either fail the client's JSON decode or, worse,
+		// parse into an agent missing tools its author attached.
+		clearContentBytes(encoded)
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	defer clearContentBytes(encoded)
+	digest := sha256.Sum256(encoded)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(encoded)))
+	w.Header().Set("Content-Digest", formatSHA256Digest(digest))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(encoded); err != nil {
+		s.logger.WarnContext(r.Context(), "nested application version write failed")
+	}
+}
+
+// PostAttachmentObject serves one stored chat attachment's text under the live
+// claim that already authorized the turn the file rides on.
+//
+// It is the server twin of PostApplicationVersion above — same claim parsing,
+// same concurrency gate, same private-no-cache headers, same error taxonomy
+// plus one status — and that symmetry is the point: the worker reaches every
+// runtime-context route over one mTLS channel with one authority, and a route
+// that authorized differently would be a second, weaker contract on the same
+// connection.
+//
+// THE ONE ADDED STATUS IS 422. A stored object that cannot be served as text —
+// oversized, empty, or not UTF-8 — is neither a rejected claim nor a missing
+// file, and the difference matters operationally: 404 says the reference is
+// stale and someone should look at the row, while 422 says the file is exactly
+// what it claims to be and this route will never be able to read it. The worker
+// treats both as "unreadable" and announces the file by name either way, so
+// neither ever fails a turn.
+func (s *ContentServer) PostAttachmentObject(w http.ResponseWriter, r *http.Request) {
+	setPrivateNoCacheHeaders(w.Header())
+	if !s.acquire(w) {
+		return
+	}
+	defer s.release()
+	if s.runtimeObjects == nil || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	claim, err := parseExecutionClaim(r)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	bucket, bucketErr := claimPathPart(r, "bucket")
+	name, nameErr := claimPathPart(r, "name")
+	if bucketErr != nil || nameErr != nil {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	value, err := s.runtimeObjects.Resolve(r.Context(), claim, bucket, name)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		switch {
+		case errors.Is(err, ErrContentUnauthorized):
+			// Also the CROSS-CONVERSATION refusal. It is deliberately the same
+			// 403 a stale or foreign claim gets: a caller must not be able to
+			// learn, from the status alone, that an object exists in a
+			// conversation it does not hold a claim for.
+			status = http.StatusForbidden
+		case errors.Is(err, ErrContentNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, ErrContentRejected):
+			status = http.StatusUnprocessableEntity
+		case errors.Is(err, ErrContentUnavailable):
+			s.logger.WarnContext(
+				r.Context(),
+				"attachment object unavailable",
+				"stage",
+				runtimeContextUnavailableStage(err),
+			)
+		}
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) == 0 || len(encoded) > maxRuntimeAttachmentObjectResponseBytes {
+		// Refused, never trimmed. A truncated document is worse than an
+		// unread one: the model is shown a prefix and told it is the file.
+		clearContentBytes(encoded)
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	defer clearContentBytes(encoded)
+	digest := sha256.Sum256(encoded)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(encoded)))
+	w.Header().Set("Content-Digest", formatSHA256Digest(digest))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(encoded); err != nil {
+		s.logger.WarnContext(r.Context(), "attachment object write failed")
+	}
+}
+
 func (s *ContentServer) acquire(w http.ResponseWriter) bool {
 	select {
 	case s.requests <- struct{}{}:
@@ -401,6 +673,23 @@ func claimPathPart(r *http.Request, name string) (string, error) {
 		return "", fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
 	}
 	return value, nil
+}
+
+// claimPathIdentity reads one canonical positive integer path segment.
+//
+// Canonical, not merely parseable: the worker formats these with plain
+// `{application_id}` interpolation (runtime_context.rs:454-456), so "007" or
+// "+7" never come from it. Admitting them would let two spellings of the same
+// identity address one agent, and the response echoes the identity back for the
+// client to compare (:554-564) — a comparison that only means something while
+// exactly one spelling reaches the query.
+func claimPathIdentity(r *http.Request, name string) (uint64, bool) {
+	text := chi.URLParam(r, name)
+	value, err := strconv.ParseUint(text, 10, 64)
+	if err != nil || value == 0 || strconv.FormatUint(value, 10) != text {
+		return 0, false
+	}
+	return value, true
 }
 
 func singleHeader(header http.Header, name string) (string, bool) {

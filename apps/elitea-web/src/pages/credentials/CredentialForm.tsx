@@ -37,7 +37,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 
-import { CredentialsControls, CredentialsTabBar } from '@/features/credentials';
+import { CredentialsActions } from '@/features/credentials';
 
 import { CredentialSchemaField } from './CredentialFormFields';
 import {
@@ -150,7 +150,7 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
       )}
       {c.typeDescriptor?.has_test_connection && <TestConnectionBlock controller={c} />}
       <Box sx={actionsRowSx}>
-        <CredentialsTabBar
+        <CredentialsActions.TabBar
           isEditing={mode.kind === 'edit'}
           onSave={c.save}
           onDiscard={onDiscarded}
@@ -158,7 +158,7 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
           isSaving={c.isSaving}
         />
         {mode.kind === 'edit' && (
-          <CredentialsControls
+          <CredentialsActions.Controls
             credentialName={c.name}
             canDelete={c.canDelete}
             isDeleting={c.isDeleting}
@@ -201,6 +201,19 @@ function TestConnectionBlock({ controller }: TestConnectionBlockProps): ReactNod
           sx={errorTextSx}
         >
           {controller.testMessage || t('credentials.form.testFailed', 'Connection test failed')}
+        </Typography>
+      )}
+      {/* NOT the error colour: a credential type this build has no checker
+          for has not failed anything, and painting it red sends the user off
+          to fix a credential that is fine. Same "not supported yet" wording
+          the server sends, rendered in the neutral secondary text style the
+          rest of this form uses for informational lines. */}
+      {controller.testResult === 'unsupported' && (
+        <Typography
+          variant="labelSmall"
+          color="text.secondary"
+        >
+          {controller.testMessage || t('credentials.form.testUnsupported', 'Checking connection is not supported yet for this configuration type.')}
         </Typography>
       )}
     </Box>

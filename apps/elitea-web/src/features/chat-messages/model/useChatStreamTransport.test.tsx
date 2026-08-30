@@ -48,8 +48,25 @@ function pendingAssistant(): ChatMessage {
   };
 }
 
-/** Drives the hook and keeps the history it produces observable to the test. */
-function harness(): {
+/** The user's question, already on screen before the run is started. */
+function userQuestion(): ChatMessage {
+  return {
+    id: QUESTION_ID,
+    role: "user",
+    name: "Alice",
+    content: "hi",
+    createdAt: "2026-08-13T00:00:00.000Z",
+  };
+}
+
+/**
+ * Drives the hook and keeps the history it produces observable to the test.
+ *
+ * `initial` defaults to a message the reducer has already created. Pass a
+ * transcript WITHOUT one to reach the state a refusal arrives in: the run is
+ * started, no frame has been folded in yet, so nothing is in flight.
+ */
+function harness(initial: readonly ChatMessage[] = [pendingAssistant()]): {
   readonly api: { current: UseChatStreamTransportResult | undefined };
   readonly history: { current: readonly ChatMessage[] };
   readonly agentEvents: unknown[];
@@ -59,9 +76,7 @@ function harness(): {
   const api: { current: UseChatStreamTransportResult | undefined } = {
     current: undefined,
   };
-  const history: { current: readonly ChatMessage[] } = {
-    current: [pendingAssistant()],
-  };
+  const history: { current: readonly ChatMessage[] } = { current: initial };
   const agentEvents: unknown[] = [];
   const errors: string[] = [];
 
@@ -518,7 +533,7 @@ describe("useChatStreamTransport", () => {
     act(() => {
       registry.emit(
         "execution.failed",
-        JSON.stringify({ error: "model unavailable" }),
+        JSON.stringify({ code: "INTERNAL", safe_message: "model unavailable" }),
       );
     });
 
@@ -526,6 +541,103 @@ describe("useChatStreamTransport", () => {
     expect(history.current[0]?.isLoading).toBe(false);
     expect(history.current[0]?.exception).toBe("model unavailable");
     expect(errors).toEqual(["model unavailable"]);
+  });
+
+  it("shows the server's own sentence, which it sends as safe_message", async () => {
+    // Measured on a live stack: the native Rust runtime refused an agent
+    // profile and Main durably recorded exactly this payload in
+    // `elitea_runtime.execution_replay_events`. The transport read `error`,
+    // a key no producer of `execution.failed` writes — every one of them
+    // emits `{code, safe_message, retryable}` — so the user got the generic
+    // "The agent run failed." instead of the reason.
+    okStart();
+    const { api, history, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        "execution.failed",
+        JSON.stringify({
+          code: "UNSUPPORTED_CAPABILITY",
+          safe_message: "Configuration type is not supported.",
+          retryable: false,
+        }),
+      );
+    });
+
+    expect(history.current[0]?.exception).toBe(
+      "Configuration type is not supported.",
+    );
+    expect(errors).toEqual(["Configuration type is not supported."]);
+  });
+
+  it("puts a refusal on screen when it beat the first frame, so no message exists yet", async () => {
+    // The second half of the same live observation: the refusal was the run's
+    // FIRST event, so the reducer had never created an assistant message —
+    // `settleInFlight` matched nothing, returned the history unchanged, and
+    // the composer re-enabled over a transcript that said nothing at all.
+    okStart();
+    const { api, history, Probe } = harness([userQuestion()]);
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        "execution.failed",
+        JSON.stringify({
+          code: "UNSUPPORTED_CAPABILITY",
+          safe_message: "Configuration type is not supported.",
+          retryable: false,
+        }),
+      );
+    });
+
+    expect(history.current).toHaveLength(2);
+    const failure = history.current[1];
+    expect(failure?.role).toBe("assistant");
+    // `exception` is what `ApplicationAnswer` renders through `ErrorTrace`.
+    expect(failure?.exception).toBe("Configuration type is not supported.");
+    expect(failure?.isStreaming).toBe(false);
+    expect(failure?.isLoading).toBe(false);
+    // Captured before `detach` clears it, so regenerate can still find the
+    // question this refused turn answered.
+    expect(failure?.questionId).toBe(QUESTION_ID);
+  });
+
+  it("keeps the user's question when the turn is refused", async () => {
+    // Observed once in the browser as a question that vanished on refusal.
+    // Nothing in this transport removes it — the assertion pins that.
+    okStart();
+    const { api, history, Probe } = harness([userQuestion()]);
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        "execution.failed",
+        JSON.stringify({ code: "INTERNAL", safe_message: "nope" }),
+      );
+    });
+
+    expect(history.current[0]).toEqual(userQuestion());
+  });
+
+  it("names the failure by its code when the payload carries no sentence", async () => {
+    okStart();
+    const { api, history, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        "execution.failed",
+        JSON.stringify({ code: "DEADLINE_EXCEEDED", retryable: true }),
+      );
+    });
+
+    expect(history.current[0]?.exception).toBe("DEADLINE_EXCEEDED");
+    expect(errors).toEqual(["DEADLINE_EXCEEDED"]);
   });
 
   it("does not settle the message on the first drop — that turn is still resumable", async () => {
@@ -699,7 +811,7 @@ describe("stream ownership (#328)", () => {
       );
       registry.emit(
         "execution.failed",
-        JSON.stringify({ error: "LEAKED FAILURE" }),
+        JSON.stringify({ code: "INTERNAL", safe_message: "LEAKED FAILURE" }),
       );
     });
 
@@ -986,8 +1098,42 @@ describe("resume after a drop (#329)", () => {
     expect(registry.getOpen()).toHaveLength(0);
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(history.current[0]?.isLoading).toBe(false);
-    expect(history.current[0]?.exception).toBeUndefined();
+    // The reason goes ON the message, not only to `onStreamError`: the
+    // callback drives a toast that is gone in seconds, while the transcript is
+    // what the user still has when they come back to the tab.
+    expect(history.current[0]?.exception).toBe(
+      "The connection to the agent run was lost.",
+    );
     expect(errors).toEqual(["The connection to the agent run was lost."]);
+  });
+
+  it("still says the connection was lost when the stream never delivered a frame", async () => {
+    // The same hole as the early refusal, on the other path: a stream that
+    // dies before its first frame leaves nothing in flight for
+    // `settleInFlight` to mark, so the turn ended with an untouched
+    // transcript and a silently re-enabled composer.
+    okStart();
+    const { api, history, Probe } = harness([userQuestion()]);
+    render(<Probe />);
+    await started(api);
+
+    for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+      act(() => {
+        registry.fail();
+        vi.advanceTimersByTime(delay);
+      });
+    }
+    act(() => {
+      registry.fail();
+      vi.advanceTimersByTime(600_000);
+    });
+
+    expect(history.current).toHaveLength(2);
+    expect(history.current[0]).toEqual(userQuestion());
+    expect(history.current[1]?.role).toBe("assistant");
+    expect(history.current[1]?.exception).toBe(
+      "The connection to the agent run was lost.",
+    );
   });
 
   it("spends a fresh budget after a delivered frame, not the one the last outage exhausted", async () => {
@@ -1155,5 +1301,80 @@ describe("the regeneration path owns its replacement stream", () => {
     );
     expect(requestBody).toEqual({ message_id: RESPONSE_MESSAGE_ID });
     expect(registry.getOpen()[0]?.url).toContain(EVENTS_URL);
+  });
+
+  /**
+   * The still-finalizing refusal, read off the REAL response rather than a
+   * hand-built error.
+   *
+   * This is the only place in the app that can tell `retry-later` from every
+   * other failure, and the distinction is not cosmetic: `no-transport` sends
+   * the caller to the legacy REST trigger, which posts the same regeneration
+   * WITHOUT an `execution_contract` and is answered 400 — so a widget-level
+   * retry can only ever work if this classification happens here first.
+   */
+  it("reports the still-finalizing 409 as retry-later, not as an absent transport", async () => {
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/regenerate/prompt_lib/7/${RESPONSE_MESSAGE_ID}`,
+        () =>
+          HttpResponse.json(
+            {
+              error: "agent_regeneration_pending",
+              message: "The previous agent response is still being finalized.",
+              retryable: true,
+            },
+            { status: 409, headers: { "Retry-After": "1" } },
+          ),
+      ),
+    );
+    const { api, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await expect(
+        api.current?.regenerateDetailed({
+          projectId: 7,
+          conversationUuid: "uuid-1",
+          responseMessageId: RESPONSE_MESSAGE_ID,
+          body: { message_id: RESPONSE_MESSAGE_ID },
+        }),
+      ).resolves.toEqual({ started: false, reason: "retry-later" });
+    });
+
+    // Refused ⇒ no run to watch. A subscription here would leave a stream open
+    // for an execution the server never created.
+    expect(registry.getOpen()).toHaveLength(0);
+  });
+
+  /**
+   * The OTHER 409s on the same route state `retryable: false`
+   * (`agent_hitl_already_resolved`, `agent_authorization_already_resolved`) —
+   * repeating those never succeeds, so they must keep the fallback behaviour.
+   */
+  it("does NOT read a non-retryable 409 as retry-later", async () => {
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/regenerate/prompt_lib/7/${RESPONSE_MESSAGE_ID}`,
+        () =>
+          HttpResponse.json(
+            { error: "agent_hitl_already_resolved", retryable: false },
+            { status: 409 },
+          ),
+      ),
+    );
+    const { api, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await expect(
+        api.current?.regenerateDetailed({
+          projectId: 7,
+          conversationUuid: "uuid-1",
+          responseMessageId: RESPONSE_MESSAGE_ID,
+          body: { message_id: RESPONSE_MESSAGE_ID },
+        }),
+      ).resolves.toEqual({ started: false, reason: "no-transport" });
+    });
   });
 });

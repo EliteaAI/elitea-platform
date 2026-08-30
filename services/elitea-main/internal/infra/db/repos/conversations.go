@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,12 +174,40 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 	if err != nil {
 		return nil, err
 	}
+	// The auth_core__user join resolves a DISPLAY NAME for user participants.
+	// The REST attach path stores only `entity_meta.id` (the numeric user id
+	// the resolver's author join needs), and the participant writer records
+	// its own disclosed gap: "Legacy also resolves a user name ... this
+	// repository does not perform that lookup" (participantDisplayMeta). The
+	// transcript's author captions read `meta.user_name` off THIS payload, so
+	// without the lookup every author renders as "User <n>".
+	//
+	// Probe-guarded, not assumed: auth_core__user is BOOTSTRAP-owned
+	// (001_initial.sql), not part of the shared migration corpus this
+	// repository's RunMigrations applies — a corpus-only database (the
+	// integration suite is one) has chat_participants and no auth table, and
+	// an unguarded join would turn every participants read into 42P01 there.
+	// Same arrangement as the application_tools probe in applications.go: a
+	// display name is an enrichment, and its absence must never take the
+	// payload down with it.
+	authorIdentityJoin := ""
+	authorIdentityColumns := "'', ''"
+	var authTable *string
+	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('auth_core__user')::text`).Scan(&authTable); err == nil && authTable != nil {
+		authorIdentityColumns = "COALESCE(au.name, ''), COALESCE(au.email, '')"
+		authorIdentityJoin = `
+		LEFT JOIN auth_core__user au
+			ON p.entity_name = 'user'
+			AND p.entity_meta->>'id' ~ '^[0-9]+$'
+			AND au.id = (p.entity_meta->>'id')::integer`
+	}
 	q := fmt.Sprintf(`
-		SELECT p.id, p.entity_name, p.entity_meta, p.meta, pm.entity_settings
+		SELECT p.id, p.entity_name, p.entity_meta, p.meta, pm.entity_settings,
+			%s
 		FROM %s.chat_participant_mapping pm
-		JOIN %s.chat_participants p ON p.id = pm.participant_id
+		JOIN %s.chat_participants p ON p.id = pm.participant_id%s
 		WHERE pm.conversation_id = $1
-		ORDER BY pm.id`, s, s)
+		ORDER BY pm.id`, authorIdentityColumns, s, s, authorIdentityJoin)
 
 	rows, err := r.pool.Query(ctx, q, id)
 	if err != nil {
@@ -190,7 +219,8 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 	for rows.Next() {
 		var p conversations.Participant
 		var entityMeta, meta, entitySettings []byte
-		if err := rows.Scan(&p.ID, &p.EntityName, &entityMeta, &meta, &entitySettings); err != nil {
+		var authorName, authorEmail string
+		if err := rows.Scan(&p.ID, &p.EntityName, &entityMeta, &meta, &entitySettings, &authorName, &authorEmail); err != nil {
 			continue
 		}
 		if entityMeta != nil {
@@ -204,6 +234,19 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 		}
 		if p.Meta == nil {
 			p.Meta = map[string]any{}
+		}
+		// Overlay, never overwrite: a participant that already carries a
+		// user_name (the socket-era writer resolved one) keeps it, and a user
+		// the auth table no longer holds stays as stored — the reader then
+		// renders its own "no longer available" state.
+		if p.EntityName == "user" {
+			if existing, _ := p.Meta["user_name"].(string); existing == "" {
+				if authorName != "" {
+					p.Meta["user_name"] = authorName
+				} else if authorEmail != "" {
+					p.Meta["user_name"] = authorEmail
+				}
+			}
 		}
 		if entitySettings != nil {
 			_ = json.Unmarshal(entitySettings, &p.EntitySettings) // best-effort: DB column is trusted JSON
@@ -1353,6 +1396,7 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 	q := fmt.Sprintf(`
 		SELECT mg.id, mg.conversation_id, COALESCE(mg.uuid::text, ''),
 			p.entity_name, mg.meta, mg.created_at,
+			mg.author_participant_id, mg.sent_to_id, mg.reply_to_id,
 			COALESCE((
 				SELECT string_agg(mt.content, E'\n' ORDER BY mi.order_index)
 				FROM %s.chat_message_items mi
@@ -1372,15 +1416,24 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 	defer rows.Close()
 
 	items := []conversations.Message{}
+	// Index-aligned with `items`: the numeric group id each row was built
+	// from, which the attachment projection below keys on. Kept beside the
+	// slice rather than re-parsed out of `Message.ID` (a string on the wire)
+	// so the join reads the id the database returned, not a round trip
+	// through its decimal spelling.
+	groupIDs := []int{}
 	for rows.Next() {
 		var m conversations.Message
 		var meta []byte
 		var entityName string
+		var groupID int
 		// A scan failure used to `continue`, so an unreadable row silently
 		// dropped a message out of the transcript.
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt, &m.Content); err != nil {
+		if err := rows.Scan(&groupID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt,
+			&m.AuthorParticipantID, &m.SentToID, &m.ReplyToID, &m.Content); err != nil {
 			return conversations.MessagesListResponse{}, fmt.Errorf("conversations: scan message: %w", err)
 		}
+		m.ID = strconv.Itoa(groupID)
 		if meta != nil {
 			_ = json.Unmarshal(meta, &m.Metadata) // best-effort: DB column is trusted JSON
 		}
@@ -1392,9 +1445,39 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		}
 		m.ContentType = "text"
 		items = append(items, m)
+		groupIDs = append(groupIDs, groupID)
 	}
 	if err := rows.Err(); err != nil {
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
+	}
+
+	// The files each question was sent with (#606 read path, part 2).
+	//
+	// This projection is what the CHAT PAGE reads: useChatPageData.ts hands
+	// these rows to ChatBox as `message_groups`, and `UserMessage`'s
+	// `findAttachmentItems` filters them for `attachment_message` items. Until
+	// this join existed the route answered every row with no items at all, so a
+	// reloaded conversation showed the question and silently dropped the file
+	// that rode it — while the details route, reading the SAME rows through
+	// ListMessageGroups, returned it. Two projections of one transcript
+	// disagreeing is the defect; the second one is now this.
+	//
+	// TEXT ITEMS ARE DELIBERATELY NOT INCLUDED. This route already collapses
+	// each group's text into `content` (the string_agg above), which every
+	// client reads as the message body; re-emitting the same text as items
+	// would give two sources for one sentence and let them drift. Attachments
+	// have no such representation here — they exist in this response only as
+	// items — so they are what this carries.
+	if len(groupIDs) > 0 {
+		byGroup, err := r.attachmentItemsByGroup(ctx, s, groupIDs)
+		if err != nil {
+			return conversations.MessagesListResponse{}, err
+		}
+		for i := range items {
+			if attachments := byGroup[groupIDs[i]]; len(attachments) > 0 {
+				items[i].MessageItems = attachments
+			}
+		}
 	}
 
 	totalPages := total / limit
@@ -1421,6 +1504,63 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		PageSize:   limit,
 		TotalPages: totalPages,
 	}, nil
+}
+
+// attachmentItemsByGroup projects the `attachment_message` items of the given
+// message groups, in the SAME shape ListMessageGroups embeds them in — item id,
+// discriminator, order index and the `attachmentItemDetails` payload — so a
+// client that already renders the details route's items needs no second reader
+// for this one. Two shapes for one item is how a renderer ends up branching on
+// which endpoint it was handed.
+//
+// INNER JOIN, not LEFT. An item whose discriminator says `attachment_message`
+// but which has no chat_messages_attachment row is not an attachment with empty
+// fields, it is a broken row; joining it in with nil name/bucket would hang an
+// unaddressable `filepath: "//"` off a message and point the client's download
+// at artifact storage for a file that does not exist. It is dropped instead,
+// which is the same "the row is required as well as the item_type" rule
+// ListMessageGroups states for its own LEFT-joined equivalent.
+//
+// A query failure PROPAGATES. `chat_messages_attachment` is a tenant table
+// (migrations/tenant/0127) and a schema where it is missing answers 42P01 here;
+// reporting that as "this conversation's messages carry no files" is the #599
+// failure shape — an empty successful answer that a caller cannot tell from the
+// truth — and it is exactly how the attachment gap stayed invisible on the read
+// side for as long as it did.
+func (r *ConversationsRepo) attachmentItemsByGroup(ctx context.Context, s string, groupIDs []int) (map[int][]map[string]any, error) {
+	q := fmt.Sprintf(`
+		SELECT mi.message_group_id, mi.id, mi.item_type, mi.order_index,
+			ma.name, ma.bucket, ma.attachment_type, ma.content
+		FROM %s.chat_message_items mi
+		JOIN %s.chat_messages_attachment ma ON ma.id = mi.id
+		WHERE mi.message_group_id = ANY($1) AND mi.item_type = 'attachment_message'
+		ORDER BY mi.message_group_id, mi.order_index`, s, s)
+
+	rows, err := r.pool.Query(ctx, q, groupIDs)
+	if err != nil {
+		return nil, fmt.Errorf("conversations: list message attachments: %w", err)
+	}
+	defer rows.Close()
+
+	byGroup := map[int][]map[string]any{}
+	for rows.Next() {
+		var groupID, itemID, orderIndex int
+		var itemType, name, bucket, attachmentType string
+		var content []byte
+		if err := rows.Scan(&groupID, &itemID, &itemType, &orderIndex, &name, &bucket, &attachmentType, &content); err != nil {
+			return nil, fmt.Errorf("conversations: scan message attachment: %w", err)
+		}
+		byGroup[groupID] = append(byGroup[groupID], map[string]any{
+			"id":           itemID,
+			"item_type":    itemType,
+			"order_index":  orderIndex,
+			"item_details": attachmentItemDetails(itemID, itemType, name, bucket, attachmentType, content),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("conversations: list message attachments: %w", err)
+	}
+	return byGroup, nil
 }
 
 func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error) {

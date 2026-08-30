@@ -1,4 +1,5 @@
 import { memo, useCallback, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 
 import AddIcon from '@mui/icons-material/Add';
 import Box from '@mui/material/Box';
@@ -11,6 +12,7 @@ import { agentEditorHooks } from '@/features/agents';
 import { t } from '@/shared/i18n';
 
 import { AttachmentButton } from './AttachmentButton';
+import type { AttachmentButtonHandle } from './AttachmentButton';
 import { AttachmentsPanel, MainMenuList, MenuPaper } from './PlusChatButton.parts';
 import {
   MENU_ITEMS,
@@ -62,6 +64,11 @@ import { PlusChatSubmenu } from './PlusChatSubmenu';
  *   - `onCreateToolkit`              — navigate/create a toolkit (`isMcp` for the MCPs category's "create new")
  *   - `participants`                 — list of participants for agent selection
  *   - `entitySubmenus`               — real pipelines/toolkits/mcps lists + the shared select callback (grouped to stay under the §3.5 12-prop budget)
+ *   - `attachmentButtonRef`          — imperative drop/paste handle, attached to a hidden always-mounted
+ *     `AttachmentButton` (baseline `PlusChatButton.jsx:313-320`'s `hiddenAttachment` Box). The visible
+ *     attachment rows live inside a `Popper` and only exist while the menu is open, so without this
+ *     hidden mount `useNewChatInputAttachmentBridge` (features/chat-input) finds `ref.current === null`
+ *     and silently discards every file dropped or pasted onto the chat surface.
  */
 export type { PlusChatButtonEntitySubmenus } from './PlusChatButton.helpers';
 
@@ -77,6 +84,7 @@ export interface PlusChatButtonProps {
   onCreateToolkit?: (isMcp?: boolean) => void;
   participants?: unknown[];
   entitySubmenus?: PlusChatButtonEntitySubmenus;
+  attachmentButtonRef?: RefObject<AttachmentButtonHandle | null>;
 }
 
 export const PlusChatButton = memo(
@@ -92,6 +100,7 @@ export const PlusChatButton = memo(
     onCreateToolkit,
     participants,
     entitySubmenus,
+    attachmentButtonRef,
   }: PlusChatButtonProps) => {
     const [menuOpen, setMenuOpen] = useState(false);
     const [activeSubmenu, setActiveSubmenu] = useState<SubmenuKey | null>(null);
@@ -187,6 +196,23 @@ export const PlusChatButton = memo(
 
     return (
       <>
+        {/*
+          * The drag-and-drop / paste target. The visible AttachmentButton rows
+          * below are inside a Popper and unmount whenever the menu is closed,
+          * so the injected imperative handle must live on this always-mounted,
+          * visually hidden instance instead — baseline PlusChatButton.jsx:
+          * 313-320 (`styles.hiddenAttachment`), byte-for-byte the same sx.
+          */}
+        <Box sx={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }}>
+          <AttachmentButton
+            ref={attachmentButtonRef}
+            onAttachFiles={onAttachFiles}
+            disableAttachments={disableAttachments}
+            attachments={attachments}
+            limits={limits}
+          />
+        </Box>
+
         <Tooltip title={t('widgets.chat.plusChatButton.tooltip', 'Add files, agents, toolkits and more...')} placement="top">
           <IconButton
             ref={anchorRef}

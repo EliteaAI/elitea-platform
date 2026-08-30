@@ -44,6 +44,7 @@ import ConfigurationsPanel from './ui/ai-configuration/ConfigurationsPanel';
 import ModelCapabilitiesSection from './ui/ai-configuration/ModelCapabilitiesSection';
 import OpenAITemplate from './ui/ai-configuration/OpenAITemplate';
 import ProjectAIConfiguration from './ui/ai-configuration/ProjectAIConfiguration';
+import { RequestModelConnection } from './ui/ai-configuration/RequestModelConnection';
 import { useConfigurationsBySection } from './lib/ai-configuration/useConfigurationsBySection';
 import { useModelConfigurationLayer } from './lib/ai-configuration/useModelConfigurationLayer';
 import { useModelsQuery } from './api/ai-configuration/api';
@@ -95,12 +96,19 @@ export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIEL
  * `Configuration/ModelConfiguration.jsx` level, which the port had skipped
  * (issue #80): the chips component existed with no importer, and the helpers
  * it needs had no caller.
+ *
+ * `RequestModelConnection` is the user-facing half of the moderation flow: a
+ * member who cannot create a configuration asks an operator for a provider or
+ * a model, over the same `centry.moderation_state` wire the App Catalogue's
+ * "Request Access" card uses. It joins this bundle (rather than taking a slot
+ * of its own) because the page it mounts on is this one.
  */
 export const aiConfigurationFeature = {
   ConfigurationsPanel,
   ModelCapabilitiesSection,
   OpenAITemplate,
   ProjectAIConfiguration,
+  RequestModelConnection,
   useConfigurationsBySection,
   useModelConfigurationLayer,
   useModelsQuery,

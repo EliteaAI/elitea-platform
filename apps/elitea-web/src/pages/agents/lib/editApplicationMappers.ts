@@ -1,5 +1,6 @@
 import type { ApplicationCreationInput, ApplicationVersionDraft } from '@/entities/application-form';
 import type { VersionSummary } from '@/entities/version';
+import { toAgentLlmSettings, toLlmSettingsBody, type AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import type {
   ApplicationDetail,
   ApplicationVersionDetail,
@@ -107,6 +108,80 @@ export function toVersionOptions(
  * trace, including why `meta`/`tags`/`tools` are deliberately omitted
  * (the handler discards them).
  */
+/**
+ * The `llm_settings` key of the write body, or nothing at all — a separate
+ * function both to keep `toVersionWriteBody`'s own cyclomatic complexity
+ * under this codebase's oxlint gate and because the choice needs explaining.
+ *
+ * The live edit wins over the stored copy, exactly as `instructions` does and
+ * for the same #307 reason: a Save-As-Version taken after picking a different
+ * model used to clone the OLD model onto the new version and say nothing.
+ *
+ * With NO edit the stored blob is forwarded VERBATIM rather than re-read
+ * through `toAgentLlmSettings`. A stored `{model_name}` with no
+ * `model_project_id` is a real, working shape — elitea-main's freeze fills
+ * the project id in from the catalogue row it resolves
+ * (`internal/application/agentexecution/tools.go`,
+ * `resolveCurrentAgentModel`) — and the strict read would reject it and
+ * silently move the cloned version onto a different model.
+ */
+function selectLlmSettings(
+  version: ApplicationVersionDetail,
+  edited: AgentLlmSettings | undefined,
+): Pick<VersionWriteRequest, 'llm_settings'> {
+  if (edited !== undefined) return { llm_settings: toLlmSettingsBody(edited) };
+  return version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings };
+}
+
+/**
+ * The `meta` blob both write paths send, MERGED over the version's stored
+ * one rather than replacing it: the Go handler assigns the whole map it
+ * receives (`applications/handler.go:826-828` on the PUT,
+ * `versionFromBody` on the POST), so sending `{step_limit}` alone would
+ * drop `internal_tools` and every other key the version already carries.
+ *
+ * Shared by `toVersionWriteBody` and `toVersionSaveBody` so a Save and a
+ * Save-As-Version cannot disagree about it — which is the same reason those
+ * two already share their field selection.
+ */
+function toVersionMetaBody(
+  version: ApplicationVersionDetail,
+  edits?: EditApplicationVersionFields,
+): Pick<VersionWriteRequest, 'meta'> {
+  // `variables` is DROPPED from the stored blob, and this is load-bearing.
+  //
+  // Both handlers fold the body's TOP-LEVEL `variables` list into `meta`
+  // themselves, so a copy carried inside `meta` can only ever contradict the
+  // authoritative one — and on the create path it wins, because
+  // `versionFromBody` folds only when the top-level list is NON-EMPTY
+  // (`applications/handler.go:509-511`). Forwarding it there resurrected
+  // deleted variables: delete an agent's last variable, Save As Version, and
+  // the new version was inserted with `meta.variables` still holding it while
+  // `application_variables` held no row. `agent_chat.sql` COALESCEs the empty
+  // table onto `meta -> 'variables'`, and the Rust worker applies the meta
+  // copy LAST (`agents/variables.rs`), so the deleted value — a secret, in the
+  // case that matters — was substituted into every turn while the editor
+  // showed no variables at all.
+  //
+  // The update path folds on key PRESENCE and so was never exposed; dropping
+  // the key is correct for both, because both rebuild it from the list.
+  const { variables: _storedVariables, ...storedMeta } = (version.meta ?? {}) as Record<string, unknown>;
+  if (edits === undefined) return { meta: { ...storedMeta } };
+  return {
+    meta: {
+      ...storedMeta,
+      ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
+      /*
+       * #307 — `internal_tools` is the Tools panel's internal-tool switches.
+       * Always sent (not gated on being non-empty): turning the LAST one off
+       * has to reach the wire, and an `undefined`-when-empty guard would make
+       * exactly that one edit silently unsaveable.
+       */
+      internal_tools: [...edits.internalTools],
+    },
+  };
+}
+
 export function toVersionWriteBody(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
@@ -116,12 +191,29 @@ export function toVersionWriteBody(
     ...(version.agent_type === undefined ? {} : { agent_type: version.agent_type }),
     instructions: edits?.instructions ?? version.instructions ?? '',
     welcome_message: edits?.welcomeMessage ?? version.welcome_message ?? '',
-    ...(version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings }),
+    ...selectLlmSettings(version, edits?.llmSettings),
     conversation_starters: [...conversationStarters],
     variables: (edits?.variables ?? version.variables ?? []).map((variable) => ({
       name: variable.name ?? '',
       value: variable.value ?? '',
     })),
+    /*
+     * `meta` REACHES THE CREATE PATH — the comment that used to say otherwise
+     * here was wrong, and so is `VersionWriteRequest.tags`' generated
+     * description ("the two create paths still ignore the key, exactly as
+     * they ignore `meta`"). Traced end to end: `CreateVersion`
+     * (`applications/handler.go:811`) calls `versionFromBody`, which reads
+     * `vBody["meta"]` (`:504`) and only DEFAULTS `step_limit` when the key is
+     * absent; `insertVersion` (`repos/applications.go:517-525`) then persists
+     * it as the tenth column. Omitting it made every Save-As-Version reset
+     * `step_limit` to the default and drop `internal_tools` — the two keys
+     * the native Rust runtime gates admission on, so a cloned agent could
+     * stop running.
+     *
+     * `tags` stays omitted: that half of the old comment is correct.
+     * `versionFromBody` reads no `tags` key, so only the PUT writes them.
+     */
+    ...toVersionMetaBody(version, edits),
   };
 }
 
@@ -131,9 +223,10 @@ export function toVersionWriteBody(
  * cannot drift apart, and adds the two keys only the UPDATE path carries:
  * the version's own `name` (unchanged — `UpdateVersion` writes whatever
  * `name` it is given, so omitting it is fine but sending the current one is
- * closer to the baseline's whole-object PUT), `meta`, and `tags` — both of
- * which `toVersionWriteBody` deliberately omits because the CREATE handler
- * discards them.
+ * closer to the baseline's whole-object PUT) and `tags`, which
+ * `toVersionWriteBody` omits because `versionFromBody` reads no `tags` key
+ * on the create path. `meta` is NOT in that list: it comes through the
+ * shared `toVersionMetaBody`, because the create path reads it too.
  *
  * #345 — `tags` is ALWAYS sent, never gated on being non-empty: removing
  * the last tag has to reach the wire, and the handler reads the key's
@@ -142,32 +235,16 @@ export function toVersionWriteBody(
  * just typed is stripped: the server matches by name and a negative id
  * would be fiction on the wire.
  *
- * `meta` is MERGED over the stored blob rather than replaced: the Go
- * handler assigns the whole `meta` map it receives
- * (`applications/handler.go:826-828`), so sending `{step_limit}` alone
- * would drop `internal_tools` and every other key the version already
- * carries.
+ * See `toVersionMetaBody` for why `meta` is merged rather than replaced.
  */
 export function toVersionSaveBody(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
   edits: EditApplicationVersionFields,
 ): VersionWriteRequest {
-  const storedMeta: Record<string, unknown> = version.meta ?? {};
   return {
     name: version.name,
     ...toVersionWriteBody(version, conversationStarters, edits),
-    /*
-     * #307 — `internal_tools` is the Tools panel's internal-tool switches.
-     * Always sent (not gated on being non-empty): turning the LAST one off
-     * has to reach the wire, and an `undefined`-when-empty guard would make
-     * exactly that one edit silently unsaveable.
-     */
-    meta: {
-      ...storedMeta,
-      ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
-      internal_tools: [...edits.internalTools],
-    },
     tags: edits.tags.map((tag) => ({
       ...(tag.id > 0 ? { id: tag.id } : {}),
       name: tag.name,
@@ -220,11 +297,24 @@ export function toFormValues(
  * shape `useSaveApplicationVersion` sends on write). `meta`'s
  * `step_limit`/`internal_tools` are read defensively from the opaque
  * passthrough blob with the SAME defaults `useCreateApplicationInitialValues`
- * seeds a brand-new draft with (`{ step_limit: 25, internal_tools:
- * ['internal_mcp'] }`) when the existing version's `meta` does not already
- * carry them in the expected shape — this page never invents a value the
- * existing version did not already have UNLESS the field is genuinely
- * absent.
+ * seeds a brand-new draft with (`{ step_limit: 25, internal_tools: [] }`,
+ * `entities/application-form/model/initialValues.ts:131`) when the existing
+ * version's `meta` does not already carry them in the expected shape.
+ *
+ * **`internal_tools` falls back to EMPTY, not `['internal_mcp']`.** The
+ * fallback here is more dangerous than a create-time default, because it
+ * rewrites an agent that already works: a stored version with no
+ * `internal_tools` key is admitted by the chat query's own COALESCE
+ * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362` reads
+ * `COALESCE(... -> 'internal_tools', '[]') IN ('[]', '["ask_user"]')`), so
+ * such an agent answers turns today — but the old `['internal_mcp']`
+ * fallback injected that name the first time a user saved ANY unrelated
+ * edit, after which every send came back 422 and the native runtime refused
+ * the name too (`services/elitea-worker-rust/src/agents/
+ * internal_tools.rs:47-61`). An explicitly stored array is still returned
+ * verbatim, `internal_mcp` included, so a deliberate opt-in round-trips
+ * through the editor unchanged — losing a setting on load would be a worse
+ * defect than the one this fixes.
  */
 export function toVersionDraft(
   version: ApplicationVersionDetail,
@@ -235,7 +325,7 @@ export function toVersionDraft(
   const internalToolsRaw = metaRecord['internal_tools'];
   const internalTools = Array.isArray(internalToolsRaw)
     ? internalToolsRaw.filter((entry): entry is string => typeof entry === 'string')
-    : ['internal_mcp'];
+    : [];
   return {
     name: version.name,
     agentType: version.agent_type === 'pipeline' ? 'pipeline' : undefined,
@@ -246,6 +336,12 @@ export function toVersionDraft(
       value: variable.value ?? '',
     })),
     meta: { step_limit: stepLimit, internal_tools: internalTools },
+    // Read back so a save round-trips the model the version already names.
+    // `undefined` when the stored blob is `{}` — every version written before
+    // the model picker existed — and `toVersionWriteRequest` then omits the
+    // key, leaving that version on the catalogue-default fallback it works on
+    // today rather than pinning it to a model this mapper guessed.
+    llmSettings: toAgentLlmSettings(version.llm_settings),
     tags: (version.tags ?? [])
       .map((tag) => tag.name)
       .filter((name): name is string => typeof name === 'string'),

@@ -136,6 +136,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		}
 		return nil, unsupportedStartBecause("model resolution", err)
 	}
+	normalizeCurrentAgentRuntimeProfile(ctx, version, request.ProjectID)
 	tools, ok := version["tools"].([]any)
 	if !ok {
 		return nil, unsupportedStart("version tools is not an array")
@@ -540,7 +541,35 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 		if !modelProjectSet {
 			settings["model_project_id"] = int64(selected.ProjectID)
 		}
-		if currentAgentModelFamilyConflict(settings) {
+		// A version that carries NO `temperature` key at all is normalized too,
+		// not only one whose temperature conflicts with a reasoning effort.
+		//
+		// The SDK worker reads it with a SUBSCRIPT --
+		// `"temperature": data['llm_settings']['temperature']`
+		// (elitea-sdk 0.9.8 `runtime/clients/client.py`, the revision
+		// `services/elitea-worker-python/elitea-sdk.lock.json` pins) -- so an
+		// absent key is a `KeyError` that ends the turn with an empty
+		// `is_error` row and an `agent_execution_internal_failure` naming
+		// nothing but `builtins.KeyError`. The native runtime tolerates the
+		// same document, which is why every stack running the Rust worker
+		// looked healthy.
+		//
+		// The two branches that DO normalize already prove this object is
+		// Main's to complete: the fallback path above sets it unconditionally,
+		// and the conflict test below only fires when a temperature is already
+		// there. The one shape left over -- model found, no temperature -- is
+		// exactly what the agent editor stores for a REASONING model (its
+		// picker writes at most one of `temperature`/`reasoning_effort`,
+		// `apps/elitea-web/src/features/agents/model/useSaveVersion.ts`) and
+		// what any API caller that sends `llm_settings` without one stores.
+		//
+		// `normalizeCurrentAgentModelFamily` is the platform's existing answer
+		// for both families (null for a reasoning model, 0.7 otherwise), so it
+		// is reused rather than a second default being invented here. Running
+		// it only when the key is ABSENT keeps every version that already
+		// carries a temperature byte-identical to what it resolved to before.
+		_, hasTemperature := settings["temperature"]
+		if !hasTemperature || currentAgentModelFamilyConflict(settings) {
 			normalizeCurrentAgentModelFamily(settings, selected.SupportsReasoning)
 		}
 	}
@@ -568,6 +597,121 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	settings["openai_compatible"] = compatible
 	version["llm_settings"] = settings
 	return nil
+}
+
+// currentAgentRuntimeDirectAgentType is the agent_type the runtime's direct
+// (non-pipeline) agent profile is named by. The STORED name is different — see
+// normalizeCurrentAgentRuntimeProfile.
+const currentAgentRuntimeDirectAgentType = "agent"
+
+// currentAgentStoredDirectAgentType is what the platform actually stores for a
+// direct agent. `versionFromBody` defaults an empty agent_type to it
+// (internal/api/v2/applications/handler.go:2447) and the write validator admits
+// only openai/react/dial/pipeline (handler.go:2378), so a version authored
+// through the product's own API can never carry the runtime's spelling.
+//
+// The two names are the same thing: the old application named a direct agent
+// `agent` and renamed it to `openai`, which the previous UI still carries as an
+// import-time rewrite (apps/elitea-ui/src/[fsd]/entities/import-wizard/lib/
+// helpers/importWizardModels.helpers.js:31-32 — "Rename agent_type 'agent' to
+// 'openai' for backward compatibility").
+const currentAgentStoredDirectAgentType = "openai"
+
+// normalizeCurrentAgentRuntimeProfile conforms the immutable snapshot to the
+// contract the runtime validates, for the one field where what the product
+// STORES and what the runtime ACCEPTS were allowed to drift apart: `agent_type`
+// "openai" becomes "agent", at the top level and on every nested application
+// reference in `tools`. It runs on the frozen copy only — nothing here is
+// written back to the version row.
+//
+// Without it the runtime refuses every stored direct agent as an unsupported
+// profile (services/elitea-worker-rust/src/agents/assembly.rs:575-578, and
+// agents/application_tools.rs:1043 for the nested case). The browser sees that
+// refusal as a turn that is admitted, streams nothing, and stops.
+//
+// A `pipeline` agent_type is left alone: the runtime names that one identically.
+// `react` and `dial` are left alone too — the runtime genuinely does not
+// implement them, and renaming them would turn an honest refusal into an agent
+// that silently runs as something else.
+//
+// It also removes `internal_mcp` from the version's internal-tool list — see
+// dropCurrentAgentInternalMCP.
+func normalizeCurrentAgentRuntimeProfile(ctx context.Context, version map[string]any, projectID int32) {
+	normalizeCurrentAgentTypeField(version)
+	dropCurrentAgentInternalMCP(ctx, version, projectID)
+	tools, ok := version["tools"].([]any)
+	if !ok {
+		return
+	}
+	for _, value := range tools {
+		if tool, ok := value.(map[string]any); ok {
+			normalizeCurrentAgentTypeField(tool)
+		}
+	}
+}
+
+// dropCurrentAgentInternalMCP removes `internal_mcp` from the version's
+// internal-tool list.
+//
+// Internal MCP is not an internal TOOL to this runtime: it reaches the worker
+// through the frozen tools projection, which is why currentRuntimeInternalTools
+// (start.go) already accepts the name on the conversation's list and drops it
+// rather than forwarding it. The runtime's own catalogue admits `ask_user` and
+// nothing else (services/elitea-worker-rust/src/agents/internal_tools.rs), and
+// it reads the VERSION's list as well as the conversation's, so a name left in
+// the snapshot refuses the whole profile.
+//
+// This matters for agents that already exist: the create-agent form seeded
+// `internal_mcp` into every new version until it was changed, so a project can
+// hold any number of saved agents carrying it. Dropping it here is what lets
+// those run without rewriting anyone's stored version. Nothing is lost — the
+// Python worker never reads this list at all (it takes its internal tools from
+// the execution input), and the Go layer was already discarding the name.
+//
+// A list that named nothing else becomes empty rather than absent: the two are
+// the same input to the runtime's catalogue, and rebuilding the key keeps the
+// snapshot's shape stable for anything that reads it.
+func dropCurrentAgentInternalMCP(ctx context.Context, version map[string]any, projectID int32) {
+	meta, ok := version["meta"].(map[string]any)
+	if !ok {
+		return
+	}
+	configured, ok := meta["internal_tools"].([]any)
+	if !ok {
+		return
+	}
+	retained := make([]any, 0, len(configured))
+	for _, value := range configured {
+		if name, ok := value.(string); ok && name == currentAgentInternalMCPTool {
+			continue
+		}
+		retained = append(retained, value)
+	}
+	if len(retained) == len(configured) {
+		return
+	}
+	// Logged, not silent. The agent is about to run WITHOUT a capability its
+	// author asked for, and this repository has been bitten more than once by a
+	// removal that read as "there was nothing to remove". The toolkit walk below
+	// states its own drops the same way (`agent_toolkit_skipped`).
+	slog.WarnContext(ctx, "agent internal tool is unavailable in this runtime and was omitted from the execution snapshot",
+		"event", "agent_internal_tool_skipped",
+		"reason_code", "internal_tool_unsupported",
+		"internal_tool", currentAgentInternalMCPTool,
+		"project_id", projectID,
+	)
+	meta["internal_tools"] = retained
+}
+
+// currentAgentInternalMCPTool is the name the previous create-agent form seeded
+// into every new version's meta.
+const currentAgentInternalMCPTool = "internal_mcp"
+
+func normalizeCurrentAgentTypeField(holder map[string]any) {
+	if agentType, ok := holder["agent_type"].(string); ok &&
+		agentType == currentAgentStoredDirectAgentType {
+		holder["agent_type"] = currentAgentRuntimeDirectAgentType
+	}
 }
 
 func selectCurrentAgentModel(

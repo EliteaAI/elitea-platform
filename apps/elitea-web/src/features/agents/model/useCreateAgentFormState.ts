@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { MAX_NAME_LENGTH } from '@/shared/lib/limits';
 import { PROMPT_PAYLOAD_KEY } from '@/shared/lib/prompt-payload';
+import { contextResolver } from '@/shared/lib/string';
 
 import { useFieldFocus } from '../lib/useFieldFocus';
 import type { AgentDraftValues, AgentFieldChange, AgentVariable } from './types';
@@ -37,6 +38,65 @@ export interface CreateAgentFormState {
   readonly onStepLimitChange: (value: number | undefined) => void;
   /** #307 — replaces the baseline's `setFieldValue('version_details.conversation_starters', ...)` inside `ConversationStarters.jsx` itself. */
   readonly onConversationStartersChange: (next: readonly string[]) => void;
+}
+
+/**
+ * The manual-authoring half of variable AUTHORING, restored from the
+ * baseline: `apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/
+ * configurations/input/InstructionsInput.jsx:85-101` (`updateVariableList`),
+ * fed by `shared/ui/input/FileReaderInput.jsx:62-75` on every instructions
+ * edit.
+ *
+ * The baseline's rule, measured (not guessed) off those two files:
+ *  - The variables list is DERIVED from the `{{placeholder}}`s in the
+ *    instructions and REPLACED wholesale — `contextResolver(value).map(...)`
+ *    with no merge of names the text no longer mentions.
+ *  - A value already typed for a name that is STILL mentioned survives
+ *    (`prevValue?.value || ''`, matched by name).
+ *  - A name the text stops mentioning is dropped unconditionally — the
+ *    baseline has no confirmation, and no "keep it because it had a value"
+ *    branch. This is deliberate parity, not an oversight on this port: the
+ *    row exists to fill a placeholder, so a list that could outlive its
+ *    placeholders is exactly the name/instructions desync the derive-only
+ *    design exists to prevent. Re-typing the placeholder brings the row
+ *    back (empty).
+ *  - There is no add-a-row editor anywhere in the baseline's agent form;
+ *    `components/VariableDialog.jsx` is the chat-run-time surface, not this
+ *    one. Authoring a variable IS typing its placeholder.
+ *
+ * DISCLOSED DEVIATIONS, both narrowing:
+ *  - `id` is not carried across. The baseline kept `prevValue?.id`; nothing
+ *    in this app reads or sends it (`pages/agents/lib/
+ *    useEditApplicationVersionFields.ts`'s `fromVersion` already drops it,
+ *    and both create pages type the field as `{name, value}[]`), so
+ *    emitting it would widen the wire shape for no reader.
+ *  - No 500ms debounce of its own. The baseline debounced because its
+ *    textarea's `onChange` was per-keystroke; this app's instructions field
+ *    is `shared/ui/CodeMirrorEditor`, whose `onChange` is ALREADY debounced
+ *    (~30ms) upstream. A second, longer debounce here would only re-open the
+ *    baseline's own race — a Save landing inside the window persists
+ *    instructions whose variables were never derived.
+ */
+function deriveVariablesFromInstructions(
+  instructions: string,
+  previous: readonly AgentVariable[],
+): readonly AgentVariable[] {
+  return contextResolver(instructions).map((name) => ({
+    name,
+    value: previous.find((variable) => variable.name === name)?.value ?? '',
+  }));
+}
+
+/**
+ * Whether the derived list is the one already held — checked so an
+ * instructions keystroke that changes no placeholder emits no
+ * `version_details.variables` write at all. Without it every keystroke would
+ * hand each caller a fresh array: harmless on the edit page (its `areEqual`
+ * compares key by key) but enough to arm the create pages' unsaved-changes
+ * guard (#133) on a draft nobody has actually changed.
+ */
+function sameVariables(a: readonly AgentVariable[], b: readonly AgentVariable[]): boolean {
+  return a.length === b.length && a.every((variable, index) => b[index]?.name === variable.name && b[index]?.value === variable.value);
 }
 
 export function useCreateAgentFormState(values: AgentDraftValues, onFieldChange: AgentFieldChange): CreateAgentFormState {
@@ -98,9 +158,23 @@ export function useCreateAgentFormState(values: AgentDraftValues, onFieldChange:
     [toggleFieldFocus],
   );
 
+  // Writes the text, then re-derives the variable rows from it — see
+  // `deriveVariablesFromInstructions` above for the baseline this restores.
+  // Both writes go through the same `onFieldChange`, and every mount routes
+  // both paths (`pages/agents/CreateApplication.tsx`,
+  // `pages/pipelines/CreatePipeline.tsx`,
+  // `pages/agents/lib/useEditApplicationVersionFields.ts`, and
+  // `lib/useAgentEditorCreate.ts`'s generic `setFieldValueAtPath`), so the
+  // rows appear on all four without any of them changing.
   const onInstructionsChange = useCallback(
-    (value: string) => onFieldChange('version_details.instructions', value),
-    [onFieldChange],
+    (value: string) => {
+      onFieldChange('version_details.instructions', value);
+      const derived = deriveVariablesFromInstructions(value, variables);
+      if (!sameVariables(derived, variables)) {
+        onFieldChange('version_details.variables', derived);
+      }
+    },
+    [onFieldChange, variables],
   );
 
   const onWelcomeMessageChange = useCallback(

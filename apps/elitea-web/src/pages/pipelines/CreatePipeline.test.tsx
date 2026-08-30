@@ -2,15 +2,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { http, HttpResponse } from 'msw';
+
 import { getCreateApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
+import { useNavBlockerStore } from '@/widgets/app-shell';
 
 import { CreatePipeline } from './CreatePipeline';
 import { renderPipelinesRoute } from './__tests__/testRouter';
 
+/**
+ * The model catalogue the Advanced-settings picker reads. Served for every
+ * test here because the page mounts the picker unconditionally and
+ * `src/test/setup.ts` runs msw with `onUnhandledRequest: 'error'`.
+ */
+const CATALOGUE = {
+  items: [
+    { name: 'gpt-4o', display_name: 'GPT-4o', project_id: '1', default: true },
+    { name: 'qwen3.5', display_name: 'Qwen 3.5', project_id: '1' },
+  ],
+  default_model_name: 'gpt-4o',
+};
+
+/** Fills Name/Description so Save enables, then clicks it. */
+async function fillAndSave(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.type(screen.getByTestId('agent-name-input'), 'my-pipeline');
+  await user.type(screen.getByTestId('agent-description-input'), 'does a thing');
+  const save = screen.getByTestId('pipeline-save-button');
+  await waitFor(() => expect(save).not.toBeDisabled());
+  await user.click(save);
+}
+
+/** Opens the model menu and picks a row by its catalogue display name. */
+async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName: string): Promise<void> {
+  await user.click(await screen.findByTestId('model-selector-name'));
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(displayName) }));
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  server.use(http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)));
 });
 
 afterEach(() => {
@@ -87,5 +119,120 @@ describe('CreatePipeline', () => {
 
     expect(router.state.location.pathname).toBe('/pipelines/create');
     expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  /*
+   * This page's save handler used to build the create body from
+   * `draftDefaults.versionDetails` and override `conversationStarters`
+   * alone, with `extraFields` in neither the body nor the `useCallback`
+   * dependency list — so everything typed on the page below the two
+   * schema-validated fields was replaced by the empty defaults, with a 201
+   * back and no way for the user to tell. Proven red before the fix: this
+   * assertion read `expected 25 to be 7`.
+   */
+  it('sends the step limit typed on the page in the create body, not the draft default', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    const stepLimit = await screen.findByLabelText(/Step limit/i);
+    await user.clear(stepLimit);
+    await user.type(stepLimit, '7');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect((versions?.[0]?.['meta'] as Record<string, unknown> | undefined)?.['step_limit']).toBe(7);
+  });
+
+  /*
+   * The pipelines twin of the agents-page defect: the typed welcome message
+   * lived in `extraFields`, was echoed back into the form, and never reached
+   * the POST body. Asserted off the body — the page echoing its own state is
+   * exactly what made this look saved.
+   */
+  it('sends the welcome message typed on the create form in the create POST body', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    await user.type(await screen.findByTestId('agent-welcome-message-input'), 'Hi there');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect(versions?.[0]?.['welcome_message']).toBe('Hi there');
+  });
+
+  it('mounts the model picker in the advanced-settings panel, showing the project default', async () => {
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    expect(await screen.findByText('GPT-4o')).toBeVisible();
+  });
+
+  it('sends the picked model as llm_settings, with a NUMERIC model_project_id', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const raw: string[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        raw.push(await request.text());
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    await screen.findByText('GPT-4o');
+    await chooseModel(user, 'Qwen 3.5');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(raw).toHaveLength(1));
+    const body = JSON.parse(raw[0] ?? '{}') as { versions?: Record<string, unknown>[] };
+    expect(body.versions?.[0]?.['llm_settings']).toMatchObject({ model_name: 'qwen3.5', model_project_id: 1 });
+    // On the raw text, because the worker's `positive_u32` refuses a string
+    // and `JSON.parse` would hide the difference from `toMatchObject`.
+    expect(raw[0]).toContain('"model_project_id":1');
+  });
+
+  it('omits llm_settings entirely when the author never touches the picker', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    await screen.findByText('GPT-4o');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect(versions?.[0]).not.toHaveProperty('llm_settings');
+  });
+
+  it('arms the unsaved-changes guard when a model is picked and nothing else is touched (#133)', async () => {
+    const user = userEvent.setup({ delay: null });
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    await screen.findByText('GPT-4o');
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+
+    await chooseModel(user, 'Qwen 3.5');
+
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
   });
 });

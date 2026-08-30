@@ -375,6 +375,7 @@ jobs:
         env:
           # A pull request measures its BASE. A push measures the new head.
           SURVIVAL_TIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           tip="${SURVIVAL_TIP}"
@@ -384,5 +385,20 @@ jobs:
             # parent IS the base.
             echo "::notice::${tip} is not in this clone; reading the first parent of HEAD instead"
             tip="$(git rev-parse HEAD^1 2>/dev/null || git rev-parse HEAD)"
+          fi
+          # A pull request can target a FEATURE branch (a stacked PR). Its base
+          # head then sits on unmerged feature commits, none of which name a
+          # pull request, and the walk refuses with "measured nothing" - a
+          # false alarm about the subject format. The trunk this check audits
+          # is the default branch, so fold the tip down to the last trunk
+          # commit underneath it. On a pull request into the default branch the
+          # base head already sits on the trunk and the fold is the identity.
+          trunk="origin/${DEFAULT_BRANCH}"
+          if git rev-parse -q --verify "${trunk}^{commit}" >/dev/null 2>&1; then
+            folded="$(git merge-base "${tip}" "${trunk}")" || folded="${tip}"
+            if [ "${folded}" != "${tip}" ]; then
+              echo "::notice::${tip} is not on ${trunk}; auditing the trunk beneath it at ${folded}"
+              tip="${folded}"
+            fi
           fi
           python scripts/ci/check_landed_line_survival.py --tip "${tip}"

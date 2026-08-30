@@ -39,11 +39,20 @@ export interface ResolvedUserMention {
   readonly [key: string]: unknown;
 }
 
-/** A conversation starter suggestion item. */
-export interface ConversationStarter {
-  readonly id: string;
-  readonly text: string;
-}
+/**
+ * A conversation starter suggestion — the string the empty-chat grid renders.
+ *
+ * Declared as `{id, text}` until now, which was a LIE about every consumer.
+ * The only thing this value ever reaches is `ChatConversationStarters`, whose
+ * own prop is `readonly unknown[]` and which puts each entry through
+ * `conversationStartersToStrings` before rendering it; nothing anywhere reads
+ * `.id` or `.text`. An `{id, text}` row handed to it renders the literal
+ * `[object Object]`, so the object form was not merely unused — it was the
+ * one shape that could not work. The producers are plain strings already
+ * (`ApplicationVersionDetail.conversationStarters`, and the agent editor's
+ * RHF field), so this makes the declared type match both ends.
+ */
+export type ConversationStarter = string;
 
 /* ------------------------------------------------------------------ */
 /*  Hook                                                                */

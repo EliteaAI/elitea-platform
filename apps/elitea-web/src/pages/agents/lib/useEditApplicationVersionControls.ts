@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useWatch, type Control } from 'react-hook-form';
 
 import type { ApplicationCreationInput } from '@/entities/application-form';
+import { disarmUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 import { getGetApplicationQueryKey } from '@/shared/api/generated/applications/applications';
 import type {
   ApplicationVersionDetail,
@@ -137,6 +138,20 @@ export function useEditApplicationVersionControls(
       if (projectId !== undefined && applicationId !== undefined) {
         void queryClient.invalidateQueries({ queryKey: getGetApplicationQueryKey(projectId, applicationId) });
       }
+      /*
+       * #133 — `EditApplication.tsx` arms the app-wide unsaved-changes guard
+       * off its own `isDirty`, and `NavBlockerDialog` blocks ANY pathname
+       * change while it is raised. Without this disarm the post-save
+       * navigation onto the version just created was intercepted by a modal
+       * asking whether to discard the changes it had just persisted, and
+       * Cancel left the URL on the old version while the new one silently
+       * held the work. `disarmUnsavedChangesNavBlocker`'s own doc comment
+       * names this failure; `EditApplicationActions` already calls it on the
+       * discard path. The pipelines twin
+       * (`pages/pipelines/lib/usePipelineVersionControls.ts`) carries the
+       * same pair of calls for the same reason.
+       */
+      disarmUnsavedChangesNavBlocker();
       goToVersion(Number(created.id));
     },
     [queryClient, projectId, applicationId, goToVersion],
@@ -154,6 +169,12 @@ export function useEditApplicationVersionControls(
       void queryClient.invalidateQueries({ queryKey: getGetApplicationQueryKey(projectId, applicationId) });
     }
     if (applicationId === undefined) return;
+    /*
+     * Same disarm, worse failure: this navigation is an ESCAPE. Blocking it
+     * strands the user on the URL of a version that no longer exists, which
+     * is precisely the 404 the comment above says it exists to avoid.
+     */
+    disarmUnsavedChangesNavBlocker();
     void navigate({
       to: '/agents/$tab/$agentId',
       params: { tab: tab ?? 'latest', agentId: String(applicationId) },

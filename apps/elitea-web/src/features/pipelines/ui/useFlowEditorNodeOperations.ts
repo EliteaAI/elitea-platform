@@ -4,13 +4,14 @@
  * into their own hook purely to keep `FlowEditor.tsx` itself under the
  * §3.5 400-line file-length budget.
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import type { Viewport } from '@xyflow/react';
 
 import { FlowEditorConstants } from '../lib/flow-editor/constants';
 import * as FlowEditorHelpers from '../lib/flow-editor/helpers/flowEditor.helpers';
 import * as LayoutHelpers from '../lib/flow-editor/helpers/layout.helpers';
+import * as NewNodeRevealHelpers from '../lib/flow-editor/helpers/newNodeReveal.helpers';
 import * as ParsePipelineHelpers from '../lib/flow-editor/helpers/parsePipeline.helpers';
 import type { YamlPipelineDocument } from '../lib/flow-editor/helpers/pipelineFlow.types';
 import type { FlowEdge, FlowNode, SetFlowEdges, SetFlowNodes, SetYamlJsonObject, YamlPipelineDocumentRef } from '../lib/flow-editor/reactFlowTypes';
@@ -22,6 +23,7 @@ export interface UseFlowEditorNodeOperationsArgs {
   readonly setYamlJsonObject: SetYamlJsonObject;
   readonly yamlJsonObjectRef: YamlPipelineDocumentRef;
   readonly getViewport: () => Viewport;
+  readonly setCenter: (x: number, y: number, options?: { readonly zoom?: number; readonly duration?: number }) => unknown;
   readonly getZoom: () => number;
   readonly editorRef: { readonly current: HTMLElement | null };
   readonly editorWidth: number;
@@ -94,12 +96,34 @@ function useOnNodeCreateAtPosition(args: Pick<UseFlowEditorNodeOperationsArgs, '
   );
 }
 
-/** `FlowEditor.jsx:263-276` — picks a free canvas position centred in the current viewport, then delegates to `onNodeCreateAtPosition`. */
+/**
+ * `FlowEditor.jsx:263-276` — picks a free canvas position centred in the current viewport (stacked below the existing cards when the centre is taken — see `calculatePositionForNewNode`), then delegates to `onNodeCreateAtPosition`.
+ *
+ * The stacking rule fires on the very first add (an `End` node always sits
+ * at the viewport centre, so the new card is always pushed below it), which
+ * put most of the card under the fold with nothing bringing it back into
+ * view. `calculateRevealCenterForNewNode` decides whether the viewport has
+ * to move at all and returns a target that keeps the current zoom unless
+ * the card cannot fit at it — unlike `fitView`, which rescales the whole
+ * canvas to the whole graph on every add, needed or not.
+ */
 function useOnAddNode(
-  args: Pick<UseFlowEditorNodeOperationsArgs, 'flowNodes' | 'getViewport' | 'editorWidth' | 'editorHeight'>,
+  args: Pick<UseFlowEditorNodeOperationsArgs, 'flowNodes' | 'getViewport' | 'setCenter' | 'editorRef' | 'editorWidth' | 'editorHeight'>,
   onNodeCreateAtPosition: UseFlowEditorNodeOperationsResult['onNodeCreateAtPosition'],
 ): UseFlowEditorNodeOperationsResult['onAddNode'] {
-  const { flowNodes, getViewport, editorWidth, editorHeight } = args;
+  const { flowNodes, getViewport, setCenter, editorRef, editorWidth, editorHeight } = args;
+
+  // The pending reveal, so an unmounting editor can cancel it. Without this
+  // the timer below still fires after the `ReactFlowProvider` has gone —
+  // adding a node and navigating away inside the delay left `setCenter`
+  // writing to a disposed store.
+  const revealTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (revealTimer.current !== undefined) clearTimeout(revealTimer.current);
+    },
+    [],
+  );
 
   return useCallback(
     type => {
@@ -108,10 +132,29 @@ function useOnAddNode(
         (editorWidth / 2 - 230 - viewPort.x) / viewPort.zoom,
         (editorHeight / 2 - 200 - viewPort.y) / viewPort.zoom,
         flowNodes,
+        type,
       );
-      return onNodeCreateAtPosition(type, { x: xPos, y: yPos });
+      const created = onNodeCreateAtPosition(type, { x: xPos, y: yPos });
+      // Deferred and re-measured rather than reusing `editorWidth`/
+      // `editorHeight` above: those are the pane's size DURING the add, and a
+      // node that opens the admission panel shrinks the pane immediately
+      // after it. `setCenter` is called without a duration, like every other
+      // reveal in this editor — `settle()` in the @visual suite freezes CSS
+      // transitions, not React Flow's own d3 one, so an animated pan would
+      // make every shot that adds a node a timing race.
+      if (revealTimer.current !== undefined) clearTimeout(revealTimer.current);
+      revealTimer.current = setTimeout(() => {
+        revealTimer.current = undefined;
+        const pane = editorRef.current;
+        const revealCenter = NewNodeRevealHelpers.calculateRevealCenterForNewNode({ x: xPos, y: yPos }, type, getViewport(), {
+          width: pane?.offsetWidth ?? editorWidth,
+          height: pane?.offsetHeight ?? editorHeight,
+        });
+        if (revealCenter) void setCenter(revealCenter.x, revealCenter.y, { zoom: revealCenter.zoom });
+      }, NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
+      return created;
     },
-    [getViewport, editorWidth, editorHeight, flowNodes, onNodeCreateAtPosition],
+    [getViewport, setCenter, editorRef, editorWidth, editorHeight, flowNodes, onNodeCreateAtPosition],
   );
 }
 

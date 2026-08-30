@@ -16,12 +16,12 @@ import {
   useConfigurationDetail,
   useCreateConfiguration,
   useDeleteConfiguration,
-  useTestConfigurationConnection,
   useUpdateConfiguration,
 } from '@/features/credentials';
 import { t } from '@/shared/i18n';
 import type { ConfigSchemaNode, ConfigurationTypeDescriptor } from '@/features/credentials';
 
+import { useCredentialConnectionTest } from './useCredentialConnectionTest';
 import { useCredentialDeleteGuard } from './useCredentialDeleteGuard';
 import { useTypeSections } from './useTypeSections';
 
@@ -143,27 +143,14 @@ async function performSave(params: PerformSaveParams): Promise<SaveOutcome> {
   }
 }
 
-type TestOutcome = { readonly status: 'success' } | { readonly status: 'failure'; readonly message: string };
+/** The saved row's id, or `undefined` on the create screen. A named function rather than an inline ternary in the hook body, for the same §3.5 complexity reason as `canSubmit` below. */
+function editConfigId(mode: CredentialFormMode): string | undefined {
+  return mode.kind === 'edit' ? mode.configId : undefined;
+}
 
 /** Split out of the hook body — one more condition there would push `useCredentialFormController` over the §3.5 complexity budget. */
 function canSubmit(canUpdate: boolean, label: string, effectiveType: string | undefined, isSaving: boolean): boolean {
   return canUpdate && label.trim() !== '' && Boolean(effectiveType) && !isSaving;
-}
-
-/** Isolated for the same reason as `performSave`. */
-async function performTestConnection(
-  testConnection: ReturnType<typeof useTestConfigurationConnection>,
-  projectId: string,
-  configType: string,
-  data: Readonly<Record<string, unknown>>,
-): Promise<TestOutcome> {
-  try {
-    const result = await testConnection.mutateAsync({ projectId, configType, body: data });
-    if (result.error) return { status: 'failure', message: result.error };
-    return { status: 'success' };
-  } catch {
-    return { status: 'failure', message: t('credentials.form.testFailed', 'Connection test failed') };
-  }
 }
 
 interface FormSeedingSetters {
@@ -230,8 +217,6 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   const [data, setData] = useState<Record<string, unknown>>({});
   const [apiError, setApiError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Readonly<Record<string, string>>>({});
-  const [testResult, setTestResult] = useState<'idle' | 'success' | 'failure'>('idle');
-  const [testMessage, setTestMessage] = useState('');
 
   const detail = useConfigurationDetail(context.projectId, mode.configId, { enabled: mode.kind === 'edit' });
   const typeQuery = useTypeSections(mode, prefill?.section, detail.data?.section, detail.data !== undefined);
@@ -288,13 +273,12 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   const createConfiguration = useCreateConfiguration();
   const updateConfiguration = useUpdateConfiguration();
   const deleteConfiguration = useDeleteConfiguration();
-  const testConnection = useTestConfigurationConnection();
 
   const isSaving = createConfiguration.isPending || updateConfiguration.isPending;
   const canSave = canSubmit(context.canUpdate, name, effectiveType, isSaving);
 
-  // Collapses 4 separate `save`/`testConnectionAction` dependencies into 1
-  // — keeps both `useCallback` dependency arrays within the §3.5 budget
+  // Collapses 4 separate `save` dependencies into 1
+  // — keeps the `useCallback` dependency array within the §3.5 budget
   // (≤8 entries) without losing memoization correctness (this object is
   // itself re-derived only when one of the four fields actually changes).
   const formValues = useMemo(() => ({ name, eliteaTitle, shared, data }), [name, eliteaTitle, shared, data]);
@@ -313,9 +297,26 @@ export function useCredentialFormController(props: CredentialFormControllerProps
     [onTypeChosen],
   );
 
+  /**
+   * The connection test owns its own two-call decision — see
+   * `./useCredentialConnectionTest.ts`. The one thing it needs from here is
+   * to be told when a field is edited, so it can tell "the sealed secret the
+   * server already holds" from "a new secret the user just typed"; that is
+   * what `noteFieldChanged` below is threaded into `setField` for.
+   */
+  const connectionTest = useCredentialConnectionTest({
+    projectId: context.projectId,
+    configId: editConfigId(mode),
+    configType: effectiveType,
+    data,
+    schemaProperties,
+  });
+  const { noteFieldChanged } = connectionTest;
+
   const setField = useCallback((fieldKey: string, value: unknown): void => {
+    noteFieldChanged(fieldKey);
     setData((prev) => ({ ...prev, [fieldKey]: value }));
-  }, []);
+  }, [noteFieldChanged]);
 
   const save = useCallback(() => {
     if (!effectiveType) return;
@@ -343,15 +344,6 @@ export function useCredentialFormController(props: CredentialFormControllerProps
     });
   }, [effectiveType, mode, context.projectId, formValues, schemaProperties, createConfiguration, updateConfiguration, onSaved]);
 
-  const testConnectionAction = useCallback(() => {
-    if (!effectiveType) return;
-    setTestResult('idle');
-    void performTestConnection(testConnection, context.projectId, effectiveType, formValues.data).then((outcome) => {
-      setTestResult(outcome.status);
-      setTestMessage(outcome.status === 'failure' ? outcome.message : '');
-    });
-  }, [effectiveType, testConnection, context.projectId, formValues.data]);
-
   const remove = useCallback(() => {
     if (!mode.configId) return;
     deleteConfiguration.mutate({ projectId: context.projectId, configId: mode.configId }, { onSuccess: onDiscarded });
@@ -372,17 +364,17 @@ export function useCredentialFormController(props: CredentialFormControllerProps
     setField,
     apiError,
     fieldErrors,
-    testResult,
-    testMessage,
+    testResult: connectionTest.testResult,
+    testMessage: connectionTest.testMessage,
     isSaving,
-    isTesting: testConnection.isPending,
+    isTesting: connectionTest.isTesting,
     isDeleting: deleteConfiguration.isPending,
     canSave,
     canDelete: deleteGuard.canDelete,
     deleteDisabledReason: deleteGuard.deleteDisabledReason,
     chooseType,
     save,
-    testConnection: testConnectionAction,
+    testConnection: connectionTest.testConnection,
     remove,
   };
 }

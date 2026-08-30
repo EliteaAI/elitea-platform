@@ -12,7 +12,7 @@ import { t } from '@/shared/i18n';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
 import { ChatConversationSidebar } from './ChatConversationSidebar';
-import { rejectToolkitWrite, toCreatedResult } from './ChatWithEditors.helpers';
+import { toCreatedResult } from './ChatWithEditors.helpers';
 import { usePlusMenuEntities } from '../model/usePlusMenuEntities';
 import { useChatWithEditors } from './ChatWithEditors.hooks';
 import { renderAgentEditorShell, renderPipelineEditorShell, renderToolkitEditorShell } from './EditorShell';
@@ -52,9 +52,10 @@ import { useCreateChatReset } from './useCreateChatReset';
  *
  * All the real hook wiring (`useEditAgent`/`useAgentCreation`/
  * `useEditPipeline`/`usePipelineCreation`/`useEditToolkit`/
- * `useToolkitCreation`/`useEditorMutex`, plus every disclosed gap —
- * Canvas/Artifact stubs, the agent-participant-resync gap, the toolkit
- * create/save-mutation gap) lives in `./ChatWithEditors.hooks.ts`, split
+ * `useToolkitCreation`/the real toolkit create/save mutations
+ * (`toolkitWriteDeps`)/`useEditorMutex`, plus every disclosed gap —
+ * Canvas/Artifact stubs, the agent-participant-resync gap) lives in
+ * `./ChatWithEditors.hooks.ts`, split
  * out purely to keep this file itself under the §3.5 400-line budget; read
  * that file's own doc comments for the full disclosure. This file is pure
  * composition: render `<ChatPage>` plus the three editors, each gated on
@@ -75,6 +76,7 @@ export function ChatWithEditors(): ReactNode {
     pipelineCreation,
     editToolkit,
     toolkitCreation,
+    toolkitWriteDeps,
     mutex,
     handleShowAgentEditor,
     handleShowPipelineEditor,
@@ -162,8 +164,8 @@ export function ChatWithEditors(): ReactNode {
           onToolkitCreated={(result) => void toolkitCreation.onToolkitCreated(result)}
           deps={{
             renderShell: renderToolkitEditorShell,
-            createToolkit: rejectToolkitWrite,
-            saveToolkit: rejectToolkitWrite,
+            createToolkit: toolkitWriteDeps.createToolkit,
+            saveToolkit: toolkitWriteDeps.saveToolkit,
           }}
         />
       )}

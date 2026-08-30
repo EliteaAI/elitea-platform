@@ -15,6 +15,7 @@ import { render } from '@testing-library/react';
 import type { RenderResult } from '@testing-library/react';
 
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
+import { NavBlockerDialog } from '@/widgets/app-shell';
 
 /**
  * Small, self-contained `pages/agents`-scoped router fixture — same shape
@@ -34,8 +35,29 @@ export interface TestRouterUser {
   readonly personal_project_id?: string;
 }
 
-function buildTestRouter(initialPath: string, content: ReactElement, projectId: string | undefined, user: TestRouterUser | undefined): AnyRouter {
-  const rootRoute = createRootRoute({ component: () => <Outlet /> });
+/**
+ * `withNavBlocker` mounts `widgets/app-shell`'s `NavBlockerDialog` over the
+ * fixture. `AppShell` mounts it under every REAL page, and it holds a
+ * TanStack `useBlocker` that intercepts any pathname change while the
+ * unsaved-changes guard is raised — so a fixture without it cannot see that
+ * this page's own post-save and post-delete navigations were being blocked
+ * by the guard the page itself armed.
+ */
+function buildTestRouter(
+  initialPath: string,
+  content: ReactElement,
+  projectId: string | undefined,
+  user: TestRouterUser | undefined,
+  withNavBlocker: boolean,
+): AnyRouter {
+  const rootRoute = createRootRoute({
+    component: () => (
+      <>
+        {withNavBlocker && <NavBlockerDialog />}
+        <Outlet />
+      </>
+    ),
+  });
 
   const tabRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -82,7 +104,16 @@ function buildTestRouter(initialPath: string, content: ReactElement, projectId: 
     component: () => content,
   });
 
-  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_]);
+  // Where `ChatWithAgentButton` lands — the destination itself is outside
+  // this unit (the real page is `processes/chat`'s), so the fixture renders
+  // nothing there: a test asserts on `router.state.location.pathname` alone.
+  const chatRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/chat/$conversationId',
+    component: () => null,
+  });
+
+  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_, chatRoute]);
 
   return createRouter({
     routeTree,
@@ -110,10 +141,10 @@ export interface RenderAgentsRouteResult extends RenderResult {
 export function renderAgentsRoute(
   content: ReactElement,
   initialPath = '/agents/latest',
-  options: { queryClient?: QueryClient; projectId?: string; user?: TestRouterUser } = {},
+  options: { queryClient?: QueryClient; projectId?: string; user?: TestRouterUser; withNavBlocker?: boolean } = {},
 ): RenderAgentsRouteResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
-  const router = buildTestRouter(initialPath, content, options.projectId, options.user);
+  const router = buildTestRouter(initialPath, content, options.projectId, options.user, options.withNavBlocker ?? false);
 
   const view = render(
     <QueryClientProvider client={queryClient}>

@@ -16,98 +16,17 @@ import {
   type ApplicationCreationInput,
 } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
-import { EliteaApiError } from '@/shared/api/generated/mutator';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
+import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
+import {
+  areExtraFieldsEqual,
+  mapCreateErrorToFieldErrors,
+  type CreateAgentFormExtraFields,
+} from './lib/createApplicationDraftState';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
-
-/**
- * The subset of `AgentDraftValues.version_details` (`features/agents`'
- * internal, unexported type) that `CreateAgentForm` actually reads/writes on
- * a brand-new draft but that `applicationCreationSchema` (this page's RHF
- * validation schema — name/description/`conversation_starters` only) does
- * not cover. Held as separate local state rather than widening the RHF
- * form's generic type: `zodResolver(applicationCreationSchema)` is typed as
- * `Resolver<ApplicationCreationInput>`, and stretching the form's type
- * param to a superset would require an unsound resolver cast for zero real
- * benefit, since none of these fields are ever validated anyway (same as
- * the baseline: its yup schema didn't touch them either). This is the "small
- * adapter" this file's own doc comment below anticipated.
- */
-interface CreateAgentFormExtraFields {
-  readonly instructions: string;
-  readonly welcomeMessage: string;
-  readonly variables: { readonly name: string; readonly value: string }[];
-  readonly stepLimit: number | undefined;
-}
-
-/**
- * The `extraFields` half of "is this draft dirty?" (#133).
- *
- * RHF's `formState.isDirty` only covers the three fields
- * `applicationCreationSchema` validates (`name`, `description`,
- * `version_details.conversation_starters`); the four in
- * `CreateAgentFormExtraFields` are deliberately held OUTSIDE the form (see
- * that interface's own doc comment), so a user who typed only instructions
- * or a welcome message would be invisible to `isDirty` and would lose that
- * work on nav-away. Compared field-by-field against the values this page
- * started from rather than tracked with a sticky "user touched something"
- * boolean, so undoing an edit correctly disarms the guard again.
- */
-function areExtraFieldsEqual(a: CreateAgentFormExtraFields, b: CreateAgentFormExtraFields): boolean {
-  if (a.instructions !== b.instructions) return false;
-  if (a.welcomeMessage !== b.welcomeMessage) return false;
-  if (a.stepLimit !== b.stepLimit) return false;
-  if (a.variables.length !== b.variables.length) return false;
-  return a.variables.every((variable, index) => {
-    const other = b.variables[index];
-    return other !== undefined && variable.name === other.name && variable.value === other.value;
-  });
-}
-
-interface CreateApplicationFieldErrors {
-  readonly name?: string;
-  readonly description?: string;
-}
-
-function isFastApiErrorDetail(value: unknown): value is { readonly msg?: unknown; readonly loc?: readonly unknown[] } {
-  return typeof value === 'object' && value !== null;
-}
-
-/**
- * Maps the create-application endpoint's failure onto per-field messages —
- * old app: `useCreateApplication.jsx:85-107` inspects `error.data` (a
- * FastAPI/Pydantic-style array of `{loc, msg}` entries — same shape
- * `shared/lib/http-error.ts`'s `ErrorDetail`/`messageFromValidationArray`
- * already ports for this exact backend family) and calls
- * `formik.setFieldError('name'|'description', msg)` per entry, so e.g. a
- * duplicate-name rejection is shown attributed to the Name field rather than
- * as one generic message.
- *
- * **Disclosed gap:** `features/agents/ui/CreateAgentForm.tsx` (out of this
- * unit's file scope — owned by sub-unit A1c) takes no `nameError`/
- * `descriptionError`-shaped prop at all (verified: `CreateAgentFormProps`
- * has no such field, and `GeneralFields`' `StyledInputEnhancer` calls pass
- * no `error`/`helperText`), so a mapped field error cannot be rendered
- * literally under the Name/Description inputs from this file alone. This
- * still closes the finding's real complaint — field-attributed text instead
- * of one generic, un-attributed message — via the banner below;
- * true inline-under-field parity needs a follow-up prop on `CreateAgentForm`.
- */
-function mapCreateErrorToFieldErrors(error: unknown): CreateApplicationFieldErrors {
-  if (!(error instanceof EliteaApiError) || error.failure.kind !== 'http') return {};
-  const body: unknown = error.failure.body;
-  if (!Array.isArray(body)) return {};
-  const fieldErrors: { name?: string; description?: string } = {};
-  for (const entry of body) {
-    if (!isFastApiErrorDetail(entry) || typeof entry.msg !== 'string') continue;
-    const loc = entry.loc ?? [];
-    if (loc.includes('name')) fieldErrors.name = entry.msg;
-    else if (loc.includes('description')) fieldErrors.description = entry.msg;
-  }
-  return fieldErrors;
-}
 
 const pageSx: SxProps<Theme> = {
   height: '100%',
@@ -181,7 +100,13 @@ const contentSx: SxProps<Theme> = {
  *    `conversation_starters` are validated, matching the baseline's yup
  *    schema) and are held in a sibling `extraFields` state slice instead of
  *    widening the RHF form's generic type — see `CreateAgentFormExtraFields`
- *    above for why.
+ *    in `./lib/createApplicationDraftState.ts` for why.
+ *  - `modelSettingsSlot` is the model picker
+ *    (`widgets/agent-model-settings`). It is injected as a slot rather than
+ *    imported by the form because `.dependency-cruiser.cjs` forbids
+ *    `features/` importing `widgets/`; the page owns the value, which is why
+ *    its `onChange` writes the same `extraFields` slice every other
+ *    unvalidated field lands in.
  *  - `conversationStartersSlot`/`iconSlot`/`tagsSlot`/
  *    `generateAgentButtonSlot` are left unset: each is a genuine, separately
  *    disclosed composition gap on `CreateAgentForm`'s OWN doc comment (no
@@ -218,13 +143,14 @@ export function CreateApplication(): ReactNode {
     },
   });
 
-  // See `CreateAgentFormExtraFields`'s own doc comment: the `CreateAgentForm`
-  // fields `applicationCreationSchema` does not validate.
+  // See `CreateAgentFormExtraFields` (`./lib/createApplicationDraftState.ts`):
+  // the `CreateAgentForm` fields `applicationCreationSchema` does not validate.
   const [extraFields, setExtraFields] = useState<CreateAgentFormExtraFields>({
     instructions: draftDefaults.versionDetails.instructions,
     welcomeMessage: '',
     variables: draftDefaults.versionDetails.variables.map((variable) => ({ ...variable })),
     stepLimit: draftDefaults.versionDetails.meta.step_limit,
+    llmSettings: draftDefaults.versionDetails.llmSettings,
   });
 
   /*
@@ -261,6 +187,7 @@ export function CreateApplication(): ReactNode {
       welcome_message: extraFields.welcomeMessage,
       variables: extraFields.variables,
       meta: { step_limit: extraFields.stepLimit },
+      llm_settings: extraFields.llmSettings,
     },
   };
 
@@ -304,6 +231,13 @@ export function CreateApplication(): ReactNode {
             stepLimit: typeof value === 'number' ? value : undefined,
           }));
           return;
+        // No `version_details.llm_settings` case, deliberately: model settings
+        // reach `extraFields.llmSettings` through `handleModelSettingsChange`
+        // below, straight off the `AgentModelSettings` slot. The create form's
+        // dispatcher (`features/agents/model/useCreateAgentFormState.ts`)
+        // emits only the six paths above, so a branch here would be dead — the
+        // EDIT page's identical-looking branch IS live, which is what made
+        // this one read as reachable. Do not re-add it.
         default:
           return;
       }
@@ -320,11 +254,18 @@ export function CreateApplication(): ReactNode {
         version: {
           ...draftDefaults.versionDetails,
           instructions: extraFields.instructions,
+          // Held here since the page was written and echoed back into the
+          // form, but absent from this body until now — so the welcome message
+          // an author typed on CREATE was dropped silently, with a 201 back,
+          // and only reappeared if they saved a second time from the edit
+          // page. See `ApplicationVersionDraft.welcomeMessage`.
+          welcomeMessage: extraFields.welcomeMessage,
           conversationStarters: (values.version_details?.conversation_starters ?? []).filter(
             (entry): entry is string => typeof entry === 'string',
           ),
           variables: extraFields.variables,
           meta: { ...draftDefaults.versionDetails.meta, step_limit: extraFields.stepLimit ?? draftDefaults.versionDetails.meta.step_limit },
+          llmSettings: extraFields.llmSettings,
         },
       });
       // On failure, `create`'s own `error` state (destructured above as
@@ -341,6 +282,11 @@ export function CreateApplication(): ReactNode {
       });
     })();
   }, [form, create, draftDefaults, extraFields, navigate, params.tab]);
+
+  const handleModelSettingsChange = useCallback(
+    (next: AgentLlmSettings) => setExtraFields((previous) => ({ ...previous, llmSettings: next })),
+    [],
+  );
 
   const handleCancel = useCallback(() => {
     // #133: Cancel IS the explicit "throw this draft away" action, so it
@@ -390,6 +336,14 @@ export function CreateApplication(): ReactNode {
             values={agentDraftValues}
             onFieldChange={handleAgentFieldChange}
             disabled={isCreating}
+            modelSettingsSlot={
+              <AgentModelSettings
+                projectId={projectId}
+                value={extraFields.llmSettings}
+                onChange={handleModelSettingsChange}
+                disabled={isCreating}
+              />
+            }
           />
         </Box>
       </Box>

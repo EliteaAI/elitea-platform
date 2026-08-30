@@ -9,13 +9,14 @@
  * same finding: "No OpenAPI schema exists for this resource (chat/
  * agent-authoring domain, not in the W2 manifest)"). Per R-A5 ("every
  * network call must go through a generated or hand-registered endpoint …
- * and appear in endpoints.manifest.json") these 16 endpoints are
+ * and appear in endpoints.manifest.json") these 19 endpoints are
  * hand-registered: every fetcher below calls `eliteaFetch` (the same
  * transport `shared/api/generated/**`'s orval hooks call — this file adds
  * NO new `fetch`/`XMLHttpRequest` site, so R-A1/R-A4 are untouched), and
  * `endpoints.manifest.json` carries one `source:"handwritten"` entry per
  * endpoint (this unit appended them — see that file's own append
- * convention comment).
+ * convention comment). The bottom-of-file stored-connection-check family
+ * (3 endpoints) has no baseline/`API-*` precedent — see its own comment.
  *
  * Ported from `apps/elitea-ui/src/api/configurations.js` (RTK Query). This
  * file keeps the URL/parameter/body shape byte-for-byte identical to the
@@ -39,14 +40,10 @@
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
 /**
- * `fetchData<T>` resolves to orval's enveloped shape
- * (`{data: T, status, headers}` — `@/shared/api/generated/mutator.ts`'s own
- * doc comment: "T is always the ENVELOPED type orval generates for every
- * operation … never the bare body"), matching what every *generated*
- * caller in `shared/api/generated/**` already receives. This unit's
- * hand-registered endpoints call `eliteaFetch` the same way (R-A5: no
- * second transport), so every fetcher below goes through this instead of
- * calling `eliteaFetch` directly, to unwrap `.data` at exactly one place.
+ * `eliteaFetch<T>` always resolves to `{data: T, status, headers}` — the
+ * ENVELOPE, never the bare body (see `mutator.ts`'s own doc comment).
+ * Every fetcher below goes through this wrapper instead of calling
+ * `eliteaFetch` directly, to unwrap `.data` at exactly one place.
  */
 export async function fetchData<T>(url: string, options?: RequestInit): Promise<T> {
   const envelope = await eliteaFetch<{ data: T }>(url, options);
@@ -120,36 +117,17 @@ export interface ConfigurationPageWire {
 
 /* ── shared query-string helper (byte-for-byte port of `appendParam`) ────── */
 
-/**
- * `exactOptionalPropertyTypes` forbids `{ signal: undefined }` against
- * `RequestInit`'s optional (not `| undefined`) `signal` field — this is the
- * same conditional-spread shape `shared/api/generated/mutator.ts` uses at
- * its own call sites. Exported: `./configurationConnections.ts` (API-154..160,
- * split out purely to keep this file under the §3.5 400-line budget) reuses
- * it rather than duplicating.
- */
+/** `exactOptionalPropertyTypes` forbids `{ signal: undefined }` against `RequestInit`'s optional `signal` field. Exported: `./configurationConnections.ts` reuses it rather than duplicating. */
 export function withSignal(signal: AbortSignal | undefined): { signal: AbortSignal } | Record<string, never> {
   return signal ? { signal } : {};
 }
 
-/**
- * `String(value)` on a genuinely `unknown` value trips `no-base-to-string`
- * (an object with no custom `toString` silently stringifies to
- * `"[object Object]"`) — this narrows to the primitive cases a query-string
- * value can actually be and never calls the bare `String()`/template
- * coercion on anything else.
- */
+/** Narrows to the primitives a query-string value can be — avoids `no-base-to-string` on a bare `String()`/template coercion of a genuinely `unknown` value. */
 function toQueryParamValue(value: string | number | boolean): string {
   return typeof value === 'string' ? value : String(value);
 }
 
-/**
- * `Array.isArray`'s builtin signature narrows to `any[]`, which — combined
- * with `readonly string[]` inside this union — leaves the element type
- * unsound for `tsgolint`'s `no-unsafe-argument` (a real gap in the builtin
- * type, not a false positive: `Array.isArray` alone cannot promise the
- * ELEMENT type). This explicit guard checks every element is a string.
- */
+/** `Array.isArray` alone narrows to `any[]`, unsound for `no-unsafe-argument` against `readonly string[]` — this checks every element. */
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -165,16 +143,7 @@ function appendParam(query: URLSearchParams, key: string, value: string | number
 
 /* ── API-145: GET /configurations/available/ ─────────────────────────────── */
 
-/**
- * Real usage note: the baseline's `getAvailableConfigurationsType` accepts
- * arbitrary extra query params via object spread (`{ section, ...params }`),
- * but no call site anywhere in the app (grepped) ever passes one — every
- * caller supplies `section` alone. Typed to just that field rather than an
- * open index signature: a mixed named-property-plus-index-signature shape
- * is also what produced the `unsafe-argument`/`no-base-to-string` findings
- * this rewrite fixes, and there is no real behaviour to preserve for the
- * unused generality.
- */
+/** Real usage note: the baseline accepts arbitrary extra query params via object spread, but no call site (grepped) ever passes one — every caller supplies `section` alone, so this is typed to just that field rather than an open index signature (the mixed shape is also what produced the `unsafe-argument`/`no-base-to-string` findings this rewrite fixes). */
 export interface GetAvailableConfigurationsTypeParams {
   readonly section?: string | readonly string[];
 }
@@ -392,4 +361,31 @@ export async function deleteConfiguration(
   configId: string | number,
 ): Promise<unknown> {
   return fetchData<unknown>(`/configurations/configuration/${projectId}/${configId}`, { method: 'DELETE' });
+}
+
+/* ── stored-connection-check family: no baseline/P1 precedent (native Go backend, built in parallel); see file header ── */
+
+/** Legacy-shaped `{success, message?}` result — same family as `configurationConnections.ts`'s `BatchTestResultRow`, declared locally (not imported) to avoid inverting that file's one-way split off this one. `[key: string]: unknown` matches this file's `ConfigurationWire`/`ConfigSchemaNode` passthrough convention. */
+export interface StoredConnectionCheckResult { readonly success?: boolean; readonly message?: string; readonly [key: string]: unknown; }
+
+/** One row of the batch response — adds the `id`/`unsupported` fields `BatchTestResultRow` also carries. */
+export interface StoredConnectionCheckRow extends StoredConnectionCheckResult { readonly id: string; readonly unsupported?: boolean; }
+
+/** POST /configurations/check_stored_connection/{projectId}/{configId} — re-tests an already-stored config; no body (unlike `testConfigurationConnection`, which must send the not-yet-persisted candidate payload). */
+export async function checkStoredConfigurationConnection(projectId: string | number, configId: string | number): Promise<StoredConnectionCheckResult> {
+  return fetchData<StoredConnectionCheckResult>(`/configurations/check_stored_connection/${projectId}/${configId}`, { method: 'POST' });
+}
+
+/** POST /configurations/check_stored_connections/{projectId} — batch form of the above. */
+export async function batchCheckStoredConfigurationConnections(projectId: string | number, configurationIds: readonly string[]): Promise<StoredConnectionCheckRow[]> {
+  return fetchData<StoredConnectionCheckRow[]>(`/configurations/check_stored_connections/${projectId}`, {
+    method: 'POST',
+    body: JSON.stringify({ configuration_ids: configurationIds }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/** POST /configurations/revalidate/{projectId}/{configId} — returns the configuration row, same shape as `updateConfiguration`; no body. */
+export async function revalidateConfiguration(projectId: string | number, configId: string | number): Promise<ConfigurationWire> {
+  return fetchData<ConfigurationWire>(`/configurations/revalidate/${projectId}/${configId}`, { method: 'POST' });
 }

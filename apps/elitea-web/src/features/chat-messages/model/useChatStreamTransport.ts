@@ -11,18 +11,29 @@
  * over REST, subscribe to the durable replay stream, and fold each frame into
  * chat history with `applyChatStreamFrame`.
  *
- * FALLBACK IS PART OF THE CONTRACT, not defensiveness. `startAgentExecution`'s
- * own doc states it: the Go route REQUIRES a recognised `execution_contract`
- * and 400s without one, which is what makes any failure — or a 200 carrying no
- * `events_url` — an unambiguous "this backend has not landed the SSE path".
- * `start` reports that by returning `false`, and the caller then emits
- * `chat_predict` exactly as before. A backend mid-migration keeps working.
+ * WHAT IS LEFT HERE, AND WHAT MOVED. Two families were split out of this file
+ * to keep it inside the §3.5 400-line budget — the same move
+ * `lib/chatStreamSettle.ts` records in its own header:
  *
- * WHAT THIS HOOK DOES NOT DO: it never re-starts a run. Once the POST has
- * succeeded the execution exists server-side, so a transport failure after
- * that point must not fall back to the socket — that would run the agent
- * twice and bill it twice. It REOPENS the stream (see below) and, once the
- * retry budget is spent, stops the spinner and surfaces the failure instead.
+ *  - `./useChatStreamRunStarters.ts` — the three admission routes (start,
+ *    resume, regenerate) and the classification of their failures. It carries
+ *    the FALLBACK CONTRACT in full: the Go route requires a recognised
+ *    `execution_contract`, so a failure — or a 200 with no `events_url` — is
+ *    an unambiguous "this backend has not landed the SSE path", `start`
+ *    answers `false`, and the caller emits `chat_predict` exactly as before.
+ *  - `./useChatStreamConnection.ts` — the SSE connection lifecycle, and with
+ *    it the RESUME contract of issue #329 in full: a drop reopens the SAME
+ *    execution's stream at `?cursor=<last id seen>` rather than re-running
+ *    anything, and the retries stop once the turn is over.
+ *
+ * What stays is what needs all three at once: run OWNERSHIP, frame dispatch
+ * into chat history, and how a turn ends.
+ *
+ * IT NEVER RE-STARTS A RUN. Once the POST has succeeded the execution exists
+ * server-side, so a transport failure after that point must not fall back to
+ * the socket — that would run the agent twice and bill it twice. The stream is
+ * REOPENED instead and, once the retry budget is spent, the spinner stops and
+ * the failure is surfaced.
  *
  * STREAM OWNERSHIP (issue #328). A stream belongs to the conversation that
  * started it, and to nothing else. The hook stays mounted across a
@@ -33,40 +44,21 @@
  * active conversation stops matching the stream's owner — and, for the one
  * ordering that closing cannot cover, a `start` whose POST resolves after the
  * user has already left subscribes to nothing at all.
- *
- * RESUME (issue #329). `EventSource` retries only after a CLEAN end and only
- * via a `Last-Event-ID` header, neither of which survives this backend (see
- * `shared/api/sse/resume.ts`), so the reconnect is this hook's job: on a drop
- * it reopens the SAME execution's stream with `?cursor=<last id seen>`, which
- * `events.go` treats exactly as `Last-Event-ID`. The server then replays only
- * what follows that cursor, which is what makes the resume free of duplicates
- * — the reducer's `agent_response` "already rendered" guard is a backstop for
- * one frame type, NOT a general de-duplicator (a replayed `agent_llm_chunk`
- * appends unconditionally). Nothing is reconnected once the turn is over or
- * the user pressed Stop.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import {
-  AGENT_REGENERATE_CONTRACT,
-  continueAgentExecution,
-  regenerate as regenerateConversation,
-  startAgentExecution,
-  stopChatTask,
   type AgentExecutionStart,
-  type ContinueAgentExecutionParams,
-  type StartAgentExecutionParams,
   type StopChatTaskParams,
+  stopChatTask,
 } from "@/entities/conversation/api/conversationApi";
-import { EliteaApiError } from "@/shared/api/generated/mutator";
-import {
-  streamReconnectDelayMs,
-  useExecutionEventStream,
-  withResumeCursor,
-  type ExecutionEventData,
-} from "@/shared/api/sse";
+import type { ExecutionEventData } from "@/shared/api/sse";
 
-import { settleInFlight } from "../lib/chatStreamSettle";
+import {
+  recordStreamFailure,
+  runtimeFailureReason,
+  settleInFlight,
+} from "../lib/chatStreamSettle";
 import {
   applyChatStreamFrame,
   type ChatStreamContext,
@@ -74,6 +66,13 @@ import {
 import { isChatStreamFrame } from "../lib/chatStreamFrame";
 import { shouldForwardAgentEvent } from "../lib/agentGraphEvents";
 import { isTurnTerminalFrame } from "../lib/chatStreamTurnEnd";
+
+import { useChatStreamConnection } from "./useChatStreamConnection";
+import {
+  nonEmptyString,
+  useChatStreamRunStarters,
+  type ChatStreamRunStarters,
+} from "./useChatStreamRunStarters";
 
 import type { ChatMessage } from "../lib/convertMessagesToChatHistory";
 
@@ -105,38 +104,14 @@ export interface UseChatStreamTransportParams {
   readonly onStreamError?: ((reason: string) => void) | undefined;
 }
 
-/** @public */
-export interface UseChatStreamTransportResult {
-  /** Start with the distinction between an absent transport and a server refusal. */
-  readonly startDetailed: (
-    params: StartAgentExecutionParams,
-  ) => Promise<AgentStreamStartAttempt>;
-  /**
-   * Start a run over REST and take ownership of its stream.
-   *
-   * `true` ⇒ this transport owns the run and the caller must NOT emit
-   * `chat_predict`. `false` ⇒ the backend serves no replay stream; fall back.
-   */
-  readonly start: (params: StartAgentExecutionParams) => Promise<boolean>;
-  /**
-   * Resume a run this backend PAUSED, and take ownership of its stream.
-   *
-   * `true` ⇒ the route accepted the resume and the caller must NOT emit
-   * `chat_continue_predict`; a second resume would run the agent twice.
-   * `false` ⇒ the route refused or does not exist; fall back to the socket.
-   *
-   * A 200 that carries no `events_url` still answers `true`. The run IS live
-   * again server-side, which is the half that must not be repeated; only the
-   * live view of it is missing.
-   */
-  readonly resume: (params: ContinueAgentExecutionParams) => Promise<boolean>;
-  /** Regenerate one persisted answer and take ownership of its replacement stream. */
-  readonly regenerate: (params: {
-    readonly projectId: string | number;
-    readonly conversationUuid: string;
-    readonly responseMessageId: string;
-    readonly body: Readonly<Record<string, unknown>>;
-  }) => Promise<boolean>;
+/**
+ * @public
+ *
+ * `startDetailed`, `start`, `resume` and `regenerate` come from
+ * `ChatStreamRunStarters`, which documents each one — including the boolean
+ * every caller reads to decide whether a socket fallback is still safe.
+ */
+export interface UseChatStreamTransportResult extends ChatStreamRunStarters {
   /** Whether a stream is currently subscribed — drives the composer's Stop affordance. */
   readonly isStreaming: boolean;
   /**
@@ -157,84 +132,6 @@ export interface UseChatStreamTransportResult {
   readonly stop: () => void;
 }
 
-/** Result of starting a run before the widget decides whether socket fallback is safe. */
-export type AgentStreamStartAttempt =
-  | { readonly started: true }
-  | { readonly started: false; readonly reason: "no-transport" }
-  | {
-      readonly started: false;
-      readonly reason: "rejected";
-      readonly message: string;
-    };
-
-const STARTED: AgentStreamStartAttempt = { started: true };
-const NO_TRANSPORT: AgentStreamStartAttempt = {
-  started: false,
-  reason: "no-transport",
-};
-
-function serverFailureMessage(body: unknown, status: number): string {
-  if (typeof body === "object" && body !== null) {
-    const value = body as Readonly<Record<string, unknown>>;
-    for (const field of ["safe_message", "message", "error"] as const) {
-      if (typeof value[field] === "string" && value[field].trim() !== "")
-        return value[field];
-    }
-  }
-  return `The agent run could not start (HTTP ${status}).`;
-}
-
-function classifyStartFailure(error: unknown): AgentStreamStartAttempt {
-  if (!(error instanceof EliteaApiError)) return NO_TRANSPORT;
-  const failure = error.failure;
-  if (failure.kind === "http") {
-    if (failure.status === 404 || failure.status === 405) return NO_TRANSPORT;
-    return {
-      started: false,
-      reason: "rejected",
-      message: serverFailureMessage(failure.body, failure.status),
-    };
-  }
-  if (failure.kind === "auth") {
-    return {
-      started: false,
-      reason: "rejected",
-      message: "This session is not authorized to start the agent run.",
-    };
-  }
-  if (failure.kind === "network") {
-    return {
-      started: false,
-      reason: "rejected",
-      message: "The agent service could not be reached.",
-    };
-  }
-  return {
-    started: false,
-    reason: "rejected",
-    message: "The agent start request was cancelled.",
-  };
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-/**
- * One subscription to one run: the URL currently open, and the cursor-free URL
- * a resume rebuilds from.
- *
- * `url: null` is the gap between a drop and its reopen — the connection is
- * closed, but the RUN is still this hook's, which is why the connection object
- * survives it. Collapsing that state to `null` would make `isStreaming` go
- * false for a second or eight mid-answer, and the composer would swap Stop
- * back for Send on a turn that has not stopped.
- */
-interface StreamConnection {
-  readonly baseUrl: string;
-  readonly url: string | null;
-}
-
 export function useChatStreamTransport(
   params: UseChatStreamTransportParams,
 ): UseChatStreamTransportResult {
@@ -245,7 +142,6 @@ export function useChatStreamTransport(
     onAgentEvent,
     onStreamError,
   } = params;
-  const [connection, setConnection] = useState<StreamConnection | null>(null);
 
   // Read through a ref so a changing context does not re-open the stream:
   // `useExecutionEventStream` keys its connection on the URL and the handler
@@ -264,12 +160,6 @@ export function useChatStreamTransport(
   activeConversationRef.current = conversationUuid;
   const ownerRef = useRef<string | undefined>(undefined);
 
-  /** The durable cursor of the last frame delivered — what a resume sends back. */
-  const cursorRef = useRef<string | null>(null);
-  /** The turn is over (finished, failed, or stopped): a drop must NOT reconnect. */
-  const doneRef = useRef(false);
-  /** Consecutive failed reopen attempts; reset by any delivered frame. */
-  const attemptRef = useRef(0);
   /** What Stop has to cancel server-side, from the start endpoint's answer. */
   const cancelRef = useRef<StopChatTaskParams | null>(null);
   /**
@@ -284,15 +174,16 @@ export function useChatStreamTransport(
    * individual frame omitted; an explicit frame value still wins.
    */
   const questionIdRef = useRef<string | undefined>(undefined);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
-    undefined,
-  );
 
-  const clearRetry = useCallback(() => {
-    if (retryTimerRef.current === undefined) return;
-    clearTimeout(retryTimerRef.current);
-    retryTimerRef.current = undefined;
-  }, []);
+  /**
+   * The connection's own `close`, held in a ref because the two sides need
+   * each other: `useChatStreamConnection` is handed the frame handlers below,
+   * and those handlers end the turn by detaching — which closes the
+   * connection. One of the two references has to be late, and this is it. The
+   * no-op initial value is never the one called: nothing can detach before a
+   * run has been subscribed, and subscribing happens after this hook renders.
+   */
+  const closeStreamRef = useRef<() => void>(() => undefined);
 
   /**
    * Has this hook a run of its own? False once `detach` has run — including
@@ -304,21 +195,12 @@ export function useChatStreamTransport(
     [],
   );
 
-  /** Close the connection and forget the run. Never touches chat history. */
+  /** Forget the run and close its stream. Never touches chat history. */
   const detach = useCallback(() => {
-    doneRef.current = true;
     ownerRef.current = undefined;
     cancelRef.current = null;
     questionIdRef.current = undefined;
-    clearRetry();
-    setConnection(null);
-  }, [clearRetry]);
-
-  const onCursor = useCallback((cursor: string) => {
-    cursorRef.current = cursor;
-    // A delivered frame is proof the connection works, so the next drop starts
-    // its backoff from the top instead of inheriting a spent budget.
-    attemptRef.current = 0;
+    closeStreamRef.current();
   }, []);
 
   const onNodeEvent = useCallback(
@@ -338,7 +220,7 @@ export function useChatStreamTransport(
       // right here — it does not wait for the connection to close, because
       // the server never closes it (executions/events.go keeps the stream open
       // and only emits `: heartbeat` comments afterwards). `isStreaming` is
-      // `connection !== null`, and ChatBox now gates BOTH the Stop button and
+      // "a connection exists", and ChatBox now gates BOTH the Stop button and
       // the composer on it, so leaving the connection open past the terminal
       // frame left the composer disabled for the rest of the session — caught
       // by the #284 journey's "the composer must be released when the turn
@@ -353,77 +235,52 @@ export function useChatStreamTransport(
     [setChatHistory, detach],
   );
 
-  const onFailed = useCallback(
-    (frame: ExecutionEventData) => {
-      // The server reporting the EXECUTION failed — distinct from the stream
-      // dropping. The reason is shown on the message, not swallowed.
-      const reason =
-        typeof frame["error"] === "string"
-          ? frame["error"]
-          : "The agent run failed.";
+  /**
+   * End the turn with a reason the user can read.
+   *
+   * The identity is captured BEFORE `detach`, which clears `questionIdRef` —
+   * without that ordering a failure-only message would lose its link back to
+   * the question it answers.
+   */
+  const failWith = useCallback(
+    (reason: string) => {
+      const streamContext = contextRef.current;
+      const questionId = questionIdRef.current;
       detach();
-      setChatHistory((prev) => settleInFlight(prev, reason));
+      setChatHistory((prev) =>
+        recordStreamFailure(prev, reason, streamContext, questionId),
+      );
       onStreamErrorRef.current?.(reason);
     },
     [setChatHistory, detach],
   );
 
-  const onError = useCallback(() => {
-    // Transport-level: the stream never opened, or dropped mid-answer.
-    if (doneRef.current) {
-      detach();
-      return;
-    }
-    const baseUrl = connection?.baseUrl;
-    if (baseUrl === undefined) return;
+  const onFailed = useCallback(
+    (frame: ExecutionEventData) => {
+      // The server reporting the EXECUTION failed — distinct from the stream
+      // dropping. A refusal can be the run's FIRST frame, so this must not
+      // assume a message exists to carry it; `recordStreamFailure` appends one
+      // when nothing is in flight.
+      failWith(runtimeFailureReason(frame));
+    },
+    [failWith],
+  );
 
-    const attempt = attemptRef.current + 1;
-    const delay = streamReconnectDelayMs(attempt);
-    if (delay === undefined) {
-      // The retry budget is spent. The message would spin forever otherwise:
-      // the frames that would have ended the turn are exactly the ones that
-      // stopped arriving.
-      detach();
-      setChatHistory((prev) => settleInFlight(prev));
-      onStreamErrorRef.current?.("The connection to the agent run was lost.");
-      return;
-    }
-    attemptRef.current = attempt;
-    clearRetry();
-    // Drop the failed connection NOW rather than at reopen time: it is dead
-    // either way, and clearing the URL first is what makes the reopen re-run
-    // the subscription effect even when the resumed URL is byte-identical.
-    setConnection({ baseUrl, url: null });
-    retryTimerRef.current = setTimeout(() => {
-      retryTimerRef.current = undefined;
-      setConnection({
-        baseUrl,
-        url: withResumeCursor(baseUrl, cursorRef.current),
-      });
-    }, delay);
-  }, [connection, detach, clearRetry, setChatHistory]);
-
-  // No `onReplayReset`, and that is the handling rather than an omission.
-  // `execution.replay_reset` says the durable log was pruned past the cursor
-  // this client resumed from, so some progress frames are gone for good — a
-  // hole in the transcript, not a failed turn and not a reason to reconnect
-  // onto the same pruned cursor. `useExecutionEventStream` registers the event
-  // name either way (an unregistered name is dropped SILENTLY by EventSource),
-  // and `onCursor` fires for it like any other, so the cursor moves past the
-  // gap and the surviving frames still finish the answer. A no-op callback
-  // here would only look like handling that is not there.
-  useExecutionEventStream(connection?.url ?? null, {
+  const connection = useChatStreamConnection({
     onNodeEvent,
     onFailed,
-    onCursor,
-    onError,
+    // A spent retry budget ends the turn exactly like a runtime failure: the
+    // reason goes on the message, not only to the caller's toast.
+    onConnectionLost: failWith,
   });
+  closeStreamRef.current = connection.close;
+  const { isStreaming, open: openStream } = connection;
 
   // #328: the conversation on screen changed while a stream was open. The
   // stream belongs to the previous one, so it is dropped — without settling
   // any history, because the history in scope now is not the run's.
   useEffect(() => {
-    if (connection === null) return;
+    if (!isStreaming) return;
     const owner = ownerRef.current;
     if (
       owner === undefined ||
@@ -432,27 +289,20 @@ export function useChatStreamTransport(
     )
       return;
     detach();
-  }, [conversationUuid, connection, detach]);
-
-  // Release a pending reconnect on unmount. HONEST SCOPE: this is timer
-  // hygiene, not the mechanism that stops a post-unmount stream — a late
-  // `setConnection` on an unmounted component is already inert, so removing
-  // this changes no observable behaviour and no test can prove it. What
-  // actually keeps frames out after unmount is `useEventSource`'s own
-  // `source.close()` teardown, which the unmount test does pin.
-  useEffect(() => clearRetry, [clearRetry]);
+  }, [conversationUuid, isStreaming, detach]);
 
   /**
    * Subscribe to the stream one accepted run answered with.
    *
-   * `start` and `resume` share it: both own the run from this point, and both
-   * must apply the same #328 ownership rule and the same cancel binding.
-   * Returns `false` only when the answer carries no stream to watch.
+   * `start`, `resume` and `regenerate` share it: all three own the run from
+   * this point, and all three must apply the same #328 ownership rule and the
+   * same cancel binding. Returns `false` only when the answer carries no
+   * stream to watch.
    */
   const subscribeToRun = useCallback(
     (
       accepted: AgentExecutionStart,
-      conversationUuid: string,
+      runConversationUuid: string,
       projectId: string | number,
       questionId?: string,
     ): boolean => {
@@ -462,12 +312,8 @@ export function useChatStreamTransport(
       // a transcript that is no longer on screen, and the durable log replays
       // them when it is reopened (#328).
       const active = activeConversationRef.current;
-      if (active !== undefined && active !== conversationUuid) return true;
-      clearRetry();
-      cursorRef.current = null;
-      attemptRef.current = 0;
-      doneRef.current = false;
-      ownerRef.current = conversationUuid;
+      if (active !== undefined && active !== runConversationUuid) return true;
+      ownerRef.current = runConversationUuid;
       questionIdRef.current = questionId;
       // `response_message_id` is what the cancel route addresses
       // (`DELETE .../task/prompt_lib/{projectID}/{responseMessageID}`). Without
@@ -477,95 +323,13 @@ export function useChatStreamTransport(
         accepted.response_message_id !== ""
           ? { projectId, messageGroupUuid: accepted.response_message_id }
           : null;
-      setConnection({ baseUrl: accepted.events_url, url: accepted.events_url });
+      openStream(accepted.events_url);
       return true;
     },
-    [clearRetry],
+    [openStream],
   );
 
-  const startDetailed = useCallback(
-    async (
-      startParams: StartAgentExecutionParams,
-    ): Promise<AgentStreamStartAttempt> => {
-      let started: AgentExecutionStart;
-      try {
-        started = await startAgentExecution(startParams);
-      } catch (error) {
-        return classifyStartFailure(error);
-      }
-      // A 200 with no events_url is the same signal — an older backend answering
-      // the same route. Treating it as success would leave the run unwatched.
-      return subscribeToRun(
-        started,
-        startParams.conversationUuid,
-        startParams.projectId,
-        nonEmptyString(startParams.body["question_id"]),
-      )
-        ? STARTED
-        : NO_TRANSPORT;
-    },
-    [subscribeToRun],
-  );
-
-  const start = useCallback(
-    async (startParams: StartAgentExecutionParams): Promise<boolean> =>
-      (await startDetailed(startParams)).started,
-    [startDetailed],
-  );
-
-  const resume = useCallback(
-    async (resumeParams: ContinueAgentExecutionParams): Promise<boolean> => {
-      let resumed: AgentExecutionStart;
-      try {
-        resumed = await continueAgentExecution(resumeParams);
-      } catch {
-        // The route refused the resume, or this backend does not serve it. The
-        // caller falls back to `chat_continue_predict`.
-        return false;
-      }
-      // The route ACCEPTED the resume. The run is live again whether or not the
-      // answer named a stream, so the caller must not resume it a second time.
-      subscribeToRun(
-        resumed,
-        resumeParams.conversationUuid,
-        resumeParams.projectId,
-        nonEmptyString(resumeParams.body["question_id"]),
-      );
-      return true;
-    },
-    [subscribeToRun],
-  );
-
-  const regenerate = useCallback(
-    async (params: {
-      readonly projectId: string | number;
-      readonly conversationUuid: string;
-      readonly responseMessageId: string;
-      readonly body: Readonly<Record<string, unknown>>;
-    }): Promise<boolean> => {
-      let accepted: AgentExecutionStart;
-      try {
-        accepted = await regenerateConversation({
-          ...params.body,
-          projectId: params.projectId,
-          id: params.responseMessageId,
-          executionContract: AGENT_REGENERATE_CONTRACT,
-        });
-      } catch {
-        return false;
-      }
-      // The contract was accepted, so the run exists even when an older server
-      // omits its replay URL. Never start the same regeneration over a socket.
-      subscribeToRun(
-        accepted,
-        params.conversationUuid,
-        params.projectId,
-        nonEmptyString(params.body["question_id"]),
-      );
-      return true;
-    },
-    [subscribeToRun],
-  );
+  const starters = useChatStreamRunStarters(subscribeToRun);
 
   const stop = useCallback(() => {
     // Nothing of this hook's is running — the run was already stopped, already
@@ -587,14 +351,11 @@ export function useChatStreamTransport(
 
   return useMemo(
     () => ({
-      startDetailed,
-      start,
-      resume,
-      regenerate,
-      isStreaming: connection !== null,
+      ...starters,
+      isStreaming,
       close: detach,
       stop,
     }),
-    [startDetailed, start, resume, regenerate, connection, detach, stop],
+    [starters, isStreaming, detach, stop],
   );
 }

@@ -139,6 +139,8 @@ func TestCreateToolkitInsertSQLBindsOwnerID(t *testing.T) {
 func TestCreateToolkitInsertSQLOmitsOwnerIDForTheCurrentPylonTable(t *testing.T) {
 	t.Parallel()
 
+	// The same already-quoted identifier the repository passes; see the sibling
+	// case above for why the test builds it rather than restating the quoting.
 	schema, err := tenantschema.Quote("1")
 	if err != nil {
 		t.Fatalf("Quote(1) failed: %v", err)

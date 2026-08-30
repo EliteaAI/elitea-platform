@@ -5,6 +5,8 @@ import { LATEST_VERSION_NAME } from '@/entities/version';
 import type { ApplicationCreatedResponse } from '@/shared/api/generated/model';
 
 import { setFieldValueAtPath } from './agentFieldChange';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
+
 import type { AgentDraftValues, AgentFieldChange } from '../model/types';
 
 /**
@@ -42,26 +44,21 @@ import type { AgentDraftValues, AgentFieldChange } from '../model/types';
  * as the baseline's own `createInitialValues`), so "discard" and "start a
  * fresh create form" are the identical operation.
  *
- * **`meta.internal_tools` default -- adversarial-review fix.** This app's
- * own `entities/application-form/model/initialValues.ts`
- * (`useCreateApplicationInitialValues`) seeds a brand-new draft's
- * `meta.internal_tools` as `['internal_mcp']` (the "Elitea MCP Tools"
- * internal toggle, enabled by default) -- the SAME default the baseline's
- * `useApplicationInitialValues.jsx` seeds. `buildCreateDraft` previously
- * hardcoded `internal_tools: []` on submit regardless, silently disabling
- * that toggle for every agent created through the chat-embedded create form
- * (no live UI here can set it either way -- see the `conversation_starters`
- * gap above, same class of limitation -- so the hardcoded `[]` was not a
- * real default, just a bug). `resolveInternalTools` below restores that
- * default while still respecting an explicit override, matching this
- * file's own `onFieldChange('version_details.meta.internal_tools', ...)`
- * escape hatch if a future caller ever wires one up (`AgentVersionMeta`'s
- * `[metaKey: string]: unknown` index signature already allows it). Same
- * bug, same fix shape, independently found and fixed on the pipelines side
- * in `features/pipelines/lib/usePipelineEditorCreate.ts` (a different
- * Wave-2 unit, A2) -- see that file's doc comment.
+ * **`meta.internal_tools` default -- empty, matching a fresh form.** The
+ * admission gates now admit the platform's whole authorable catalogue (the
+ * `NOT IN` lists in `services/elitea-main/internal/db/queries/agent_chat.sql`
+ * — nine sites, pinned against the other catalogue copies by
+ * `internal_tools_catalogue_drift_test.go`), and the native runtime SKIPS
+ * catalogue names it does not implement with a logged
+ * `agent_internal_tool_skipped` (`services/elitea-worker-rust/src/agents/
+ * internal_tools.rs`), so a toggled tool no longer refuses the turn. The
+ * default stays empty because a fresh agent has no tools toggled — the
+ * Tools panel writes the real values. `resolveInternalTools` still respects
+ * an explicit override. The pipelines side
+ * (`features/pipelines/lib/usePipelineEditorCreate.ts`) seeds `[]` the same
+ * way.
  */
-const DEFAULT_INTERNAL_TOOLS: readonly string[] = ['internal_mcp'];
+const DEFAULT_INTERNAL_TOOLS: readonly string[] = [];
 
 function resolveInternalTools(meta: NonNullable<AgentDraftValues['version_details']>['meta']): readonly string[] {
   const raw = meta?.['internal_tools'];
@@ -69,6 +66,18 @@ function resolveInternalTools(meta: NonNullable<AgentDraftValues['version_detail
     return raw;
   }
   return DEFAULT_INTERNAL_TOOLS;
+}
+
+/**
+ * The model the form's picker wrote, if any. A function for the same reason
+ * `resolveInternalTools` above is one: it keeps the optional-chain branch off
+ * `buildCreateDraft`'s own cyclomatic complexity, which is at this codebase's
+ * oxlint budget (12).
+ */
+function resolveLlmSettings(
+  versionDetails: AgentDraftValues['version_details'],
+): AgentLlmSettings | undefined {
+  return versionDetails?.llm_settings;
 }
 
 export function useAgentEditorCreate(projectId: string | undefined) {
@@ -108,6 +117,19 @@ const EMPTY_CREATE_VALUES: AgentDraftValues = {
   },
 };
 
+/**
+ * The optional keys of the version body, split from `buildCreateDraft` to
+ * keep each function under the oxlint complexity budget (12) — the welcome
+ * message spread pushed the single function to 14.
+ */
+function optionalCreateVersionFields(versionDetails: AgentDraftValues['version_details']) {
+  // The draft carries `welcomeMessage` now (it used to have no key for it,
+  // and this path silently dropped what the form collected). Spread, not
+  // assigned: the key is optional-without-undefined
+  // (exactOptionalPropertyTypes).
+  return versionDetails?.welcome_message !== undefined ? { welcomeMessage: versionDetails.welcome_message } : {};
+}
+
 /** `submit`'s request-body construction, extracted purely to keep `useAgentEditorCreate` under the oxlint complexity budget. */
 function buildCreateDraft(values: AgentDraftValues): ApplicationDraftInput {
   const versionDetails = values.version_details;
@@ -124,13 +146,14 @@ function buildCreateDraft(values: AgentDraftValues): ApplicationDraftInput {
       name: LATEST_VERSION_NAME,
       agentType: undefined,
       instructions: versionDetails?.instructions ?? '',
-      // `welcome_message` is deliberately NOT sent: `ApplicationVersionDraft`
-      // (entities/application-form/model/initialValues.ts) has no field for
-      // it — see `useAgentDraftApproval.ts`'s doc comment for the identical,
-      // already-disclosed gap on the generate-with-AI create path.
+      ...optionalCreateVersionFields(versionDetails),
       conversationStarters: [],
       variables: (versionDetails?.variables ?? []).map((variable) => ({ name: variable.name, value: variable.value })),
       meta: { step_limit: meta?.step_limit ?? 25, internal_tools: resolveInternalTools(meta) },
+      // Whatever the model picker wrote into the form, or `undefined` when
+      // the user left it alone — `toVersionWriteRequest` then omits the key
+      // and the new agent runs on the project's catalogue default.
+      llmSettings: resolveLlmSettings(versionDetails),
       tags: [...(versionDetails?.tags ?? [])],
       tools: [],
       pipelineSettings: undefined,

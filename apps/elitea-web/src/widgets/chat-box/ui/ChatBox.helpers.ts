@@ -9,7 +9,6 @@ import type { ComponentProps } from 'react';
 import type { Participant } from '@/entities/participant';
 import type { NewChatInput } from '@/features/chat-input';
 import type { MessageGroupWire } from '@/entities/message';
-import type { ConfigModel } from '@/shared/api/configurationsApi';
 
 import type { ChatBoxHandlerDeps } from './hooks/useChatBoxHandlers';
 import type { UseChatBoxDataParams } from './hooks/useChatBoxData';
@@ -176,27 +175,6 @@ export function buildTtsProps(readAloud: {
   };
 }
 
-/** `ConfigModel` -> `LLMModelSelector`'s own `LLMModel` shape (a locally-derived type, see `ChatBox.tsx`). */
-export function toLlmModel(raw: ConfigModel): {
-  id: string;
-  name: string;
-  display_name?: string;
-  shared?: boolean;
-  supports_vision?: boolean;
-  supports_reasoning?: boolean;
-  max_output_tokens?: number;
-} {
-  return {
-    id: raw.id !== undefined ? String(raw.id) : raw.name,
-    name: raw.name,
-    ...(raw.display_name !== undefined ? { display_name: raw.display_name } : {}),
-    ...(typeof raw['shared'] === 'boolean' ? { shared: raw['shared'] } : {}),
-    ...(typeof raw['supports_vision'] === 'boolean' ? { supports_vision: raw['supports_vision'] } : {}),
-    ...(typeof raw['supports_reasoning'] === 'boolean' ? { supports_reasoning: raw['supports_reasoning'] } : {}),
-    ...(typeof raw['max_output_tokens'] === 'number' ? { max_output_tokens: raw['max_output_tokens'] } : {}),
-  };
-}
-
 /** `ChatBox`'s input-disable/loading derivation — extracted to keep `ChatBox`'s own complexity down (a pure boolean-combination has no reason to live inside a component body). */
 export function deriveChatBoxInputState(flags: {
   readonly isLoadingConversation: boolean | undefined;
@@ -340,7 +318,7 @@ export function buildChatBoxStateParams(params: {
   readonly activeParticipant: Participant | undefined;
   readonly participants: readonly Participant[] | undefined;
   readonly userId: string | undefined;
-  readonly conversationStarters: readonly { readonly id: string; readonly text: string }[] | undefined;
+  readonly conversationStarters: readonly string[] | undefined;
   readonly isAgentsPage: boolean | undefined;
   readonly chatInput: UseChatBoxStateParams['chatInput'];
   readonly projectId: string | number | undefined;
@@ -394,7 +372,7 @@ export function deriveChatBoxIds(activeConversation: ChatBoxActiveConversation |
 export function resolveConversationStarters(
   hasStarterBeenSent: boolean,
   messageCount: number,
-  conversationStarters: readonly { readonly id: string; readonly text: string }[] | undefined,
-): readonly { readonly id: string; readonly text: string }[] | undefined {
+  conversationStarters: readonly string[] | undefined,
+): readonly string[] | undefined {
   return hasStarterBeenSent || messageCount > 0 ? [] : conversationStarters;
 }

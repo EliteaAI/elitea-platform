@@ -405,6 +405,11 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	var agentCancel *agentexecutionapp.CurrentAgentCancellationService
 	var agentPublisher publisherRunner
 	var agentMaterializer *storage.CurrentConfigurationsMaterializer
+	// Both are built inside the agent-execution block below but consumed with
+	// the private content listener further down, where the claim authorizer
+	// they have to be combined with is constructed.
+	var agentFreezer agentexecutionapp.CurrentApplicationVersionFreezer
+	var agentNestedVersions storage.CurrentApplicationVersionSource
 	if config.AgentExecutionDispatchEnabled {
 		agentLimits := limits
 		agentLimits.MaxRedisEntryBytes = productionIndexRedisEntrySize
@@ -477,6 +482,19 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		)
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct current agent version freezer: %w", targetErr)
+		}
+		// The SAME freezer instance the interactive start path uses. A nested
+		// child has to be frozen by the identical rules as its parent —
+		// blocked toolkits dropped, `internal_mcp` removed, `openai`
+		// normalized to `agent` — because the native runtime decodes both
+		// documents with one decoder and would refuse the child on a
+		// difference the author never made.
+		agentFreezer = agentVersions
+		agentNestedVersions, targetErr = repos.NewCurrentNestedApplicationVersionRepository(
+			dependencies.AdmissionPool,
+		)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct nested application version reader: %w", targetErr)
 		}
 		agentMaterializer, targetErr = storage.NewCurrentConfigurationsMaterializer(
 			dependencies.CurrentConfigurations.unsecreter,
@@ -907,6 +925,52 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, fmt.Errorf("construct runtime worker client-token context: %w", err)
 		}
 	}
+	// nestedApplicationVersions is what makes agent-as-tool executable at all:
+	// without this route the native worker reaches
+	// `resolve_application_version` and fails the whole turn with
+	// `native_agent.dependency_unavailable`, because it refuses by design to
+	// fall back to the mutable public version endpoint
+	// (services/elitea-worker-rust/src/transport/runtime_context.rs:328-333).
+	var nestedApplicationVersions *storage.RuntimeApplicationVersionService
+	if config.AgentExecutionDispatchEnabled {
+		nestedApplicationVersions, err = storage.NewRuntimeApplicationVersionService(
+			contentRepository,
+			agentNestedVersions,
+			agentFreezer,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct nested application version context: %w", err)
+		}
+	}
+	// attachmentObjects is what lets an attached DOCUMENT reach the model as
+	// text rather than as a filename. The native runtime has no other channel
+	// to object storage (no vault, no `artifact` toolkit family, and an egress
+	// allowlist that reaches the model gateway alone), so without this route a
+	// chunk flagged `needs_content_extraction` is announced and skipped
+	// (services/elitea-worker-rust/src/agents/attachments.rs).
+	//
+	// A nil ObjectStore leaves it nil, and the route unregistered: mixed
+	// deployments keep the Centry artifacts capability authoritative and run
+	// this service with no Go object store at all, and there the honest answer
+	// is that the runtime keeps announcing files it cannot read — not a route
+	// that exists and fails.
+	var attachmentObjects *storage.RuntimeAttachmentObjectService
+	if config.AgentExecutionDispatchEnabled && dependencies.ObjectStore != nil {
+		attachmentSource, attachmentErr := repos.NewCurrentAttachmentObjectRepository(
+			dependencies.AdmissionPool,
+			dependencies.ObjectStore,
+		)
+		if attachmentErr != nil {
+			return nil, fmt.Errorf("construct attachment object reader: %w", attachmentErr)
+		}
+		attachmentObjects, err = storage.NewRuntimeAttachmentObjectService(
+			contentRepository,
+			attachmentSource,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct attachment object context: %w", err)
+		}
+	}
 	if config.IndexIngestDispatchEnabled {
 		currentIndex, err = newCurrentIndexRuntime(
 			dependencies.AdmissionPool,
@@ -925,14 +989,46 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, fmt.Errorf("construct current index runtime: %w", err)
 		}
-		contentServer, err = storage.NewMaterializingRuntimeContentServerWithLimits(
-			contentRepository,
-			contentRepository,
-			currentIndex.materializer,
-			runtimeToken,
-			maxInputContentBytes,
-			maxContentRequests,
-		)
+		// One listener serves both capabilities, so when agent execution is
+		// dispatched alongside index ingest the nested route belongs here too.
+		// Registering it is not a widening, but only because the service asks
+		// for AgentRuntimeContextAuthorizer: the claim authorizer selects the
+		// project and actor from the execution row, while the REQUEST names
+		// the application and version inside that project — so an index claim
+		// on this shared listener could otherwise read any agent version in
+		// the project it was admitted for. The capability filter in
+		// AuthorizeAgentRuntimeContext is what makes that false.
+		if nestedApplicationVersions != nil && attachmentObjects != nil {
+			contentServer, err = storage.NewAgentAttachmentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				currentIndex.materializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				attachmentObjects,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		} else if nestedApplicationVersions != nil {
+			contentServer, err = storage.NewNestedAgentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				currentIndex.materializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		} else {
+			contentServer, err = storage.NewMaterializingRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				currentIndex.materializer,
+				runtimeToken,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1156,14 +1252,28 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			)
 		}
 	} else if config.AgentExecutionDispatchEnabled {
-		contentServer, err = storage.NewMaterializingRuntimeContentServerWithLimits(
-			contentRepository,
-			contentRepository,
-			agentMaterializer,
-			runtimeToken,
-			maxInputContentBytes,
-			maxContentRequests,
-		)
+		if attachmentObjects != nil {
+			contentServer, err = storage.NewAgentAttachmentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				agentMaterializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				attachmentObjects,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		} else {
+			contentServer, err = storage.NewNestedAgentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				agentMaterializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		}
 		if err != nil {
 			return nil, err
 		}

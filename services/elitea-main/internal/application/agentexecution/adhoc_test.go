@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -112,6 +113,34 @@ func TestCurrentAdhocStartRejectsMalformedConversationOptionsBeforeAdmission(t *
 	_, err = service.StartCurrentAdhoc(context.Background(), validCurrentAdhocStartRequest())
 	if err == nil || len(admissions.requests) != 0 {
 		t.Fatalf("error=%v admissions=%d", err, len(admissions.requests))
+	}
+}
+
+// The application path refuses an authored step limit above the runtime
+// ceiling (maxCurrentAgentStepLimit) so the start fails with a stated reason
+// instead of the native runtime's opaque invalid_profile. The adhoc path
+// forwards the same field from conversation meta and must refuse at the same
+// bound — this pins the cap that closed that divergence.
+func TestCurrentAdhocStartRejectsAStepLimitAboveTheRuntimeCeiling(t *testing.T) {
+	resolver := &currentApplicationResolverStub{adhocTarget: CurrentAdhocTarget{
+		TargetParticipantID: 21,
+		LLMSettings:         json.RawMessage(`{"model_name":"saved","model_project_id":7}`),
+		Tools:               json.RawMessage(`[]`),
+		ChatHistory:         json.RawMessage(`[]`),
+		ConversationMeta:    json.RawMessage(`{"steps_limit":1025}`),
+	}}
+	admissions := &currentApplicationAdmissionStub{}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.StartCurrentAdhoc(context.Background(), validCurrentAdhocStartRequest())
+	if !errors.Is(err, ErrUnsupportedCurrentAgentStart) || len(admissions.requests) != 0 {
+		t.Fatalf("error=%v admissions=%d, want ErrUnsupportedCurrentAgentStart before admission", err, len(admissions.requests))
 	}
 }
 

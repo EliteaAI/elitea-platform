@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 
-import type { ToolkitWriteResult } from '../api/toolkits';
+import type { ToolkitWriteResult, UseToolkitCreateMutation, UseToolkitEditMutation } from '../api/toolkits';
+import { useToolkitSaveValidation } from '../model/useToolkitSaveValidation';
 
 import type { ToolkitFormValues } from './SaveToolkitButton';
+import type { ToolkitFormEditDetail } from './form/ToolkitForm/ToolkitForm';
 import {
   EMPTY_PARTICIPANT,
   ToolkitEditorBody,
@@ -105,7 +107,60 @@ export type { ToolkitEditorDeps, ToolkitEditorParticipant, ToolkitEditorProps, T
  */
 export function ToolkitEditor({ toolkit, isVisible, onCloseToolkitEditor, onToolkitCreated, onToolkitUpdated, deps }: ToolkitEditorProps): ReactNode {
   const state = useToolkitEditorState(toolkit ?? EMPTY_PARTICIPANT, isVisible);
+  /**
+   * #613. Both save buttons below accept an `onError` and NOTHING in the app
+   * supplied one, so a server refusal — including the new per-field credential
+   * refusal — vanished silently. This turns it into the field errors the form
+   * already knows how to paint.
+   */
+  const { toolkitValidation, reportSaveError, clearSaveErrors } = useToolkitSaveValidation();
+
   const { isDirty, setIsDirty, validationState, setValidationState, revertCredentialsRef, isCreating, isMCP, projectId, toolkitId, scopedProjectId, isPublic, isError, editToolDetail, formInitialValues, setFormInitialValues, handleChangeToolDetail, handleDiscard } = state;
+
+  /**
+   * The two real save mutations, wrapped so a rejection is RECORDED on its way
+   * past. `CreateToolkitButton`/`SaveToolkitButton` each catch their own
+   * rejection into an `onError` that nothing in this app ever supplied, so a
+   * refused save — including the new per-field credential refusal — vanished
+   * entirely. Wrapping here rather than adding a third `onError` prop keeps
+   * `ToolkitEditorParts.tsx` inside its §3.5 400-line budget; the rethrow keeps
+   * each button's own failure handling unchanged.
+   */
+  const depsWithSaveErrors = useMemo(
+    () => ({
+      ...deps,
+      createToolkit: async (args: Parameters<UseToolkitCreateMutation>[0]) => {
+        try {
+          return await deps.createToolkit(args);
+        } catch (error) {
+          reportSaveError(error);
+          throw error;
+        }
+      },
+      saveToolkit: async (args: Parameters<UseToolkitEditMutation>[0]) => {
+        try {
+          return await deps.saveToolkit(args);
+        } catch (error) {
+          reportSaveError(error);
+          throw error;
+        }
+      },
+    }),
+    [deps, reportSaveError],
+  );
+
+  /**
+   * Any real edit drops the recorded refusal. Both save buttons gate on
+   * `validationState.hasErrors`, which the server errors feed, so without this
+   * the gate would stay latched shut on an error the user has already fixed.
+   */
+  const handleEditAndClearErrors = useCallback(
+    (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null, options?: { readonly isAutoSelect?: boolean }) => {
+      handleChangeToolDetail(updater, options);
+      clearSaveErrors();
+    },
+    [handleChangeToolDetail, clearSaveErrors],
+  );
 
   const handleClose = useCallback(() => {
     onCloseToolkitEditor?.();
@@ -147,7 +202,7 @@ export function ToolkitEditor({ toolkit, isVisible, onCloseToolkitEditor, onTool
         validationState={validationState}
         createProjectId={projectId}
         saveProjectId={scopedProjectId}
-        deps={deps}
+        deps={depsWithSaveErrors}
         onToolkitCreated={handleToolkitCreated}
         onToolkitSaved={handleToolkitSaved}
       />
@@ -158,13 +213,14 @@ export function ToolkitEditor({ toolkit, isVisible, onCloseToolkitEditor, onTool
         isCreating={isCreating}
         isMCP={isMCP}
         editToolDetail={editToolDetail}
-        onChangeToolDetail={handleChangeToolDetail}
+        onChangeToolDetail={handleEditAndClearErrors}
         formInitialValues={formInitialValues}
         setFormInitialValues={setFormInitialValues}
         disabled={resolveToolkitFormDisabled(isPublic, deps.hasPublicProjectAccess)}
         projectId={scopedProjectId}
         revertCredentialsRef={revertCredentialsRef}
         onValidationStateChange={setValidationState}
+        toolkitValidation={toolkitValidation}
       />
     ),
   });

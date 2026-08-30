@@ -25,8 +25,19 @@
 import * as FlowEditorConstantsNamespace from './flowEditor.constants';
 import * as StateDrawerConstantsNamespace from './stateDrawer.constants';
 import * as DeprecatedConstantsNamespace from './deprecated.constants';
+import * as RuntimeContractConstantsNamespace from './runtimeContract.constants';
+import * as NodeDefaultsConstantsNamespace from './nodeDefaults.constants';
 
 export const FlowEditorConstants = FlowEditorConstantsNamespace;
 export const StateDrawerConstants = StateDrawerConstantsNamespace;
 export const DeprecatedConstants = DeprecatedConstantsNamespace;
+/**
+ * The Rust pipeline compiler's own admissibility rules (node-id grammar,
+ * the `parse_pipeline_node` allow-list, the reserved `state:` keys), each
+ * entry citing the runtime line it transcribes. Added because the editor
+ * was minting documents the compiler refuses.
+ */
+export const RuntimeContractConstants = RuntimeContractConstantsNamespace;
+/** `InitialNodeData` — the per-node-type seed payload, split out of `flowEditor.constants` for the §3.5 file-length budget. */
+export const NodeDefaultsConstants = NodeDefaultsConstantsNamespace;
 export { ValidationErrors } from './validation.constants';

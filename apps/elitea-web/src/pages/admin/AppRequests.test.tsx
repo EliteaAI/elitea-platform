@@ -25,7 +25,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { server } from '@/test/setup';
 
 import { AdminAppRequests } from './AppRequests';
-import { useAdminAppRequestsPage } from './useAdminAppRequestsPage';
+import { ADMIN_APP_REQUESTS_PAGE_SIZE, useAdminAppRequestsPage } from './useAdminAppRequestsPage';
 import { renderAdminRoute } from './__tests__/testRouter';
 
 /** Mirrors `./__tests__/testRouter`'s client, for the hook-only cases. */
@@ -131,8 +131,21 @@ function reads(): RecordedRequest[] {
   return recorded.filter((entry) => entry.method === 'GET');
 }
 
+/**
+ * The queue's OWN reads, discriminated from the issue-type filter's separate
+ * options-sample query by `limit` — the queue always asks for
+ * `ADMIN_APP_REQUESTS_PAGE_SIZE`, the sample always asks for more. Both fire
+ * on first mount, and nothing orders their two responses relative to each
+ * other, so "the last GET recorded" is not reliably the queue's.
+ */
+function queueReads(): RecordedRequest[] {
+  return reads().filter(
+    (entry) => new URL(entry.url).searchParams.get('limit') === String(ADMIN_APP_REQUESTS_PAGE_SIZE),
+  );
+}
+
 function lastReadParams(): URLSearchParams {
-  const all = reads();
+  const all = queueReads();
   return new URL(all[all.length - 1]!.url).searchParams;
 }
 
@@ -227,6 +240,77 @@ describe('AdminAppRequests — the queue', () => {
 
     await user.type(screen.getByRole('textbox'), 'grace');
     await waitFor(() => expect(lastReadParams().get('search')).toBe('grace'));
+  });
+
+  it('sends the issue-type filter to the server, and sends none at all for All', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminAppRequests />);
+    await waitForQueue();
+
+    // The fixture rows' distinct `issue_type`s ("Wikis", "Inventory") are the
+    // options offered — there is no fixed enum for this filter (see
+    // `useAdminAppRequestsPage`'s module doc), so the control has nothing to
+    // show until the queue's own data supplies it.
+    await user.click(screen.getByRole('combobox', { name: 'Issue Type' }));
+    await user.click(await screen.findByRole('option', { name: 'Inventory' }));
+    await waitFor(() => expect(lastReadParams().get('issue_type')).toBe('Inventory'));
+
+    // `All` is the absence of the filter, not a value the server knows — the
+    // same contract the status tabs use.
+    await user.click(screen.getByRole('combobox', { name: 'Issue Type' }));
+    await user.click(await screen.findByRole('option', { name: 'All' }));
+    await waitFor(() => expect(lastReadParams().has('issue_type')).toBe(false));
+  });
+
+  it('renders a Model Connection Request row with a readable entity label', async () => {
+    listBody = () =>
+      HttpResponse.json({
+        rows: [
+          {
+            id: 601,
+            user_id: 4010,
+            user_email: 'grace2@example.com',
+            project_id: 5,
+            issue_type: 'Model Connection Request',
+            entity_id: 'provider:openai',
+            description: 'Need OpenAI connectivity for the support bot.',
+            status: 'pending',
+            rejection_comment: null,
+            created_at: '2026-08-20 09:00:00',
+            updated_at: '2026-08-20 09:00:00',
+          },
+          {
+            id: 602,
+            user_id: 4011,
+            user_email: 'hank@example.com',
+            project_id: 5,
+            issue_type: 'Model Connection Request',
+            // Percent-encoded, matching `buildModelConnectionEntityId` in
+            // `features/settings/ui/ai-configuration/RequestModelConnection.tsx`
+            // — a vendor-prefixed model id's `/` would otherwise split the
+            // path segment this travels as.
+            entity_id: `model:${encodeURIComponent('meta-llama/Llama-3.1-70B')}`,
+            description: 'Need the Llama 3.1 70B model available.',
+            status: 'pending',
+            rejection_comment: null,
+            created_at: '2026-08-21 09:00:00',
+            updated_at: '2026-08-21 09:00:00',
+          },
+        ],
+        total: 2,
+      });
+    renderAdminRoute(<AdminAppRequests />);
+
+    await screen.findByText('Need OpenAI connectivity for the support bot.');
+
+    expect(screen.getAllByText('Model Connection Request')).toHaveLength(2);
+    // The `provider:<type>` / `model:<name>` convention renders as a label
+    // rather than the raw wire value — every other issue type's `entity_id`
+    // is opaque and renders as-is (see "renders the requester, the label and
+    // the catalogue key…" above). The model name also comes back DECODED,
+    // not as the percent-escaped value the server actually stores.
+    expect(screen.getByText('Provider: openai')).toBeInTheDocument();
+    expect(screen.getByText('Model: meta-llama/Llama-3.1-70B')).toBeInTheDocument();
   });
 
   it('shows the server own words when the queue read is refused', async () => {

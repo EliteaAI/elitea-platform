@@ -79,6 +79,13 @@ export function scopedSerialLines(source) {
  * A line that sends `limit=` and no filter asks for "the first page of
  * everything" and then hopes the row is on it. The moderation queue offers an
  * exact `entity_id` filter, so the hope is not needed.
+ *
+ * A paged read that genuinely cannot filter — the route offers nothing
+ * narrower, or the assertion NEEDS the exhaustive listing (the clerical
+ * pin's before/after sweep) — satisfies this rule by carrying its
+ * justification on the SAME line, naming `entity_id` in it: the reviewer
+ * sees the reason where the read happens, and a bare hopeful page still
+ * fails.
  */
 export function unfilteredPagedReads(source) {
   return source

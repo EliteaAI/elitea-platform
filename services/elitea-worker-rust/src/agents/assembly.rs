@@ -10,15 +10,17 @@
 use adk_rust::Content;
 use serde_json::{Map, Value};
 
+use super::attachments;
 use super::context_management::ContextManagementPlan;
 use super::internal_tools::{InternalToolCatalog, InternalToolError};
 use super::request::{AgentExecutionKind, AgentExecutionRequest, UserInput};
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
+use super::variables::{self, AgentVariables};
 
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_USER_INPUT_BYTES: usize = 512 * 1_024;
 const MAX_CHAT_HISTORY_MESSAGES: usize = 999;
-const DEFAULT_AGENT_STEP_LIMIT: u32 = 25;
+pub(super) const DEFAULT_AGENT_STEP_LIMIT: u32 = 25;
 const MAX_AGENT_STEP_LIMIT: u32 = 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,25 +226,26 @@ impl OrdinaryNoToolProfile {
         let internal_tools = internal_tools_from_version(version)?;
         validate_empty_feature_array(version.get("skills"), false)?;
         validate_application_meta(version.get("meta"))?;
-        if version
-            .get("variables")
-            .and_then(Value::as_array)
-            .is_some_and(|variables| !variables.is_empty())
-        {
-            return Err(unsupported_profile());
-        }
+        // A nested agent renders its OWN declared variables: the SDK reaches
+        // one through `client.application()` too (`runtime/tools/
+        // application.py:396`), which builds a fresh `LangChainAssistant` over
+        // the child's version and resolves the child's instructions there. The
+        // per-CALL overrides that path also passes — the arguments the model
+        // supplies for a variable-shaped agent tool — are a separate feature
+        // (a tool argument schema derived from the variable list) and stay
+        // unimplemented; only the child's stored values are served here.
+        let variables = AgentVariables::admit(version, None)?;
         let instructions = version
             .get("instructions")
             .and_then(Value::as_str)
-            .filter(|value| bounded_instruction(value))
+            .filter(|value| bounded_instruction(value, expected_agent_type == "agent"))
             .ok_or_else(invalid_profile)?;
-        if expected_agent_type == "agent"
-            && ["{{", "{%", "{#"]
-                .iter()
-                .any(|marker| instructions.contains(marker))
-        {
-            return Err(unsupported_profile());
-        }
+        let rendered = if expected_agent_type == "agent" {
+            variables.render(instructions)
+        } else {
+            instructions.to_owned()
+        };
+        let instructions = rendered.as_str();
         let model = match version.get("llm_settings") {
             None | Some(Value::Null) => ValidatedModel {
                 instructions: instructions.to_owned(),
@@ -401,7 +404,6 @@ fn validate_common_profile(
         || !payload.applied_skills.is_empty()
         || payload.auto_approve_sensitive_actions
         || !payload.attached_skills.is_empty()
-        || !payload.input_attachments.is_empty()
         || payload.parallel_reconcile.is_some()
         || !payload.parallel_terminal_errors.is_empty()
         || payload.exception_handling_enabled == Some(true)
@@ -414,6 +416,13 @@ fn validate_common_profile(
     {
         return Err(unsupported_profile());
     }
+    // #606: attachments are no longer an unsupported profile — their chunks are
+    // rendered into the human message by `attachments::append_attachment_parts`
+    // at session assembly. Their SHAPE is admitted here, before credential
+    // redemption, so a chunk this runtime cannot put in front of a model is an
+    // `InvalidInput` on a turn that never started rather than a provider error
+    // in the middle of one.
+    attachments::validate_input_attachments(&payload.input_attachments)?;
     let has_direct_hitl_fields = payload.should_continue
         || payload.hitl_resume
         || payload.hitl_action.is_some()
@@ -562,15 +571,17 @@ fn application_model_for_agent_type(
         .get("version_details")
         .and_then(Value::as_object)
         .ok_or_else(invalid_profile)?;
-    let variables = request
+    // Per-conversation VALUES for variables the version already declares,
+    // projected from `chat_participant_mapping.entity_settings`
+    // (`internal/db/queries/agent_chat.sql:8`). Main guarantees the array
+    // shape (`agentexecution/start.go:184`), so a non-array here is malformed
+    // input rather than an unserved capability.
+    let participant_variables = request
         .payload
         .application
         .get("variables")
-        .and_then(Value::as_array)
+        .filter(|value| value.is_array())
         .ok_or_else(invalid_profile)?;
-    if !variables.is_empty() {
-        return Err(unsupported_profile());
-    }
     match version.get("agent_type") {
         None if expected_agent_type == "agent" => {}
         Some(Value::String(value)) if value == expected_agent_type => {}
@@ -582,18 +593,22 @@ fn application_model_for_agent_type(
         .map_err(internal_tool_profile_error)?;
     validate_empty_feature_array(version.get("skills"), false)?;
     validate_application_meta(version.get("meta"))?;
+    let variables = AgentVariables::admit(version, Some(participant_variables))?;
     let instructions = version
         .get("instructions")
         .and_then(Value::as_str)
-        .filter(|value| bounded_instruction(value))
+        .filter(|value| bounded_instruction(value, expected_agent_type == "agent"))
         .ok_or_else(invalid_profile)?;
-    if expected_agent_type == "agent"
-        && ["{{", "{%", "{#"]
-            .iter()
-            .any(|marker| instructions.contains(marker))
-    {
-        return Err(unsupported_profile());
-    }
+    // A PIPELINE's `instructions` carry the graph YAML, and `assistant.py`'s
+    // `pipeline()` (:886-905) hands `self.prompt` to `create_graph` WITHOUT
+    // calling `_resolve_jinja2_variables`. Only the react-agent path (:794)
+    // renders, so only `agent` renders here.
+    let rendered = if expected_agent_type == "agent" {
+        variables.render(instructions)
+    } else {
+        instructions.to_owned()
+    };
+    let instructions = rendered.as_str();
     let settings = version
         .get("llm_settings")
         .and_then(Value::as_object)
@@ -658,23 +673,76 @@ fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAss
         return Ok(());
     };
     let meta = value.as_object().ok_or_else(invalid_profile)?;
-    if meta.contains_key("step_limit") {
-        return Err(unsupported_profile());
-    }
+    validate_application_meta_step_limit(meta.get("step_limit"))?;
     InternalToolCatalog::from_values(meta.get("internal_tools"))
         .map_err(internal_tool_profile_error)?;
     match meta.get("lazy_tools_mode") {
         None | Some(Value::Bool(false)) => {}
-        Some(Value::Bool(true)) => return Err(unsupported_profile()),
+        Some(Value::Bool(true)) => {
+            // Smart Tools Selection — a form toggle, not a protocol field. The
+            // runtime exposes every tool unconditionally, which is the mode's
+            // SAFE side (lazy mode narrows exposure; ignoring it widens
+            // nothing the author did not already attach), so this degrades
+            // with a log instead of refusing the turn — the same contract as
+            // `InternalToolCatalog`'s platform-name skip.
+            tracing::warn!(
+                event = "agent_internal_tool_skipped",
+                reason_code = "internal_tool_unsupported",
+                internal_tool = "lazy_tools_mode",
+                "smart tools selection is unavailable in this runtime; every attached tool stays exposed"
+            );
+        }
         Some(_) => return Err(invalid_profile()),
     }
-    match meta.get("variables") {
-        None => {}
-        Some(Value::Object(variables)) if variables.is_empty() => {}
-        Some(Value::Object(_)) => return Err(unsupported_profile()),
-        Some(_) => return Err(invalid_profile()),
-    }
-    Ok(())
+    validate_application_meta_variables(meta.get("variables"))
+}
+
+/// Admit the variable list in the shapes the platform actually stores.
+///
+/// Main folds a version's variables into `meta.variables` as an ARRAY — the
+/// create path writes one only when it is non-empty, but the UPDATE path writes
+/// it on presence, deliberately, so that deleting the last variable is
+/// distinguishable from never having had one
+/// (`internal/api/v2/applications/handler.go`). The result is that EVERY agent
+/// re-saved through the edit page carries `"variables": []`.
+///
+/// A POPULATED list used to be refused here as an unsupported capability, which
+/// was honest while nothing substituted them. `super::variables` now renders
+/// them — the SDK's own Jinja2 semantics over the values Main really stores —
+/// so both the empty and the populated shapes are admitted, and only a
+/// collection that is neither an array nor an object, or an array holding
+/// something other than objects, is still malformed input.
+fn validate_application_meta_variables(
+    value: Option<&Value>,
+) -> Result<(), NativeAgentAssemblyError> {
+    variables::validate_variables(value)
+}
+
+/// Admit the authored step limit where the control plane keeps it, without
+/// letting it select the effective one.
+///
+/// The effective limit is `payload.steps_limit` and nothing else; Main derives
+/// that field from this same key, so the two agree by construction. The key
+/// itself cannot be refused: `versionFromBody` writes it into every version on
+/// every save (`services/elitea-main/internal/api/v2/applications/handler.go`),
+/// so refusing it refused every stored agent — a turn that Main admitted and
+/// that then stopped here with nothing on screen. The Python worker reads the
+/// same key to set its `LangGraph` recursion limit, which is why it stays in the
+/// version rather than moving onto the input alone.
+///
+/// The bounds are `validate_step_limit`'s, deliberately: a value this profile
+/// would refuse on the input must not pass unexamined on the version.
+fn validate_application_meta_step_limit(
+    value: Option<&Value>,
+) -> Result<(), NativeAgentAssemblyError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let limit = value
+        .as_u64()
+        .and_then(|limit| u32::try_from(limit).ok())
+        .ok_or_else(invalid_profile)?;
+    validate_step_limit(Some(limit)).map(|_| ())
 }
 
 fn adhoc_model(
@@ -687,12 +755,12 @@ fn adhoc_model(
         .and_then(Value::as_str)
         .filter(|value| bounded_adhoc_instruction(value))
         .ok_or_else(invalid_profile)?;
-    if ["{{", "{%", "{#"]
-        .iter()
-        .any(|marker| instructions.contains(marker))
-    {
-        return Err(unsupported_profile());
-    }
+    // An ad-hoc turn is `predict_agent`, which builds its assistant data with
+    // `variables: []` (`clients/client.py:1270-1280`) and still runs the
+    // react path — so the prompt IS rendered, with `current_date` as the only
+    // defined name, and every other placeholder survives verbatim.
+    let rendered = AgentVariables::default().render(instructions);
+    let instructions = rendered.as_str();
     let kwargs = request
         .payload
         .llm
@@ -874,8 +942,22 @@ fn bounded_runtime_identity(value: &str) -> bool {
     bounded_text(value, 256)
 }
 
-fn bounded_instruction(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 64 * 1_024 && !value.contains('\0')
+/// Bound a stored version's `instructions`.
+///
+/// `allow_empty` is the direct-agent case. An agent with no system prompt is a
+/// real thing a user can save — the create form does not require the field, and
+/// nothing between the form and here fills it in — so refusing it made every
+/// such agent answer "The execution input is invalid." on every turn, a
+/// sentence that names neither the field nor the fix. The ad-hoc path in this
+/// same file has always accepted an empty instruction
+/// (`bounded_adhoc_instruction`), and an ad-hoc turn is exactly an agent
+/// without a stored prompt, so refusing it here was the odd one out.
+///
+/// A PIPELINE keeps the non-empty rule: its `instructions` field carries the
+/// graph YAML, and an empty graph is not an unconstrained agent — it is a
+/// pipeline with nothing to run.
+fn bounded_instruction(value: &str, allow_empty: bool) -> bool {
+    (allow_empty || !value.is_empty()) && value.len() <= 64 * 1_024 && !value.contains('\0')
 }
 
 fn bounded_adhoc_instruction(value: &str) -> bool {
@@ -895,7 +977,7 @@ fn unsupported_profile() -> NativeAgentAssemblyError {
     )
 }
 
-fn invalid_profile() -> NativeAgentAssemblyError {
+pub(super) fn invalid_profile() -> NativeAgentAssemblyError {
     NativeAgentAssemblyError::new(
         NativeAgentAssemblyErrorCode::InvalidInput,
         "the authorized agent profile is malformed",
@@ -910,7 +992,7 @@ fn internal_tool_profile_error(error: InternalToolError) -> NativeAgentAssemblyE
     }
 }
 
-fn resource_exhausted_profile() -> NativeAgentAssemblyError {
+pub(super) fn resource_exhausted_profile() -> NativeAgentAssemblyError {
     NativeAgentAssemblyError::new(
         NativeAgentAssemblyErrorCode::ResourceExhausted,
         "the authorized agent profile exceeds its approved limit",

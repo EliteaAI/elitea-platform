@@ -173,6 +173,14 @@ export const PlusChatSubmenu = memo(
                 key={item.key}
                 onClick={handleItemClick(item)}
                 disabled={item.pending === true}
+                // The rows carry no accessible name of their own — the label is
+                // a nested `Typography`, so the accessibility tree reports an
+                // unnamed `menuitem` and a journey can only reach them by text
+                // content. `data-item-key` is the same identity the list is
+                // keyed on, which is what lets a test address ONE row when two
+                // entities share a display name.
+                data-testid="plus-submenu-item"
+                data-item-key={item.key}
                 sx={{
                   padding: '0.5rem 1rem',
                   height: '2.5rem',

@@ -8,6 +8,8 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useNavigate } from '@tanstack/react-router';
 
 import { DeleteApplicationButton, ExportApplicationButton } from '@/features/agents';
+
+import { ChatWithAgentButton } from './ChatWithAgentButton';
 import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
 import { disarmUnsavedChangesNavBlocker } from '@/widgets/app-shell';
@@ -35,10 +37,12 @@ export interface EditApplicationActionsProps {
   /** The agent's id, as the route carries it. `undefined` while the route param is unparseable — the actions then render disabled rather than acting on a wrong id. */
   readonly applicationId: string | undefined;
   readonly detail: ApplicationDetail | undefined;
-  /** Currently-open version — export follows exactly this one version (`ExportApplicationButton`'s own contract). */
+  /** Currently-open version — export follows exactly this one version (`ExportApplicationButton`'s own contract), and the Chat button pins the conversation's participant to it. */
   readonly activeVersion: ApplicationVersionDetail | undefined;
   /** The list tab to return to once the agent is gone. */
   readonly tab: string | undefined;
+  /** The selected project — the Chat button creates its conversation there. */
+  readonly projectId: string | undefined;
 }
 
 /*
@@ -52,6 +56,7 @@ export function EditApplicationActions({
   detail,
   activeVersion,
   tab,
+  projectId,
 }: EditApplicationActionsProps): ReactNode {
   const name = detail?.name;
   const currentVersionId = activeVersion?.id;
@@ -77,6 +82,10 @@ export function EditApplicationActions({
     () => setError(t('pages.agents.editApplication.exportError', 'Failed to export this agent.')),
     [],
   );
+  const handleChatError = useCallback(
+    () => setError(t('pages.agents.editApplication.chatError', 'Failed to open a chat with this agent.')),
+    [],
+  );
 
   return (
     <Box sx={wrapperSx}>
@@ -88,6 +97,13 @@ export function EditApplicationActions({
           {error}
         </Typography>
       )}
+      <ChatWithAgentButton
+        projectId={projectId}
+        applicationId={applicationId}
+        name={name}
+        activeVersion={activeVersion}
+        onError={handleChatError}
+      />
       <ExportApplicationButton
         applicationId={applicationId}
         name={name}

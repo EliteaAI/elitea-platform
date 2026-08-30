@@ -56,6 +56,29 @@ describe('ApplicationVariables', () => {
     expect(screen.queryByRole('button', { name: 'Collapse field' })).not.toBeInTheDocument();
   });
 
+  it('explains where the rows come from, so a row that appears or vanishes with the instructions is not a mystery', () => {
+    renderWithProviders(
+      <ApplicationVariables
+        variables={[{ name: 'topic', value: '' }]}
+        onChangeVariable={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('application-variables')).toBeInTheDocument();
+    expect(screen.getByText(/One row per placeholder in the instructions/)).toBeInTheDocument();
+  });
+
+  it('renders no literal double-brace interpolation artefact in the hint (i18next would swallow one)', () => {
+    renderWithProviders(
+      <ApplicationVariables
+        variables={[{ name: 'topic', value: '' }]}
+        onChangeVariable={vi.fn()}
+      />,
+    );
+    const hint = screen.getByText(/One row per placeholder in the instructions/);
+    expect(hint.textContent).not.toContain('{{');
+    expect(hint.textContent).not.toMatch(/\bundefined\b/);
+  });
+
   it('calls onChangeVariable with the variable name and new value', () => {
     const onChangeVariable = vi.fn();
     renderWithProviders(

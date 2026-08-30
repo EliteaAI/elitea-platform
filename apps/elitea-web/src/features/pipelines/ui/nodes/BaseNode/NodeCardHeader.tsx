@@ -76,6 +76,7 @@ import { useTheme } from '@mui/material/styles';
 import { PipelineNodeTypes } from '../../../lib/flow-editor/constants/flowEditor.constants';
 import { DeprecatedTips } from '../../../lib/flow-editor/constants/deprecated.constants';
 import { getNodeIconByType, isDeprecatedNodeType } from '../../../lib/flow-editor/helpers/node.helpers';
+import { isCompilerLegalNodeId } from '../../../lib/flow-editor/helpers/flowEditor.helpers';
 import type { FlowEdge, FlowNode, SetFlowEdges, SetFlowNodes } from '../../../lib/flow-editor/reactFlowTypes';
 import type { YamlPipelineDocument } from '../../../lib/flow-editor/helpers/pipelineFlow.types';
 import { renameFlowEdge, renameFlowNode, renameYamlDocument } from './NodeCardHeader.rename';
@@ -110,12 +111,37 @@ export interface NodeCardHeaderProps {
   readonly onDuplicateName?: (message: string) => void;
 }
 
-function findDuplicateMessage(
+/**
+ * Why a rename must be refused, or `undefined` to let it through.
+ *
+ * The FIRST branch is not a baseline behaviour: a node id is a runtime graph
+ * identifier, and `valid_graph_id`
+ * (`services/elitea-worker-rust/src/agents/graph/yaml.rs:362`) admits ASCII
+ * alphanumerics plus `_ - . :` and nothing else. Renaming a node to
+ * `"My Agent"` used to be accepted here and then rewritten into
+ * `entry_point`, every `transition` and every route target by
+ * `renameYamlDocument` — producing a document the compiler refuses whole
+ * (`graph.pipeline.invalid_configuration`). Minting legal ids
+ * (`getInitialNodeId`) is pointless if the rename box can undo it.
+ */
+function findRenameRejection(
   inputtedName: string,
   name: string,
   yamlJsonObject: YamlPipelineDocument,
   toolNames: readonly string[],
 ): string | undefined {
+  if (!isCompilerLegalNodeId(inputtedName)) {
+    // Literal, not `ValidationErrors.NodeNameInvalid`: `scripts/
+    // i18n-backfill.mjs` extracts `t(key, fallback)` pairs statically and
+    // cannot resolve a fallback that is an identifier, so a constant here
+    // fails the en.json sync gate as UNRESOLVED. The two duplicate-name
+    // messages below inline their copy for the same reason.
+    return t(
+      'pipelines.flowEditor.nodeCardHeader.invalidNodeName',
+      'Only letters, numbers and _ - . : are allowed — no spaces.',
+    );
+  }
+
   const foundNodeName = yamlJsonObject.nodes?.find(
     node => node.id !== name && node.id.replace(/\s/g, '') === inputtedName.replace(/\s/g, ''),
   );
@@ -185,9 +211,12 @@ export function NodeCardHeader(props: NodeCardHeaderProps): ReactNode {
       return;
     }
 
-    const duplicateMessage = findDuplicateMessage(inputtedName, name, yamlJsonObject, toolNames);
-    if (duplicateMessage) {
-      onDuplicateName?.(duplicateMessage);
+    // `onDuplicateName` keeps its baseline name (it is a caller-owned prop)
+    // but is now the general "rename refused, here is why" channel — it also
+    // carries the compiler-legality refusal added in `findRenameRejection`.
+    const rejection = findRenameRejection(inputtedName, name, yamlJsonObject, toolNames);
+    if (rejection) {
+      onDuplicateName?.(rejection);
       setInputtedName(name);
       setIsEditingName(false);
       return;
