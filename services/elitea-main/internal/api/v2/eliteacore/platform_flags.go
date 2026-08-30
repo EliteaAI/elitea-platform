@@ -24,6 +24,11 @@ package eliteacore
 //	blocked_toolkits               → blockedToolkits, marshalled into
 //	                                 PlatformSettings so the product UI can mark
 //	                                 an existing toolkit blocked
+//	analytics_enabled              → analyticsFlags, marshalled as
+//	                                 analytics_enabled AND enforced on the
+//	                                 `/analytics*` routes by
+//	                                 internal/api/router.go's
+//	                                 requireAnalyticsEnabled
 //
 // The other four `guardrails` fields are read outside this package, and this is
 // the whole of that list: `blocked_toolkits` and `blocked_tools` in the toolkit
@@ -151,6 +156,24 @@ func (h *Handler) voiceFlags(ctx context.Context) voiceFlagState {
 		enabled:             enabled,
 		temporarilyDisabled: enabled && values.Bool(platformconfig.KeyVoiceTemporarilyDisabled, false),
 	}
+}
+
+// analyticsFlagState is the resolved Analytics visibility switch.
+type analyticsFlagState struct {
+	// enabled hides the Settings > Analytics tab when false, AND — unlike the
+	// voice and MCP-menu switches — is also the answer requireAnalyticsEnabled
+	// enforces on the `/analytics*` HTTP surface. A client-only switch would
+	// leave those routes open to anyone who kept a URL while the tab believed
+	// itself hidden.
+	enabled bool
+}
+
+func (h *Handler) analyticsFlags(ctx context.Context) analyticsFlagState {
+	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionAnalytics)
+	if err != nil {
+		return analyticsFlagState{enabled: true}
+	}
+	return analyticsFlagState{enabled: values.Bool(platformconfig.KeyAnalyticsEnabled, true)}
 }
 
 // publishGuardrailState is the resolved agent-publishing guardrail.

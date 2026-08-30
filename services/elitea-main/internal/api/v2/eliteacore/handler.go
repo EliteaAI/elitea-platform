@@ -219,6 +219,16 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	defaults["dedicated_banner"] = banner
 	defaults["maintenance"] = h.maintenancePayload(r.Context(), maintenance)
 
+	// The Analytics visibility switch, ported off the withheld `observability`
+	// section (config_schemas.go's "Observability, Runtime and Admin Panel are
+	// GONE too" note) onto the Features page. Added under
+	// `additionalProperties: true`, like the pairs above: apps/elitea-web's
+	// Settings page hides its Analytics tab when this is false. The routes
+	// themselves are gated independently, in internal/api/router.go, so a
+	// client that ignores this key still meets a 403 rather than an open
+	// endpoint behind a hidden button.
+	defaults["analytics_enabled"] = h.analyticsFlags(r.Context()).enabled
+
 	writeJSON(w, http.StatusOK, defaults)
 }
 

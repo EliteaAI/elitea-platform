@@ -358,13 +358,16 @@ func TestTheUnavailableFieldIsStillDECLARED(t *testing.T) {
  * cannot supply an environment for. "Nothing to assert" is not that.
  *
  * NOTHING IS LOST. The refusal contract — 501 on both verbs, with the server's
- * own reason in the body — is exercised by six live instances on the
+ * own reason in the body — is exercised by three live instances on the
  * Configuration side, in config_values_postgres_integration_test.go's
- * `mcp_servers`, `observability`, `llm_proxy`, `runtime`, `admin_panel` and
- * `auth`. And TestSchemaDeclaresAvailabilityForEverySection still holds every
- * section to being either available WITH FIELDS or unavailable WITH A REASON,
- * so a Features section that loses its consumer cannot quietly become a blank
- * pane. When one is withheld again, this test comes back with it.
+ * `mcp_servers`, `llm_proxy` and `auth`. (`observability`, `runtime` and
+ * `admin_panel` used to bring the count to six; they were REMOVED rather than
+ * ported — see config_schemas.go's "Observability, Runtime and Admin Panel are
+ * GONE too" note — so they no longer exist to refuse anything.) And
+ * TestSchemaDeclaresAvailabilityForEverySection still holds every section to
+ * being either available WITH FIELDS or unavailable WITH A REASON, so a
+ * Features section that loses its consumer cannot quietly become a blank pane.
+ * When one is withheld again, this test comes back with it.
  */
 
 /* ── the move ──────────────────────────────────────────────────────────── */

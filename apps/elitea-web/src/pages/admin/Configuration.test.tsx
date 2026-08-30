@@ -70,9 +70,13 @@ const SECTIONS = [
     // A section that is STILL unavailable. It used to be `advanced`, which is
     // no longer declared at all: its subject is Pylon plugin loading, which the
     // target architecture removes on purpose, so the row was removed rather
-    // than left saying "not available here" forever.
-    id: 'runtime',
-    title: 'Runtime',
+    // than left saying "not available here" forever. `runtime` followed
+    // `advanced` out the door for the same reason — see config_schemas.go's
+    // "Observability, Runtime and Admin Panel are GONE too" note — so this
+    // fixture now stands in with `llm_proxy`, a section that genuinely stays
+    // withheld (its data is three unrelated shapes a flat form cannot express).
+    id: 'llm_proxy',
+    title: 'LLM Proxy',
     unavailable_reason: 'these settings configure Pylon plugin runtimes',
     fields: [],
   },
@@ -177,7 +181,7 @@ describe('AdminConfiguration — the unavailable sections', () => {
   it('offers no save control at all on an unavailable section', async () => {
     renderAdminRoute(<AdminConfiguration />);
     await waitForResources();
-    await userEvent.click(screen.getByRole('button', { name: /Runtime/ }));
+    await userEvent.click(screen.getByRole('button', { name: /LLM Proxy/ }));
 
     await screen.findByTestId('admin-configuration-unavailable');
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
