@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
@@ -719,6 +720,139 @@ func importChannels[T any](agents, toolkits, skills []T) map[string]any {
 		"agents":   channel(agents),
 		"toolkits": channel(toolkits),
 		"skills":   channel(skills),
+	}
+}
+
+// importVersionTags writes the `tags` array of one imported agent version into
+// the store every other path already keeps a tag in, and returns the rows it
+// wrote plus one message for each tag it could not write.
+//
+// # The store
+//
+// A tag is not a column. It is a row of `p_<id>.tags` (id, name UNIQUE, data
+// jsonb) joined to the version through `p_<id>.application_version_tag_
+// association` (001_initial.sql:302-306, :362-366). Every path in this
+// repository writes exactly that pair:
+//
+//   - the interactive editor — applications/handler.go, replaceVersionTags,
+//     called from UpdateVersion;
+//   - the skill import one file over — import_skills.go,
+//     importSkillVersionTags, into the sibling association table;
+//   - the FORK — handler.go, the `tags` block of the version loop;
+//
+// and the EXPORT reads it back (exportedVersionTags above). The import read the
+// key not at all, so an exported agent came back with its tags gone: absent
+// from the version-detail GET the editor reloads through, absent from the
+// marketplace filters that count `application_version_tag_association`
+// (handler.go, runPublishValidation), and absent from the next export, so the
+// document could not survive a second round trip. `meta` cannot stand in for
+// it — pylon's `update_version` dumps with
+// `exclude={'tags', 'variables', 'tools'}`, so a tag never reaches that column
+// at all.
+//
+// # The conflict rule is the editor's, not the fork's
+//
+// One `tags` row is shared by EVERY version that carries the name, because
+// `name` is UNIQUE per tenant schema. So `data` is written only when the name
+// is NEW: an existing tag keeps the data it already has, exactly as
+// replaceVersionTags and importSkillVersionTags leave it. The fork's variant
+// (`DO UPDATE SET data = EXCLUDED.data`) repaints the tag for every other agent
+// in the project that uses the name, which importing one file must not do.
+//
+// # Reported, not best-effort
+//
+// A tag is what a marketplace listing is found by, so a lost one is the same
+// 201-with-an-incomplete-agent that the variable insert beside it and the
+// fork's identical insert were both changed away from (#420). Each failure
+// becomes an `errors.agents` entry at the call site, which makes the answer
+// 207.
+//
+// The rows returned are what the DATABASE holds after the write — the tag's id
+// and its stored `data`, not the file's — so the caller's echo can report what
+// was persisted rather than what was asked for.
+func (h *Handler) importVersionTags(
+	ctx context.Context, schema, versionName string, versionID int, source map[string]any,
+) ([]map[string]any, []string) {
+	written := make([]map[string]any, 0)
+	messages := make([]string, 0)
+
+	raw, present := source["tags"]
+	if !present || raw == nil {
+		return written, messages
+	}
+	entries, isArray := raw.([]any)
+	if !isArray {
+		// The same rule importedJSONArray applies to a column: a key of the
+		// wrong JSON type is a fault in the file and is reported, rather than
+		// silently importing an agent with no tags.
+		return written, append(messages,
+			"unable to import the tags of version "+versionName+": tags must be a JSON array")
+	}
+
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		name, data := importedTagFrom(entry)
+		// A nameless tag cannot be stored (`tags.name` is NOT NULL) and a
+		// duplicate name is one row either way, so both are skipped rather than
+		// failing the version — the rule replaceVersionTags applies to the same
+		// list arriving from the editor.
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		var dataJSON []byte
+		if data != nil {
+			encoded, err := json.Marshal(data)
+			if err != nil {
+				messages = append(messages, "unable to import tag "+name+": "+err.Error())
+				continue
+			}
+			dataJSON = encoded
+		}
+
+		var tagID int
+		var storedData string
+		if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %s.tags (name, data) VALUES ($1, $2::jsonb)
+			ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+			RETURNING id, COALESCE(data::text, 'null')`, schema), name, dataJSON).Scan(&tagID, &storedData); err != nil {
+			messages = append(messages, "unable to import tag "+name+": "+err.Error())
+			continue
+		}
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %s.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+			ON CONFLICT DO NOTHING`, schema), versionID, tagID); err != nil {
+			messages = append(messages, "unable to import tag "+name+": "+err.Error())
+			continue
+		}
+
+		var stored any
+		// storedData is JSON this database just returned — it cannot fail.
+		_ = json.Unmarshal([]byte(storedData), &stored)
+		written = append(written, map[string]any{"id": tagID, "name": name, "data": stored})
+	}
+	return written, messages
+}
+
+// importedTagFrom reads the name and the data out of one entry of a `tags`
+// array.
+//
+// It takes the two shapes the sibling readers take: the object the export
+// writes ({name, data} — exportedVersionTags) and the object the editor sends
+// ({id, name, data} — applications/handler.go, tagNameFrom), plus the bare
+// string a hand-written file carries, which is what importSkillVersionTags and
+// pylon's `_normalize_tags` accept. An entry's `id` is ignored on purpose: it
+// names a row of the SOURCE project's `tags` table and means nothing here.
+func importedTagFrom(raw any) (string, any) {
+	switch typed := raw.(type) {
+	case string:
+		return strings.TrimSpace(typed), nil
+	case map[string]any:
+		name, _ := typed["name"].(string)
+		return strings.TrimSpace(name), typed["data"]
+	default:
+		return "", nil
 	}
 }
 

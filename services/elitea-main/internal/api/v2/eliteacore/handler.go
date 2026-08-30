@@ -2510,6 +2510,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			// to run, so a lost one is the same 201-with-a-broken-agent the
 			// fork path's identical insert was changed away from, and the
 			// caller reads both through the same wizard channel.
+			//
+			// `importedVariables` collects the rows that were WRITTEN, so the
+			// echo below can report what the database holds rather than what
+			// the file asked for.
+			importedVariables := make([]map[string]any, 0)
 			if vars, ok := v["variables"].([]any); ok {
 				for _, varRaw := range vars {
 					varMap, _ := varRaw.(map[string]any)
@@ -2528,8 +2533,30 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 							"name":  name,
 							"msg":   "Import function has been failed: unable to import variable " + varName + ": " + err.Error(),
 						})
+						continue
 					}
+					importedVariables = append(importedVariables, map[string]any{
+						"name": varName, "value": varValue,
+					})
 				}
+			}
+
+			// The version's tags, one key over from the variables and lost the
+			// same way: the file carries them (export_import.go,
+			// exportedVersionTags), and this path read the key not at all, so an
+			// exported agent could not bring its tags home. They go to the store
+			// the editor, the version-detail GET, the publish validation and the
+			// next export all use. See importVersionTags for the store, the
+			// conflict rule and why each failure is reported.
+			importedTags, tagFailures := h.importVersionTags(ctx, s, vName, vID, v)
+			for _, message := range tagFailures {
+				slog.ErrorContext(ctx, "import: application version tag write failed",
+					"schema", s, "version_id", vID, "message", message)
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: " + message,
+				})
 			}
 
 			// Collect tool refs for later resolution
@@ -2553,10 +2580,25 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				"status":         "draft",
 			})
 
-			var llmParsed, startersParsed any
+			var llmParsed, startersParsed, metaParsed any
 			_ = json.Unmarshal([]byte(llmJSON), &llmParsed)           // already marshaled above; can't fail
 			_ = json.Unmarshal([]byte(startersJSON), &startersParsed) // already marshaled above; can't fail
+			_ = json.Unmarshal([]byte(metaJSON), &metaParsed)         // already marshaled above; can't fail
 
+			// `meta`, `variables` and `tags` were all absent from this map,
+			// while the sibling fork echo and the version-detail GET both carry
+			// them. The echo therefore UNDER-REPORTED the write: the wizard read
+			// back an agent with no variables and no tags from a request that
+			// had just stored both, and a caller comparing the echo with the
+			// file it sent would conclude the import had dropped them.
+			//
+			// Each key is what was PERSISTED, not what was asked for:
+			// `variables` and `tags` hold the rows that were actually written —
+			// a failed one is in `errors.agents` and must not also appear here —
+			// and `tags` carries each tag's stored id and stored `data`, which
+			// is the {id, name, data} shape the version-detail GET answers with
+			// (applications/handler.go, versionTagsOrEmpty). `meta` is the value
+			// the column took.
 			versionDetails = map[string]any{
 				"id":                    fmt.Sprintf("%d", vID),
 				"application_id":        fmt.Sprintf("%d", appID),
@@ -2568,6 +2610,9 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				"welcome_message":       welcomeMsg,
 				"llm_settings":          llmParsed,
 				"conversation_starters": startersParsed,
+				"meta":                  metaParsed,
+				"variables":             importedVariables,
+				"tags":                  importedTags,
 				"tools":                 []any{},
 			}
 		}
@@ -2839,11 +2884,12 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 //     member of. Only this function rewrites it to the destination;
 //   - carried no `meta.parent_entity_id`, so nothing recorded where it came
 //     from and the read path reported `is_forked: false` on a fork;
-//   - lost every tag, which the import still does not read. It no longer
-//     loses the version's variables: the import writes
-//     `application_variables` too, because that table is where every
-//     reader of an agent looks and an import that skipped it dropped the
-//     variables out of the round trip entirely.
+//   - lost every tag and every variable. That one is no longer a difference:
+//     the import writes `application_variables`, and it writes the
+//     `tags` / `application_version_tag_association` pair as well, because
+//     those are the stores every reader of an agent looks in and an import
+//     that skipped them dropped both out of the round trip entirely. The two
+//     differences above remain, and are why the route needs this function.
 //
 // The registration is the repair. This function keeps the errors channel and
 // the status rule the import uses, because the same wizard reads both.

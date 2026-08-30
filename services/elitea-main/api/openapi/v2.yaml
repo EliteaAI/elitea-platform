@@ -1462,8 +1462,10 @@ components:
         emits the 10-key subset without created_at/author/tools (:913-919);
         Fork adds is_forked and omits pipeline_settings
         (eliteacore/handler.go:2440-2456, is_forked at :2452); the import
-        detail map (:2070-2082) has NO is_forked and also omits
-        meta/variables/tags/created_at; publicApplicationDetail omits
+        detail map has NO is_forked and omits created_at, but DOES carry
+        meta, variables and tags — it reports what the import actually
+        persisted, since the import began writing the canonical variable
+        and tag stores; publicApplicationDetail omits
         variables, created_at, author and is_forked (:1460-1475).
         Empty-vs-missing: instructions and welcome_message are always
         present as "" when the DB column is NULL (COALESCE / pointer deref
