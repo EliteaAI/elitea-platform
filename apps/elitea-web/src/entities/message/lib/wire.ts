@@ -147,11 +147,24 @@ export interface MessageGroupMetaWire {
 }
 
 /**
- * A persisted `message_group` row (lines 36-46, 112-126). `id`/`reply_to_id`/
- * `question_id` are only ever equality-compared in the source (never
- * arithmetic), so their wire numeric-vs-string type is genuinely
- * unevidenced — kept as the defensive `string | number` union rather than
- * guessing one.
+ * A persisted `message_group` row (lines 36-46, 112-126).
+ *
+ * `id`/`reply_to_id`/`question_id` are no longer an unevidenced guess: BOTH
+ * spellings are wire truth, and ONE payload carries both. The transcript
+ * route `GET /elitea_core/messages/prompt_lib/{project}/{conversation}`
+ * answers `{"id": "1121", ...}` beside `{"id": "1122", "reply_to_id": 1121}`
+ * — measured on the live stack, project 90106 conversation 471 — because Go
+ * types the row id `Message.ID string` (`strconv.Itoa` of the DB int) and the
+ * FK `ReplyToID *int`
+ * (services/elitea-main/internal/api/v2/conversations/handler.go:41,57),
+ * while the other producer, `ListMessageGroups`, numbers BOTH
+ * (internal/infra/db/repos/conversations.go:1618,1631).
+ *
+ * No producer emits `question_id` on a persisted row at all — the only writer
+ * in this app is `pages/chat/useChatPageData.ts`'s adapter, which synthesises
+ * it from a sibling row's `id` and so carries whichever spelling that row
+ * had. So the union stays, and every comparison against these three goes
+ * through `isMessageRow` in lib/normalise.ts rather than `===`.
  */
 export interface MessageGroupWire {
   readonly id: string | number;

@@ -285,6 +285,44 @@ describe('normaliseAssistantMessage', () => {
     expect(normaliseAssistantMessage(answer, [question, answer], undefined).questionId).toBe('10');
   });
 
+  /*
+   * MEASURED on the live stack (project 90106, conversation 471): the
+   * transcript route answers the question as `{"id": "1121", ...}` and its
+   * answer as `{"id": "1122", "reply_to_id": 1121}` — the SAME row id in two
+   * spellings inside ONE payload, because Go serialises `Message.ID` as a
+   * string (`strconv.Itoa` of the row id) and `ReplyToID` as `*int`
+   * (services/elitea-main/internal/api/v2/conversations/handler.go:41,57),
+   * while the other producer (`ListMessageGroups`) numbers both. A strict
+   * `===` resolved NO question on the measured shape, and
+   * `ChatMessageList`'s `canDeleteAiMessage` then refuses delete on every
+   * answer of a reloaded conversation. `expect.soft` so one broken
+   * comparison reports every spelling it governs at once.
+   */
+  it('links an answer to its question across the two row-id spellings', () => {
+    const wireQuestion: MessageGroupWire = { id: '1121', uuid: 'q-uuid', content: 'q', created_at: '2026-08-30 01:50:58' };
+    const numberedQuestion: MessageGroupWire = { ...wireQuestion, id: 1121 };
+    const wireAnswer: MessageGroupWire = { ...baseGroup, id: '1122', reply_to_id: 1121 };
+    const spelledAnswer: MessageGroupWire = { ...baseGroup, reply_to_id: '1121' };
+
+    // reply_to_id: string row id <- numeric FK (the measured transcript payload)
+    expect.soft(normaliseAssistantMessage(wireAnswer, [wireQuestion, wireAnswer], undefined).questionId).toBe('q-uuid');
+    // reply_to_id: numeric row id <- string FK (the message-groups spelling)
+    expect.soft(normaliseAssistantMessage(spelledAnswer, [numberedQuestion], undefined).questionId).toBe('q-uuid');
+    // question_id, the second clause of the same lookup, in both directions
+    expect.soft(normaliseAssistantMessage({ ...baseGroup, question_id: 1121 }, [wireQuestion], undefined).questionId).toBe('q-uuid');
+    expect.soft(normaliseAssistantMessage({ ...baseGroup, question_id: '1121' }, [numberedQuestion], undefined).questionId).toBe('q-uuid');
+  });
+
+  /*
+   * The other half of the same comparison: a strict `===` also makes
+   * `undefined === undefined` TRUE, so an answer stating no reply linked
+   * itself to whichever row happened to state no id.
+   */
+  it('links no question when neither the answer nor the candidate row states an id', () => {
+    const idless = { uuid: 'x-uuid', content: 'q', created_at: '2026-01-01 12:00:00' } as unknown as MessageGroupWire;
+    expect('questionId' in normaliseAssistantMessage(baseGroup, [idless], undefined)).toBe(false);
+  });
+
   it('omits questionId when no sibling row matches reply_to_id or question_id', () => {
     const result = normaliseAssistantMessage(baseGroup, [], undefined);
     expect('questionId' in result).toBe(false);

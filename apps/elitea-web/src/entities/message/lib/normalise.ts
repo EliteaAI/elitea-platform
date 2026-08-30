@@ -173,10 +173,31 @@ export function normaliseUserMessage(
 
 // ── convertToAIAnswer (lines 111-313) ──────────────────────────────────────
 
+/**
+ * Match a message-group row against a row id another row states — a DIFFERENT id family from
+ * `isParticipant` above (chat_message_group ROW ids), normalised for its own measured reason:
+ * ONE payload spells the same id BOTH ways. `GET /elitea_core/messages/prompt_lib/{p}/{c}`
+ * answers the question `{"id": "1121"}` and its answer `{"id": "1122", "reply_to_id": 1121}`
+ * (measured, project 90106 conversation 471) — Go serialises `Message.ID` as a STRING
+ * (`strconv.Itoa` of the row id) and `ReplyToID` as `*int`, conversations/handler.go:41,57. The
+ * other producer, `ListMessageGroups`, numbers both; hence `string | number` on all three fields
+ * in `./wire`. Not cosmetic: `questionId` is how `ChatMessageList`'s `canDeleteAiMessage` finds
+ * the question an answer replies to, to check the reader wrote it — unresolved, it finds no
+ * question, reads no `userId`, and refuses delete on every answer of a reloaded conversation.
+ *
+ * `undefined` never matches on EITHER side — the second half of the same defect, not mere
+ * hardening: under `===`, `undefined === undefined` is TRUE, so an answer stating no reply
+ * linked itself to whatever row stated no id.
+ */
+function isMessageRow(rowId: string | number | undefined, statedId: string | number | undefined): boolean {
+  if (rowId === undefined || statedId === undefined) return false;
+  return String(rowId) === String(statedId);
+}
+
 /** `foundQuestion` lookup + `question_id` resolution (lines 127, 295). */
 function resolveQuestionId(messageGroup: MessageGroupWire, messageGroups: readonly MessageGroupWire[]): string | undefined {
   const foundQuestion = messageGroups.find(
-    (item) => item.id === messageGroup.reply_to_id || messageGroup.question_id === item.id,
+    (item) => isMessageRow(item.id, messageGroup.reply_to_id) || isMessageRow(item.id, messageGroup.question_id),
   );
   if (!foundQuestion) return undefined;
   return foundQuestion.uuid || String(foundQuestion.id);
