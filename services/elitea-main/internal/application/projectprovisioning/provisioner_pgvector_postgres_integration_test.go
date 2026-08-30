@@ -49,6 +49,8 @@ import (
 const referenceProjectID = 1
 
 func TestProvisionCreatesAVectorStoreAnIndexRunCanResolve(t *testing.T) {
+	skipWithoutVectorExtension(t)
+
 	pool := newProvisioningPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -196,6 +198,8 @@ WHERE project_id = $1 AND type = 'pgvector' AND section = 'vectorstorage' AND so
 }
 
 func TestProvisionCompensatesTheVectorStoreWhenALaterStepFails(t *testing.T) {
+	skipWithoutVectorExtension(t)
+
 	pool := newProvisioningPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -452,4 +456,56 @@ func dropProvisionedVectorStore(t *testing.T, projectID int64) {
 			_, _ = admin.Exec(ctx, statement)
 		}
 	})
+}
+
+// skipWithoutVectorExtension states the missing dependency BEFORE the test
+// provisions anything.
+//
+// WHY THIS GUARD EXISTS (#423)
+//
+// The four tests that call it run the project_pgvector step, which executes
+// CREATE EXTENSION vector inside the per-project database. On a server that
+// does not ship pgvector the step fails with "project pgvector provisioning
+// unavailable", and the four report a red test — a defect in the code under
+// test — for a dependency the developer's PostgreSQL simply does not have.
+// internal/infra/pgvector already answers the same condition with the same
+// sentence; this says it in the same words.
+//
+// It is a LOCAL accommodation only. The Test job in .github/workflows/ci-go.yml
+// runs a pgvector image and sets ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST, which
+// turns this skip into a failure — the four tests cannot go quiet there, which
+// is the whole point of the ledger in scripts/go/declared-skips.txt (#423).
+// Same shape as ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST.
+func skipWithoutVectorExtension(t *testing.T) {
+	t.Helper()
+	const requireEnvironment = "ELITEA_REQUIRE_PGVECTOR_POSTGRES_TEST"
+	databaseURL := provisioningDatabaseURL()
+	if databaseURL == "" {
+		// newProvisioningPool reports the absent DSN, with its own message.
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s: %v", databaseURLEnv, err)
+	}
+	defer func() { _ = connection.Close(context.Background()) }()
+
+	var available bool
+	if err := connection.QueryRow(ctx, `SELECT EXISTS (
+SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
+)`).Scan(&available); err != nil {
+		t.Fatalf("read the available extensions of the %s server: %v", databaseURLEnv, err)
+	}
+	if available {
+		return
+	}
+	if os.Getenv(requireEnvironment) == "true" {
+		t.Fatalf("%s is set, and the %s server does not provide the vector extension: "+
+			"run this job against a pgvector image rather than letting the coverage go silent",
+			requireEnvironment, databaseURLEnv)
+	}
+	t.Skipf("the %s server does not provide the vector extension", databaseURLEnv)
 }

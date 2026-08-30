@@ -53,6 +53,8 @@ const referenceMasterKey = "dGVzdC1tYXN0ZXIta2V5LTMyLWJ5dGVzLXNlZWQtMDE="
 const unwrappedStoredKeyBytes = 44
 
 func TestProvisionWritesVaultMaterialTheDeploymentMasterKeyCanOpen(t *testing.T) {
+	skipWithoutVectorExtension(t)
+
 	// The deployment shape. Five files under deploy/ set SECRETS_MASTER_KEY; no
 	// file under deploy/ sets ELITEA_VAULT_MASTER_KEY_FILE. Set the first
 	// BEFORE anything builds a secrets handler, which reads it at construction.
@@ -205,6 +207,8 @@ func TestProvisionWritesVaultMaterialTheDeploymentMasterKeyCanOpen(t *testing.T)
 // behind is adopted by the next project that draws the same id, and its rows
 // carry no foreign key to centry.project, so nothing else would ever sweep it.
 func TestProvisionDeprovisionRemovesTheWrappedVault(t *testing.T) {
+	skipWithoutVectorExtension(t)
+
 	t.Setenv("SECRETS_MASTER_KEY", referenceMasterKey)
 	assertVaultMasterKeyFileIsUnset(t)
 
