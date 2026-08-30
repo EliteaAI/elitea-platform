@@ -9,13 +9,26 @@
  * both correct and self-invalidating: a new document is a cache miss, the
  * old one is collectable.
  *
- * **Why the empty-graph guard is load-bearing.** An absent or node-less
- * document is not an invalid pipeline — it is an editor that has not been
- * seeded yet (`usePipelineVersionSync` runs after the first paint, and the
- * chat-side editor may never mount one). Reporting "a pipeline must hold
- * between 1 and 128 nodes" there would block the Save button on a screen
- * the user has not touched. `usePipelineGraphDraft` draws the same line for
- * the same reason (`yamlCode.trim() === ''` -> "nothing to save").
+ * **Why the empty-DOCUMENT guard is load-bearing, and why it is not an
+ * empty-GRAPH guard.** An ABSENT document is not an invalid pipeline — it
+ * is an editor that has not been seeded yet (`usePipelineVersionSync` runs
+ * after the first paint, and the chat-side editor may never mount one).
+ * Reporting "a pipeline must hold between 1 and 128 nodes" there would
+ * block the Save button on a screen the user has not touched.
+ *
+ * A NODE-LESS document is a different thing entirely, and suppressing it
+ * was a hole: deleting the last node on the canvas leaves `{state: {...},
+ * nodes: [], entry_point: undefined}` — a real, edited document that
+ * `PipelineDefinition::from_yaml` refuses twice over (`entry_point` is a
+ * required non-defaulted field, `compiler.rs:137`; and `compiler.rs:459`
+ * refuses `raw.nodes.is_empty()`). Exempting it re-enabled Save on a graph
+ * the runtime cannot run, and `usePipelineGraphDraft` then stored it
+ * happily, because its own bail-out reads `yamlCode.trim() === ''` — the
+ * top-level `state:` keys survive a delete-all, so that string is never
+ * empty. The guard below is the document-shaped reading of the SAME line:
+ * an unseeded editor holds `{}` (`pipelineYamlStore.ts`'s
+ * `EMPTY_YAML_OBJECT`, the object a blank `yamlCode` parses to), an edited
+ * one always holds at least one key.
  */
 import { useContext } from 'react';
 
@@ -29,9 +42,18 @@ const NO_ISSUES: readonly GraphAdmissionIssue[] = [];
 
 const ISSUE_CACHE = new WeakMap<object, readonly GraphAdmissionIssue[]>();
 
+/**
+ * `true` once the editor holds a document at all — a node-less one counts.
+ * See this module's doc comment: only a document that was never seeded is
+ * exempt, because a node-less one is a real edit the compiler refuses.
+ */
+function holdsDocument(document: YamlPipelineDocument | undefined): document is YamlPipelineDocument {
+  return document !== undefined && Object.keys(document).length > 0;
+}
+
 /** Admission issues for `document`, computed once per document object. */
 function admissionIssuesFor(document: YamlPipelineDocument | undefined): readonly GraphAdmissionIssue[] {
-  if (document === undefined || (document.nodes ?? []).length === 0) return NO_ISSUES;
+  if (!holdsDocument(document)) return NO_ISSUES;
   const cached = ISSUE_CACHE.get(document);
   if (cached !== undefined) return cached;
   const issues = collectGraphAdmissionIssues(document);
@@ -42,7 +64,12 @@ function admissionIssuesFor(document: YamlPipelineDocument | undefined): readonl
 export interface GraphAdmission {
   /** Every reason the native runtime would refuse this graph. Empty for an admissible — or not-yet-seeded — document. */
   readonly issues: readonly GraphAdmissionIssue[];
-  /** `false` while the editor holds no graph at all; nothing should be gated on admission then. */
+  /**
+   * `false` only while the editor holds no DOCUMENT at all; nothing should
+   * be gated on admission then. A document whose `nodes:` list is empty is
+   * `true` — the user emptied the canvas, and the runtime refuses that
+   * (`compiler.rs:459`).
+   */
   readonly hasGraph: boolean;
 }
 
@@ -60,7 +87,7 @@ export function useGraphAdmission(): GraphAdmission {
   const contextDocument = useContext(FlowEditorContext)?.yamlJsonObject;
   const storeDocument = usePipelineYamlStore((state) => state.yamlJsonObject);
   const document = (contextDocument ?? storeDocument) as YamlPipelineDocument;
-  return { issues: admissionIssuesFor(document), hasGraph: (document.nodes ?? []).length > 0 };
+  return { issues: admissionIssuesFor(document), hasGraph: holdsDocument(document) };
 }
 
 /** The admission issues one node's panel should show, in compiler order. */

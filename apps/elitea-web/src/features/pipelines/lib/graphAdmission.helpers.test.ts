@@ -225,6 +225,30 @@ describe('node rules', () => {
     expect(issues[0]?.citation).toBe('hitl.rs:474');
   });
 
+  it('node.required-field: a HITL `user_message` cleared to "" refuses the document (hitl.rs:440)', () => {
+    // `validate_message` refuses `message.value.is_empty()` before anything
+    // else about the node is read, and `compiler.rs:1252` turns that into "a
+    // HITL node is invalid" for the WHOLE pipeline. Clearing the User
+    // message field in the node card writes exactly this shape.
+    const hitl: YamlPipelineNode = { id: 'HITL_1', type: 'hitl', input: ['messages'], user_message: { type: 'fixed', value: '' }, routes: { approve: 'END' } };
+    const issues = issuesForNode(collectGraphAdmissionIssues(baseDocument({ nodes: [hitl], entry_point: 'HITL_1' })), 'HITL_1');
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.rule).toBe('node.required-field');
+    expect(issues[0]?.field).toBe('user_message.value');
+    expect(issues[0]?.citation).toBe('hitl.rs:440');
+  });
+
+  it('node.required-field: an ABSENT HITL `user_message` is legal — serde substitutes `default_message` (hitl.rs:60-64)', () => {
+    // The discriminator for the rule above being a rule about the EMPTY
+    // string and not about the field's presence. `#[serde(default)]` on the
+    // struct and `#[serde(default = "default_message")]` on the field mean
+    // an absent message compiles; refusing it would block a legal save.
+    const hitl: YamlPipelineNode = { id: 'HITL_1', type: 'hitl', input: ['messages'], routes: { approve: 'END' } };
+
+    expect(collectGraphAdmissionIssues(baseDocument({ nodes: [hitl], entry_point: 'HITL_1' }))).toEqual([]);
+  });
+
   it('node.route-target: refuses a transition that names no node (compiler.rs:484)', () => {
     const issues = issuesForNode(collectGraphAdmissionIssues(withNode({ transition: 'Missing_1' })), 'LLM_1');
 
@@ -264,6 +288,54 @@ describe('node rules', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]?.field).toBe('edit_state_key');
     expect(issues[0]?.citation).toBe('compiler.rs:1348');
+  });
+
+  it('node.state-reference: a HITL `edit_state_key` set to "" is present-and-illegal, not absent (hitl.rs:161)', () => {
+    // `Option<String>` — `Some("")` is Some, so `validate_routes` counts the
+    // edit route as an action (`hitl.rs:477`) and then `hitl.rs:158-165`
+    // refuses the node because `valid_output_key("")` is false
+    // (`yaml.rs:372`). Treating `''` as "no key set" admitted the document.
+    const hitl: YamlPipelineNode = { id: 'HITL_1', type: 'hitl', input: ['messages'], routes: { edit: 'HITL_1' }, edit_state_key: '' };
+    const issues = issuesForNode(collectGraphAdmissionIssues(baseDocument({ nodes: [hitl], entry_point: 'HITL_1' })), 'HITL_1');
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.field).toBe('edit_state_key');
+    expect(issues[0]?.subject).toBe('');
+    expect(issues[0]?.citation).toBe('hitl.rs:161');
+  });
+
+  it('node.state-reference: an ABSENT HITL `edit_state_key` is legal — `None`, not `Some("")` (hitl.rs:158)', () => {
+    const hitl: YamlPipelineNode = { id: 'HITL_1', type: 'hitl', input: ['messages'], routes: { approve: 'END' } };
+
+    expect(collectGraphAdmissionIssues(baseDocument({ nodes: [hitl], entry_point: 'HITL_1' }))).toEqual([]);
+  });
+
+  it('node.state-reference: a Decision node validates `decisional_inputs`, not the `input` the compiler drops (decision.rs:97-101)', () => {
+    // Both halves on the pair of documents that made the old rule wrong in
+    // OPPOSITE directions. `routing_tests.rs:310-314` pins the precedence:
+    // `input` beside a non-empty `decisional_inputs` never reaches
+    // `input_keys()`, so validating it is a false refusal — and the key that
+    // DOES reach it went unchecked.
+    const stale: YamlPipelineNode = { id: 'Decision_1', type: 'decision', nodes: [], default_output: 'END', decisional_inputs: ['messages'], input: ['nowhere'] };
+    expect(collectGraphAdmissionIssues(baseDocument({ nodes: [stale], entry_point: 'Decision_1' }))).toEqual([]);
+
+    const live: YamlPipelineNode = { id: 'Decision_1', type: 'decision', nodes: [], default_output: 'END', decisional_inputs: ['nowhere'] };
+    const issues = issuesForNode(collectGraphAdmissionIssues(baseDocument({ nodes: [live], entry_point: 'Decision_1' })), 'Decision_1');
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.field).toBe('decisional_inputs[0]');
+    expect(issues[0]?.subject).toBe('nowhere');
+    expect(issues[0]?.citation).toBe('compiler.rs:1284');
+  });
+
+  it('node.state-reference: an EMPTY `decisional_inputs` hands the read back to `input` (decision.rs:99)', () => {
+    // `.filter(|values| !values.is_empty())` — an empty list loses to
+    // `raw.input`, so `input` is the field the compiler reads and the field
+    // the issue must name.
+    const decision: YamlPipelineNode = { id: 'Decision_1', type: 'decision', nodes: [], default_output: 'END', decisional_inputs: [], input: ['nowhere'] };
+    const issues = issuesForNode(collectGraphAdmissionIssues(baseDocument({ nodes: [decision], entry_point: 'Decision_1' })), 'Decision_1');
+
+    expect(issues.map((issue) => issue.field)).toEqual(['input[0]']);
   });
 
   it('node.structured-output: a non-structured LLM node writes at most one data output (llm.rs:182)', () => {

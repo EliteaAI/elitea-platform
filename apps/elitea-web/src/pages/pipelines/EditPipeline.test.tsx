@@ -60,7 +60,16 @@ function detail(
       name: 'base',
       status: 'draft',
       agent_type: 'pipeline',
-      instructions: 'Be helpful.',
+      /*
+       * A pipeline's `instructions` IS its graph, so this default has to be a
+       * document the compiler would accept — `'Be helpful.'` (an AGENT's
+       * shape) parses to a node-less document, which `compiler.rs:459`
+       * refuses and the admission gate therefore vetoes Save on. Four
+       * save-path tests below were passing only because that veto did not
+       * exist yet; they assert on the PUT, not on admission, so the fixture
+       * is what was wrong.
+       */
+      instructions: 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n    transition: END\n',
       conversation_starters: ['Hi there'],
     },
   };
@@ -101,6 +110,15 @@ async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName
 }
 
 beforeEach(() => {
+  /*
+   * `usePipelineYamlStore` is module-scoped, so without this reset a document
+   * one test left behind judges the NEXT test's Save button — and since the
+   * admission gate now (correctly) refuses a node-less graph, a leaked one
+   * disables Save on a page that never loaded it. Two tests below already
+   * reset it by hand for exactly this reason; doing it once here makes the
+   * isolation unconditional rather than remembered.
+   */
+  usePipelineYamlStore.setState({ yamlCode: '', yamlJsonObject: {}, layoutVersion: undefined });
   configureGeneratedClient({ baseUrl: '/api/v2' });
   server.use(
     http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)),
@@ -644,8 +662,8 @@ describe('pipeline versioning', () => {
      * claim: it is what tells "the editor loaded the other version" apart from
      * "the trigger relabelled itself".
      */
-    const baseYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n';
-    const v2Yaml = 'entry_point: Printer_2\nnodes:\n  - id: Printer_2\n    type: printer\n';
+    const baseYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n    transition: END\n';
+    const v2Yaml = 'entry_point: Printer_2\nnodes:\n  - id: Printer_2\n    type: printer\n    transition: END\n';
     usePipelineYamlStore.setState({ yamlCode: '', yamlJsonObject: {}, layoutVersion: undefined });
     const base = detail({ versions: twoVersions });
     server.use(
@@ -686,7 +704,7 @@ describe('pipeline versioning', () => {
    * because `CreateVersion` cannot store the graph geometry at all.
    */
   it('saves a new version, then carries the live graph onto it', async () => {
-    const graphYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n';
+    const graphYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n    transition: END\n';
     const base = detail({ versions: twoVersions });
     const posts: Record<string, unknown>[] = [];
     const puts: { url: string; body: Record<string, unknown> }[] = [];
@@ -811,7 +829,11 @@ describe('pipeline versioning', () => {
           name: 'v1',
           status: 'draft',
           agent_type: 'pipeline',
-          instructions: 'nodes: []\n',
+          // A real one-node graph, not `nodes: []`: this test asserts on the
+          // post-save REFETCH, and an empty node list is a document the
+          // runtime refuses, so the admission gate keeps Save disabled and
+          // the save never happens.
+          instructions: 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n    transition: END\n',
         });
       }),
       // Delayed on purpose. `useRefetchPipelineAfterSave` fires on the save's

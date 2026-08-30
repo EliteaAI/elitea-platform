@@ -43,8 +43,14 @@ export const BUILTIN_STATE_KEYS: ReadonlySet<string> = new Set([
   'session_id',
 ]);
 
-/** Families whose `input:` list the compiler reads — `compiler.rs:371-382` (Printer contributes none). */
-const READS_INPUT: ReadonlySet<string> = new Set(['agent', 'decision', 'toolkit', 'mcp', 'hitl', 'llm', 'router', 'state_modifier']);
+/**
+ * Families whose `input:` list the compiler reads VERBATIM as its
+ * `input_keys()` — `compiler.rs:371-382`. Printer contributes none
+ * (`compiler.rs:378`), and `decision` is deliberately NOT a member: its
+ * `input_keys()` is a resolved list, not `raw.input`. See
+ * `decisionInputKeys` below.
+ */
+const READS_INPUT: ReadonlySet<string> = new Set(['agent', 'toolkit', 'mcp', 'hitl', 'llm', 'router', 'state_modifier']);
 
 /** Families whose `output:` list the compiler reads — `compiler.rs:384-392`. */
 const READS_OUTPUT: ReadonlySet<string> = new Set(['agent', 'toolkit', 'mcp', 'llm', 'state_modifier']);
@@ -133,10 +139,40 @@ function mappedVariable(key: string, entry: unknown): readonly RouteTargetRef[] 
   return [{ field: `input_mapping.${key}`, target: record.value }];
 }
 
+/**
+ * `decision.rs:97-101` — a Decision node's `input_keys()` is
+ * `decisional_inputs` when that field holds a NON-EMPTY list, otherwise
+ * `input`, otherwise the built-in `["messages"]`. The losing field is
+ * dropped before `validate_node_state` (`compiler.rs:1277`) ever sees it,
+ * because `compiler.rs:374` delegates to `DecisionNodeDefinition::
+ * input_keys`, which returns the resolved list rather than `raw.input`.
+ *
+ * Reading `raw.input` unconditionally here got this wrong in both
+ * directions: it REFUSED a legal document (a stale `input` left beside a
+ * live `decisional_inputs` — a save the user then cannot make) and ADMITTED
+ * an illegal one (an undeclared key in `decisional_inputs`). The runtime's
+ * own `routing_tests.rs:310-314` pins the precedence: `input: [ignored]`
+ * with `decisional_inputs: [messages]` yields `input_keys() == ["messages"]`.
+ *
+ * The `["messages"]` fallback needs no branch — it is a built-in
+ * (`compiler.rs:1440`), so an empty result is equivalent.
+ */
+function decisionInputKeys(raw: YamlPipelineNode): readonly RouteTargetRef[] {
+  if (toStringList(raw.decisional_inputs).length > 0) return listTargets('decisional_inputs', raw.decisional_inputs);
+  return listTargets('input', raw.input);
+}
+
+/** The state keys `node` names through whichever field the compiler resolves as its `input_keys()`. */
+function inputReferences(node: AdmissionNode): readonly RouteTargetRef[] {
+  if (node.type === 'decision') return decisionInputKeys(node.raw);
+  if (READS_INPUT.has(node.type)) return listTargets('input', node.raw.input);
+  return [];
+}
+
 /** State keys `node` names through `input`/`output`/`variables_to_clean`, each tagged with its field. */
 export function declaredStateReferences(node: AdmissionNode): readonly RouteTargetRef[] {
   const raw = node.raw;
-  const input = READS_INPUT.has(node.type) ? listTargets('input', raw.input) : [];
+  const input = inputReferences(node);
   const output = READS_OUTPUT.has(node.type) ? listTargets('output', raw.output) : [];
   const cleaned = node.type === 'state_modifier' ? listTargets('variables_to_clean', raw.variables_to_clean) : [];
   const mapped = READS_INPUT_MAPPING.has(node.type) ? mappedVariables(raw) : [];

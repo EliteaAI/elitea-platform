@@ -108,6 +108,41 @@ describe('toVersionWriteBody', () => {
     expect(body.meta?.['category']).toBe('sales');
   });
 
+  /*
+   * The create path folds the body's TOP-LEVEL `variables` into `meta` only
+   * when that list is NON-EMPTY (`applications/handler.go:509-511`). So a
+   * `variables` copy forwarded inside `meta` survives a deletion and wins:
+   * the new version is inserted with the deleted variable still in
+   * `meta.variables` while `application_variables` has no row, and the Rust
+   * worker applies the meta copy LAST — substituting a value the user
+   * deleted into every turn, while the editor shows no variables at all.
+   */
+  it('drops the stored `meta.variables` so deleting the last variable is not undone by the clone', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      variables: [{ name: 'api_key', value: 's3cret' }],
+      meta: { step_limit: 7, internal_tools: [], variables: [{ name: 'api_key', value: 's3cret' }] },
+    } as unknown as ApplicationVersionDetail;
+
+    const body = toVersionWriteBody(version, [], {
+      instructions: 'i',
+      welcomeMessage: 'w',
+      variables: [],
+      stepLimit: 7,
+      internalTools: [],
+      tags: [],
+    } as unknown as EditApplicationVersionFields);
+
+    expect(body.variables, 'the authoritative list is the deleted one').toEqual([]);
+    expect(
+      (body.meta as Record<string, unknown> | undefined)?.['variables'],
+      '`meta` must not carry a second, stale copy the server would prefer',
+    ).toBeUndefined();
+    // The rest of the blob still rides along.
+    expect(body.meta?.step_limit).toBe(7);
+  });
+
   it('keeps the stored `meta` verbatim when there are no live edits to fold in', () => {
     const version = {
       id: '1',

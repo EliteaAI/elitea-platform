@@ -124,12 +124,21 @@ describe('InitialNodeData: the Rust compiler admits every freshly seeded node', 
     },
   );
 
-  it('seeds a Hitl node with every route target legal and no empty edit_state_key', () => {
+  it('seeds a Hitl node with every route target legal, no `edit` route, and no empty edit_state_key', () => {
     // `validate_routes` (`hitl.rs:464`): each declared target must be `END`
     // or a `valid_graph_id`. `edit_state_key` is `Option<String>` and
     // `Some("")` is refused (`hitl.rs:157-165`) — absent is `None`, legal.
+    //
+    // `edit` is ABSENT, and that is the assertion with teeth. `edit: 'END'`
+    // is compiler-legal but `HITLNode.parts.tsx:352` reads any truthy
+    // `routes.edit` as a configured edit route, so it painted "Provide an
+    // edit state key before using the Edit route." on every freshly added
+    // node; `edit: ''` is refused by `validate_target`. Only omission
+    // satisfies both, because `HitlRoutes.edit` is `#[serde(default)]
+    // Option<String>` (`hitl.rs:83-84`) and `approve` alone already
+    // satisfies `has_action` (`hitl.rs:474-478`).
     const hitl = InitialNodeData[PipelineNodeTypes.Hitl];
-    expect(hitl?.['routes']).toEqual({ approve: 'END', edit: 'END', reject: 'END' });
+    expect(hitl?.['routes']).toEqual({ approve: 'END', reject: 'END' });
     expect(hitl?.['edit_state_key']).toBeUndefined();
     // `validate_message` (`hitl.rs:440`) refuses an empty `user_message.value`;
     // this is the runtime's own `default_message` (`hitl.rs:625`) verbatim.

@@ -172,11 +172,27 @@ const createPrinterNodeData = () => ({
  * `type: hitl` (`compiler.rs:1252`).
  *
  * Every declared route target is checked by `validate_routes`
- * (`hitl.rs:464`): it must be `END` or pass `valid_graph_id`. The previous
- * seed's `approve: ''` / `edit: ''` failed that on the first save, so a
- * freshly added HITL node rejected the whole document. All three now default
- * to `END` — the same "goes nowhere yet" meaning every other node type's
- * `transition: END` seed carries.
+ * (`hitl.rs:464-468`): it must be `END` or pass `valid_graph_id`. The
+ * original seed's `approve: ''` / `edit: ''` failed that on the first save,
+ * so a freshly added HITL node rejected the whole document. `approve` and
+ * `reject` now default to `END` — the same "goes nowhere yet" meaning every
+ * other node type's `transition: END` seed carries — and `approve` alone
+ * satisfies `has_action` (`hitl.rs:474-478`).
+ *
+ * `edit` is OMITTED, not seeded. Two constraints have to hold at once and
+ * only omission satisfies both: the seed must be compiler-legal, and it must
+ * not trip a validator the node card already runs. `edit: 'END'` is
+ * compiler-legal but fails the second — `HITLNode.parts.tsx:352` computes
+ * `hasConfiguredEditRoute = Boolean(routes['edit'])`, so `'END'` reads as a
+ * configured edit route with no `edit_state_key` and every freshly added
+ * node paints "Provide an edit state key before using the Edit route." on a
+ * node the user has not touched. `edit: ''` fails the first (`validate_target`).
+ * An absent key is neither: `HitlRoutes.edit` is `#[serde(default)]
+ * Option<String>` (`hitl.rs:83-84`), so it deserializes to `None`, and
+ * `routes.iter()` (`hitl.rs:96-100`) never yields it to `validate_target`.
+ * The compiler-legality constraint is the one that ruled out the shape the
+ * card would have preferred; the red-error constraint is what ruled out the
+ * shape the compiler would have preferred.
  *
  * `user_message.value` was `''`, which `validate_message` (`hitl.rs:440`)
  * refuses; see the field comment below.
@@ -197,9 +213,12 @@ const createHitlNodeData = () => ({
   // absent. Seeding it visibly (rather than omitting the key) keeps the
   // prompt editable in the node card instead of appearing only at run time.
   user_message: { type: 'fixed', value: 'Please review and approve to continue.' },
+  // No `edit` key: see this factory's doc comment. `Boolean(routes['edit'])`
+  // is what the node card reads as "an edit route is configured", so any
+  // seeded value at all — `'END'` included — renders a red error on a fresh
+  // node, and `''` is refused by the compiler.
   routes: {
     approve: PipelineNodeTypes.End as string,
-    edit: PipelineNodeTypes.End as string,
     reject: PipelineNodeTypes.End as string,
   },
   edit_state_key: undefined as string | undefined,

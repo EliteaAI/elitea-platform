@@ -154,8 +154,60 @@ function decisionRequiredFields(node: AdmissionNode): readonly GraphAdmissionIss
   return [admissionIssue('node.required-field', 'decision.rs:40', node.id, 'nodes', '', 'nodes: a Decision node must declare its branch list (it may be empty, but it must exist).')];
 }
 
-/** `hitl.rs:470-478` — approve, reject, or a real edit route with an `edit_state_key`; otherwise the node can do nothing. */
+/** `hitl.rs:155-157` — `from_raw` runs `validate_message` and `validate_routes` in turn, and EITHER refusal takes the whole document. */
 function hitlRequiredFields(node: AdmissionNode): readonly GraphAdmissionIssue[] {
+  return [...hitlUserMessageIssues(node), ...hitlRouteActionIssues(node)];
+}
+
+/**
+ * `hitl.rs:439-447` — `validate_message` refuses an EMPTY
+ * `user_message.value` outright, and `parse_pipeline_node`
+ * (`compiler.rs:1252`) turns that into "a HITL node is invalid" for the
+ * whole pipeline.
+ *
+ * An ABSENT `user_message`, and an absent `value` inside a present one, are
+ * both legal: the struct carries `#[serde(default)]` and the field carries
+ * `#[serde(default = "default_message")]` (`hitl.rs:60-64`), so serde
+ * substitutes `default_message` (`hitl.rs:625-627`). Only a value the user
+ * has actually cleared is an issue — which is exactly what the node card
+ * writes (`HITLNode.parts.tsx`'s `handleUserMessageMappingChange` stores the
+ * field verbatim) and what js-yaml then dumps as `value: ''`.
+ *
+ * The REST of `validate_message` — the 8 KiB bound and the NUL byte
+ * (`hitl.rs:441-442`), and the `variable`/`fstring` sub-checks
+ * (`hitl.rs:448-455`) — is deliberately not mirrored. This module may only
+ * be as strict as the compiler, and a byte-length or template grammar
+ * transcribed approximately would refuse a legal save; they stay
+ * compiler-side until each can be cited exactly.
+ */
+function hitlUserMessageIssues(node: AdmissionNode): readonly GraphAdmissionIssue[] {
+  const message = node.raw.user_message;
+  if (message === undefined || message.value !== '') return [];
+  return [
+    admissionIssue(
+      'node.required-field',
+      'hitl.rs:440',
+      node.id,
+      'user_message.value',
+      '',
+      'User message: a HITL node must ask the reviewer something — an empty message refuses the whole pipeline, not just this node.',
+    ),
+  ];
+}
+
+/**
+ * `hitl.rs:469-478` (`validate_routes`) — approve, reject, or an edit route
+ * that goes somewhere other than END with an `edit_state_key` present;
+ * otherwise the node can do nothing.
+ *
+ * `typeof node.raw.edit_state_key === 'string'` is the right test here even
+ * for `''`, and deliberately not tightened: Rust asks `edit_state_key
+ * .is_some()` (`hitl.rs:477`), and `Some("")` IS some — an empty key
+ * satisfies THIS check and is refused by the separate one at
+ * `hitl.rs:158-165`, which `hitlEditStateKeyIssues` mirrors below. Merging
+ * the two would report the wrong field and the wrong line.
+ */
+function hitlRouteActionIssues(node: AdmissionNode): readonly GraphAdmissionIssue[] {
   const named = namedRoutes(node.raw);
   const editIsReal = typeof named['edit'] === 'string' && named['edit'] !== END_TARGET && typeof node.raw.edit_state_key === 'string';
   if (typeof named['approve'] === 'string' || typeof named['reject'] === 'string' || editIsReal) return [];
@@ -226,10 +278,35 @@ function malformedListEntries(node: AdmissionNode): readonly GraphAdmissionIssue
     );
 }
 
-/** `compiler.rs:1344-1351` — `edit_state_key` is checked against `state:` with NO built-in escape, unlike every other key. */
+/**
+ * Two runtime checks on the same field, in the order
+ * `HitlNodeDefinition::from_raw` and then the compiler run them:
+ *
+ *  - `hitl.rs:158-165` — `edit_state_key` is `Option<String>`, and a
+ *    PRESENT key must pass `valid_output_key`, which rejects the empty
+ *    string (`yaml.rs:372`). `Some("")` is present-and-illegal, not absent;
+ *    only `None` is legal. That is why the guard below tests `typeof key
+ *    !== 'string'` and NOT `key === ''` — treating `''` as absent admitted a
+ *    document the compiler refuses outright, and js-yaml really does store
+ *    it as `edit_state_key: ''` once the picker has written an empty value.
+ *  - `compiler.rs:1344-1351` — the key is then checked against `state:`
+ *    with NO built-in escape, unlike every other key.
+ */
 function hitlEditStateKeyIssues(graph: AdmissionGraph, node: AdmissionNode): readonly GraphAdmissionIssue[] {
   const key = node.raw.edit_state_key;
-  if (node.type !== 'hitl' || typeof key !== 'string' || key === '') return [];
+  if (node.type !== 'hitl' || typeof key !== 'string') return [];
+  if (!isValidOutputKey(key)) {
+    return [
+      admissionIssue(
+        'node.state-reference',
+        'hitl.rs:161',
+        node.id,
+        'edit_state_key',
+        key,
+        `edit_state_key: "${key}" is not a legal state-variable name — pick a state variable, or leave the Edit state key unset.`,
+      ),
+    ];
+  }
   if (graph.stateKeys.has(key)) return [];
   return [
     admissionIssue(

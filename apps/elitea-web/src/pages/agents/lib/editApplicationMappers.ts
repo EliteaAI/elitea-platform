@@ -148,7 +148,24 @@ function toVersionMetaBody(
   version: ApplicationVersionDetail,
   edits?: EditApplicationVersionFields,
 ): Pick<VersionWriteRequest, 'meta'> {
-  const storedMeta: Record<string, unknown> = version.meta ?? {};
+  // `variables` is DROPPED from the stored blob, and this is load-bearing.
+  //
+  // Both handlers fold the body's TOP-LEVEL `variables` list into `meta`
+  // themselves, so a copy carried inside `meta` can only ever contradict the
+  // authoritative one — and on the create path it wins, because
+  // `versionFromBody` folds only when the top-level list is NON-EMPTY
+  // (`applications/handler.go:509-511`). Forwarding it there resurrected
+  // deleted variables: delete an agent's last variable, Save As Version, and
+  // the new version was inserted with `meta.variables` still holding it while
+  // `application_variables` held no row. `agent_chat.sql` COALESCEs the empty
+  // table onto `meta -> 'variables'`, and the Rust worker applies the meta
+  // copy LAST (`agents/variables.rs`), so the deleted value — a secret, in the
+  // case that matters — was substituted into every turn while the editor
+  // showed no variables at all.
+  //
+  // The update path folds on key PRESENCE and so was never exposed; dropping
+  // the key is correct for both, because both rebuild it from the list.
+  const { variables: _storedVariables, ...storedMeta } = (version.meta ?? {}) as Record<string, unknown>;
   if (edits === undefined) return { meta: { ...storedMeta } };
   return {
     meta: {
