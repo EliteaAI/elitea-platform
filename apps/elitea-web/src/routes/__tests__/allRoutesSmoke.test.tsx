@@ -39,6 +39,7 @@ const PATHS: readonly string[] = [
   '/onboarding',
   '/help-center',
   '/agents-hub',
+  '/elitea-catalog',
   '/mode-switch',
   '/mcp-auth-callback',
   '/chat',

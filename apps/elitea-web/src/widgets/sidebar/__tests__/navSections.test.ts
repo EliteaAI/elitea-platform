@@ -114,6 +114,18 @@ describe('selectedNavItem', () => {
     expect(selectedNavItem('/agents-hub', items)).toBeUndefined();
   });
 
+  /*
+   * `/elitea-catalog` has no nav row — it is the footer pill. Without its own
+   * early return it would fall through to the `startsWith` scan, which is
+   * prefix-based, and any future nav item at `/e...` could claim it. More
+   * immediately: the old app early-returns for BOTH paths
+   * (`SidebarBody.jsx:85`), and only one of them was ported.
+   */
+  it('never matches /elitea-catalog either — the catalogue is a footer pill, not a nav row', () => {
+    const items = navSections()[0]?.items ?? [];
+    expect(selectedNavItem('/elitea-catalog', items)).toBeUndefined();
+  });
+
   it('returns undefined for a pathname matching no nav item', () => {
     const items = navSections()[0]?.items ?? [];
     expect(selectedNavItem('/mode-switch', items)).toBeUndefined();

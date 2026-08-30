@@ -400,3 +400,49 @@ describe('useConversationSidebar — create-folder re-entrancy', () => {
     expect(result.current.conversationsProps.folders.filter((folder) => folder.isNew === true)).toHaveLength(1);
   });
 });
+
+/**
+ * DEFECT: the row's Play button and a plain click on the row did the same
+ * thing. `onPlaybackConversation` was wired to `onSelectConversation` on the
+ * grounds that `PlaybackChatBox` had no mount — so the control existed, was
+ * clickable, and started no playback, with nothing on screen to say so.
+ *
+ * `processes/chat/ui/ChatPlayback.tsx` is now that mount, selected by
+ * `?playback=1` on the conversation's own URL.
+ */
+describe('useConversationSidebar — playback', () => {
+  interface SearchState {
+    readonly state: { readonly location: { readonly pathname: string; readonly search: Record<string, unknown> } };
+  }
+
+  it('sends the Play button to the conversation WITH ?playback=1', async () => {
+    seedProjectSeven();
+    const { Wrapper, router } = makeRoutedWrapper();
+    const { result } = renderHook(() => useConversationSidebar(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    act(() => result.current.conversationsProps.onPlaybackConversation(conversation));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/chat/c1'));
+    expect((router as unknown as SearchState).state.location.search['playback']).toBe('1');
+    expect(result.current.conversationsProps.selectedConversationId).toBe('c1');
+  });
+
+  /*
+   * The other half: a plain click while a replay is open must LEAVE playback.
+   * Without an explicit `playback: '0'`, the flag survives the navigation and
+   * the user is stuck replaying every conversation they click.
+   */
+  it('clears playback when a row is then clicked normally', async () => {
+    seedProjectSeven();
+    const { Wrapper, router } = makeRoutedWrapper();
+    const { result } = renderHook(() => useConversationSidebar(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    act(() => result.current.conversationsProps.onPlaybackConversation(conversation));
+    await waitFor(() => expect((router as unknown as SearchState).state.location.search['playback']).toBe('1'));
+
+    act(() => result.current.conversationsProps.onSelectConversation(conversation));
+    await waitFor(() => expect((router as unknown as SearchState).state.location.search['playback']).not.toBe('1'));
+  });
+});

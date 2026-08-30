@@ -2,9 +2,11 @@ import type { ReactNode } from 'react';
 import { useCallback } from 'react';
 
 import Box from '@mui/material/Box';
+import Drawer from '@mui/material/Drawer';
 import Typography from '@mui/material/Typography';
 
 import { AgentEditor } from '@/features/agents';
+import { CanvasEditor } from '@/features/chat-messages';
 import { PipelineEditor } from '@/features/pipelines';
 import { ToolkitEditor } from '@/features/toolkits';
 import ChatPage from '@/pages/chat';
@@ -12,6 +14,8 @@ import { t } from '@/shared/i18n';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
 import { ChatConversationSidebar } from './ChatConversationSidebar';
+import { ChatPlayback } from './ChatPlayback';
+import { usePlaybackConversationId } from './usePlaybackConversationId';
 import { toCreatedResult } from './ChatWithEditors.helpers';
 import { usePlusMenuEntities } from '../model/usePlusMenuEntities';
 import { useChatWithEditors } from './ChatWithEditors.hooks';
@@ -81,6 +85,7 @@ export function ChatWithEditors(): ReactNode {
     handleShowAgentEditor,
     handleShowPipelineEditor,
     handleShowToolkitEditor,
+    canvas,
   } = useChatWithEditors();
 
   // "+ Create -> Chat" writes `?create=1` and had no reader, so the click did
@@ -99,6 +104,11 @@ export function ChatWithEditors(): ReactNode {
   // lowest layer allowed to fetch them (`widgets/` may not import
   // `processes/`), so they are resolved here and handed down as a prop.
   const plusMenu = usePlusMenuEntities();
+
+  // `?playback=1` on `/chat/$conversationId` replaces the live chat column
+  // with the replay surface. See `ChatPlayback.tsx` for why the signal
+  // travels through the URL rather than shared component state.
+  const playbackConversationId = usePlaybackConversationId();
 
   return (
     <>
@@ -120,6 +130,9 @@ export function ChatWithEditors(): ReactNode {
       <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%', boxSizing: 'border-box', py: 2, pl: 3 }}>
         <ChatConversationSidebar />
         <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
+          {playbackConversationId !== undefined ? (
+            <ChatPlayback conversationId={playbackConversationId} />
+          ) : (
           <ChatPage
             key={`chat-${String(resetToken)}`}
             entitySubmenus={{ ...plusMenu.entities, onOpen: plusMenu.onOpen }}
@@ -131,6 +144,7 @@ export function ChatWithEditors(): ReactNode {
               onClosePipelineEditor: editPipeline.onClosePipelineEditor,
             }}
           />
+          )}
         </Box>
       </Box>
 
@@ -154,6 +168,31 @@ export function ChatWithEditors(): ReactNode {
           onPipelineCreated={(result) => pipelineCreation.onPipelineCreated(toCreatedResult(result))}
           deps={{ renderShell: renderPipelineEditorShell }}
         />
+      )}
+
+      {/*
+        * The canvas editor's mount — `CanvasEditor.tsx` was fully built and
+        * rendered by nothing, which is also what made `useEditorMutex`'s
+        * save-before-swap branch a no-op (see `useCanvasEditing`).
+        *
+        * Rendered as a right-hand drawer rather than the baseline's
+        * resizable split pane: `react-split` is not a dependency here, and
+        * the port's own module doc already states that trade.
+        */}
+      {canvas.isEditingCanvas && canvas.selectedCodeBlockInfo !== undefined && (
+        <Drawer
+          anchor="right"
+          open
+          onClose={canvas.onCloseCanvasEditor}
+          slotProps={{ paper: { sx: { width: { xs: '100%', md: '48rem' }, maxWidth: '100%', p: 2, boxSizing: 'border-box' } } }}
+          data-testid="chat-canvas-editor"
+        >
+          <CanvasEditor
+            ref={canvas.canvasEditorRef}
+            selectedCodeBlockInfo={canvas.selectedCodeBlockInfo}
+            onCloseCanvasEditor={canvas.onCloseCanvasEditor}
+          />
+        </Drawer>
       )}
 
       {isEditingToolkit && (

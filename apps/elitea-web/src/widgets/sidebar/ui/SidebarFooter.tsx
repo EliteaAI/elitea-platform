@@ -21,19 +21,24 @@ export interface SidebarFooterProps {
  * (`Buttons.SettingsButton`/`Buttons.ResourcesButton`, full-width variant,
  * plus `Buttons.AgentHubButton`).
  *
- * `Buttons.AgentHubButton` (the "Agent HUB" pill, `ui/button/
- * AgentHubButton.jsx`) is wired back in as `AgentHubLink` below. It was
- * previously dropped on the grounds that `/agents-hub` (owned by unit A13)
- * hadn't landed yet — that blocker is stale: `src/pages/agents-hub/
- * AgentHub.tsx` (225 lines, commit e836d63) and `src/routes/_shell/
- * agents-hub.tsx` both exist, so this ungated, always-visible pill has real
- * content to point at, same as every other footer link here.
+ * `Buttons.AgentHubButton` (the pill, `ui/button/AgentHubButton.jsx`) is
+ * wired back in as `CatalogLink` below. It was previously dropped on the
+ * grounds that `/agents-hub` (owned by unit A13) hadn't landed yet — that
+ * blocker is stale: `src/pages/agents-hub/AgentHub.tsx` and its route both
+ * exist, so this ungated, always-visible pill has real content to point at.
+ *
+ * It points at `/elitea-catalog` and reads "Catalog", not "Agent HUB": the
+ * baseline's own `AgentHubButton.jsx` now navigates to
+ * `RouteDefinitions.EliteaCatalog` and labels itself `Catalog` (its
+ * component name is the only thing left unrenamed there). `/agents-hub` is
+ * a redirect source now, so linking to it would cost every click an extra
+ * history hop.
  */
 export function SidebarFooter({ collapsed }: SidebarFooterProps): ReactNode {
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const onSettings = pathname.startsWith('/settings');
   const onHelp = pathname === '/help-center';
-  const onAgentHub = pathname === '/agents-hub';
+  const onCatalog = pathname === '/elitea-catalog';
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', paddingInline: '1rem', gap: '0.5rem', paddingBottom: '0.5rem' }}>
@@ -44,9 +49,9 @@ export function SidebarFooter({ collapsed }: SidebarFooterProps): ReactNode {
         collapsed={collapsed}
         active={onSettings}
       />
-      <AgentHubLink
+      <CatalogLink
         collapsed={collapsed}
-        active={onAgentHub}
+        active={onCatalog}
       />
       <FooterLink
         to="/help-center"
@@ -59,7 +64,7 @@ export function SidebarFooter({ collapsed }: SidebarFooterProps): ReactNode {
   );
 }
 
-interface AgentHubLinkProps {
+interface CatalogLinkProps {
   collapsed: boolean;
   active: boolean;
 }
@@ -67,15 +72,15 @@ interface AgentHubLinkProps {
 /**
  * Ported from `ui/button/AgentHubButton.jsx` — an always-visible, ungated
  * pill (no `PERMISSION_GROUPS` entry in the old app either) navigating to
- * `/agents-hub`. Cosmetically distinct from the plain `FooterLink` rows
+ * `/elitea-catalog`. Cosmetically distinct from the plain `FooterLink` rows
  * around it, matching the old app's own `background.button.agentHub.*`
  * token family (default/active/hover + inset box-shadow variants) and
  * `palette.primary.main` icon/text colour, rather than `FooterLink`'s
  * shared drawer-menu hover token — same distinction the old app drew
  * between this pill and `Buttons.SettingsButton`.
  */
-function AgentHubLink({ collapsed, active }: AgentHubLinkProps): ReactNode {
-  const label = t('widgets.sidebar.agentHub', 'Agent HUB');
+function CatalogLink({ collapsed, active }: CatalogLinkProps): ReactNode {
+  const label = t('widgets.sidebar.eliteaCatalog', 'Catalog');
   return (
     <Tooltip
       title={collapsed ? label : ''}
@@ -85,7 +90,7 @@ function AgentHubLink({ collapsed, active }: AgentHubLinkProps): ReactNode {
     >
       <Box
         component={Link}
-        to="/agents-hub"
+        to="/elitea-catalog"
         aria-current={active ? 'page' : undefined}
         data-testid="sidebar-agent-hub-button"
         sx={(theme: Theme) => ({
