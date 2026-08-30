@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/settings/analytics` renders AnalyticsContainer",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:331",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:381",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -38,7 +38,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics/prompt_lib/{projectId}{expr} (projectAnalytics) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:12-26"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:12-26"
       ],
       "acceptance": [
         "GIVEN the user performs the project analytics operation",
@@ -66,7 +66,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics_users/prompt_lib/{projectId}?{params} (analyticsUsers)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:27-52"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:27-52"
       ],
       "acceptance": [
         "GIVEN the user performs the analytics users operation",
@@ -94,7 +94,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics_user_detail/prompt_lib/{projectId}?{params} (analyticsUserDetail)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:53-65"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:53-65"
       ],
       "acceptance": [
         "GIVEN the user performs the analytics user detail operation",
@@ -122,7 +122,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics_tools/prompt_lib/{projectId}?{params} (analyticsTools)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:66-91"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:66-104"
       ],
       "acceptance": [
         "GIVEN the user performs the analytics tools operation",
@@ -150,7 +150,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics_tool_detail/prompt_lib/{projectId}?{params} (analyticsToolDetail)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:92-104"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:92-104"
       ],
       "acceptance": [
         "GIVEN the user performs the analytics tool detail operation",
@@ -178,7 +178,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics_agents/prompt_lib/{projectId}?{params} (analyticsAgents)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:105-130"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:105-143"
       ],
       "acceptance": [
         "GIVEN the user performs the analytics agents operation",
@@ -206,7 +206,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/analytics_agent_detail/prompt_lib/{projectId}?{params} (analyticsAgentDetail)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:131-143"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/analyticsApi.js:131-157"
       ],
       "acceptance": [
         "GIVEN the user performs the analytics agent detail operation",
@@ -234,8 +234,8 @@
       "priority": "should",
       "title": "Copy: constants/analyticsCommon.constants.js (34 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/lib/constants/analyticsCommon.constants.js:28",
-        "apps/elitea-ui/src/[fsd]/features/analytics/lib/constants/analyticsCommon.constants.js:215"
+        "apps/elitea-ui/src/[fsd]/features/settings/lib/constants/analyticsCommon.constants.js:147",
+        "apps/elitea-ui/src/[fsd]/features/settings/lib/constants/analyticsCommon.constants.js:419"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -263,8 +263,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsAgentDetailed.jsx (19 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgentDetailed.jsx:38",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgentDetailed.jsx:255"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsAgentDetailed.jsx:43",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsAgentDetailed.jsx:336"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -292,8 +292,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsAgents.jsx (13 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgents.jsx:97",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgents.jsx:235"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsAgents.jsx:129",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsAgents.jsx:295"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -321,8 +321,7 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsContainer.jsx (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsContainer.jsx:28",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsContainer.jsx:213"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsContainer.jsx:291"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -350,8 +349,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsGuide.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsGuide.jsx:45",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsGuide.jsx:61"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsGuide.jsx:45",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsGuide.jsx:61"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -379,8 +378,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsHealth.jsx (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsHealth.jsx:36",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsHealth.jsx:123"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsHealth.jsx:36",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsHealth.jsx:123"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -408,8 +407,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsOverview.jsx (18 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsOverview.jsx:31",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsOverview.jsx:203"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsOverview.jsx:43",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsOverview.jsx:259"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -437,8 +436,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsToolDetailed.jsx (19 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsToolDetailed.jsx:38",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsToolDetailed.jsx:255"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsToolDetailed.jsx:38",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsToolDetailed.jsx:255"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -466,8 +465,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsTools.jsx (11 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsTools.jsx:85",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsTools.jsx:174"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsTools.jsx:85",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsTools.jsx:174"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -495,8 +494,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsUserDetailed.jsx (19 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUserDetailed.jsx:39",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUserDetailed.jsx:328"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsUserDetailed.jsx:60",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsUserDetailed.jsx:447"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -524,8 +523,8 @@
       "priority": "should",
       "title": "Copy: ui/AnalyticsUsers.jsx (11 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUsers.jsx:84",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUsers.jsx:110"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsUsers.jsx:108",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/AnalyticsUsers.jsx:115"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -553,8 +552,8 @@
       "priority": "should",
       "title": "Copy: components/ModelUsageTable.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/components/ModelUsageTable.jsx:22",
-        "apps/elitea-ui/src/[fsd]/features/analytics/ui/components/ModelUsageTable.jsx:71"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/components/ModelUsageTable.jsx:23",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/analytics/components/ModelUsageTable.jsx:84"
       ],
       "acceptance": [
         "GIVEN the analytics screen renders with the default brand in both colour schemes",
@@ -582,7 +581,7 @@
       "priority": "must",
       "title": "Journey 24: Settings: analytics loads",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:331"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:381"
       ],
       "acceptance": [
         "GIVEN the analytics settings tab",
@@ -600,6 +599,34 @@
       "coverage": {
         "file": "e2e/journeys.spec.ts",
         "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-085",
+      "domain": "analytics",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/usage` is mounted",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:385"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/usage",
+        "THEN the usage screen is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-085"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
       },
       "waiver": null
     }

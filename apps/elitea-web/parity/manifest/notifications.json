@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/settings/notifications` renders NotificationCenter",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:339",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:405",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -178,7 +178,7 @@
       "priority": "must",
       "title": "Socket event `notifications_notify` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:898",
+        "apps/elitea-ui/src/common/constants.js:925",
         "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/NotificationButton.jsx:43"
       ],
       "acceptance": [
@@ -207,7 +207,7 @@
       "priority": "must",
       "title": "Action on notifications: notification bulk delete via onDeleteSelected",
       "source": [
-        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:230",
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:233",
         "apps/elitea-ui/src/api/notifications.js:43"
       ],
       "acceptance": [
@@ -236,7 +236,7 @@
       "priority": "must",
       "title": "Action on notifications: notification bulk mark seen via onMarkToggle",
       "source": [
-        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:231",
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:234",
         "apps/elitea-ui/src/api/notifications.js:51"
       ],
       "acceptance": [
@@ -266,7 +266,7 @@
       "title": "Copy: NotificationCenter/NotificationTable.jsx (4 strings)",
       "source": [
         "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:31",
-        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:239"
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:242"
       ],
       "acceptance": [
         "GIVEN the notifications screen renders with the default brand in both colour schemes",
@@ -295,7 +295,7 @@
       "title": "Copy: NotificationCenter/NotificationTableToolbar.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/pages/NotificationCenter/NotificationTableToolbar.jsx:36",
-        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTableToolbar.jsx:66"
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTableToolbar.jsx:67"
       ],
       "acceptance": [
         "GIVEN the notifications screen renders with the default brand in both colour schemes",

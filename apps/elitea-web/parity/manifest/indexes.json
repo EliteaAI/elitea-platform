@@ -9,9 +9,7 @@
       "priority": "must",
       "title": "Query param `index_name` on /toolkits/:tab/:toolkitId (indexes panel) (spec QP-008)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:38",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:73",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:163"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:22"
       ],
       "acceptance": [
         "GIVEN the application is at /toolkits/:tab/:toolkitId (indexes panel)",
@@ -40,7 +38,7 @@
       "priority": "must",
       "title": "Endpoint GET elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId} (getIndexesList)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:12-22"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:12-30"
       ],
       "acceptance": [
         "GIVEN the user performs the get indexes list operation",
@@ -68,7 +66,7 @@
       "priority": "must",
       "title": "Endpoint DELETE elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexId} (deleteIndexItem)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:23-32"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:23-39"
       ],
       "acceptance": [
         "GIVEN the user performs the delete index item operation",
@@ -96,7 +94,7 @@
       "priority": "must",
       "title": "Endpoint DELETE elitea_core/index_cancel/prompt_lib/{projectId}/{toolkitId}/{indexName}/{taskId} (stopIndexingItem)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:33-39"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:33-47"
       ],
       "acceptance": [
         "GIVEN the user performs the stop indexing item operation",
@@ -124,7 +122,7 @@
       "priority": "must",
       "title": "Endpoint PATCH elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexName} (updateIndexSchedule)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:40-47"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:55-60"
       ],
       "acceptance": [
         "GIVEN the user performs the update index schedule operation",
@@ -152,7 +150,7 @@
       "priority": "must",
       "title": "Endpoint GET elitea_core/tool/prompt_lib/{projectId}/{toolkitId} (getIndexSchedule)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:48-62"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:63-78"
       ],
       "acceptance": [
         "GIVEN the user performs the get index schedule operation",
@@ -180,8 +178,7 @@
       "priority": "must",
       "title": "Permission `models.applications.index_meta.edit` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:605",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:99"
+        "apps/elitea-ui/src/common/constants.js:630"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.index_meta.edit",
@@ -209,10 +206,7 @@
       "priority": "must",
       "title": "Action on indexes: add participant into conversation via onCancelIndexing/onSelectModel/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:124"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:132"
       ],
       "acceptance": [
         "GIVEN the indexes screen is displayed with the relevant entity available",
@@ -240,10 +234,7 @@
       "priority": "must",
       "title": "Action on indexes: conversation create via onCancelIndexing/onSelectModel/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:100"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:108"
       ],
       "acceptance": [
         "GIVEN the indexes screen is displayed with the relevant entity available",
@@ -271,7 +262,7 @@
       "priority": "must",
       "title": "Action on indexes: delete index item via onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:218",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:201",
         "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:23"
       ],
       "acceptance": [
@@ -300,10 +291,7 @@
       "priority": "must",
       "title": "Action on indexes: socket chat_enter_room via onCancelIndexing/onSelectModel/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
-        "apps/elitea-ui/src/common/constants.js:886"
+        "apps/elitea-ui/src/common/constants.js:913"
       ],
       "acceptance": [
         "GIVEN the indexes screen is displayed with the relevant entity available",
@@ -331,10 +319,7 @@
       "priority": "must",
       "title": "Action on indexes: socket chat_leave_rooms via onCancelIndexing/onSelectModel/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
-        "apps/elitea-ui/src/common/constants.js:887"
+        "apps/elitea-ui/src/common/constants.js:914"
       ],
       "acceptance": [
         "GIVEN the indexes screen is displayed with the relevant entity available",
@@ -362,10 +347,7 @@
       "priority": "must",
       "title": "Action on indexes: socket chat_predict via onCancelIndexing/onSelectModel/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
-        "apps/elitea-ui/src/common/constants.js:883"
+        "apps/elitea-ui/src/common/constants.js:910"
       ],
       "acceptance": [
         "GIVEN the indexes screen is displayed with the relevant entity available",
@@ -393,9 +375,6 @@
       "priority": "must",
       "title": "Action on indexes: stop indexing item via onCancelIndexing/onSelectModel/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
         "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:33"
       ],
       "acceptance": [
@@ -424,9 +403,7 @@
       "priority": "must",
       "title": "Action on indexes: update index schedule via onChange/onSubmit",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:205",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:277",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:40"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:55"
       ],
       "acceptance": [
         "GIVEN the indexes screen is displayed with the relevant entity available",
@@ -454,8 +431,7 @@
       "priority": "should",
       "title": "Copy: helpers/indexSchedule.helpers.js (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexSchedule.helpers.js:44",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexSchedule.helpers.js:149"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexDetails.helpers.js:1"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -483,8 +459,8 @@
       "priority": "should",
       "title": "Copy: IndexDetails/IndexActions.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:171",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:266"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-details/IndexScheduleModal.jsx:64",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-details/IndexScheduleModal.jsx:64"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -512,8 +488,7 @@
       "priority": "should",
       "title": "Copy: IndexDetails/IndexConfig.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexConfig.jsx:38",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexConfig.jsx:82"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-details/IndexScheduleModal.jsx:64"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -541,8 +516,8 @@
       "priority": "should",
       "title": "Copy: IndexDetails/IndexHistory.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexHistory.jsx:55",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexHistory.jsx:56"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-history/IndexHistory.jsx:35",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-history/IndexHistory.jsx:34"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -570,7 +545,7 @@
       "priority": "should",
       "title": "Copy: IndexDetails/IndexNameWrapper.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexNameWrapper.jsx:73"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-details/IndexScheduleModal.jsx:64"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -598,8 +573,7 @@
       "priority": "should",
       "title": "Copy: IndexDetails/IndexScheduleModal.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexScheduleModal.jsx:72",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexScheduleModal.jsx:164"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-details/IndexScheduleModal.jsx:64"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -627,8 +601,7 @@
       "priority": "waived",
       "title": "Cron preview text is hand-rolled, not cronstrue-backed (N4 deviation, waived)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexSchedule.helpers.js:147",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexScheduleModal.jsx:77-82"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexDetails.helpers.js:1"
       ],
       "acceptance": [
         "GIVEN a cron expression entered through the new CronField's structured editor",
@@ -662,7 +635,7 @@
       "priority": "should",
       "title": "Copy: IndexDetails/IndexViewToggler.jsx (1 strings) [aria-only]",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexViewToggler.jsx:19"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-details/IndexChat.jsx:13"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders",
@@ -690,7 +663,7 @@
       "priority": "should",
       "title": "Copy: ui/IndexesContainer.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:223"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:22"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -718,8 +691,7 @@
       "priority": "should",
       "title": "Copy: IndexesList/index.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/index.jsx:17",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/index.jsx:30"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/UsersParticipantDropdown/index.jsx:89"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -747,8 +719,7 @@
       "priority": "should",
       "title": "Copy: IndexesList/IndexListItem.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/IndexListItem.jsx:36",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/IndexListItem.jsx:108"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/index-list/IndexListItem.jsx:167"
       ],
       "acceptance": [
         "GIVEN the indexes screen renders with the default brand in both colour schemes",
@@ -766,6 +737,122 @@
       "coverage": {
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-087",
+      "domain": "indexes",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/:tab/:toolkitId/create-index` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:37",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:254"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/:tab/:toolkitId/create-index",
+        "THEN the create-index screen for that toolkit is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-087"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-089",
+      "domain": "indexes",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/:tab/:toolkitId/index/:indexName` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:38",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:254"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/:tab/:toolkitId/index/:indexName",
+        "THEN the details of that named index is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-089"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-090",
+      "domain": "indexes",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/:tab/:toolkitId/index/:indexName/history` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:39",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:256"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/:tab/:toolkitId/index/:indexName/history",
+        "THEN the run history of that named index is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-090"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-091",
+      "domain": "indexes",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/:tab/:toolkitId/index/:indexName/search` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:40",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:257"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/:tab/:toolkitId/index/:indexName/search",
+        "THEN the search view of that named index is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-091"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
       },
       "waiver": null
     }

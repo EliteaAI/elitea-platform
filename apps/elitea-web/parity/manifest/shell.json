@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/auth-callback` renders AuthCallbackPage",
       "source": [
-        "apps/elitea-ui/src/routes.js:71",
-        "apps/elitea-ui/src/[fsd]/app/routes/router.jsx:12"
+        "apps/elitea-ui/src/routes.js:79",
+        "apps/elitea-ui/src/[fsd]/app/routes/router.jsx:13"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -38,7 +38,7 @@
       "priority": "must",
       "title": "Route `/*` renders AppLayout",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/router.jsx:16"
+        "apps/elitea-ui/src/[fsd]/app/routes/router.jsx:21"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -66,8 +66,8 @@
       "priority": "must",
       "title": "Route `/` renders IndexRoute",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:264-266",
-        "apps/elitea-ui/src/[fsd]/app/routes/IndexRoute.jsx:11-26"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:309-311",
+        "apps/elitea-ui/src/[fsd]/app/routes/IndexRoute.jsx:13-28"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -95,8 +95,8 @@
       "priority": "must",
       "title": "Route `/onboarding` renders Onboarding",
       "source": [
-        "apps/elitea-ui/src/routes.js:73",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:159"
+        "apps/elitea-ui/src/routes.js:82",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:191"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -124,8 +124,8 @@
       "priority": "must",
       "title": "Route `/help-center` renders Resources",
       "source": [
-        "apps/elitea-ui/src/routes.js:74",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:160"
+        "apps/elitea-ui/src/routes.js:83",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:192"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -150,7 +150,7 @@
       "id": "ROUTE-047",
       "domain": "shell",
       "kind": "route",
-      "priority": "must",
+      "priority": "waived",
       "title": "Route `/mode-switch` renders ModeSwitch",
       "source": [
         "apps/elitea-ui/src/routes.js:64",
@@ -168,12 +168,17 @@
         "testId": "ROUTE-047"
       },
       "unit": "R1",
-      "status": "todo",
+      "status": "waived",
       "coverage": {
         "file": "src/app/router.tsx",
         "min": 90
       },
-      "waiver": null
+      "waiver": {
+        "reason": "The baseline RETIRED this route at 20b23c42: routes.js no longer declares ModeSwitch and ProtectedRoutes no longer mounts it. elitea-web ships the page as verified dead code (build-route-wiring-map.mjs:130 — the baseline page hard-coded enableToggle=false and had zero inbound links in either app), so nothing observable is lost. Kept as a waived item because ids are immutable.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "route /mode-switch mounted"
+      }
     },
     {
       "id": "ROUTE-051",
@@ -182,8 +187,8 @@
       "priority": "must",
       "title": "Route `/settings` renders Settings layout",
       "source": [
-        "apps/elitea-ui/src/routes.js:58",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/routes.js:66",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -211,7 +216,7 @@
       "priority": "must",
       "title": "Route `/settings (index)` renders redirect to model-configuration",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:293-299"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:342-349"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -239,8 +244,8 @@
       "priority": "must",
       "title": "Route `/settings/environment` renders EnvironmentSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:307",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:347",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -265,15 +270,14 @@
       "id": "ROUTE-055",
       "domain": "shell",
       "kind": "route",
-      "priority": "must",
-      "title": "Route `/settings/project-params` renders ProjectContextSettings",
+      "priority": "waived",
+      "title": "Route `/settings/project-context` renders ProjectContextSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:311",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
-        "WHEN the browser navigates to a URL matching /settings/project-params",
+        "WHEN the browser navigates to a URL matching /settings/project-context",
         "THEN the project context settings screen is displayed at that URL",
         "AND the location, parameters and history behave exactly as in the baseline application"
       ],
@@ -288,7 +292,12 @@
         "file": "src/app/router.tsx",
         "min": 90
       },
-      "waiver": null
+      "waiver": {
+        "reason": "The baseline RENAMED this route at 20b23c42 (/settings/project-params -> /settings/project-context). The requirement is unchanged; only the path moved, so the item is re-pointed at its successor rather than retired and re-created under a new id. Confirmed deliberate.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "route /settings/project-params"
+      }
     },
     {
       "id": "ROUTE-056",
@@ -297,8 +306,8 @@
       "priority": "must",
       "title": "Route `/settings/prompts` renders ServicePromptsPage",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:315",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:365",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -323,15 +332,14 @@
       "id": "ROUTE-061",
       "domain": "shell",
       "kind": "route",
-      "priority": "must",
-      "title": "Route `/settings/personalization` renders UserSettings",
+      "priority": "waived",
+      "title": "Route `/settings/ai-personality` renders UserSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:335",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
-        "WHEN the browser navigates to a URL matching /settings/personalization",
+        "WHEN the browser navigates to a URL matching /settings/ai-personality",
         "THEN the user settings screen is displayed at that URL",
         "AND the location, parameters and history behave exactly as in the baseline application"
       ],
@@ -346,7 +354,12 @@
         "file": "src/app/router.tsx",
         "min": 90
       },
-      "waiver": null
+      "waiver": {
+        "reason": "The baseline RENAMED this route at 20b23c42 (/settings/personalization -> /settings/ai-personality). The requirement is unchanged; only the path moved, so the item is re-pointed at its successor rather than retired and re-created under a new id. Confirmed deliberate.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "route /settings/personalization"
+      }
     },
     {
       "id": "ROUTE-070",
@@ -355,7 +368,7 @@
       "priority": "must",
       "title": "Route `/:projectId/*` renders ProjectSwitcher",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:386",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:452",
         "apps/elitea-ui/src/pages/ProjectSwitcher.jsx:1"
       ],
       "acceptance": [
@@ -384,7 +397,7 @@
       "priority": "must",
       "title": "Route `*` renders Page404",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:390-393"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:456-459"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -410,15 +423,15 @@
       "domain": "shell",
       "kind": "route",
       "priority": "must",
-      "title": "Route anomaly `/settings/:tab` \u2014 declared but not mounted, reproduced bug-for-bug",
+      "title": "Route anomaly `/settings/:tab` — declared but not mounted, reproduced bug-for-bug",
       "source": [
-        "apps/elitea-ui/src/routes.js:59",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/routes.js:67",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN the application is running with the baseline route table",
         "WHEN the browser navigates to /settings/:tab",
-        "THEN the latent baseline behaviour is reproduced exactly: declared in the route table, but the settings children are mounted explicitly, so an unknown settings tab renders the settings layout with an empty content area \u2014 no 404 and no redirect",
+        "THEN the latent baseline behaviour is reproduced exactly: declared in the route table, but the settings children are mounted explicitly, so an unknown settings tab renders the settings layout with an empty content area — no 404 and no redirect",
         "AND no redirect, 404 page or new screen is introduced for this path"
       ],
       "verify": {
@@ -441,8 +454,7 @@
       "priority": "must",
       "title": "Query param `agentId` on /agents-hub",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/agent-hub/AgentHub.jsx:29",
-        "apps/elitea-ui/src/[fsd]/pages/agent-hub/AgentHub.jsx:32"
+        "apps/elitea-ui/src/[fsd]/pages/agent-hub/AgentHub.jsx:5"
       ],
       "acceptance": [
         "GIVEN the application is at /agents-hub",
@@ -530,8 +542,8 @@
       "priority": "must",
       "title": "Query param `author_id` on any",
       "source": [
-        "apps/elitea-ui/src/hooks/useBackPath.js:84",
-        "apps/elitea-ui/src/hooks/useBackPath.js:86",
+        "apps/elitea-ui/src/hooks/useBackPath.js:83",
+        "apps/elitea-ui/src/hooks/useBackPath.js:85",
         "apps/elitea-ui/src/hooks/useCardNavigate.js:87",
         "apps/elitea-ui/src/hooks/useCardNavigate.js:399",
         "apps/elitea-ui/src/hooks/useSearchParamValue.js:21"
@@ -563,8 +575,8 @@
       "priority": "must",
       "title": "Query param `author_name` on any",
       "source": [
-        "apps/elitea-ui/src/hooks/useBackPath.js:84",
-        "apps/elitea-ui/src/hooks/useBackPath.js:86",
+        "apps/elitea-ui/src/hooks/useBackPath.js:83",
+        "apps/elitea-ui/src/hooks/useBackPath.js:85",
         "apps/elitea-ui/src/hooks/useCardNavigate.js:87",
         "apps/elitea-ui/src/hooks/useCardNavigate.js:401",
         "apps/elitea-ui/src/hooks/useSearchParamValue.js:17"
@@ -802,7 +814,7 @@
       "priority": "must",
       "title": "Query param `isFromCreation` on any",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/application-tab-bar/ui/ApplicationVersionSelect.jsx:40"
+        "apps/elitea-ui/src/[fsd]/entities/application-tab-bar/ui/ApplicationVersionSelect.jsx:42"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -953,7 +965,7 @@
       "priority": "must",
       "title": "Query param `save_toolkit` on any",
       "source": [
-        "apps/elitea-ui/src/hooks/toolkit/useToolkitView.js:29"
+        "apps/elitea-ui/src/hooks/toolkit/useToolkitView.js:34"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -983,7 +995,7 @@
       "title": "Query param `sort_by` on any",
       "source": [
         "apps/elitea-ui/src/hooks/useSortQueryParamsFromUrl.js:14",
-        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:70"
+        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:73"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -1013,7 +1025,7 @@
       "title": "Query param `sort_order` on any",
       "source": [
         "apps/elitea-ui/src/hooks/useSortQueryParamsFromUrl.js:10",
-        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:72"
+        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:75"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -1071,8 +1083,8 @@
       "priority": "must",
       "title": "Query param `tags[]` on any",
       "source": [
-        "apps/elitea-ui/src/components/ProjectSelect.jsx:129",
-        "apps/elitea-ui/src/components/ProjectSelect.jsx:130"
+        "apps/elitea-ui/src/components/ProjectSelect.jsx:140",
+        "apps/elitea-ui/src/components/ProjectSelect.jsx:141"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -1101,10 +1113,10 @@
       "priority": "must",
       "title": "Query param `toolkit_type` on any",
       "source": [
-        "apps/elitea-ui/src/hooks/useBackPath.js:65",
-        "apps/elitea-ui/src/hooks/useBackPath.js:70",
-        "apps/elitea-ui/src/hooks/useBackPath.js:73",
-        "apps/elitea-ui/src/hooks/useBackPath.js:75"
+        "apps/elitea-ui/src/hooks/useBackPath.js:64",
+        "apps/elitea-ui/src/hooks/useBackPath.js:69",
+        "apps/elitea-ui/src/hooks/useBackPath.js:72",
+        "apps/elitea-ui/src/hooks/useBackPath.js:74"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -1193,16 +1205,16 @@
       "title": "Query param `viewMode` on any",
       "source": [
         "apps/elitea-ui/src/hooks/application/useCreateApplication.jsx:126",
-        "apps/elitea-ui/src/hooks/useBackPath.js:60",
-        "apps/elitea-ui/src/hooks/useBackPath.js:62",
-        "apps/elitea-ui/src/hooks/useBackPath.js:67",
-        "apps/elitea-ui/src/hooks/useBackPath.js:72",
-        "apps/elitea-ui/src/hooks/useBackPath.js:74",
-        "apps/elitea-ui/src/hooks/useBackPath.js:76",
-        "apps/elitea-ui/src/hooks/useBackPath.js:79",
-        "apps/elitea-ui/src/hooks/useBackPath.js:81",
-        "apps/elitea-ui/src/hooks/useBackPath.js:84",
-        "apps/elitea-ui/src/hooks/useBackPath.js:86",
+        "apps/elitea-ui/src/hooks/useBackPath.js:59",
+        "apps/elitea-ui/src/hooks/useBackPath.js:61",
+        "apps/elitea-ui/src/hooks/useBackPath.js:66",
+        "apps/elitea-ui/src/hooks/useBackPath.js:71",
+        "apps/elitea-ui/src/hooks/useBackPath.js:73",
+        "apps/elitea-ui/src/hooks/useBackPath.js:75",
+        "apps/elitea-ui/src/hooks/useBackPath.js:78",
+        "apps/elitea-ui/src/hooks/useBackPath.js:80",
+        "apps/elitea-ui/src/hooks/useBackPath.js:83",
+        "apps/elitea-ui/src/hooks/useBackPath.js:85",
         "apps/elitea-ui/src/hooks/useCardNavigate.js:87",
         "apps/elitea-ui/src/hooks/useCardNavigate.js:398",
         "apps/elitea-ui/src/hooks/useSearchParamValue.js:25",
@@ -1236,7 +1248,7 @@
       "priority": "must",
       "title": "Query param `page_size` on any",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:67"
+        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:70"
       ],
       "acceptance": [
         "GIVEN the application is at any",
@@ -1293,7 +1305,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/project_info/prompt_lib/{projectId}/project-info (projectInfo)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:14-22"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:14-23"
       ],
       "acceptance": [
         "GIVEN the user performs the project info operation",
@@ -1321,7 +1333,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/project_info/prompt_lib/{projectId}/project-info (updateProjectIcon)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:23-33"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:24-34"
       ],
       "acceptance": [
         "GIVEN the user performs the update project icon operation",
@@ -1349,7 +1361,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/project_icon/prompt_lib/{projectId} (uploadProjectIcon)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:34-60"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:35-61"
       ],
       "acceptance": [
         "GIVEN the user performs the upload project icon operation",
@@ -1377,7 +1389,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/project_icon/prompt_lib/{projectId} (getProjectIcons)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:61-73"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:62-74"
       ],
       "acceptance": [
         "GIVEN the user performs the get project icons operation",
@@ -1405,7 +1417,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/project_icon/prompt_lib/{projectId}/{name} (deleteProjectIcon)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:74-83"
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:75-84"
       ],
       "acceptance": [
         "GIVEN the user performs the delete project icon operation",
@@ -1741,7 +1753,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/project_context/prompt_lib/{projectId}/project-context (projectContext)",
       "source": [
-        "apps/elitea-ui/src/api/projectContext.js:12-20"
+        "apps/elitea-ui/src/api/projectContext.js:12-26"
       ],
       "acceptance": [
         "GIVEN the user performs the project context operation",
@@ -1769,7 +1781,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/project_context/prompt_lib/{projectId}/project-context (updateProjectContext)",
       "source": [
-        "apps/elitea-ui/src/api/projectContext.js:21-31"
+        "apps/elitea-ui/src/api/projectContext.js:21-41"
       ],
       "acceptance": [
         "GIVEN the user performs the update project context operation",
@@ -2077,8 +2089,8 @@
       "priority": "must",
       "title": "Permission `configuration.artifacts.buckets.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:582",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:78"
+        "apps/elitea-ui/src/common/constants.js:607",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:80"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.artifacts.buckets.create",
@@ -2106,8 +2118,8 @@
       "priority": "must",
       "title": "Permission `configuration.secrets.secret.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:570",
-        "apps/elitea-ui/src/[fsd]/shared/ui/secret-field/SecretField.jsx:97"
+        "apps/elitea-ui/src/common/constants.js:594",
+        "apps/elitea-ui/src/[fsd]/shared/ui/secret-field/SecretField.jsx:105"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.secrets.secret.create",
@@ -2135,10 +2147,10 @@
       "priority": "must",
       "title": "Permission `configuration.secrets.secret.list` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:568",
+        "apps/elitea-ui/src/common/constants.js:592",
         "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsContent.jsx:44",
-        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:79",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:82"
+        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:89",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:84"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.secrets.secret.list",
@@ -2166,8 +2178,8 @@
       "priority": "must",
       "title": "Permission `configuration.secrets.secret.unsecret` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:573",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsTable.jsx:492"
+        "apps/elitea-ui/src/common/constants.js:597",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsTable.jsx:496"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.secrets.secret.unsecret",
@@ -2223,9 +2235,9 @@
       "priority": "must",
       "title": "Permission `models.applications.publish.post` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:539",
-        "apps/elitea-ui/src/common/constants.js:549",
-        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/usePublishVersion.hooks.js:48"
+        "apps/elitea-ui/src/common/constants.js:562",
+        "apps/elitea-ui/src/common/constants.js:562",
+        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/usePublishVersion.hooks.js:49"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.publish.post",
@@ -2253,7 +2265,7 @@
       "priority": "must",
       "title": "Permission `models.chat.canvas.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:526",
+        "apps/elitea-ui/src/common/constants.js:539",
         "apps/elitea-ui/src/components/MarkdownTableBlock.jsx:34"
       ],
       "acceptance": [
@@ -2282,7 +2294,7 @@
       "priority": "must",
       "title": "Permission `models.chat.canvas.update` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:527",
+        "apps/elitea-ui/src/common/constants.js:540",
         "apps/elitea-ui/src/components/Canvas.jsx:97"
       ],
       "acceptance": [
@@ -2311,9 +2323,9 @@
       "priority": "must",
       "title": "Permission `models.chat.conversations.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:524",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:68",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:69"
+        "apps/elitea-ui/src/common/constants.js:537",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:70",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:71"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.chat.conversations.create",
@@ -2341,10 +2353,10 @@
       "priority": "must",
       "title": "Permission `models.project_context.edit` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:564",
+        "apps/elitea-ui/src/common/constants.js:588",
         "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextButton.jsx:13",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:31",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectParamsHeader.jsx:23"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:22",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/ProjectParamsHeader.jsx:23"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.project_context.edit",
@@ -2372,9 +2384,9 @@
       "priority": "must",
       "title": "Permission `models.project_context.view` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:563",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:30",
-        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:73"
+        "apps/elitea-ui/src/common/constants.js:587",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:21",
+        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:71"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.project_context.view",
@@ -2431,7 +2443,7 @@
       "priority": "must",
       "title": "Sidebar permission group `chat` requires [models.chat.folders.get]",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:610"
+        "apps/elitea-ui/src/common/constants.js:637"
       ],
       "acceptance": [
         "GIVEN a user with none of the permissions [models.chat.folders.get]",
@@ -2459,7 +2471,7 @@
       "priority": "must",
       "title": "Sidebar permission group `agents` requires [models.applications.public_applications.list]",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:611"
+        "apps/elitea-ui/src/common/constants.js:638"
       ],
       "acceptance": [
         "GIVEN a user with none of the permissions [models.applications.public_applications.list]",
@@ -2487,7 +2499,7 @@
       "priority": "must",
       "title": "Sidebar permission group `pipelines` requires [models.applications.public_applications.list]",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:612"
+        "apps/elitea-ui/src/common/constants.js:639"
       ],
       "acceptance": [
         "GIVEN a user with none of the permissions [models.applications.public_applications.list]",
@@ -2515,7 +2527,7 @@
       "priority": "must",
       "title": "Sidebar permission group `credentials` requires [models.applications.tools.list]",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:613"
+        "apps/elitea-ui/src/common/constants.js:640"
       ],
       "acceptance": [
         "GIVEN a user with none of the permissions [models.applications.tools.list]",
@@ -2543,7 +2555,7 @@
       "priority": "must",
       "title": "Sidebar permission group `artifacts` requires [configuration.artifacts.artifacts.view]",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:614"
+        "apps/elitea-ui/src/common/constants.js:641"
       ],
       "acceptance": [
         "GIVEN a user with none of the permissions [configuration.artifacts.artifacts.view]",
@@ -2571,7 +2583,7 @@
       "priority": "must",
       "title": "Sidebar permission group `toolkits` requires [models.applications.tools.list]",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:615"
+        "apps/elitea-ui/src/common/constants.js:642"
       ],
       "acceptance": [
         "GIVEN a user with none of the permissions [models.applications.tools.list]",
@@ -2599,7 +2611,7 @@
       "priority": "must",
       "title": "Route guard IndexRoute",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/IndexRoute.jsx:11-26"
+        "apps/elitea-ui/src/[fsd]/app/routes/IndexRoute.jsx:13-28"
       ],
       "acceptance": [
         "GIVEN the guard condition for IndexRoute applies",
@@ -2628,8 +2640,8 @@
       "title": "Action on settings: create configuration via onBlur/onClick",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/settings/ui/environment/EnvironmentSection.jsx:222",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:526",
-        "apps/elitea-ui/src/api/configurations.js:246"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:502",
+        "apps/elitea-ui/src/api/configurations.js:250"
       ],
       "acceptance": [
         "GIVEN the settings screen is displayed with the relevant entity available",
@@ -2657,8 +2669,8 @@
       "priority": "must",
       "title": "Action on settings: delete project icon via onDelete",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:232",
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:74"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:231",
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:75"
       ],
       "acceptance": [
         "GIVEN the settings screen is displayed with the relevant entity available",
@@ -2686,7 +2698,7 @@
       "priority": "must",
       "title": "Action on settings: generate project context draft via onGenerate",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextModal.jsx:66",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextModal.jsx:46",
         "apps/elitea-ui/src/[fsd]/features/settings/api/generateProjectContextDraftApi.js:5"
       ],
       "acceptance": [
@@ -2715,8 +2727,7 @@
       "priority": "must",
       "title": "Action on settings: set project default model via onChangeDefaultModel",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ModelConfiguration.jsx:268",
-        "apps/elitea-ui/src/api/configurations.js:446"
+        "apps/elitea-ui/src/api/configurations.js:450"
       ],
       "acceptance": [
         "GIVEN the settings screen is displayed with the relevant entity available",
@@ -2744,7 +2755,6 @@
       "priority": "must",
       "title": "Action on settings: token delete via onDelete",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/TokensTable.jsx:190",
         "apps/elitea-ui/src/api/auth.js:69"
       ],
       "acceptance": [
@@ -2775,9 +2785,9 @@
       "source": [
         "apps/elitea-ui/src/[fsd]/features/settings/ui/environment/EnvironmentSection.jsx:222",
         "apps/elitea-ui/src/[fsd]/features/settings/ui/environment/EnvironmentSection.jsx:223",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:441",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:468",
-        "apps/elitea-ui/src/api/configurations.js:289"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:417",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:444",
+        "apps/elitea-ui/src/api/configurations.js:293"
       ],
       "acceptance": [
         "GIVEN the settings screen is displayed with the relevant entity available",
@@ -2805,7 +2815,6 @@
       "priority": "must",
       "title": "Action on settings: update project context via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:284",
         "apps/elitea-ui/src/api/projectContext.js:21"
       ],
       "acceptance": [
@@ -2834,11 +2843,11 @@
       "priority": "must",
       "title": "Action on settings: update project icon via onChange/onClick/onDelete",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:191",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:202",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:231",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:232",
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:23"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:190",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:201",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:230",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:231",
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:24"
       ],
       "acceptance": [
         "GIVEN the settings screen is displayed with the relevant entity available",
@@ -2866,8 +2875,8 @@
       "priority": "must",
       "title": "Action on settings: upload project icon via onChange",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:257",
-        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:34"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:256",
+        "apps/elitea-ui/src/[fsd]/features/settings/api/projectInfoApi.js:35"
       ],
       "acceptance": [
         "GIVEN the settings screen is displayed with the relevant entity available",
@@ -2895,7 +2904,7 @@
       "priority": "must",
       "title": "Action on settings: user delete via onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/DeleteUserButton.jsx:87",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/DeleteUserButton.jsx:82",
         "apps/elitea-ui/src/api/admin.js:117"
       ],
       "acceptance": [
@@ -2924,8 +2933,7 @@
       "priority": "must",
       "title": "Action on settings-personalization: author description via onSubmit",
       "source": [
-        "apps/elitea-ui/src/pages/UserSettings/Profile.jsx:56",
-        "apps/elitea-ui/src/api/social.js:139"
+        "apps/elitea-ui/src/api/social.js:127"
       ],
       "acceptance": [
         "GIVEN the settings-personalization screen is displayed with the relevant entity available",
@@ -2982,11 +2990,10 @@
       "priority": "must",
       "title": "Action on shared: delete application version via onCancel/onClick/onClose/onConfirm/onReplace",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:125",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:139",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:151",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:152",
-        "apps/elitea-ui/src/api/applications.js:523"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:123",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:137",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:146",
+        "apps/elitea-ui/src/api/applications.js:544"
       ],
       "acceptance": [
         "GIVEN the shared screen is displayed with the relevant entity available",
@@ -3014,7 +3021,7 @@
       "priority": "must",
       "title": "Action on shared: generate content blocking via onQuickFix",
       "source": [
-        "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:372",
+        "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:373",
         "apps/elitea-ui/src/api/llm.js:18"
       ],
       "acceptance": [
@@ -3134,7 +3141,7 @@
       "title": "Action on shared: set application default version via onConfirm",
       "source": [
         "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/useSetDefaultVersion.hooks.jsx:101",
-        "apps/elitea-ui/src/api/applications.js:503"
+        "apps/elitea-ui/src/api/applications.js:524"
       ],
       "acceptance": [
         "GIVEN the shared screen is displayed with the relevant entity available",
@@ -3162,8 +3169,8 @@
       "priority": "must",
       "title": "Action on shared: socket chat_canvas_edit via onQuickFix",
       "source": [
-        "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:372",
-        "apps/elitea-ui/src/common/constants.js:903"
+        "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:373",
+        "apps/elitea-ui/src/common/constants.js:930"
       ],
       "acceptance": [
         "GIVEN the shared screen is displayed with the relevant entity available",
@@ -3191,9 +3198,9 @@
       "priority": "must",
       "title": "Action on shared: test configuration connection via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiDelegatedLoginButton.jsx:53",
-        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointDelegatedLoginButton.jsx:53",
-        "apps/elitea-ui/src/api/configurations.js:378"
+        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiDelegatedLoginButton.jsx:52",
+        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointDelegatedLoginButton.jsx:52",
+        "apps/elitea-ui/src/api/configurations.js:382"
       ],
       "acceptance": [
         "GIVEN the shared screen is displayed with the relevant entity available",
@@ -3221,7 +3228,7 @@
       "priority": "must",
       "title": "Action on shared: toolkit fork via onClick",
       "source": [
-        "apps/elitea-ui/src/components/Fork/ForkEntityButton.jsx:108",
+        "apps/elitea-ui/src/components/Fork/ForkEntityButton.jsx:122",
         "apps/elitea-ui/src/api/toolkits.js:224"
       ],
       "acceptance": [
@@ -3279,7 +3286,7 @@
       "priority": "must",
       "title": "Action on shared: unpublish application via onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/useUnpublishVersionMenu.hooks.jsx:136",
+        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/useUnpublishVersionMenu.hooks.jsx:137",
         "apps/elitea-ui/src/api/applications.js:310"
       ],
       "acceptance": [
@@ -3340,7 +3347,7 @@
       "priority": "must",
       "title": "Action on shared-page-components: delete application via onDelete",
       "source": [
-        "apps/elitea-ui/src/pages/Common/Components/DeleteButton.jsx:107",
+        "apps/elitea-ui/src/pages/Common/Components/DeleteButton.jsx:108",
         "apps/elitea-ui/src/api/applications.js:264"
       ],
       "acceptance": [
@@ -3370,7 +3377,7 @@
       "title": "Action on shell-widgets: delete summary via onDelete",
       "source": [
         "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/SummaryDetailsModal.jsx:158",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:421"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:447"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen is displayed with the relevant entity available",
@@ -3398,7 +3405,7 @@
       "priority": "must",
       "title": "Action on shell-widgets: notification bulk mark seen via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/Notifications/ui/NotificationList.jsx:151",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/NotificationList.jsx:151",
         "apps/elitea-ui/src/api/notifications.js:51"
       ],
       "acceptance": [
@@ -3428,7 +3435,7 @@
       "title": "Action on shell-widgets: update summary via onEdit",
       "source": [
         "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/SummaryDetailsModal.jsx:159",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:407"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:433"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen is displayed with the relevant entity available",
@@ -3457,7 +3464,7 @@
       "title": "Action on sidebar: feedback via onClick",
       "source": [
         "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/FeedbackDialog.jsx:145",
-        "apps/elitea-ui/src/api/social.js:149"
+        "apps/elitea-ui/src/api/social.js:137"
       ],
       "acceptance": [
         "GIVEN the sidebar screen is displayed with the relevant entity available",
@@ -3510,16 +3517,15 @@
       "id": "COPY-002",
       "domain": "shell",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: routes/ProtectedRoutes.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:347",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:374"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:440"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 7 strings from this component (for example \"New Configuration\") appear verbatim",
+        "THEN all 7 strings from this component (for example \"Configuration\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -3533,7 +3539,12 @@
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Baseline vocabulary rename at 20b23c42 (\"New Configuration\" -> \"Configuration\"), confirmed deliberate. The item still requires verbatim copy parity; the string it names has changed.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "copy string \"New Configuration\""
+      }
     },
     {
       "id": "COPY-003",
@@ -3542,8 +3553,8 @@
       "priority": "should",
       "title": "Copy: ui/ApplicationControls.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/application-tab-bar/ui/ApplicationControls.jsx:53",
-        "apps/elitea-ui/src/[fsd]/entities/application-tab-bar/ui/ApplicationControls.jsx:155"
+        "apps/elitea-ui/src/[fsd]/widgets/application-controls/ui/ApplicationControls.jsx:74",
+        "apps/elitea-ui/src/[fsd]/widgets/application-controls/ui/ApplicationControls.jsx:200"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3600,8 +3611,8 @@
       "priority": "should",
       "title": "Copy: ui/EmptyStatePage.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/empty-state-page/ui/EmptyStatePage.jsx:37",
-        "apps/elitea-ui/src/[fsd]/entities/empty-state-page/ui/EmptyStatePage.jsx:61"
+        "apps/elitea-ui/src/[fsd]/entities/empty-state-page/ui/EmptyStatePage.jsx:41",
+        "apps/elitea-ui/src/[fsd]/entities/empty-state-page/ui/EmptyStatePage.jsx:67"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3629,7 +3640,7 @@
       "priority": "should",
       "title": "Copy: ui/GenerateEntityButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/generate-entity-with-ai/ui/GenerateEntityButton.jsx:25"
+        "apps/elitea-ui/src/[fsd]/entities/generate-entity-with-ai/ui/GenerateEntityButton.jsx:26"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3657,8 +3668,8 @@
       "priority": "should",
       "title": "Copy: ui/GenerateEntityModal.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/generate-entity-with-ai/ui/GenerateEntityModal.jsx:149",
-        "apps/elitea-ui/src/[fsd]/entities/generate-entity-with-ai/ui/GenerateEntityModal.jsx:211"
+        "apps/elitea-ui/src/[fsd]/entities/generate-entity-with-ai/ui/GenerateEntityModal.jsx:163",
+        "apps/elitea-ui/src/[fsd]/entities/generate-entity-with-ai/ui/GenerateEntityModal.jsx:229"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3686,7 +3697,7 @@
       "priority": "should",
       "title": "Copy: ui/LegacyNotificationMessage.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/notifications/ui/LegacyNotificationMessage.jsx:105"
+        "apps/elitea-ui/src/[fsd]/entities/notifications/ui/LegacyNotificationMessage.jsx:108"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3714,7 +3725,7 @@
       "priority": "should",
       "title": "Copy: ui/SkillTabBar.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/skill-tab-bar/ui/SkillTabBar.jsx:70"
+        "apps/elitea-ui/src/[fsd]/widgets/skill-tab-bar/ui/SkillTabBar.jsx:109"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3742,8 +3753,8 @@
       "priority": "should",
       "title": "Copy: hooks/usePublishVersionMenu.hooks.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/usePublishVersionMenu.hooks.jsx:81",
-        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/usePublishVersionMenu.hooks.jsx:101"
+        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/usePublishVersionMenu.hooks.jsx:82",
+        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/usePublishVersionMenu.hooks.jsx:102"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3771,7 +3782,7 @@
       "priority": "should",
       "title": "Copy: hooks/useUnpublishVersionMenu.hooks.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/useUnpublishVersionMenu.hooks.jsx:109"
+        "apps/elitea-ui/src/[fsd]/entities/version/lib/hooks/useUnpublishVersionMenu.hooks.jsx:110"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3799,8 +3810,8 @@
       "priority": "should",
       "title": "Copy: ui/PreparationStep.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/PreparationStep.jsx:44",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/PreparationStep.jsx:98"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/PreparationStep.jsx:45",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/PreparationStep.jsx:104"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3828,7 +3839,7 @@
       "priority": "should",
       "title": "Copy: ui/PublishingTerms.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/PublishingTerms.jsx:85"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/PublishingTerms.jsx:137"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3856,8 +3867,8 @@
       "priority": "should",
       "title": "Copy: ui/PublishWizardModal.jsx (12 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/PublishWizardModal.jsx:146",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/PublishWizardModal.jsx:310"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/PublishWizardModal.jsx:147",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/PublishWizardModal.jsx:315"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3885,8 +3896,8 @@
       "priority": "should",
       "title": "Copy: ui/SetDefaultVersionDialog.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/SetDefaultVersionDialog.jsx:22",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/SetDefaultVersionDialog.jsx:60"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/SetDefaultVersionDialog.jsx:30",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/SetDefaultVersionDialog.jsx:69"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3914,8 +3925,8 @@
       "priority": "should",
       "title": "Copy: ui/UnpublishConfirmModal.jsx (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/UnpublishConfirmModal.jsx:48",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/UnpublishConfirmModal.jsx:107"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/UnpublishConfirmModal.jsx:55",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/UnpublishConfirmModal.jsx:115"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3943,8 +3954,7 @@
       "priority": "should",
       "title": "Copy: ui/ValidationStep.jsx (13 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/ValidationStep.jsx:25",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/ValidationStep.jsx:381"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/ValidationStep.jsx:16"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -3972,8 +3982,7 @@
       "priority": "should",
       "title": "Copy: ui/VersionDelete.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:131",
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:147"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionDelete.jsx:129"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4001,7 +4010,7 @@
       "priority": "should",
       "title": "Copy: ui/VersionSelect.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionSelect.jsx:176"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionSelect.jsx:187"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4113,7 +4122,7 @@
       "id": "COPY-116",
       "domain": "shell",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: constants/agentHubTour.constants.js (6 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/agentHubTour.constants.js:14",
@@ -4131,12 +4140,17 @@
         "testId": "visual > shared > agentHubTour.constants.js"
       },
       "unit": "V2",
-      "status": "todo",
+      "status": "waived",
       "coverage": {
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "agentHubTour.constants.js was deleted when Agents HUB became the Elitea Catalog (eliteaCatalogTourTargets.constants.js). Its 6 strings name the retired product surface — \"What is ELITEA Agents HUB?\" cannot appear verbatim in a product that no longer uses the name. The interactive-tour system is not ported to elitea-web at all.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "6 strings of agentHubTour.constants.js rendered verbatim"
+      }
     },
     {
       "id": "COPY-117",
@@ -4204,7 +4218,7 @@
       "title": "Copy: constants/analyticsTour.constants.js (8 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/analyticsTour.constants.js:15",
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/analyticsTour.constants.js:92"
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/analyticsTour.constants.js:112"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4377,7 +4391,7 @@
       "title": "Copy: constants/mcpTour.constants.js (6 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/mcpTour.constants.js:22",
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/mcpTour.constants.js:67"
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/mcpTour.constants.js:69"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4580,7 +4594,7 @@
       "title": "Copy: constants/toolkitTour.constants.js (7 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/toolkitTour.constants.js:18",
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/toolkitTour.constants.js:73"
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/toolkitTour.constants.js:75"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4608,7 +4622,6 @@
       "priority": "should",
       "title": "Copy: constants/usersTour.constants.js (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/usersTour.constants.js:11",
         "apps/elitea-ui/src/[fsd]/features/interactive-tours/lib/constants/usersTour.constants.js:46"
       ],
       "acceptance": [
@@ -4637,8 +4650,8 @@
       "priority": "should",
       "title": "Copy: ui/FirstVisitPrompt.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/FirstVisitPrompt.jsx:50",
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/FirstVisitPrompt.jsx:75"
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/FirstVisitPrompt.jsx:49",
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/FirstVisitPrompt.jsx:74"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4666,8 +4679,8 @@
       "priority": "should",
       "title": "Copy: ui/InteractiveTourCard.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/InteractiveTourCard.jsx:145",
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/InteractiveTourCard.jsx:160"
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/InteractiveTourCard.jsx:157",
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/InteractiveTourCard.jsx:174"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4695,8 +4708,8 @@
       "priority": "should",
       "title": "Copy: ui/TourCompleteCard.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/TourCompleteCard.jsx:64",
-        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/TourCompleteCard.jsx:98"
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/TourCompleteCard.jsx:63",
+        "apps/elitea-ui/src/[fsd]/features/interactive-tours/ui/TourCompleteCard.jsx:100"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4838,8 +4851,8 @@
       "priority": "should",
       "title": "Copy: ui/WorkspaceIsReady.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/onboarding/ui/WorkspaceIsReady.jsx:20",
-        "apps/elitea-ui/src/[fsd]/features/onboarding/ui/WorkspaceIsReady.jsx:36"
+        "apps/elitea-ui/src/[fsd]/features/onboarding/ui/WorkspaceIsReady.jsx:19",
+        "apps/elitea-ui/src/[fsd]/features/onboarding/ui/WorkspaceIsReady.jsx:35"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4867,7 +4880,7 @@
       "priority": "should",
       "title": "Copy: ui/OpenApiDelegatedLoginButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiDelegatedLoginButton.jsx:56"
+        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiDelegatedLoginButton.jsx:55"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4895,8 +4908,8 @@
       "priority": "should",
       "title": "Copy: ui/OpenApiOAuthStatus.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiOAuthStatus.jsx:91",
-        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiOAuthStatus.jsx:99"
+        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiOAuthStatus.jsx:95",
+        "apps/elitea-ui/src/[fsd]/features/openapi/ui/OpenApiOAuthStatus.jsx:103"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -4924,8 +4937,7 @@
       "priority": "should",
       "title": "Copy: constants/configuration.constants.js (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/lib/constants/configuration.constants.js:18",
-        "apps/elitea-ui/src/[fsd]/features/settings/lib/constants/configuration.constants.js:26"
+        "apps/elitea-ui/src/[fsd]/features/settings/lib/constants/configuration.constants.js:18"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -4953,7 +4965,7 @@
       "priority": "should",
       "title": "Copy: Configuration/AddModelButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/AddModelButton.jsx:38"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/AIConfiguration.jsx:21"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -4981,8 +4993,8 @@
       "priority": "should",
       "title": "Copy: Configuration/ConfigurationCard.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationCard.jsx:66",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationCard.jsx:111"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/ConfigurationCard.jsx:70",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/ConfigurationCard.jsx:118"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5010,7 +5022,7 @@
       "priority": "should",
       "title": "Copy: Configuration/ConfigurationSection.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationSection.jsx:81"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/ConfigurationSection.jsx:100"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5038,8 +5050,8 @@
       "priority": "should",
       "title": "Copy: Configuration/ConfigurationsPanel.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationsPanel.jsx:85",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationsPanel.jsx:186"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/ConfigurationsPanel.jsx:42",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/ConfigurationsPanel.jsx:182"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5067,7 +5079,7 @@
       "priority": "should",
       "title": "Copy: Configuration/FieldWithCopy.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/FieldWithCopy.jsx:29"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/FieldWithCopy.jsx:29"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5095,7 +5107,7 @@
       "priority": "should",
       "title": "Copy: Configuration/ModelCapabilitiesSection.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ModelCapabilitiesSection.jsx:19"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-providers/ModelCapabilitiesSection.jsx:19"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5123,7 +5135,7 @@
       "priority": "should",
       "title": "Copy: Configuration/ModelConfiguration.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ModelConfiguration.jsx:228"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/ProjectAIConfigurations.jsx:11"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5151,8 +5163,7 @@
       "priority": "should",
       "title": "Copy: Configuration/ProjectAIConfiguration.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ProjectAIConfiguration.jsx:20",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ProjectAIConfiguration.jsx:38"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/ProjectAIConfigurations.jsx:11"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5180,8 +5191,8 @@
       "priority": "should",
       "title": "Copy: OpenAITemplate/CodePreviewEmpty.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/CodePreviewEmpty.jsx:15",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/CodePreviewEmpty.jsx:23"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/open-ai-template/CodePreviewEmpty.jsx:15",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/open-ai-template/CodePreviewEmpty.jsx:23"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5209,8 +5220,8 @@
       "priority": "should",
       "title": "Copy: OpenAITemplate/CodePreviewHeader.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/CodePreviewHeader.jsx:54",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/CodePreviewHeader.jsx:62"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/open-ai-template/CodePreviewHeader.jsx:54",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/open-ai-template/CodePreviewHeader.jsx:62"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5238,8 +5249,8 @@
       "priority": "should",
       "title": "Copy: OpenAITemplate/OpenAITemplate.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/OpenAITemplate.jsx:81",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/OpenAITemplate.jsx:97"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/open-ai-template/OpenAITemplate.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/project-ai-configurations/open-ai-template/OpenAITemplate.jsx:96"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5295,8 +5306,7 @@
       "priority": "should",
       "title": "Copy: personal-tokes/GeneratedTokenDialog.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/GeneratedTokenDialog.jsx:50",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/GeneratedTokenDialog.jsx:67"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/GeneratedTokenDialog.jsx:77"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5324,8 +5334,8 @@
       "priority": "should",
       "title": "Copy: personal-tokes/TokensTable.jsx (10 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/TokensTable.jsx:34",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/TokensTable.jsx:324"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/TokensTable.jsx:28",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/personal-tokes/TokensTable.jsx:159"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5353,7 +5363,7 @@
       "priority": "should",
       "title": "Copy: project-context/EnableToggleCard.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/EnableToggleCard.jsx:16",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/EnableToggleCard.jsx:22",
         "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/EnableToggleCard.jsx:22"
       ],
       "acceptance": [
@@ -5382,7 +5392,7 @@
       "priority": "should",
       "title": "Copy: project-context/GenerateProjectContextModal.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextModal.jsx:65"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextModal.jsx:45"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5410,8 +5420,7 @@
       "priority": "should",
       "title": "Copy: project-context/GenerateProjectContextReviewForm.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextReviewForm.jsx:44",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextReviewForm.jsx:80"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextReviewForm.jsx:36"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5439,8 +5448,7 @@
       "priority": "should",
       "title": "Copy: project-context/ProjectContextContent.jsx (12 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:66",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:293"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectContextContent.jsx:16"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5468,7 +5476,7 @@
       "priority": "should",
       "title": "Copy: project-context/ProjectParamsHeader.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectParamsHeader.jsx:73"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/ProjectParamsHeader.jsx:77"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5496,8 +5504,8 @@
       "priority": "should",
       "title": "Copy: project-context/SelectProjectIconDialog.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:156",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx:266"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:162",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/SelectProjectIconDialog.jsx:265"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5525,7 +5533,7 @@
       "priority": "should",
       "title": "Copy: project-context/UserIconItem.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/UserIconItem.jsx:53"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/project-general/general/select-project-icon/UserIconItem.jsx:53"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5553,8 +5561,8 @@
       "priority": "should",
       "title": "Copy: secrets/SecretActionsMenu.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretActionsMenu.jsx:45",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretActionsMenu.jsx:77"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretActionsMenu.jsx:47",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretActionsMenu.jsx:81"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5583,7 +5591,7 @@
       "title": "Copy: secrets/SecretsContent.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsContent.jsx:142",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsContent.jsx:155"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsContent.jsx:156"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5612,7 +5620,7 @@
       "title": "Copy: secrets/SecretsTable.jsx (5 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsTable.jsx:54",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsTable.jsx:599"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/SecretsTable.jsx:617"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5640,7 +5648,7 @@
       "priority": "should",
       "title": "Copy: settings-drawer/SettingsDrawer.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/settings-drawer/SettingsDrawer.jsx:118"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/settings-drawer/SettingsDrawer.jsx:127"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5668,8 +5676,8 @@
       "priority": "should",
       "title": "Copy: system-prompts/ServicePromptsSection.jsx (10 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:219",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:528"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/system-prompts/ServicePromptsSection.jsx:504"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5697,8 +5705,8 @@
       "priority": "should",
       "title": "Copy: users/DeleteUserButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/DeleteUserButton.jsx:63",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/DeleteUserButton.jsx:71"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/DeleteUserButton.jsx:61",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/DeleteUserButton.jsx:70"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5726,8 +5734,8 @@
       "priority": "should",
       "title": "Copy: users/EditUsersButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/EditUsersButton.jsx:71",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/EditUsersButton.jsx:87"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/EditUsersButton.jsx:83",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/EditUsersButton.jsx:100"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5756,7 +5764,7 @@
       "title": "Copy: users/UsersTable.jsx (6 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:29",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:179"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:181"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -5784,7 +5792,7 @@
       "priority": "should",
       "title": "Copy: ui/SharepointDelegatedLoginButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointDelegatedLoginButton.jsx:56"
+        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointDelegatedLoginButton.jsx:55"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -5812,7 +5820,7 @@
       "priority": "should",
       "title": "Copy: ui/SharepointLogInLink.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointLogInLink.jsx:80"
+        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointLogInLink.jsx:84"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -5840,8 +5848,8 @@
       "priority": "should",
       "title": "Copy: ui/SharepointOAuthStatus.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointOAuthStatus.jsx:84",
-        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointOAuthStatus.jsx:92"
+        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointOAuthStatus.jsx:87",
+        "apps/elitea-ui/src/[fsd]/features/sharepoint/ui/SharepointOAuthStatus.jsx:95"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -5869,8 +5877,7 @@
       "priority": "should",
       "title": "Copy: agent-hub/AgentHub.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/agent-hub/AgentHub.jsx:217",
-        "apps/elitea-ui/src/[fsd]/pages/agent-hub/AgentHub.jsx:218"
+        "apps/elitea-ui/src/[fsd]/pages/agent-hub/AgentHub.jsx:5"
       ],
       "acceptance": [
         "GIVEN the agents-hub screen renders with the default brand in both colour schemes",
@@ -5928,7 +5935,7 @@
       "title": "Copy: resources/index.jsx (4 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/pages/resources/index.jsx:97",
-        "apps/elitea-ui/src/[fsd]/pages/resources/index.jsx:167"
+        "apps/elitea-ui/src/[fsd]/pages/resources/index.jsx:171"
       ],
       "acceptance": [
         "GIVEN the help-center screen renders with the default brand in both colour schemes",
@@ -5956,8 +5963,8 @@
       "priority": "should",
       "title": "Copy: ui/ResourceVersionInfo.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/resources/ui/ResourceVersionInfo.jsx:52",
-        "apps/elitea-ui/src/[fsd]/pages/resources/ui/ResourceVersionInfo.jsx:94"
+        "apps/elitea-ui/src/[fsd]/pages/resources/ui/ResourceVersionInfo.jsx:53",
+        "apps/elitea-ui/src/[fsd]/pages/resources/ui/ResourceVersionInfo.jsx:95"
       ],
       "acceptance": [
         "GIVEN the help-center screen renders with the default brand in both colour schemes",
@@ -5985,7 +5992,7 @@
       "priority": "should",
       "title": "Copy: settings/EnvironmentSettings.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/settings/EnvironmentSettings.jsx:10"
+        "apps/elitea-ui/src/[fsd]/pages/settings/EnvironmentSettings.jsx:9"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -6013,8 +6020,7 @@
       "priority": "should",
       "title": "Copy: settings/index.jsx (11 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:54",
-        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:113"
+        "apps/elitea-ui/src/[fsd]/pages/settings/index.jsx:29"
       ],
       "acceptance": [
         "GIVEN the settings screen renders with the default brand in both colour schemes",
@@ -6042,8 +6048,7 @@
       "priority": "should",
       "title": "Copy: ui/SoundNotificationControls.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/user-settings/ui/SoundNotificationControls.jsx:32",
-        "apps/elitea-ui/src/[fsd]/pages/user-settings/ui/SoundNotificationControls.jsx:62"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/sound-notification/SoundNotificationControls.jsx:73"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6071,7 +6076,7 @@
       "priority": "should",
       "title": "Copy: ui/SoundNotificationSection.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/user-settings/ui/SoundNotificationSection.jsx:18"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/sound-notification/SoundNotificationSection.jsx:18"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6100,7 +6105,7 @@
       "title": "Copy: constants/internalTools.constants.js (16 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/shared/lib/constants/internalTools.constants.js:10",
-        "apps/elitea-ui/src/[fsd]/shared/lib/constants/internalTools.constants.js:86"
+        "apps/elitea-ui/src/[fsd]/shared/lib/constants/internalTools.constants.js:113"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6129,7 +6134,7 @@
       "title": "Copy: helpers/codeMirrorEditor.helpers.js (40 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorEditor.helpers.js:77",
-        "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorEditor.helpers.js:233"
+        "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorEditor.helpers.js:241"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6157,8 +6162,8 @@
       "priority": "should",
       "title": "Copy: helpers/codeMirrorLinter.helpers.js (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorLinter.helpers.js:79",
-        "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorLinter.helpers.js:101"
+        "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorLinter.helpers.js:80",
+        "apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorLinter.helpers.js:102"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6214,7 +6219,7 @@
       "priority": "should",
       "title": "Copy: button/DiscardButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/button/DiscardButton.jsx:48"
+        "apps/elitea-ui/src/[fsd]/shared/ui/button/DiscardButton.jsx:52"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6242,8 +6247,7 @@
       "priority": "should",
       "title": "Copy: button/ViewRunHistoryButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/button/ViewRunHistoryButton.jsx:20",
-        "apps/elitea-ui/src/[fsd]/shared/ui/button/ViewRunHistoryButton.jsx:26"
+        "apps/elitea-ui/src/[fsd]/shared/ui/button/ViewRunHistoryButton.jsx:37"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6271,8 +6275,8 @@
       "priority": "should",
       "title": "Copy: field/CommonStringField.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/field/CommonStringField.jsx:85",
-        "apps/elitea-ui/src/[fsd]/shared/ui/field/CommonStringField.jsx:121"
+        "apps/elitea-ui/src/[fsd]/shared/ui/field/CommonStringField.jsx:92",
+        "apps/elitea-ui/src/[fsd]/shared/ui/field/CommonStringField.jsx:129"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6300,8 +6304,8 @@
       "priority": "should",
       "title": "Copy: field/ResizableCodeMirrorEditor.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/field/ResizableCodeMirrorEditor.jsx:79",
-        "apps/elitea-ui/src/[fsd]/shared/ui/field/ResizableCodeMirrorEditor.jsx:83"
+        "apps/elitea-ui/src/[fsd]/shared/ui/field/ResizableCodeMirrorEditor.jsx:81",
+        "apps/elitea-ui/src/[fsd]/shared/ui/field/ResizableCodeMirrorEditor.jsx:85"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6329,7 +6333,7 @@
       "priority": "should",
       "title": "Copy: input/InputActionsToolbar.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/input/InputActionsToolbar.jsx:37"
+        "apps/elitea-ui/src/[fsd]/shared/ui/input/InputActionsToolbar.jsx:38"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6413,7 +6417,7 @@
       "priority": "should",
       "title": "Copy: modal/BaseModal.jsx (1 strings) [aria-only]",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/modal/BaseModal.jsx:141"
+        "apps/elitea-ui/src/[fsd]/shared/ui/modal/BaseModal.jsx:151"
       ],
       "acceptance": [
         "GIVEN the shared screen renders",
@@ -6441,8 +6445,8 @@
       "priority": "should",
       "title": "Copy: modal/DeleteEntityModal.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/modal/DeleteEntityModal.jsx:76",
-        "apps/elitea-ui/src/[fsd]/shared/ui/modal/DeleteEntityModal.jsx:86"
+        "apps/elitea-ui/src/[fsd]/shared/ui/modal/DeleteEntityModal.jsx:77",
+        "apps/elitea-ui/src/[fsd]/shared/ui/modal/DeleteEntityModal.jsx:88"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6470,8 +6474,8 @@
       "priority": "should",
       "title": "Copy: modal/ExpandedViewerModal.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/modal/ExpandedViewerModal.jsx:93",
-        "apps/elitea-ui/src/[fsd]/shared/ui/modal/ExpandedViewerModal.jsx:110"
+        "apps/elitea-ui/src/[fsd]/shared/ui/modal/ExpandedViewerModal.jsx:92",
+        "apps/elitea-ui/src/[fsd]/shared/ui/modal/ExpandedViewerModal.jsx:109"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6499,8 +6503,8 @@
       "priority": "should",
       "title": "Copy: secret-field/SecretField.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/secret-field/SecretField.jsx:151",
-        "apps/elitea-ui/src/[fsd]/shared/ui/secret-field/SecretField.jsx:292"
+        "apps/elitea-ui/src/[fsd]/shared/ui/secret-field/SecretField.jsx:159",
+        "apps/elitea-ui/src/[fsd]/shared/ui/secret-field/SecretField.jsx:301"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6584,7 +6588,7 @@
       "priority": "should",
       "title": "Copy: soon-label/SoonLabel.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/soon-label/SoonLabel.jsx:11"
+        "apps/elitea-ui/src/[fsd]/shared/ui/soon-label/SoonLabel.jsx:13"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6641,7 +6645,7 @@
       "priority": "should",
       "title": "Copy: text/CharacterCounter.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/shared/ui/text/CharacterCounter.jsx:17"
+        "apps/elitea-ui/src/[fsd]/shared/ui/text/CharacterCounter.jsx:5"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -6669,7 +6673,7 @@
       "priority": "should",
       "title": "Copy: ui/ContextBudgetCompact.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetCompact.jsx:101"
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetCompact.jsx:100"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -6726,7 +6730,7 @@
       "priority": "should",
       "title": "Copy: ui/ContextBudgetProgress.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetProgress.jsx:27"
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetProgress.jsx:26"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -6783,8 +6787,8 @@
       "priority": "should",
       "title": "Copy: ui/ContextBudgetStatsDisplay.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetStatsDisplay.jsx:30",
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetStatsDisplay.jsx:44"
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetStatsDisplay.jsx:39",
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextBudgetStatsDisplay.jsx:53"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -6841,8 +6845,8 @@
       "priority": "should",
       "title": "Copy: ui/ContextStrategyModalContent.jsx (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyModalContent.jsx:158",
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyModalContent.jsx:286"
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyModalContent.jsx:129",
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyModalContent.jsx:235"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -6929,7 +6933,7 @@
       "title": "Copy: ui/ContextStrategyTokenManagement.jsx (4 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyTokenManagement.jsx:62",
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyTokenManagement.jsx:85"
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/ContextStrategyTokenManagement.jsx:86"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -6957,8 +6961,7 @@
       "priority": "should",
       "title": "Copy: ui/SummaryDetailsItem.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/SummaryDetailsItem.jsx:76",
-        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/SummaryDetailsItem.jsx:183"
+        "apps/elitea-ui/src/[fsd]/widgets/context-budget/ui/SummaryDetailsItem.jsx:112"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7015,8 +7018,8 @@
       "priority": "should",
       "title": "Copy: ui/DataTable.jsx (13 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:121",
-        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:434"
+        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:122",
+        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTable.jsx:419"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7044,7 +7047,7 @@
       "priority": "should",
       "title": "Copy: ui/DataTableNameCell.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTableNameCell.jsx:95"
+        "apps/elitea-ui/src/[fsd]/widgets/data-table/ui/DataTableNameCell.jsx:96"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7129,8 +7132,8 @@
       "priority": "should",
       "title": "Copy: ui/LLMModelSelector.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMModelSelector.jsx:82",
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMModelSelector.jsx:148"
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMModelSelector.jsx:170",
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMModelSelector.jsx:237"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7158,8 +7161,8 @@
       "priority": "should",
       "title": "Copy: ui/LLMSettingsDialog.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMSettingsDialog.jsx:46",
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMSettingsDialog.jsx:83"
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMSettingsDialog.jsx:51",
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/LLMSettingsDialog.jsx:90"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7187,7 +7190,7 @@
       "priority": "should",
       "title": "Copy: settings/CapabilitySection.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/CapabilitySection.jsx:17"
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/CapabilitySection.jsx:20"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7244,8 +7247,8 @@
       "priority": "should",
       "title": "Copy: settings/MaxTokensSection.jsx (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/MaxTokensSection.jsx:56",
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/MaxTokensSection.jsx:104"
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/MaxTokensSection.jsx:59",
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/MaxTokensSection.jsx:107"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7274,12 +7277,12 @@
       "title": "Copy: settings/ReasoningSlider.jsx (5 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/ReasoningSlider.jsx:19",
-        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/ReasoningSlider.jsx:75"
+        "apps/elitea-ui/src/[fsd]/widgets/llm-model-selector/ui/settings/ReasoningSlider.jsx:77"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 5 strings from this component (for example \"Fast, surface-level reasoning \u2014 concise answers with minimal\") appear verbatim",
+        "THEN all 5 strings from this component (for example \"Fast, surface-level reasoning — concise answers with minimal\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -7331,8 +7334,8 @@
       "priority": "should",
       "title": "Copy: ui/NotificationList.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/Notifications/ui/NotificationList.jsx:111",
-        "apps/elitea-ui/src/[fsd]/widgets/Notifications/ui/NotificationList.jsx:171"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/NotificationList.jsx:111",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/NotificationList.jsx:171"
       ],
       "acceptance": [
         "GIVEN the shell-widgets screen renders with the default brand in both colour schemes",
@@ -7357,16 +7360,15 @@
       "id": "COPY-341",
       "domain": "shell",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: constants/createEntity.constant.js (29 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:22",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:53"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:54"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 29 strings from this component (for example \"Configuration\") appear verbatim",
+        "THEN all 29 strings from this component (for example \"AI Provider\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -7380,7 +7382,12 @@
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Baseline vocabulary rename at 20b23c42 (\"Configuration\" -> \"AI Provider\"), confirmed deliberate. The item still requires verbatim copy parity; the string it names has changed.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "copy string \"Configuration\""
+      }
     },
     {
       "id": "COPY-342",
@@ -7389,7 +7396,7 @@
       "priority": "should",
       "title": "Copy: button/AgentHubButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/AgentHubButton.jsx:46"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/AgentHubButton.jsx:48"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
@@ -7417,7 +7424,7 @@
       "priority": "should",
       "title": "Copy: button/CreateEntityButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/CreateEntityButton.jsx:311"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/CreateEntityButton.jsx:310"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
@@ -7445,8 +7452,8 @@
       "priority": "should",
       "title": "Copy: button/ResourcesButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/ResourcesButton.jsx:44",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/ResourcesButton.jsx:53"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/ResourcesButton.jsx:45",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/ResourcesButton.jsx:54"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
@@ -7503,8 +7510,7 @@
       "priority": "should",
       "title": "Copy: button/UserButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/UserButton.jsx:38",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/UserButton.jsx:64"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/UserButton.jsx:61"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
@@ -7561,8 +7567,8 @@
       "priority": "should",
       "title": "Copy: ui/SidebarBody.jsx (20 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:98",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:293"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:99",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:299"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
@@ -7590,8 +7596,8 @@
       "priority": "should",
       "title": "Copy: ui/SidebarProjectSelect.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarProjectSelect.jsx:46",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarProjectSelect.jsx:124"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarProjectSelect.jsx:48",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarProjectSelect.jsx:128"
       ],
       "acceptance": [
         "GIVEN the sidebar screen renders with the default brand in both colour schemes",
@@ -7619,8 +7625,8 @@
       "priority": "should",
       "title": "Copy: common/constants.js (73 strings)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:113",
-        "apps/elitea-ui/src/common/constants.js:1094"
+        "apps/elitea-ui/src/common/constants.js:114",
+        "apps/elitea-ui/src/common/constants.js:1130"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -7676,7 +7682,7 @@
       "priority": "should",
       "title": "Copy: common/utils.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/common/utils.jsx:48"
+        "apps/elitea-ui/src/common/utils.jsx:49"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -7817,8 +7823,8 @@
       "priority": "should",
       "title": "Copy: components/Categories.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/components/Categories.jsx:292",
-        "apps/elitea-ui/src/components/Categories.jsx:353"
+        "apps/elitea-ui/src/components/Categories.jsx:294",
+        "apps/elitea-ui/src/components/Categories.jsx:357"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -7846,8 +7852,8 @@
       "priority": "should",
       "title": "Copy: Chat/ActionView.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/components/Chat/ActionView.jsx:49",
-        "apps/elitea-ui/src/components/Chat/ActionView.jsx:445"
+        "apps/elitea-ui/src/components/Chat/ActionView.jsx:51",
+        "apps/elitea-ui/src/components/Chat/ActionView.jsx:533"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -7903,7 +7909,7 @@
       "priority": "should",
       "title": "Copy: Chat/FileList.jsx (1 strings) [aria-only]",
       "source": [
-        "apps/elitea-ui/src/components/Chat/FileList.jsx:113"
+        "apps/elitea-ui/src/components/Chat/FileList.jsx:115"
       ],
       "acceptance": [
         "GIVEN the shared screen renders",
@@ -7960,8 +7966,8 @@
       "priority": "should",
       "title": "Copy: Chat/hooks.js (2 strings)",
       "source": [
-        "apps/elitea-ui/src/components/Chat/hooks.js:1030",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1419"
+        "apps/elitea-ui/src/components/Chat/hooks.js:1156",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1620"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8018,8 +8024,8 @@
       "priority": "should",
       "title": "Copy: Chat/ToolModal.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/components/Chat/ToolModal.jsx:26",
-        "apps/elitea-ui/src/components/Chat/ToolModal.jsx:321"
+        "apps/elitea-ui/src/components/Chat/ToolModal.jsx:27",
+        "apps/elitea-ui/src/components/Chat/ToolModal.jsx:330"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8191,8 +8197,8 @@
       "priority": "should",
       "title": "Copy: components/ConversationStarters.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/components/ConversationStarters.jsx:101",
-        "apps/elitea-ui/src/components/ConversationStarters.jsx:325"
+        "apps/elitea-ui/src/components/ConversationStarters.jsx:87",
+        "apps/elitea-ui/src/components/ConversationStarters.jsx:311"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8249,8 +8255,8 @@
       "priority": "should",
       "title": "Copy: components/DataRowAction.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/components/DataRowAction.jsx:164",
-        "apps/elitea-ui/src/components/DataRowAction.jsx:311"
+        "apps/elitea-ui/src/components/DataRowAction.jsx:214",
+        "apps/elitea-ui/src/components/DataRowAction.jsx:367"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8307,8 +8313,8 @@
       "priority": "should",
       "title": "Copy: components/DeleteEntityButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/components/DeleteEntityButton.jsx:84",
-        "apps/elitea-ui/src/components/DeleteEntityButton.jsx:97"
+        "apps/elitea-ui/src/components/DeleteEntityButton.jsx:85",
+        "apps/elitea-ui/src/components/DeleteEntityButton.jsx:101"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8336,8 +8342,8 @@
       "priority": "should",
       "title": "Copy: components/EditUserRolesDialog.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/components/EditUserRolesDialog.jsx:62",
-        "apps/elitea-ui/src/components/EditUserRolesDialog.jsx:82"
+        "apps/elitea-ui/src/components/EditUserRolesDialog.jsx:68",
+        "apps/elitea-ui/src/components/EditUserRolesDialog.jsx:89"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8451,7 +8457,7 @@
       "priority": "should",
       "title": "Copy: components/EntityIcon.jsx (1 strings) [aria-only]",
       "source": [
-        "apps/elitea-ui/src/components/EntityIcon.jsx:194"
+        "apps/elitea-ui/src/components/EntityIcon.jsx:204"
       ],
       "acceptance": [
         "GIVEN the shared screen renders",
@@ -8479,7 +8485,7 @@
       "priority": "should",
       "title": "Copy: Fork/ForkEntityButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/components/Fork/ForkEntityButton.jsx:50"
+        "apps/elitea-ui/src/components/Fork/ForkEntityButton.jsx:64"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8507,8 +8513,7 @@
       "priority": "should",
       "title": "Copy: components/FormViewToggle.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/components/FormViewToggle.jsx:10",
-        "apps/elitea-ui/src/components/FormViewToggle.jsx:16"
+        "apps/elitea-ui/src/[fsd]/shared/ui/tab-group-button/FormViewToggle.jsx:9"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8622,7 +8627,7 @@
       "priority": "should",
       "title": "Copy: components/ImportTableButton.jsx (1 strings) [aria-only]",
       "source": [
-        "apps/elitea-ui/src/components/ImportTableButton.jsx:75"
+        "apps/elitea-ui/src/components/ImportTableButton.jsx:77"
       ],
       "acceptance": [
         "GIVEN the shared screen renders",
@@ -8650,8 +8655,8 @@
       "priority": "should",
       "title": "Copy: components/InviteUserDialog.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/components/InviteUserDialog.jsx:169",
-        "apps/elitea-ui/src/components/InviteUserDialog.jsx:214"
+        "apps/elitea-ui/src/components/InviteUserDialog.jsx:181",
+        "apps/elitea-ui/src/components/InviteUserDialog.jsx:228"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8679,7 +8684,7 @@
       "priority": "should",
       "title": "Copy: components/LlmModelSelect.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/components/LlmModelSelect.jsx:105"
+        "apps/elitea-ui/src/components/LlmModelSelect.jsx:106"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8708,7 +8713,7 @@
       "title": "Copy: components/MarkdownTableBlock.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/components/MarkdownTableBlock.jsx:107",
-        "apps/elitea-ui/src/components/MarkdownTableBlock.jsx:225"
+        "apps/elitea-ui/src/components/MarkdownTableBlock.jsx:226"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8736,8 +8741,8 @@
       "priority": "should",
       "title": "Copy: components/MarkdownTableEditor.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/components/MarkdownTableEditor.jsx:115",
-        "apps/elitea-ui/src/components/MarkdownTableEditor.jsx:725"
+        "apps/elitea-ui/src/components/MarkdownTableEditor.jsx:117",
+        "apps/elitea-ui/src/components/MarkdownTableEditor.jsx:731"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8766,7 +8771,7 @@
       "title": "Copy: components/MermaidCodeBlock.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:317",
-        "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:379"
+        "apps/elitea-ui/src/components/MermaidCodeBlock.jsx:380"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8795,7 +8800,7 @@
       "title": "Copy: MermaidDiagramOutput/DiagramOutput.jsx (10 strings)",
       "source": [
         "apps/elitea-ui/src/components/MermaidDiagramOutput/DiagramOutput.jsx:80",
-        "apps/elitea-ui/src/components/MermaidDiagramOutput/DiagramOutput.jsx:471"
+        "apps/elitea-ui/src/components/MermaidDiagramOutput/DiagramOutput.jsx:475"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8852,7 +8857,7 @@
       "priority": "should",
       "title": "Copy: components/ProjectSelect.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/components/ProjectSelect.jsx:221"
+        "apps/elitea-ui/src/components/ProjectSelect.jsx:239"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8881,7 +8886,7 @@
       "title": "Copy: components/SearchBar.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/components/SearchBar.jsx:250",
-        "apps/elitea-ui/src/components/SearchBar.jsx:335"
+        "apps/elitea-ui/src/components/SearchBar.jsx:339"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8938,8 +8943,8 @@
       "priority": "should",
       "title": "Copy: components/SelectIconDialog.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/components/SelectIconDialog.jsx:303",
-        "apps/elitea-ui/src/components/SelectIconDialog.jsx:422"
+        "apps/elitea-ui/src/components/SelectIconDialog.jsx:313",
+        "apps/elitea-ui/src/components/SelectIconDialog.jsx:430"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -8996,7 +9001,7 @@
       "title": "Copy: components/SplitButton.jsx (2 strings) [aria-only]",
       "source": [
         "apps/elitea-ui/src/components/SplitButton.jsx:110",
-        "apps/elitea-ui/src/components/SplitButton.jsx:128"
+        "apps/elitea-ui/src/components/SplitButton.jsx:129"
       ],
       "acceptance": [
         "GIVEN the shared screen renders",
@@ -9081,8 +9086,8 @@
       "priority": "should",
       "title": "Copy: components/ThemeModeToggle.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/components/ThemeModeToggle.jsx:27",
-        "apps/elitea-ui/src/components/ThemeModeToggle.jsx:40"
+        "apps/elitea-ui/src/components/ThemeModeToggle.jsx:43",
+        "apps/elitea-ui/src/components/ThemeModeToggle.jsx:56"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9138,8 +9143,7 @@
       "priority": "should",
       "title": "Copy: components/ToolkitSelect.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/components/ToolkitSelect.jsx:128",
-        "apps/elitea-ui/src/components/ToolkitSelect.jsx:247"
+        "apps/elitea-ui/src/components/ToolkitSelect.jsx:126"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9167,8 +9171,8 @@
       "priority": "should",
       "title": "Copy: components/UnifiedDropdown.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/components/UnifiedDropdown.jsx:326",
-        "apps/elitea-ui/src/components/UnifiedDropdown.jsx:381"
+        "apps/elitea-ui/src/components/UnifiedDropdown.jsx:331",
+        "apps/elitea-ui/src/components/UnifiedDropdown.jsx:386"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9193,7 +9197,7 @@
       "id": "COPY-405",
       "domain": "shell",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: components/UnsavedDialog.jsx (1 strings)",
       "source": [
         "apps/elitea-ui/src/components/UnsavedDialog.jsx:75"
@@ -9210,12 +9214,17 @@
         "testId": "visual > shared > UnsavedDialog.jsx"
       },
       "unit": "V2",
-      "status": "todo",
+      "status": "waived",
       "coverage": {
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "components/UnsavedDialog.jsx was dissolved upstream at 20b23c42; unsaved-change prompts are now raised per screen (VersionSelector, BaseEditor, CreatePersonalToken, CompareVersionsModal, Artifacts) with their own wording. The single string \"Warning\" is no longer owned by one component.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "1 string of components/UnsavedDialog.jsx rendered verbatim"
+      }
     },
     {
       "id": "COPY-406",
@@ -9224,8 +9233,8 @@
       "priority": "should",
       "title": "Copy: components/VariableDialog.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/components/VariableDialog.jsx:101",
-        "apps/elitea-ui/src/components/VariableDialog.jsx:107"
+        "apps/elitea-ui/src/components/VariableDialog.jsx:100",
+        "apps/elitea-ui/src/components/VariableDialog.jsx:106"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9283,7 +9292,7 @@
       "title": "Copy: components/WelcomeMessage.jsx (2 strings)",
       "source": [
         "apps/elitea-ui/src/components/WelcomeMessage.jsx:53",
-        "apps/elitea-ui/src/components/WelcomeMessage.jsx:66"
+        "apps/elitea-ui/src/components/WelcomeMessage.jsx:67"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9311,7 +9320,7 @@
       "priority": "should",
       "title": "Copy: Chat/UserInput.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/ComponentsLib/Chat/UserInput.jsx:48"
+        "apps/elitea-ui/src/ComponentsLib/Chat/UserInput.jsx:58"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9453,7 +9462,7 @@
       "priority": "should",
       "title": "Copy: Components/DeleteButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Common/Components/DeleteButton.jsx:66"
+        "apps/elitea-ui/src/pages/Common/Components/DeleteButton.jsx:67"
       ],
       "acceptance": [
         "GIVEN the shared-page-components screen renders with the default brand in both colour schemes",
@@ -9565,7 +9574,7 @@
       "id": "COPY-469",
       "domain": "shell",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: pages/ModeSwitch.jsx (5 strings)",
       "source": [
         "apps/elitea-ui/src/pages/ModeSwitch.jsx:20",
@@ -9583,12 +9592,17 @@
         "testId": "visual > mode-switch > ModeSwitch.jsx"
       },
       "unit": "V2",
-      "status": "todo",
+      "status": "waived",
       "coverage": {
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Component deleted upstream at 20b23c42 together with the /mode-switch route (see ROUTE-047). Its 5 strings, including \"Toggle Mode:\", exist in no baseline surface, so there is no copy left to match.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "5 strings of pages/ModeSwitch.jsx rendered verbatim"
+      }
     },
     {
       "id": "COPY-484",
@@ -9655,8 +9669,7 @@
       "priority": "should",
       "title": "Copy: components/ProfileContextManagement.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfileContextManagement.jsx:48",
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfileContextManagement.jsx:94"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/memory/MemoryContextManagement.jsx:104"
       ],
       "acceptance": [
         "GIVEN the settings-personalization screen renders with the default brand in both colour schemes",
@@ -9684,8 +9697,8 @@
       "priority": "should",
       "title": "Copy: components/ProfileLongTermMemory.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfileLongTermMemory.jsx:17",
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfileLongTermMemory.jsx:23"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/memory/MemoryLongTermMemory.jsx:17",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/memory/MemoryLongTermMemory.jsx:23"
       ],
       "acceptance": [
         "GIVEN the settings-personalization screen renders with the default brand in both colour schemes",
@@ -9713,8 +9726,7 @@
       "priority": "should",
       "title": "Copy: components/ProfilePersonalization.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfilePersonalization.jsx:54",
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfilePersonalization.jsx:128"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/preference/PreferencesFormContent.jsx:9"
       ],
       "acceptance": [
         "GIVEN the settings-personalization screen renders with the default brand in both colour schemes",
@@ -9742,7 +9754,7 @@
       "priority": "should",
       "title": "Copy: components/ProfileSummarization.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfileSummarization.jsx:80"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/memory/MemorySummarization.jsx:11"
       ],
       "acceptance": [
         "GIVEN the settings-personalization screen renders with the default brand in both colour schemes",
@@ -9770,7 +9782,7 @@
       "priority": "should",
       "title": "Copy: UserSettings/UserSettings.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/UserSettings/UserSettings.jsx:16"
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/profile/Profile.jsx:49"
       ],
       "acceptance": [
         "GIVEN the settings-personalization screen renders with the default brand in both colour schemes",
@@ -9798,7 +9810,7 @@
       "priority": "should",
       "title": "Copy: slices/settings.js (1 strings)",
       "source": [
-        "apps/elitea-ui/src/slices/settings.js:89"
+        "apps/elitea-ui/src/slices/settings.js:101"
       ],
       "acceptance": [
         "GIVEN the state-layer screen renders with the default brand in both colour schemes",
@@ -9826,7 +9838,7 @@
       "priority": "should",
       "title": "Copy: utils/filePreview.js (1 strings)",
       "source": [
-        "apps/elitea-ui/src/utils/filePreview.js:310"
+        "apps/elitea-ui/src/utils/filePreview.js:311"
       ],
       "acceptance": [
         "GIVEN the shared screen renders with the default brand in both colour schemes",
@@ -9882,7 +9894,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Chats\" (group 1)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:96"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:97"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the chat area",
@@ -9910,7 +9922,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Agents\" (group 1)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:105"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:106"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the agents area",
@@ -9938,7 +9950,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Pipelines\" (group 1)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:114"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:115"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the pipelines area",
@@ -9966,7 +9978,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Skills\" (group 2)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:125"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:126"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the skills area",
@@ -9994,7 +10006,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Toolkits\" (group 2)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:134"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:135"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the toolkits area",
@@ -10022,7 +10034,7 @@
       "priority": "must",
       "title": "Sidebar entry \"MCPs\" (group 2)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:143"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:144"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the mcps area",
@@ -10050,7 +10062,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Credentials\" (group 2)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:152"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:153"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the credentials area",
@@ -10078,7 +10090,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Applications\" (group 2)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:161"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:162"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the applications area",
@@ -10106,7 +10118,7 @@
       "priority": "must",
       "title": "Sidebar entry \"Artifacts\" (group 3)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:172"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:173"
       ],
       "acceptance": [
         "GIVEN a user whose permissions allow the artifacts area",
@@ -10134,8 +10146,8 @@
       "priority": "must",
       "title": "Sidebar groups are permission-filtered",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:183-198",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:94"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:184-203",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:95"
       ],
       "acceptance": [
         "GIVEN users with differing permission sets",
@@ -10163,7 +10175,7 @@
       "priority": "must",
       "title": "Sidebar navigation defers API cache reset while streaming",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:53-78"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:54-79"
       ],
       "acceptance": [
         "GIVEN a chat response is currently streaming or navigation is blocked by unsaved changes",
@@ -10191,8 +10203,8 @@
       "priority": "must",
       "title": "Sidebar socket connectivity indicator (SHELL-012)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/root.jsx:35-71",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:43"
+        "apps/elitea-ui/src/[fsd]/app/root.jsx:36-72",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/SidebarBody.jsx:44"
       ],
       "acceptance": [
         "GIVEN the realtime socket connection drops",
@@ -10220,8 +10232,8 @@
       "priority": "must",
       "title": "Global Create option \"Chat\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:41",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:69"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:42",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:71"
       ],
       "acceptance": [
         "GIVEN a user holding the chat.folders.create and chat.create permission(s)",
@@ -10249,8 +10261,8 @@
       "priority": "must",
       "title": "Global Create option \"Agent\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:42",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:70"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:43",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:72"
       ],
       "acceptance": [
         "GIVEN a user holding the applications.create permission(s)",
@@ -10278,8 +10290,8 @@
       "priority": "must",
       "title": "Global Create option \"Skill\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:43",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:71"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:44",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:73"
       ],
       "acceptance": [
         "GIVEN a user holding the applications.create permission(s)",
@@ -10307,8 +10319,8 @@
       "priority": "must",
       "title": "Global Create option \"Pipeline\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:44",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:72"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:45",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:74"
       ],
       "acceptance": [
         "GIVEN a user holding the applications.create permission(s)",
@@ -10336,8 +10348,8 @@
       "priority": "must",
       "title": "Global Create option \"Credential\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:45",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:77"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:46",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:79"
       ],
       "acceptance": [
         "GIVEN a user holding any role (no specific permission is required)",
@@ -10365,8 +10377,8 @@
       "priority": "must",
       "title": "Global Create option \"Toolkit\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:46",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:73"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:47",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:75"
       ],
       "acceptance": [
         "GIVEN a user holding the toolkits.create permission(s)",
@@ -10394,8 +10406,8 @@
       "priority": "must",
       "title": "Global Create option \"Application\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:47",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:75"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:48",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:77"
       ],
       "acceptance": [
         "GIVEN a user holding the toolkits.create permission(s)",
@@ -10423,8 +10435,8 @@
       "priority": "must",
       "title": "Global Create option \"MCP\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:48",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:76"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:49",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:78"
       ],
       "acceptance": [
         "GIVEN a user holding the toolkits.create permission(s)",
@@ -10452,8 +10464,8 @@
       "priority": "must",
       "title": "Global Create option \"Artifact Bucket\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:49",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:78"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:50",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:80"
       ],
       "acceptance": [
         "GIVEN a user holding the artifacts.buckets.create and artifacts.create permission(s)",
@@ -10481,8 +10493,7 @@
       "priority": "must",
       "title": "Global Create option \"Configuration\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:50",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:79"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:1"
       ],
       "acceptance": [
         "GIVEN a user holding the configuration.update permission(s)",
@@ -10510,8 +10521,8 @@
       "priority": "must",
       "title": "Global Create option \"Token\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:51",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:81"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:52",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:83"
       ],
       "acceptance": [
         "GIVEN a user holding any role (no specific permission is required)",
@@ -10539,8 +10550,8 @@
       "priority": "waived",
       "title": "Global Create option \"Secret\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:52",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:82"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:53",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:84"
       ],
       "acceptance": [
         "GIVEN a user holding the secrets.create permission",
@@ -10574,8 +10585,8 @@
       "priority": "must",
       "title": "Global Create option \"Invite User\"",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:53",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:83"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:54",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:85"
       ],
       "acceptance": [
         "GIVEN a user holding the users.create permission(s)",
@@ -10603,7 +10614,7 @@
       "priority": "must",
       "title": "Global Create suppressed on simple routes",
       "source": [
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:56-65"
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:57-67"
       ],
       "acceptance": [
         "GIVEN the user is on any of the designated simple routes (settings/analytics, settings/prompts, settings/environment, settings/personalization, settings/notifications, Onboarding, AgentHub, HelpCenter)",
@@ -10665,7 +10676,7 @@
       "priority": "must",
       "title": "Journey 1: Cold load / resolves through the redirect chain to /chat",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:264-266"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:309-311"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a personal project",
@@ -10693,7 +10704,7 @@
       "priority": "must",
       "title": "Journey 2: Login via OIDC honours target_to",
       "source": [
-        "apps/elitea-ui/src/api/eliteaApi.js:23"
+        "apps/elitea-ui/src/api/eliteaApi.js:27"
       ],
       "acceptance": [
         "GIVEN an unauthenticated user deep-links into the application",
@@ -10721,7 +10732,7 @@
       "priority": "must",
       "title": "Journey 3: Session expiry mid-request triggers re-auth popup and retry",
       "source": [
-        "apps/elitea-ui/src/api/eliteaApi.js:33"
+        "apps/elitea-ui/src/api/eliteaApi.js:53"
       ],
       "acceptance": [
         "GIVEN the session expires while the app is open",
@@ -10777,7 +10788,7 @@
       "priority": "must",
       "title": "Journey 6: Share link with project id switches project and reloads",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:386"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:452"
       ],
       "acceptance": [
         "GIVEN a share link whose first segment is a project id",
@@ -10833,8 +10844,7 @@
       "priority": "must",
       "title": "Journey 29: Theme switch persists across reload",
       "source": [
-        "apps/elitea-ui/src/components/ThemeModeToggle.jsx:10",
-        "apps/elitea-ui/src/pages/UserSettings/components/ProfilePersonalization.jsx:12"
+        "apps/elitea-ui/src/components/ThemeModeToggle.jsx:11"
       ],
       "acceptance": [
         "GIVEN the personalization settings",
@@ -10862,7 +10872,7 @@
       "priority": "must",
       "title": "Journey 30: Brand pack swaps logo, primary colour and product name without rebuild",
       "source": [
-        "apps/elitea-ui/src/MainTheme.js:19"
+        "apps/elitea-ui/src/MainTheme.js:294"
       ],
       "acceptance": [
         "GIVEN a deployment with a tenant brand pack configured",
@@ -10880,6 +10890,146 @@
       "coverage": {
         "file": "e2e/journeys.spec.ts",
         "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-080",
+      "domain": "shell",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/memory` is mounted",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:401"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/memory",
+        "THEN the memory settings screen is displayed at that URL",
+        "AND the long-term memory, summarization and context-management sections are all reachable there"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-080"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-081",
+      "domain": "shell",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/preferences` is mounted",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:393"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/preferences",
+        "THEN the preferences settings screen is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-081"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-082",
+      "domain": "shell",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/profile` is mounted",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:389"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/profile",
+        "THEN the profile settings screen is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-082"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-083",
+      "domain": "shell",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/project-context/edit` is mounted",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:360"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/project-context/edit",
+        "THEN the project-context editor is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-083"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-084",
+      "domain": "shell",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/project-general` is mounted",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:351"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/project-general",
+        "THEN the general project settings screen is displayed at that URL",
+        "AND it is the screen the settings index redirects to"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-084"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
       },
       "waiver": null
     }

@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/apps` renders Apps",
       "source": [
-        "apps/elitea-ui/src/routes.js:36",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:228"
+        "apps/elitea-ui/src/routes.js:42",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:269"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -38,8 +38,8 @@
       "priority": "must",
       "title": "Route `/apps/create` renders CreateToolkit (application mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:40",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:169"
+        "apps/elitea-ui/src/routes.js:46",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:202"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -67,8 +67,8 @@
       "priority": "must",
       "title": "Route `/apps/create/:appType` renders CreateToolkit (application mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:41",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:230"
+        "apps/elitea-ui/src/routes.js:47",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:271"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -96,8 +96,8 @@
       "priority": "must",
       "title": "Route `/apps/:tab` renders Apps",
       "source": [
-        "apps/elitea-ui/src/routes.js:39",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:231"
+        "apps/elitea-ui/src/routes.js:45",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:272"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -125,8 +125,8 @@
       "priority": "must",
       "title": "Route `/apps/:tab/:appId` renders AppDetail",
       "source": [
-        "apps/elitea-ui/src/routes.js:42",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:232"
+        "apps/elitea-ui/src/routes.js:48",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:273"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -213,7 +213,7 @@
       "title": "Copy: apps/Apps.jsx (2 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:92",
-        "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:106"
+        "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:107"
       ],
       "acceptance": [
         "GIVEN the apps screen renders with the default brand in both colour schemes",

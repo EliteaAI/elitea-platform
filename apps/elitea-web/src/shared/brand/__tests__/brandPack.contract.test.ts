@@ -172,11 +172,21 @@ describe('§4.6 check 7 — brand-pack round trip', () => {
     });
     const nonDiscriminating = colorsInTheme(baselineTheme);
 
+    // A FULLY TRANSPARENT colour is non-discriminating for the same reason the
+    // bare-MUI palette above is: alpha 0 paints nothing, so it appears in
+    // rendered output no matter which pack is mounted and cannot evidence a
+    // repaint. `background.folder.shadow` carries one — the dark half of a
+    // light-only baseline token, where the exact rendering equivalent of "no
+    // drop shadow" is a transparent zero-offset shadow (see SYMMETRY_FILLS in
+    // scripts/gen-brand-tokens.mjs). Counting it produced a failure that named
+    // a leak but described a no-op.
+    const isFullyTransparent = (color: string) => /^#[0-9a-f]{6}00$/i.test(color);
+
     const defaultPackColors = new Set<string>();
     for (const record of [DEFAULT_BRAND_PACK.schemes.light, DEFAULT_BRAND_PACK.schemes.dark]) {
       for (const value of Object.values(record)) {
         colorsIn(value).forEach((color) => {
-          if (!nonDiscriminating.has(color)) defaultPackColors.add(color);
+          if (!nonDiscriminating.has(color) && !isFullyTransparent(color)) defaultPackColors.add(color);
         });
       }
     }

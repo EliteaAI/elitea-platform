@@ -28,6 +28,7 @@ declare module '@mui/material/styles' {
       iconGradientStart: string;
     };
     border: {
+      aiProviderAccordion: string;
       attention: string;
       cardsOutlines: string;
       cardsOutlinesGradient: string;
@@ -41,15 +42,24 @@ declare module '@mui/material/styles' {
       flowNode: string;
       highlightUserMessage: string;
       hover: string;
+      indexResult: {
+        error: string;
+        info: string;
+        success: string;
+        warning: string;
+      };
+      inputHover: string;
       lines: string;
       mcp: {
         loginSuccess: string;
         logout: string;
       };
       notificationItem: string;
+      reindexInfoContainer: string;
       sidebarDivider: string;
       table: string;
       tips: string;
+      toolCardGradient: string;
       userMessageEditor: string;
     };
     boxShadow: {
@@ -79,6 +89,10 @@ declare module '@mui/material/styles' {
       };
       mark: string;
     };
+    diff: {
+      added: string;
+      removed: string;
+    };
     icon: {
       fill: {
         active: string;
@@ -101,6 +115,12 @@ declare module '@mui/material/styles' {
         successModal: string;
         tips: string;
         trophy: string;
+        warning: string;
+      };
+      indexResult: {
+        error: string;
+        info: string;
+        success: string;
         warning: string;
       };
       main: string;
@@ -178,6 +198,17 @@ declare module '@mui/material/styles' {
         icon: string;
       };
     };
+    suggestionChip: {
+      background: {
+        default: string;
+        hover: string;
+      };
+      border: string;
+      text: {
+        default: string;
+        hover: string;
+      };
+    };
   }
 
   interface TypeBackground {
@@ -192,6 +223,10 @@ declare module '@mui/material/styles' {
     aiAnswerActions: string;
     aiAnswerBkg: string;
     aiParticipantIcon: string;
+    aiProviderAccordion: {
+      default: string;
+      hover: string;
+    };
     attention: string;
     avatar: string;
     banner: {
@@ -203,9 +238,11 @@ declare module '@mui/material/styles' {
         active: string;
         default: string;
         hover: string;
+        iconGradient: string;
         shadowActive: string;
         shadowDefault: string;
         shadowHover: string;
+        textGradient: string;
       };
       alarm: {
         default: string;
@@ -310,7 +347,18 @@ declare module '@mui/material/styles' {
     deprecated: string;
     dragging: string;
     eliteaDefault: string;
+    emptyState: {
+      default: string;
+    };
     errorBkg: string;
+    folder: {
+      active: string;
+      borderActive: string;
+      borderGradient: string;
+      borderHover: string;
+      default: string;
+      shadow: string;
+    };
     highlightUserMessage: string;
     icon: {
       checkedBox: string;
@@ -320,6 +368,12 @@ declare module '@mui/material/styles' {
       trophy: string;
     };
     imageAttachment: string;
+    indexResult: {
+      error: string;
+      info: string;
+      success: string;
+      warning: string;
+    };
     info: string;
     interactiveTourPrompt: {
       backdrop: string;
@@ -338,6 +392,7 @@ declare module '@mui/material/styles' {
     notificationList: string;
     onboarding: string;
     onboardingBody: string;
+    pageSection: string;
     participant: {
       active: string;
       cover: string;
@@ -387,6 +442,7 @@ declare module '@mui/material/styles' {
       };
     };
     secondary: string;
+    section: string;
     select: {
       hover: string;
       selected: {
@@ -458,7 +514,10 @@ declare module '@mui/material/styles' {
     toolCard: {
       hover: string;
     };
+    toolkitDetailLeftPanel: string;
+    toolkitDetailRightPanel: string;
     tooltip: {
+      code: string;
       default: string;
     };
     userInputBackground: string;
@@ -505,11 +564,18 @@ declare module '@mui/material/styles' {
       default: string;
     };
     highlighted: string;
+    indexResult: {
+      error: string;
+      info: string;
+      success: string;
+      warning: string;
+    };
     info: string;
     input: {
       disabled: string;
       label: string;
       placeholder: string;
+      placeholderSecondary: string;
       primary: string;
     };
     link: string;
