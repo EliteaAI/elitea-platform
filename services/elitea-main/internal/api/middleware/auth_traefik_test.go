@@ -12,7 +12,6 @@ package middleware_test
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -127,7 +126,11 @@ func TestAuth_ForwardedHeadersRefusedWhenPrincipalIsRefused(t *testing.T) {
 		Client:                    newTestClient(),
 		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(allowForwardedIdentity),
 		PrincipalValidator: principalValidatorFunc(func(context.Context, auth.User) (auth.User, error) {
-			return auth.User{}, errors.New("user is deactivated")
+			// The sentinel, and not a bare error: a deactivated principal is
+			// what auth.ErrPrincipalInactive means, and the middleware now
+			// reads that difference to keep a database fault out of the 401
+			// (#537). A bare error here would assert the collapsed behaviour.
+			return auth.User{}, auth.ErrPrincipalInactive
 		}),
 	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("deactivated principal reached protected handler")

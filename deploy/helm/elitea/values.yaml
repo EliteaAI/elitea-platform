@@ -238,6 +238,14 @@ main:
   # this chart cannot know your ingress controller / Gateway, hostnames, or
   # TLS secret names. Set ingress.gatewayApi: true to render an HTTPRoute
   # instead of a networking.k8s.io/v1 Ingress; the two are mutually exclusive.
+  #
+  # THIS IS NOT THE CLUSTER'S BROWSER EDGE. The HTTPRoute below renders ONE `/`
+  # rule with elitea-main as the only backend, which suits an install that
+  # publishes elitea-main alone. A deployment that also serves the web app from
+  # `/app` needs a rule per root-mounted Go route, or the SPA backend swallows
+  # them: deploy/gateway-api/httproute.yaml is that edge, and
+  # services/elitea-main/tests/deployedge/edge_gateway_api_test.go walks the
+  # real Go router against it (#568).
   ingress:
     enabled: false
     gatewayApi: false
@@ -266,6 +274,15 @@ main:
     # `more_clear_input_headers` in a configuration-snippet, which many clusters
     # disallow) or by fronting elitea-main with a Gateway. Do not assume the
     # plain-Ingress path is covered by this chart.
+    #
+    # X-Elitea-Llm-Hop IS DELIBERATELY ABSENT, and a gate fails if it appears.
+    # It is the LLM gateway's hop marker (#164): the gateway stamps it on every
+    # outbound provider request and refuses a request that arrives already
+    # carrying this deployment's own value, which contains a circular route on
+    # its first re-entry. An edge that removes it disarms that detection. The
+    # marker is not identity — it grants nothing, and recognising it only
+    # refuses the caller's own request. Both traefik edges carry the same
+    # exception, and edge_identity_strip_test.go holds them together.
     stripIdentityHeaders:
       - X-Auth-Type
       - X-Auth-Id
@@ -530,13 +547,39 @@ main:
     # fails, several layers away from anything that names a vault.
     ELITEA_VAULT_MASTER_KEY_FILE: ""
 
-    # --- Capabilities deliberately left DARK -----------------------------------
-    # These two are exposed so the chart states them, and they must stay "false".
-    # Their routes answer a shape that the published contract and the generated
-    # client both reject, so turning either on breaks the web client. Issues #394
-    # and #395 track the contract work that must land FIRST. Change these only
-    # together with the contract and the regenerated client.
+    # --- Capabilities OFF in a DEFAULT install ---------------------------------
+    # ELITEA_INDEX_TYPES_ENABLED no longer has a contract problem (#394): the
+    # index-types read answers the published DocumentLoadersResponse keys
+    # (items, total) beside the Pylon keys (document_types, image_types,
+    # code_types), so both shipped clients accept the body.
+    #
+    # It stays "false" HERE for the same reason ELITEA_CONFIGURATIONS_ENABLED,
+    # ELITEA_PROJECT_INFO_ENABLED and ELITEA_APPLICATION_SKILLS_ENABLED do: the
+    # capability needs production authentication, this default install builds
+    # none, and cmd/elitea-main refuses to start without it.
+    # values-standalone.yaml turns it on, together with
+    # fileConfig.authConfig.enabled.
+    #
+    # OFF is a real gap here, unlike the skills flag above. internal/api/
+    # router.go serves this path from the toolkits handler in that case, and
+    # that handler answers a static six-loader list that no data backs. A
+    # client reading document_types gets nothing from it. Turn production
+    # authentication on to close the gap.
     ELITEA_INDEX_TYPES_ENABLED: "false"
+
+    # ELITEA_APPLICATION_SKILLS_ENABLED no longer has a contract problem (#395):
+    # the attached-skills read answers the published SkillsList keys beside the
+    # Pylon ones, so both shipped clients accept the body.
+    #
+    # It stays "false" HERE for the same reason ELITEA_CONFIGURATIONS_ENABLED and
+    # ELITEA_PROJECT_INFO_ENABLED do: the capability needs production
+    # authentication, this default install builds none, and cmd/elitea-main
+    # refuses to start without it. values-standalone.yaml turns it on, together
+    # with fileConfig.authConfig.enabled.
+    #
+    # OFF is not a gap. internal/api/router.go serves this path from the skills
+    # handler in that case, and answers the same rows in the same published
+    # envelope.
     ELITEA_APPLICATION_SKILLS_ENABLED: "false"
 
     # --- Project event stream (#152) -------------------------------------------
@@ -1664,6 +1707,23 @@ llmGateway:
       secretName: elitea-llm-gateway-secrets
       key: secrets-master-key
       optional: true    # unset ⇒ Fernet vault degraded single-level mode
+    # GATEWAY_HOP_SECRET keys the hop marker (issue #164), the anti-circular-
+    # routing mechanism. It is DEDICATED key material: never GATEWAY_IDENTITY_
+    # SECRET and never derived from it, so marker rotation stays independent of
+    # identity rotation.
+    #
+    # Set the SAME value on every replica. The marker is a pure function of the
+    # key, so a loop that leaves through one replica is then recognised on any
+    # other.
+    #
+    # `optional: true` because an empty secret is SAFE, unlike
+    # GATEWAY_IDENTITY_SECRET. The gateway boots loudly unarmed and logs
+    # "HOP DETECTION UNARMED", and no request is refused on that account.
+    # Provision it to turn the mechanism on.
+    GATEWAY_HOP_SECRET:
+      secretName: elitea-llm-gateway-secrets
+      key: hop-secret
+      optional: true    # unset ⇒ hop detection unarmed, logged loudly at boot
 
   # networkPolicy: egress containment, defence in depth for issue #13 (the
   # tenant-authored api_base SSRF). The in-process control is

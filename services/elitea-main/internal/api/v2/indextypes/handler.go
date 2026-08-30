@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
@@ -22,12 +23,122 @@ const currentIndexTypesRoutePath = "/api/v2/elitea_core/index_types/prompt_lib/{
 
 var ErrInvalidCurrentIndexTypesRoute = errors.New("invalid current index-types route dependencies")
 
-// CurrentIndexTypes is the exact successful response consumed by the unchanged
-// EliteaUI useFileTypes hook. Do not wrap it in an index_types envelope.
+// CurrentIndexTypes is the extension-to-MIME projection the unchanged EliteaUI
+// useFileTypes hook consumes. Do not wrap it in an index_types envelope.
 type CurrentIndexTypes struct {
 	DocumentTypes map[string]string `json:"document_types"`
 	ImageTypes    map[string]string `json:"image_types"`
 	CodeTypes     map[string]string `json:"code_types"`
+}
+
+// CurrentIndexTypeCategory is one entry of the published `items` array. Its
+// four fields are the ones DocumentLoadersResponse makes required in
+// api/openapi/v2.yaml, so a client generated from that spec reads it.
+type CurrentIndexTypeCategory struct {
+	Type                string   `json:"type"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description"`
+	SupportedExtensions []string `json:"supported_extensions"`
+}
+
+// currentIndexTypesResponse answers BOTH shipped clients from one body.
+//
+// The Pylon keys document_types, image_types and code_types are unchanged.
+// apps/elitea-ui reads exactly those three maps (src/api/applications.js:849
+// calls this path, src/slices/fileTypes.js:26-28 reads the maps). The pinned
+// SDK fixture in testdata pins their contents.
+//
+// The `items` and `total` keys are the PUBLISHED contract for this path —
+// DocumentLoadersResponse in api/openapi/v2.yaml. apps/elitea-web holds a
+// client generated from that schema, and shared/api/unwrap.ts takes `items`
+// first. Before this envelope carried them, a body with no `items` key read
+// as an unrecognised shape, so ELITEA_INDEX_TYPES_ENABLED could not be turned
+// on without breaking that client (#394). #395 answered the same question the
+// same way for the attached-skills read.
+//
+// The two halves project the SAME rows, so they cannot disagree: every
+// `supported_extensions` list is the sorted key set of the map named by the
+// same `type`. Extra keys are contract-legal — DocumentLoadersResponse does
+// not close its object, so a generated client ignores what it did not ask for.
+type currentIndexTypesResponse struct {
+	Items []CurrentIndexTypeCategory `json:"items"`
+	Total int                        `json:"total"`
+
+	DocumentTypes map[string]string `json:"document_types"`
+	ImageTypes    map[string]string `json:"image_types"`
+	CodeTypes     map[string]string `json:"code_types"`
+}
+
+// currentIndexTypeCategoryLabels names the three categories the pinned SDK
+// snapshot projects. The prototype handler this route replaces listed six
+// ingestion sources that no data backs; these three describe the rows the
+// route actually serves.
+var currentIndexTypeCategoryLabels = [3]struct {
+	Type        string
+	Name        string
+	Description string
+}{
+	{
+		Type:        "document_types",
+		Name:        "Document types",
+		Description: "File extensions the indexer loads as documents.",
+	},
+	{
+		Type:        "image_types",
+		Name:        "Image types",
+		Description: "File extensions the indexer loads as images.",
+	},
+	{
+		Type:        "code_types",
+		Name:        "Code types",
+		Description: "File extensions the indexer loads as plain-text code.",
+	},
+}
+
+// newCurrentIndexTypesResponse builds both halves from one snapshot read.
+//
+// The category order is fixed, and every extension list is sorted, so the same
+// request always gets the same bytes.
+func newCurrentIndexTypesResponse(
+	result CurrentIndexTypes,
+) currentIndexTypesResponse {
+	if result.DocumentTypes == nil {
+		result.DocumentTypes = map[string]string{}
+	}
+	if result.ImageTypes == nil {
+		result.ImageTypes = map[string]string{}
+	}
+	if result.CodeTypes == nil {
+		result.CodeTypes = map[string]string{}
+	}
+
+	byType := map[string]map[string]string{
+		"document_types": result.DocumentTypes,
+		"image_types":    result.ImageTypes,
+		"code_types":     result.CodeTypes,
+	}
+	items := make([]CurrentIndexTypeCategory, 0, len(currentIndexTypeCategoryLabels))
+	for _, label := range currentIndexTypeCategoryLabels {
+		extensions := make([]string, 0, len(byType[label.Type]))
+		for extension := range byType[label.Type] {
+			extensions = append(extensions, extension)
+		}
+		slices.Sort(extensions)
+		items = append(items, CurrentIndexTypeCategory{
+			Type:                label.Type,
+			Name:                label.Name,
+			Description:         label.Description,
+			SupportedExtensions: extensions,
+		})
+	}
+
+	return currentIndexTypesResponse{
+		Items:         items,
+		Total:         len(items),
+		DocumentTypes: result.DocumentTypes,
+		ImageTypes:    result.ImageTypes,
+		CodeTypes:     result.CodeTypes,
+	}
 }
 
 type CurrentIndexTypesReader interface {
@@ -97,19 +208,10 @@ func (handler *currentIndexTypesHandler) get(
 		writeCurrentIndexTypesFailure(writer)
 		return
 	}
-	if result.DocumentTypes == nil {
-		result.DocumentTypes = map[string]string{}
-	}
-	if result.ImageTypes == nil {
-		result.ImageTypes = map[string]string{}
-	}
-	if result.CodeTypes == nil {
-		result.CodeTypes = map[string]string{}
-	}
 
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(writer).Encode(result)
+	_ = json.NewEncoder(writer).Encode(newCurrentIndexTypesResponse(result))
 }
 
 func currentIndexTypesProjectID(request *http.Request) (string, bool) {

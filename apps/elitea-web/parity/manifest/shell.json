@@ -2117,11 +2117,11 @@
       ],
       "verify": {
         "type": "vitest",
-        "command": "npm run test:unit -- --grep permissions",
-        "testId": "permissions > configuration.secrets.secret.create"
+        "command": "npx vitest run --project node src/features/toolkits/ui/form/ToolBase/SecretFieldInput.permission.test.tsx",
+        "testId": "SecretFieldInput — configuration.secrets.secret.create gating (#441) > shows the \"Create new secret\" entry, and opens the secrets page, for a caller who holds the permission"
       },
       "unit": "W-shell",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/widgets/sidebar/index.ts",
         "min": 85

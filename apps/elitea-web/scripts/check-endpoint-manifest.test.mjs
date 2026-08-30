@@ -33,10 +33,20 @@ afterEach(() => {
   dirs = [];
 });
 
+/**
+ * Every fixture below holds one or two entries, which is far under the
+ * manifest floor issue #528 added. `--min-entries 0` is the deliberate opt-out
+ * for exactly that case: a fixture is a NAMED subject of a known size, not a
+ * manifest that collapsed. CI passes no flag and gets the real floor, and the
+ * "RED — an empty manifest" case below proves that floor still bites.
+ */
 function run(manifestPath, extraArgs = []) {
   return spawnSync(
     process.execPath,
-    [SCRIPT, '--manifest', manifestPath, '--generated-dir', REAL_GENERATED_DIR, '--parity-dir', REAL_PARITY_DIR, ...extraArgs],
+    [
+      SCRIPT, '--manifest', manifestPath, '--generated-dir', REAL_GENERATED_DIR,
+      '--parity-dir', REAL_PARITY_DIR, '--min-entries', '0', ...extraArgs,
+    ],
     { encoding: 'utf8' },
   );
 }
@@ -101,6 +111,48 @@ describe('RED — duplicate ids', () => {
     const result = run(file);
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('duplicate id "dup"');
+  });
+});
+
+/**
+ * Issue #528. `"endpoints": []` used to print "check-endpoint-manifest: OK".
+ * Nothing floored the manifest side, so an emptied file read as a clean one.
+ */
+describe('RED — an empty manifest', () => {
+  it('exits 2 rather than reporting OK over nothing', () => {
+    const dir = makeTempDir();
+    const file = fixture(dir, 'red-empty.json', { version: 1, endpoints: [] });
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, '--manifest', file, '--generated-dir', REAL_GENERATED_DIR, '--parity-dir', REAL_PARITY_DIR],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('the subject set is empty or too small');
+    expect(result.stdout).not.toContain('check-endpoint-manifest: OK');
+  });
+
+  it('a manifest just under the floor is refused too, not only an empty one', () => {
+    const dir = makeTempDir();
+    const file = fixture(dir, 'red-thin.json', {
+      version: 1,
+      endpoints: [
+        { id: 'only.one', method: 'GET', path: '/x', operationId: null, source: 'handwritten', responseSchema: null, fixture: null, usedBy: [] },
+      ],
+    });
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, '--manifest', file, '--generated-dir', REAL_GENERATED_DIR, '--parity-dir', REAL_PARITY_DIR, '--min-entries', '2'],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('1 entries in');
+  });
+
+  it('--min-entries rejects a value that is not a whole count', () => {
+    const result = spawnSync(process.execPath, [SCRIPT, '--min-entries', 'lots'], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--min-entries needs a whole number');
   });
 });
 
@@ -232,9 +284,26 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * `getSupportAssistantConfig` is counted in neither delta: it and its
  * `admin.getSupportAssistantConfig` entry both already existed, back when the
  * route was a static {"enabled": false} stub.
+ *
+ * 184 -> 186 when issue #440 wired the toolkit tool-discovery reads:
+ * `toolkits.availableTools` and `toolkits.discoverTools`. Both are
+ * handwritten, so GENERATED_OPERATION_COUNT is unchanged. The tripwire was
+ * left at 184 by that change and this file was RED on the branch until
+ * issue #528 measured it again — which is the tripwire doing its job, only
+ * later than it should have been read.
+ *
+ * 157 -> 159, MANIFEST_ENTRY_COUNT unchanged, when the SAME two reads were
+ * described in v2.yaml (listToolkitAvailableTools, discoverToolkitTools).
+ * elitea-main's TestSpecRouterConformance/manifest_reverse_check demands a
+ * spec entry for every endpoint the app calls, and #440 gave it two it could
+ * not find. Describing them makes orval generate a hook for each, which is
+ * the whole of this delta. The app still calls both through the hand-written
+ * src/entities/toolkit/api/toolkitToolsApi.ts, so no manifest entry is added
+ * and none changes source — the two existing entries only gain the
+ * `operationId` the reverse check matches on.
  */
-const GENERATED_OPERATION_COUNT = 157;
-const MANIFEST_ENTRY_COUNT = 184;
+const GENERATED_OPERATION_COUNT = 159;
+const MANIFEST_ENTRY_COUNT = 186;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {
@@ -292,7 +361,7 @@ describe('CLI surface', () => {
     const file = fixture(dir, 'ok.json', { version: 1, endpoints: [] });
     const result = spawnSync(
       process.execPath,
-      [SCRIPT, '--manifest', file, '--generated-dir', REAL_GENERATED_DIR, '--parity-dir', join(dir, 'no-such-parity-dir')],
+      [SCRIPT, '--manifest', file, '--generated-dir', REAL_GENERATED_DIR, '--parity-dir', join(dir, 'no-such-parity-dir'), '--min-entries', '0'],
       { encoding: 'utf8' },
     );
     expect(result.status).toBe(0);

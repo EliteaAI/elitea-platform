@@ -66,6 +66,7 @@ import type {
   ToolkitCreateRequest,
   ToolkitInstance,
   ToolkitInstanceListResponse,
+  ToolkitToolsPayload,
   ToolkitTypeSchemas,
   ToolkitUpdateRequest,
 } from "../model";
@@ -1183,6 +1184,512 @@ export function useCreateToolkit<
   const queryOptions = getCreateToolkitQueryOptions(
     projectId,
     toolkitCreateRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listToolkitAvailableToolsResponse200 = {
+  data: ToolkitToolsPayload;
+  status: 200;
+};
+
+export type listToolkitAvailableToolsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type listToolkitAvailableToolsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listToolkitAvailableToolsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type listToolkitAvailableToolsResponseSuccess =
+  listToolkitAvailableToolsResponse200 & {
+    headers: Headers;
+  };
+export type listToolkitAvailableToolsResponseError = (
+  | listToolkitAvailableToolsResponse401
+  | listToolkitAvailableToolsResponse403
+  | listToolkitAvailableToolsResponse500
+) & {
+  headers: Headers;
+};
+
+export type listToolkitAvailableToolsResponse =
+  | listToolkitAvailableToolsResponseSuccess
+  | listToolkitAvailableToolsResponseError;
+
+export const getListToolkitAvailableToolsUrl = (
+  projectId: string,
+  toolkitId: string,
+) => {
+  return `/elitea_core/toolkit_available_tools/prompt_lib/${projectId}/${toolkitId}`;
+};
+
+/**
+ * NOTE(#440): internal/api/v2/toolkits/handler.go:511-523
+ * (AvailableTools) calling pgRepo.AvailableTools (:1086-1101). The query
+ * joins `entity_tool_mapping` to `elitea_tools` on the toolkit id.
+ * Registered at internal/api/router.go:1911-1912.
+ *
+ * GUARDRAILS FILTER THE RESULT. `filterBlockedTools`
+ * (internal/api/v2/toolkits/guardrails.go:120-132) drops every row whose
+ * TYPE this deployment blocks. The response stays 200 and the count
+ * follows the filtered list, because a blocked type is not a tool the
+ * caller may run.
+ *
+ * A LOST READ IS NOT AN EMPTY CATALOGUE (#381). Any repository fault —
+ * a dead pool, a missing tenant schema, a bad row, a row set that ends
+ * early — gives 500 with `{"error": "available tools read failed"}`. The
+ * driver detail goes to the log only. A toolkit with no tools gives 200
+ * and an empty array.
+ * @summary List the tools that one toolkit instance has
+ */
+export const listToolkitAvailableTools = async (
+  projectId: string,
+  toolkitId: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listToolkitAvailableToolsResponse> => {
+  return eliteaFetch<listToolkitAvailableToolsResponse>(
+    getListToolkitAvailableToolsUrl(projectId, toolkitId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListToolkitAvailableToolsQueryKey = (
+  projectId: string,
+  toolkitId: string,
+) => {
+  return [
+    `/elitea_core/toolkit_available_tools/prompt_lib/${projectId}/${toolkitId}`,
+  ] as const;
+};
+
+export const getListToolkitAvailableToolsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getListToolkitAvailableToolsQueryKey(projectId, toolkitId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listToolkitAvailableTools>>
+  > = ({ signal }) =>
+    listToolkitAvailableTools(projectId, toolkitId, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      toolkitId !== null &&
+      toolkitId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListToolkitAvailableToolsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listToolkitAvailableTools>>
+>;
+export type ListToolkitAvailableToolsQueryError =
+  N401Response | N403Response | N500Response;
+
+export function useListToolkitAvailableTools<
+  TData = Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitId: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+          TError,
+          Awaited<ReturnType<typeof listToolkitAvailableTools>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListToolkitAvailableTools<
+  TData = Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+          TError,
+          Awaited<ReturnType<typeof listToolkitAvailableTools>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListToolkitAvailableTools<
+  TData = Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List the tools that one toolkit instance has
+ */
+
+export function useListToolkitAvailableTools<
+  TData = Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listToolkitAvailableTools>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListToolkitAvailableToolsQueryOptions(
+    projectId,
+    toolkitId,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type discoverToolkitToolsResponse200 = {
+  data: ToolkitToolsPayload;
+  status: 200;
+};
+
+export type discoverToolkitToolsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type discoverToolkitToolsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type discoverToolkitToolsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type discoverToolkitToolsResponseSuccess =
+  discoverToolkitToolsResponse200 & {
+    headers: Headers;
+  };
+export type discoverToolkitToolsResponseError = (
+  | discoverToolkitToolsResponse401
+  | discoverToolkitToolsResponse403
+  | discoverToolkitToolsResponse500
+) & {
+  headers: Headers;
+};
+
+export type discoverToolkitToolsResponse =
+  discoverToolkitToolsResponseSuccess | discoverToolkitToolsResponseError;
+
+export const getDiscoverToolkitToolsUrl = (
+  projectId: string,
+  toolkitType: string,
+) => {
+  return `/elitea_core/toolkit_discover_tools/prompt_lib/${projectId}/${toolkitType}`;
+};
+
+/**
+ * NOTE(#440): internal/api/v2/toolkits/handler.go:527-545 (DiscoverTools)
+ * calling pgRepo.DiscoverTools (:1105-1116). Registered at
+ * internal/api/router.go:1913-1914.
+ *
+ * POST WITH NO BODY. The handler reads both arguments from the URL and
+ * never opens the request body. pylon declares the verb, so the route
+ * keeps it. Send no payload; the handler discards one.
+ *
+ * A BLOCKED TYPE IS REFUSED, NOT EMPTIED. The type sits in the URL, so
+ * `refuseBlockedToolkitType`
+ * (internal/api/v2/toolkits/guardrails.go:82-97) answers 403 and NAMES
+ * the type: `{"error": "toolkit type \"<name>\" is blocked by this
+ * deployment's guardrails"}`. "This deployment blocks this type" and
+ * "this project holds no toolkit of this type" are different facts, and
+ * an operator who reads a bare 403 goes to the roles page instead of the
+ * guardrail rule. `filterBlockedTools` then drops any surviving blocked
+ * row from the list, exactly as it does for the read above.
+ *
+ * A LOST READ IS NOT AN EMPTY CATALOGUE (#381). A repository fault gives
+ * 500 with `{"error": "discover tools read failed"}`, for the same reason
+ * `listToolkitAvailableTools` does.
+ * @summary List the tools that one toolkit type offers in a project
+ */
+export const discoverToolkitTools = async (
+  projectId: string,
+  toolkitType: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<discoverToolkitToolsResponse> => {
+  return eliteaFetch<discoverToolkitToolsResponse>(
+    getDiscoverToolkitToolsUrl(projectId, toolkitType),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getDiscoverToolkitToolsQueryKey = (
+  projectId: string,
+  toolkitType: string,
+) => {
+  return [
+    "POST",
+    `/elitea_core/toolkit_discover_tools/prompt_lib/${projectId}/${toolkitType}`,
+  ] as const;
+};
+
+export const getDiscoverToolkitToolsQueryOptions = <
+  TData = Awaited<ReturnType<typeof discoverToolkitTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof discoverToolkitTools>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getDiscoverToolkitToolsQueryKey(projectId, toolkitType);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof discoverToolkitTools>>
+  > = ({ signal }) =>
+    discoverToolkitTools(projectId, toolkitType, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      toolkitType !== null &&
+      toolkitType !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof discoverToolkitTools>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type DiscoverToolkitToolsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof discoverToolkitTools>>
+>;
+export type DiscoverToolkitToolsQueryError =
+  N401Response | N403Response | N500Response;
+
+export function useDiscoverToolkitTools<
+  TData = Awaited<ReturnType<typeof discoverToolkitTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitType: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof discoverToolkitTools>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof discoverToolkitTools>>,
+          TError,
+          Awaited<ReturnType<typeof discoverToolkitTools>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useDiscoverToolkitTools<
+  TData = Awaited<ReturnType<typeof discoverToolkitTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof discoverToolkitTools>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof discoverToolkitTools>>,
+          TError,
+          Awaited<ReturnType<typeof discoverToolkitTools>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useDiscoverToolkitTools<
+  TData = Awaited<ReturnType<typeof discoverToolkitTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof discoverToolkitTools>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List the tools that one toolkit type offers in a project
+ */
+
+export function useDiscoverToolkitTools<
+  TData = Awaited<ReturnType<typeof discoverToolkitTools>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof discoverToolkitTools>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getDiscoverToolkitToolsQueryOptions(
+    projectId,
+    toolkitType,
     options,
   );
 

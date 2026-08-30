@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -84,12 +86,17 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				// compatibility ID before any downstream handler can use it as a
 				// user foreign key.
 				if cfg.PrincipalValidator == nil {
+					// A composition root that forgot the validator. It stays a
+					// 401 because the request carries no proof this deployment
+					// would have accepted, but it is logged apart from the two
+					// real answers: nothing was read, and nothing was refused.
+					logPrincipalRefusal(r, sourceForwarded, reasonValidatorAbsent, nil)
 					writeInactivePrincipal(w)
 					return
 				}
 				user, err := validatePrincipal(r.Context(), cfg, user)
 				if err != nil {
-					writeInactivePrincipal(w)
+					writePrincipalRefusal(w, r, sourceForwarded, err)
 					return
 				}
 				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceForwarded)
@@ -105,7 +112,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				}
 				user, err = validatePrincipal(r.Context(), cfg, user)
 				if err != nil {
-					writeInactivePrincipal(w)
+					writePrincipalRefusal(w, r, sourceAPIKey, err)
 					return
 				}
 				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceAPIKey)
@@ -119,7 +126,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 					if user, ok := verifySessionCookie(cookie.Value, cfg.SessionSecret); ok {
 						user, validationErr := validatePrincipal(r.Context(), cfg, user)
 						if validationErr != nil {
-							writeInactivePrincipal(w)
+							writePrincipalRefusal(w, r, sourceSession, validationErr)
 							return
 						}
 						serveAuthenticated(next, w, r, user, auth.AuthenticationSourceSession)
@@ -154,7 +161,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 
 			user, err = validatePrincipal(r.Context(), cfg, user)
 			if err != nil {
-				writeInactivePrincipal(w)
+				writePrincipalRefusal(w, r, sourceToken, err)
 				return
 			}
 			serveAuthenticated(next, w, r, user, auth.AuthenticationSourceToken)
@@ -272,6 +279,88 @@ func serveAuthenticated(next http.Handler, w http.ResponseWriter, r *http.Reques
 
 func writeInactivePrincipal(w http.ResponseWriter) {
 	writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "authenticated principal is inactive")
+}
+
+// The credential source each refusal names. One 401 burst looks the same from
+// the outside on all four paths, so the log has to say which one refused.
+const (
+	sourceForwarded = "forwarded_identity"
+	sourceAPIKey    = "api_key"
+	sourceSession   = "session_cookie"
+	sourceToken     = "bearer_token"
+)
+
+// The reason each refusal names. The three are the whole vocabulary, and they
+// exist to keep one distinction readable in the log: the principal store READ
+// the principal and REFUSED it, or the store failed EARLY and read nothing.
+const (
+	// reasonPrincipalInactive — the store answered. The row is gone,
+	// suspended, or does not match the claimed identity. 401.
+	reasonPrincipalInactive = "principal_inactive"
+	// reasonPrincipalUnavailable — the store did not answer. Nothing about
+	// this principal was read. 503.
+	reasonPrincipalUnavailable = "principal_store_unavailable"
+	// reasonValidatorAbsent — this deployment composed no validator, so
+	// nothing could read anything. 401, and a composition defect.
+	reasonValidatorAbsent = "principal_validator_not_configured"
+)
+
+// writePrincipalRefusal answers a principal check that refused the request,
+// and writes the one log line that says why (#537).
+//
+// THE STATUS FOLLOWS THE CAUSE. ErrPrincipalInactive is the store's answer
+// about the principal, so it is a 401. Every other error is a dependency
+// fault, so it is a 503. All five call sites used to write the same 401, which
+// made a connection-pool timeout indistinguishable from a suspension: the
+// answer was wrong, and three E2E runs of #519 read it as a session that
+// expired mid-journey.
+//
+// THE DEFAULT IS 503, NOT 401. A validator reports a refusal with
+// ErrPrincipalInactive, and authsvc.principalValidationError is the only
+// producer of one. Anything else reaching this function is an error nobody
+// classified, and an unclassified error is far more often a fault than a
+// suspension. Defaulting the other way is what hid the fault in the first
+// place.
+//
+// THE CAUSE NEVER CROSSES THE BOUNDARY. The bodies are fixed text. The error
+// goes to the log only, because a pgx message names the host, the database and
+// the query.
+func writePrincipalRefusal(w http.ResponseWriter, r *http.Request, source string, err error) {
+	if err == nil || errors.Is(err, auth.ErrPrincipalInactive) {
+		logPrincipalRefusal(r, source, reasonPrincipalInactive, err)
+		writeInactivePrincipal(w)
+		return
+	}
+	logPrincipalRefusal(r, source, reasonPrincipalUnavailable, err)
+	writeJSONError(w, http.StatusServiceUnavailable, "api_error", "principal_store_unavailable",
+		"the authenticated principal could not be validated")
+}
+
+// logPrincipalRefusal writes the line this path had none of.
+//
+// A `grep` of an elitea-main log for a 401 on this path returned nothing, so
+// after the fact nobody could say whether a refusal was a suspension or an
+// outage. One line per refused request closes that, and it names the source,
+// the reason and the route.
+//
+// It carries no principal identity. The refused caller is not authenticated,
+// so an id or an email in this line is attacker-controlled text in the
+// operator's log.
+func logPrincipalRefusal(r *http.Request, source, reason string, err error) {
+	attributes := []any{
+		"source", source,
+		"reason", reason,
+		"method", r.Method,
+		"path", r.URL.Path,
+	}
+	if err != nil {
+		attributes = append(attributes, "error", err)
+	}
+	if reason == reasonPrincipalUnavailable {
+		slog.ErrorContext(r.Context(), "principal validation could not read the principal store", attributes...)
+		return
+	}
+	slog.WarnContext(r.Context(), "principal validation refused the request", attributes...)
 }
 
 func verifySessionCookie(token, secret string) (auth.User, bool) {

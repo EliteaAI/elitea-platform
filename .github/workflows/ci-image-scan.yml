@@ -32,6 +32,23 @@ name: CI — Image scan
 #      different, because looking the same is how the dead stage survived.
 #   3. The threshold is HIGH,CRITICAL for every image. There is no ignore file,
 #      no `--ignore-unfixed`, and no waiver.
+#   4. The gate itself is proved red. `scripts/ci/image-scan-gate-test.sh`
+#      drives every arm of the gate with synthetic reports, and the
+#      `gate-selftest` job runs it here.
+#
+# THE RELEASE RUNS THIS SAME GATE (#501)
+#
+# This workflow scans a REBUILD of each image, on every pull request, on every
+# push to main and daily. That left one window open: a CVE published between
+# the last scan of main and a release shipped, and the daily run reported it
+# after the fact. publish.yml now scans the image the release PUSHED, before
+# the manifest job creates the `latest` tag.
+#
+# Both read one rule, `scripts/ci/image-scan-gate.sh`. A second copy of "which
+# report blocks" drifts, and a release gate that is a little more forgiving
+# than the merge gate is worse than no release gate: it reports the same words
+# for a weaker test. The `coverage` job fails when the two matrices disagree
+# about an image, its expected target type, or whether it blocks.
 #
 # TWO IMAGES DO NOT BLOCK, AND THEY SAY SO
 #
@@ -94,7 +111,13 @@ on:
       - ".github/image-scan-exempt.txt"
       # The coverage job below reads publish.yml's image list. A new image added
       # there must run this workflow, or the gap it opens stays unreported.
+      # publish.yml also carries the RELEASE scan (#501), whose matrix this
+      # workflow holds in agreement with its own.
       - ".github/workflows/publish.yml"
+      # The gate rule, and the test that proves it goes red. Both workflows run
+      # the first file; an edit to either must run the test (#518's rule).
+      - "scripts/ci/image-scan-gate.sh"
+      - "scripts/ci/image-scan-gate-test.sh"
   push:
     branches:
       - main
@@ -116,6 +139,8 @@ on:
       # The exemption register. An edit to it must run the check that reads it.
       - ".github/image-scan-exempt.txt"
       - ".github/workflows/publish.yml"
+      - "scripts/ci/image-scan-gate.sh"
+      - "scripts/ci/image-scan-gate-test.sh"
   # A commit-triggered scan only measures the day the commit landed. A CVE
   # published tomorrow against code that did not change is invisible to it, and
   # that is most CVEs. The daily run scans what main ships today.
@@ -230,6 +255,45 @@ jobs:
           echo "Exempt — scanned, reported, does not block:"
           echo "${exempt:-(none)}" | indent
           echo "Every other published image blocks on a HIGH or CRITICAL finding."
+
+      # The release path scans the images it PUSHED, before the manifest job
+      # creates the `latest` tag (#501). Its matrix states the same three
+      # values this one does: the image name, the target type the report must
+      # hold, and whether a finding blocks.
+      #
+      # THREE files must now agree. Without this step a release could exempt an
+      # image that this workflow blocks, or expect a target type the image
+      # never reports, and the release gate would read as green while measuring
+      # less. An empty read on either side FAILS: comparing nothing with
+      # nothing reports full agreement.
+      - name: The release scan states the same rule as this one
+        run: |
+          set -euo pipefail
+          indent() { while IFS= read -r line; do printf '  %s\n' "$line"; done; }
+
+          expression='.jobs.scan.strategy.matrix.image[] | .name + "|" + .expect_type + "|" + (.blocking | tostring)'
+          here="$(yq -r "$expression" .github/workflows/ci-image-scan.yml | sort -u)"
+          release="$(yq -r "$expression" .github/workflows/publish.yml | sort -u)"
+
+          if [ -z "$here" ]; then
+            echo "::error::read no scan entry from this workflow — the comparison below would pass on an empty set"
+            exit 1
+          fi
+          if [ -z "$release" ]; then
+            echo "::error::read no scan entry from publish.yml. Either the release scan job was renamed or deleted (#501), or its matrix key changed. A release that scans nothing must not read as a release that scanned everything."
+            exit 1
+          fi
+
+          if [ "$here" != "$release" ]; then
+            echo "::error::the merge scan and the release scan disagree. Each line is name|expect_type|blocking."
+            echo "this workflow:"; echo "$here" | indent
+            echo "publish.yml:";  echo "$release" | indent
+            echo "::error::both read scripts/ci/image-scan-gate.sh, so a difference here is a difference in what the release measures."
+            exit 1
+          fi
+
+          echo "The release scans the same images, for the same target types, with the same blocking rule:"
+          echo "$here" | indent
 
   # ── Build each published image and scan it ──────────────────────────────────
   scan:
@@ -361,71 +425,39 @@ jobs:
       #     reached what the image ships;
       #   - any HIGH or CRITICAL finding, with the list.
       #
-      # The first two BLOCK for every image, including the exempt one. The
+      # The first two BLOCK for every image, including the exempt ones. The
       # exemption covers a known finding set that this repository cannot fix. It
       # does not cover a scan that stopped running.
+      #
+      # The rule lives in scripts/ci/image-scan-gate.sh, not here, because
+      # publish.yml runs the SAME rule against the image a release pushed
+      # (#501). Two copies of "which report blocks" drift, and a release gate
+      # that is a little more forgiving than the merge gate is worse than none:
+      # it reports the same words for a weaker test.
       - name: Gate on HIGH and CRITICAL findings
-        env:
-          IMAGE_NAME: ${{ matrix.image.name }}
-          EXPECT_TYPE: ${{ matrix.image.expect_type }}
-          BLOCKING: ${{ matrix.image.blocking }}
         run: |
-          set -euo pipefail
-          if [ ! -s trivy-report.json ]; then
-            echo "::error::trivy wrote no report for ${IMAGE_NAME} — the scan did not run"
-            exit 1
-          fi
-          echo "Scanned targets:"
-          jq -r '.Results[]? | "  \(.Target) [\(.Type)]"' trivy-report.json
-          if ! jq -e --arg t "$EXPECT_TYPE" '[.Results[]? | select(.Type == $t)] | length > 0' trivy-report.json > /dev/null; then
-            echo "::error::the ${IMAGE_NAME} report holds no \"${EXPECT_TYPE}\" target — the scan did not reach what the image ships"
-            exit 1
-          fi
-          jq -r '
-            .Results[]? | .Target as $target
-            | .Vulnerabilities[]?
-            | "\(.Severity)\t\($target)\t\(.PkgName) \(.InstalledVersion)\t\(.VulnerabilityID)\tfixed in \(.FixedVersion // "nothing yet")"
-          ' trivy-report.json | sort -u | tee findings.txt
-          count="$(wc -l < findings.txt | tr -d ' ')"
-          critical="$(grep -c '^CRITICAL' findings.txt || true)"
-          high="$(grep -c '^HIGH' findings.txt || true)"
+          bash scripts/ci/image-scan-gate.sh \
+            trivy-report.json \
+            "${{ matrix.image.name }}" \
+            "${{ matrix.image.expect_type }}" \
+            "${{ matrix.image.blocking }}"
 
-          if [ "$BLOCKING" = "true" ]; then
-            if [ "$count" -gt 0 ]; then
-              echo "::error::${count} HIGH or CRITICAL vulnerability line(s) in ${IMAGE_NAME} — raise the pinned versions, do not lower this threshold"
-              exit 1
-            fi
-            echo "No HIGH or CRITICAL vulnerability in ${IMAGE_NAME}."
-            exit 0
-          fi
-
-          # ── The exempt arm ───────────────────────────────────────────────────
-          #
-          # Zero findings means the cause of the exemption is gone. The
-          # exemption must go with it, so this FAILS. A waiver that outlives its
-          # reason is the next gate nobody reads.
-          if [ "$count" -eq 0 ]; then
-            echo "::error::${IMAGE_NAME} reports 0 findings, so its exemption is no longer needed — delete the entry or set blocking: true in .github/workflows/ci-image-scan.yml"
-            exit 1
-          fi
-
-          echo "::warning::${IMAGE_NAME}: ${count} HIGH or CRITICAL line(s) (${critical} CRITICAL, ${high} HIGH). This image is EXEMPT and does not block the merge. Cause: the base image ghcr.io/eliteaai/pylon, which this repository does not build. Findings: issue #509. Retirement: issue #339."
-          {
-            echo "### Scan ${IMAGE_NAME} — EXEMPT, reports but does not block"
-            echo ""
-            echo "| Severity | Lines |"
-            echo "|---|---|"
-            echo "| CRITICAL | ${critical} |"
-            echo "| HIGH | ${high} |"
-            echo "| total | ${count} |"
-            echo ""
-            echo "Every finding comes from the base image \`ghcr.io/eliteaai/pylon\`."
-            echo "This repository does not build that image."
-            echo ""
-            echo "- Findings: issue #509."
-            echo "- Retirement: issue #339 deletes this image with the index v2 cut-over."
-            echo ""
-            echo "The threshold stays at HIGH,CRITICAL. No CVE is suppressed."
-            echo "The exemption ends when the image is deleted."
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit 0
+  # ── Does the gate itself go red? ────────────────────────────────────────────
+  #
+  # The gate above and the release gate in publish.yml both read one script.
+  # This job drives that script with synthetic trivy reports and checks each
+  # arm: a clean report passes, a HIGH finding fails, a CRITICAL finding fails,
+  # a missing or unparsable report fails, a report that never reached the
+  # application content fails EVEN WITH NO FINDING, and an exempt image with
+  # zero findings fails because its exemption is then stale.
+  #
+  # It needs no image, no registry and no trivy, so it costs seconds. #501 asks
+  # for the release gate to be PROVED red rather than asserted; this is where
+  # that proof runs on every change.
+  gate-selftest:
+    name: The scan gate goes red
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Drive every arm of the gate with synthetic reports
+        run: bash scripts/ci/image-scan-gate-test.sh

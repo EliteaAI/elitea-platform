@@ -47,7 +47,7 @@ export const ImportEntity = zod.object({
     .string()
     .optional()
     .describe(
-      '\"toolkits\" routes to toolkit import; anything else is an agent.',
+      '\"toolkits\" routes to the toolkit import and \"skills\" routes to the skill import. Every other value is an agent (internal\/api\/v2\/eliteacore\/handler.go:2439-2450). A \"skills\" entry had no branch of its own, so every skill entry the wizard sent became an agent named after the skill (#611).\n',
     ),
   import_uuid: zod.string().optional(),
   name: zod.string().optional(),

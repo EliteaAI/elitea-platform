@@ -20,6 +20,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 type Conversation struct {
@@ -233,7 +235,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	// Build the query with optional filtering by source & participant entity
@@ -263,7 +268,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	baseWhere += " AND (c.meta->>'is_hidden' IS NULL OR c.meta->>'is_hidden' = 'false')"
 
 	// Count total
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_conversations c %s`, s, baseWhere)
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s.chat_conversations c %s`, s, baseWhere)
 	var total int
 	if err := pool.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"total": 0, "rows": []any{}})
@@ -274,8 +279,8 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	args = append(args, limit, offset)
 	q := fmt.Sprintf(`
 		SELECT c.id, c.name, c.created_at, COALESCE(c.updated_at, c.created_at), c.meta,
-			(SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-		FROM %q.chat_conversations c
+			(SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
+		FROM %s.chat_conversations c
 		%s
 		ORDER BY c.created_at DESC
 		LIMIT $%d OFFSET $%d`, s, s, baseWhere, argIdx, argIdx+1)
@@ -459,16 +464,19 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	// Resolve conversation by UUID
 	var convID int
 	err := pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT id FROM %q.chat_conversations WHERE uuid::text = $1`, s), conversationUUID).Scan(&convID)
+		`SELECT id FROM %s.chat_conversations WHERE uuid::text = $1`, s), conversationUUID).Scan(&convID)
 	if err != nil {
 		err2 := pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT id FROM %q.chat_conversations WHERE id::text = $1`, s), conversationUUID).Scan(&convID)
+			`SELECT id FROM %s.chat_conversations WHERE id::text = $1`, s), conversationUUID).Scan(&convID)
 		if err2 != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("Conversation with uuid '%s' does not exist", conversationUUID)})
 			return
@@ -496,7 +504,7 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		pidStr := fmt.Sprintf("%v", pid)
 		var exists int
 		err := pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT 1 FROM %q.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s),
+			`SELECT 1 FROM %s.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s),
 			convID, pidStr).Scan(&exists)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("Participant %s does not exist in conversation", pidStr)})
@@ -965,10 +973,15 @@ func (h *Handler) UpdateEntitySettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getParticipantEntityInfo(ctx context.Context, pool *pgxpool.Pool, projectID, conversationID, participantID string) (string, string) {
-	s := fmt.Sprintf("p_%s", projectID)
+	// A project id that is not a project id names no participant. The empty
+	// pair is what a missing row gives too, and both callers already handle it.
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return "", ""
+	}
 	q := fmt.Sprintf(`SELECT p.entity_name, COALESCE(p.entity_meta->>'project_id', '')
-		FROM %q.chat_participants p
-		JOIN %q.chat_participant_mapping pm ON pm.participant_id = p.id
+		FROM %s.chat_participants p
+		JOIN %s.chat_participant_mapping pm ON pm.participant_id = p.id
 		WHERE pm.conversation_id = $1 AND p.id = $2`, s, s)
 	var entityName, agentProjectID string
 	_ = pool.QueryRow(ctx, q, conversationID, participantID).Scan(&entityName, &agentProjectID)
@@ -977,8 +990,13 @@ func (h *Handler) getParticipantEntityInfo(ctx context.Context, pool *pgxpool.Po
 
 func (h *Handler) llmSettingsDiffer(ctx context.Context, pool *pgxpool.Pool, projectID string, versionID, llmSettings any) bool {
 	vid := fmt.Sprintf("%v", versionID)
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT llm_settings FROM %q.application_versions WHERE id = $1`, s)
+	// "cannot verify" is the existing answer to an unreadable row, and it is
+	// the right answer to an id that identifies no schema.
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return true
+	}
+	q := fmt.Sprintf(`SELECT llm_settings FROM %s.application_versions WHERE id = $1`, s)
 	var storedRaw []byte
 	if err := pool.QueryRow(ctx, q, vid).Scan(&storedRaw); err != nil {
 		return true // can't verify, reject

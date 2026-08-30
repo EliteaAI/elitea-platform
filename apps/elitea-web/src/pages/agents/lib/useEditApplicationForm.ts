@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 
 import { applicationCreationSchema, type ApplicationCreationInput } from '@/entities/application-form';
-import { useSaveVersion } from '@/features/agents';
+import { applicationWriteHooks } from '@/features/agents';
 import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/generated/model';
 
 import { EMPTY_FORM_VALUES, toFormValues, toVersionSaveBody } from './editApplicationMappers';
@@ -78,11 +78,15 @@ export function useEditApplicationForm(
    * single combined PUT used to fake — `updateApplicationVersion` for the
    * version's mutable fields and `editApplication` for the application-level
    * `name`/`description` — and takes a raw `VersionWriteRequest`, so
-   * `welcome_message` and `meta` reach the wire. It had zero production
-   * callers before this change; see its own module doc for the endpoint
-   * split and for the `tags`/`variables` gaps it discloses.
+   * `welcome_message`, `meta` and (since #345) `tags` reach the wire. It
+   * had zero production callers before this change; see its own module doc
+   * for the endpoint split.
+   *
+   * #345 reaches it through `applicationWriteHooks` rather than through its
+   * own barrel export — the repack that freed the slot `AgentTagEditor`
+   * needed.
    */
-  const { onSave, isSaving, error: saveError } = useSaveVersion();
+  const { onSave, isSaving, error: saveError } = applicationWriteHooks.useSaveVersion();
 
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {

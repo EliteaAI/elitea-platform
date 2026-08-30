@@ -145,6 +145,28 @@ type Config struct {
 	// IdentitySecret when set.
 	IdentitySecret string
 
+	// HopSecret is the DEDICATED key material behind the hop marker — the
+	// anti-circular-routing mechanism (issue #164, GATEWAY_HOP_SECRET). The
+	// gateway sets internal/hopmarker.Header on every outbound provider
+	// request and refuses any inbound request that already carries this
+	// deployment's own marker, which contains a routing loop on its first
+	// re-entry.
+	//
+	// It MUST NOT be IdentitySecret, and nothing derives one from the other.
+	// The marker travels to every upstream, and a provider api_base is
+	// tenant-authored, so the marker is published to addresses a tenant picks;
+	// the key that signs the X-Elitea-* identity headers must not follow it
+	// there, and marker rotation must not force identity rotation.
+	//
+	// It MUST hold the same value on every replica: a loop can leave through
+	// replica A and re-enter on replica B, and only a shared key makes B
+	// recognise A's marker.
+	//
+	// Empty leaves hop detection UNARMED. That is a supported posture, but
+	// never a silent one — main() states the mode once at startup
+	// (logHopMarkerMode), for the reason logLoopBreakerMode exists.
+	HopSecret string
+
 	// NATSURL is the NATS JetStream server URL (nats://host:4222) backing the
 	// budget-enforcement path (design §8). Empty disables NATS wiring: the
 	// gateway then serves /llm without budget enforcement (dev/test only), so
@@ -307,6 +329,7 @@ func FromEnv() Config {
 		ServiceVersion:      envOr("SERVICE_VERSION", "dev"),
 		OTLPEndpoint:        os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		IdentitySecret:      os.Getenv("GATEWAY_IDENTITY_SECRET"),
+		HopSecret:           os.Getenv("GATEWAY_HOP_SECRET"),
 		NATSURL:             os.Getenv("GATEWAY_NATS_URL"),
 		NATSReplicas:        intOr("LLM_BUDGET_EXPECTED_REPLICAS", DefaultNATSReplicas),
 		CBFailureThreshold:  uint32Or("LLM_BUDGET_CB_FAILURE_THRESHOLD", DefaultCBFailureThreshold),

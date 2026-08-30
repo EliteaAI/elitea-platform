@@ -14,16 +14,41 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 type Handler struct {
 	pool *pgxpool.Pool
+	// personalProject creates the caller's personal project when they have
+	// none. EnsureAsync returns immediately: provisioning applies a whole
+	// tenant migration corpus, and this is a read endpoint the SPA polls. See
+	// GetAuthor.
+	personalProject personalproject.AsyncEnsurer
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+// Option configures a Handler at construction time.
+type Option func(*Handler)
+
+// WithPersonalProjectEnsurer wires the personal-project provisioner.
+//
+// It is optional in the constructor and REQUIRED in practice: without it
+// `GET /social/author` reports the personal project a fresh account does not
+// have, forever, and the SPA parks that account on `/onboarding` waiting for a
+// project nothing will create. It is an option only because a composition
+// without a database pool cannot build one — the same gate the project-create
+// route uses.
+func WithPersonalProjectEnsurer(ensurer personalproject.AsyncEnsurer) Option {
+	return func(h *Handler) { h.personalProject = ensurer }
+}
+
+func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -110,8 +135,43 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 	// select a different user's profile).
 	resp.ID = user.ID
 	resp.PersonalProjectID = h.resolvePersonalProjectID(ctx, user.ID)
+	if resp.PersonalProjectID == "" {
+		h.ensurePersonalProject(user)
+	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ensurePersonalProject asks for the caller's personal project to be created,
+// and does not wait for it.
+//
+// WHY HERE. This endpoint is the one that answers "which project do your
+// private things live in", it is authenticated on every plane, and the SPA
+// calls it on boot and then polls it every five seconds from the onboarding
+// screen while it waits — so it is both the place that observes the gap and the
+// place that reports it closed. pylon triggers the same work from its auth
+// layer, for every authenticated request, through the `auth_visitor` event
+// (legacy/plugins/projects/events/projects.py:8).
+//
+// It costs nothing on an account that HAS a personal project, because it is
+// reached only when the resolver above answered "". A first-time caller gets
+// "" on this response and the real id on a later one, which is exactly the
+// contract the onboarding screen is written against.
+func (h *Handler) ensurePersonalProject(user auth.User) {
+	if h.personalProject == nil {
+		return
+	}
+	// `OwningUserID`, not a fresh parse of `user.ID`: it is this repository's
+	// reviewed answer to "which auth_core__user owns this principal". It reads
+	// the validated `UserID` field first and refuses a principal whose id is a
+	// TOKEN id, neither of which a parse of the compatibility field can do.
+	// `project_user_<token id>` would name a project nobody could be a member
+	// of.
+	id, ok := user.OwningUserID()
+	if !ok {
+		return
+	}
+	h.personalProject.EnsureAsync(id)
 }
 
 // resolvePersonalProjectID answers "which project do this user's private
@@ -140,8 +200,13 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 // Returns "" when no project can be resolved. That is a truthful answer, and
 // the SPA treats it as "no personal project yet".
 //
-// NOT covered here: this Go stack never PROVISIONS a `project_user_<uid>`
-// project, so branch 1 only ever fires for data migrated from pylon.
+// NOT covered here: PROVISIONING. This function reads; it never creates. When
+// it answers "" for a live account, GetAuthor asks
+// internal/application/personalproject to create the missing
+// `project_user_<uid>` project in the background, and a later call resolves it
+// through branch 1. Before that package existed, branch 1 could only ever fire
+// for data migrated from pylon, and every account on a fresh deployment was
+// answered "" for good.
 func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) string {
 	uid, convErr := strconv.Atoi(userID)
 	if convErr != nil || uid <= 0 {
@@ -153,13 +218,18 @@ func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) s
 	// does not depend on UNION ALL branch ordering (which Postgres does not
 	// guarantee), and `id IS NOT NULL` keeps a non-matching branch from
 	// producing a NULL that the Scan below could not hold.
+	//
+	// The name comes in as a parameter built from personalproject.NamePrefix,
+	// not from a `project_user_` literal spelled again here: the package that
+	// WRITES that name and the two places that read it have to agree, and an
+	// inline literal is how they would come to disagree silently.
 	var projectID int
 	err := h.pool.QueryRow(ctx, `
 		SELECT candidate.id
 		FROM (
 		    SELECT 1 AS priority, project.id AS id
 		    FROM centry.project AS project
-		    WHERE project.name = 'project_user_' || $1::integer::text
+		    WHERE project.name = $2
 		      AND EXISTS (
 		          SELECT 1
 		          FROM public.auth_core__project_user_role AS assignment
@@ -186,7 +256,7 @@ func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) s
 		WHERE candidate.id IS NOT NULL
 		ORDER BY candidate.priority, candidate.id
 		LIMIT 1
-	`, uid).Scan(&projectID)
+	`, uid, personalproject.Name(int64(uid))).Scan(&projectID)
 	if err != nil || projectID <= 0 {
 		return ""
 	}
@@ -282,15 +352,20 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT su.user_id, COALESCE(au.name, ''), COALESCE(au.email, ''),
 			COALESCE(su.avatar, ''), COUNT(sl.id) as like_count
 		FROM centry.social_users su
 		JOIN auth_core__user au ON au.id = su.user_id
-		LEFT JOIN %q.social_likes sl ON sl.user_id = su.user_id
+		LEFT JOIN %s.social_likes sl ON sl.user_id = su.user_id
 		GROUP BY su.user_id, au.name, au.email, su.avatar
 		ORDER BY like_count DESC
-		LIMIT 10`, fmt.Sprintf("p_%s", projectID)))
+		LIMIT 10`, schema))
 
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list trending authors"})
@@ -340,10 +415,15 @@ func (h *Handler) Like(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+
 	_, err := h.pool.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %q.social_likes (entity_name, user_id, entity_id, created_at)
+		INSERT INTO %s.social_likes (entity_name, user_id, entity_id, created_at)
 		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (entity_name, user_id, entity_id) DO NOTHING`, fmt.Sprintf("p_%s", projectID)),
+		ON CONFLICT (entity_name, user_id, entity_id) DO NOTHING`, schema),
 		entityType, user.ID, entityID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to like"})
@@ -375,9 +455,14 @@ func (h *Handler) Unlike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+
 	if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-		DELETE FROM %q.social_likes
-		WHERE entity_name = $1 AND user_id = $2 AND entity_id = $3`, fmt.Sprintf("p_%s", projectID)),
+		DELETE FROM %s.social_likes
+		WHERE entity_name = $1 AND user_id = $2 AND entity_id = $3`, schema),
 		entityType, user.ID, entityID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unlike"})
 		return
@@ -396,8 +481,11 @@ func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`INSERT INTO %q.social_pins (entity_name, entity_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, s)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	q := fmt.Sprintf(`INSERT INTO %s.social_pins (entity_name, entity_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, s)
 	if _, err := h.pool.Exec(ctx, q, entityType, entityID, user.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to pin"})
 		return
@@ -416,8 +504,11 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	q := fmt.Sprintf(`DELETE FROM %s.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
 	if _, err := h.pool.Exec(ctx, q, entityType, entityID, user.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unpin"})
 		return
@@ -451,10 +542,13 @@ func (h *Handler) ListFeedbacks(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	q := fmt.Sprintf(`
 		SELECT id, entity_name, entity_id, user_id, rating, COALESCE(comment, ''), created_at
-		FROM %q.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
+		FROM %s.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
 
 	rows, err := h.pool.Query(ctx, q)
 	if err != nil {
@@ -522,9 +616,12 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	comment, _ := body["comment"].(string)
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	q := fmt.Sprintf(`
-		INSERT INTO %q.social_feedbacks (entity_name, entity_id, user_id, rating, comment, created_at)
+		INSERT INTO %s.social_feedbacks (entity_name, entity_id, user_id, rating, comment, created_at)
 		VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id`, s)
 
 	var id int

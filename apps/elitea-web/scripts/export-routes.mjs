@@ -39,7 +39,10 @@
  *    for `DiffNewApp`'s exact-set-equality check to pass.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+
+import { compareGenerated } from './lib/generated-drift.mjs';
 
 const routeTreePath = fileURLToPath(new URL('../src/routeTree.gen.ts', import.meta.url));
 const outPath = fileURLToPath(new URL('../parity/new-app-routes.json', import.meta.url));
@@ -80,6 +83,50 @@ const MANUAL_ADDITIONS = [
   '*', // ROUTE-071: Page404 — unit R3's __404.tsx deliberately exports no Route (see its header).
 ];
 const patterns = [...new Set([...converted, ...MANUAL_ADDITIONS])].sort();
+const rendered = `${JSON.stringify(patterns, null, 2)}\n`;
 
-writeFileSync(outPath, `${JSON.stringify(patterns, null, 2)}\n`);
-console.log(`export-routes: wrote ${patterns.length} patterns to ${outPath}`);
+function parseArgs(argv) {
+  const opts = { check: false };
+  for (const arg of argv) {
+    if (arg === '--check') {
+      opts.check = true;
+    } else if (arg === '--help' || arg === '-h') {
+      console.log('usage: export-routes.mjs [--check]');
+      process.exit(0);
+    } else {
+      console.error(`export-routes: unknown argument: ${arg}`);
+      process.exit(2);
+    }
+  }
+  return opts;
+}
+
+/**
+ * --check mode (issue #490): compare the committed parity/new-app-routes.json
+ * with what this run renders, and write nothing. An absent committed file and
+ * an empty render are both failures — see scripts/lib/generated-drift.mjs.
+ */
+function runCheck() {
+  let actual = null;
+  try {
+    actual = readFileSync(outPath, 'utf8');
+  } catch {
+    actual = null;
+  }
+  const result = compareGenerated([{ path: 'apps/elitea-web/parity/new-app-routes.json', expected: rendered, actual }]);
+  if (!result.ok) {
+    console.error('export-routes: --check FAIL');
+    for (const failure of result.failures) console.error(`  ${failure}`);
+    console.error('  command: node scripts/export-routes.mjs');
+    process.exit(1);
+  }
+  console.log(`export-routes: --check OK — ${patterns.length} patterns match ${outPath}`);
+}
+
+const opts = parseArgs(process.argv.slice(2));
+if (opts.check) {
+  runCheck();
+} else {
+  writeFileSync(outPath, rendered);
+  console.log(`export-routes: wrote ${patterns.length} patterns to ${outPath}`);
+}

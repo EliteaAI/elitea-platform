@@ -27,14 +27,26 @@ import (
 // here, because BOTH are bounded by the same per-replica provider worker pool
 // (GATEWAY_PROVIDER_CONCURRENCY): a threshold low enough to catch the canonical
 // loop is low enough to trip ordinary bursty traffic, and one high enough not
-// to trip ordinary traffic can never fire on the canonical loop. The actual
-// anti-circular-routing mechanism is hop-marker detection — a header the
-// gateway sets and recognises — which is tracked as a follow-up.
+// to trip ordinary traffic can never fire on the canonical loop.
 //
-// Until that lands, this layer is treated as what it measurably is: an
-// AMPLIFICATION BACKSTOP against request volume no replica could ever serve,
-// with operator-settable numbers. See DefaultLoopBreakerThreshold for the
-// derivation of the default.
+// So this layer is what it measurably is: an AMPLIFICATION BACKSTOP against
+// request volume no replica could ever serve, with operator-settable numbers.
+// See DefaultLoopBreakerThreshold for the derivation of the default.
+//
+// # The loop detector is elsewhere (issue #164)
+//
+// Hop-marker detection now LANDED, in internal/hopmarker plus hopguard.go: the
+// gateway stamps a header on every outbound provider request and refuses an
+// inbound request that already carries this deployment's own marker. That
+// contains a circular route on its FIRST re-entry, at any rate, including one
+// request per hour — which is the case no threshold here can ever see.
+//
+// The two layers stay separate and neither replaces the other. Hop detection
+// answers "did this deployment send this request?"; this answers "is one tuple
+// arriving faster than any replica could serve it?". A hop refusal must never
+// feed this breaker: the marker reaches every upstream, so a refusal that
+// incremented a shared counter would let anybody open another project's
+// circuit (TestHopGuard_LoopBreakerIsNotConsulted pins that).
 const (
 	// DefaultLoopBreakerThreshold is the request count within the window at
 	// which the circuit opens (LLM_LOOP_BREAKER_THRESHOLD).
@@ -62,7 +74,7 @@ const (
 	// Documented for operators in elitea-docs: spec-bifrost-migration §2.6 and
 	// runbook-bifrost-cutover ("circular-routing failure mode"). Those pages name
 	// this file as the source of truth — when these numbers change, change them
-	// there too (issue #164).
+	// there too (EliteaAI/elitea-docs#13).
 	DefaultLoopBreakerThreshold = 1000
 	// DefaultLoopBreakerWindow is the sliding observation window
 	// (LLM_LOOP_BREAKER_WINDOW_MS).

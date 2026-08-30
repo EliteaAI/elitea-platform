@@ -74,7 +74,7 @@ func (h *Handler) admitConfiguration(
 		return stored
 	}
 	query := fmt.Sprintf(
-		`UPDATE %q.configuration SET status_ok = $1 WHERE id = $2 AND project_id = $3`,
+		`UPDATE %s.configuration SET status_ok = $1 WHERE id = $2 AND project_id = $3`,
 		schema,
 	)
 	if _, err := h.pool.Exec(ctx, query, decision.StatusOK, snapshot.ID, snapshot.ProjectID); err != nil {

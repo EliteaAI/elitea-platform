@@ -16,6 +16,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 /* ── harness ───────────────────────────────────────────────────────────── */
@@ -319,8 +321,15 @@ func TestCatalogReceivesTheURLProjectSchema(t *testing.T) {
 	}}
 	router := newTestRouter(newTestHandler(t, source))
 	post(t, router, "/app/312/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if seen != "p_312" {
-		t.Fatalf("catalog schema = %q, want %q", seen, "p_312")
+	// The schema is handed over QUOTED as a PostgreSQL identifier. The
+	// expected value is built the same way the handler builds it, so the test
+	// cannot drift from the quoting.
+	want, err := tenantschema.Quote("312")
+	if err != nil {
+		t.Fatalf("Quote(312) failed: %v", err)
+	}
+	if seen != want {
+		t.Fatalf("catalog schema = %q, want %q", seen, want)
 	}
 }
 

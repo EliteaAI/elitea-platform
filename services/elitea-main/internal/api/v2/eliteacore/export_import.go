@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
@@ -40,9 +41,9 @@ const exportReadFailed = "unable to read the application to export"
 func (h *Handler) exportedToolkits(ctx context.Context, schema, applicationID string) ([]map[string]any, map[int]string, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT DISTINCT t.id, t.name, t.type, COALESCE(t.settings::text, '{}')
-		FROM %q.entity_tool_mapping etm
-		JOIN %q.elitea_tools t ON t.id = etm.tool_id
-		JOIN %q.application_versions av ON av.id = etm.entity_version_id
+		FROM %s.entity_tool_mapping etm
+		JOIN %s.elitea_tools t ON t.id = etm.tool_id
+		JOIN %s.application_versions av ON av.id = etm.entity_version_id
 		WHERE av.application_id = $1`, schema, schema, schema), applicationID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query the toolkits of application %q in %q: %w", applicationID, schema, err)
@@ -111,7 +112,7 @@ type exportedVersionRow struct {
 }
 
 // exportedVersions reads every version of one application, with its tools,
-// variables and tags.
+// variables, tags and skill attachments.
 func (h *Handler) exportedVersions(
 	ctx context.Context, schema, applicationID string, toolkitMap map[int]string,
 ) ([]map[string]any, error) {
@@ -165,6 +166,10 @@ func (h *Handler) exportedVersions(
 		if err != nil {
 			return nil, err
 		}
+		skills, err := h.exportedVersionSkills(ctx, schema, row.id)
+		if err != nil {
+			return nil, err
+		}
 
 		_, isForked := metaMap["parent_entity_id"]
 
@@ -176,7 +181,7 @@ func (h *Handler) exportedVersions(
 			"welcome_message": row.welcomeMsg, "llm_settings": llm,
 			"conversation_starters": starters, "meta": meta,
 			"tools": tools, "variables": variables, "tags": tags,
-			"is_forked": isForked,
+			"skills": skills, "is_forked": isForked,
 		}
 		if row.uuid != "" {
 			entry["import_version_uuid"] = row.uuid
@@ -192,7 +197,7 @@ func (h *Handler) exportedVersionRows(ctx context.Context, schema, applicationID
 			COALESCE(instructions, ''), COALESCE(welcome_message, ''),
 			COALESCE(llm_settings::text, '{}'), COALESCE(conversation_starters::text, '[]'),
 			COALESCE(meta::text, '{}'), COALESCE(uuid::text, ''), application_id, COALESCE(author_id, 0)
-		FROM %q.application_versions WHERE application_id = $1
+		FROM %s.application_versions WHERE application_id = $1
 		ORDER BY created_at`, schema), applicationID)
 	if err != nil {
 		return nil, fmt.Errorf("query the versions of application %q in %q: %w", applicationID, schema, err)
@@ -229,7 +234,7 @@ func (h *Handler) exportedVersionTools(
 ) ([]map[string]any, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT tool_id, COALESCE(selected_tools::text, '[]')
-		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), versionID)
+		FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, schema), versionID)
 	if err != nil {
 		return nil, fmt.Errorf("query the toolkit references of version %d in %q: %w", versionID, schema, err)
 	}
@@ -259,7 +264,7 @@ func (h *Handler) exportedVersionTools(
 
 func (h *Handler) exportedVersionVariables(ctx context.Context, schema string, versionID int) ([]map[string]any, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT name, COALESCE(value, '') FROM %q.application_variables
+		SELECT name, COALESCE(value, '') FROM %s.application_variables
 		WHERE application_version_id = $1 ORDER BY id`, schema), versionID)
 	if err != nil {
 		return nil, fmt.Errorf("query the variables of version %d in %q: %w", versionID, schema, err)
@@ -283,8 +288,8 @@ func (h *Handler) exportedVersionVariables(ctx context.Context, schema string, v
 func (h *Handler) exportedVersionTags(ctx context.Context, schema string, versionID int) ([]map[string]any, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT t.name, COALESCE(t.data::text, '{}')
-		FROM %q.application_version_tag_association vta
-		JOIN %q.tags t ON t.id = vta.tag_id
+		FROM %s.application_version_tag_association vta
+		JOIN %s.tags t ON t.id = vta.tag_id
 		WHERE vta.version_id = $1`, schema, schema), versionID)
 	if err != nil {
 		return nil, fmt.Errorf("query the tags of version %d in %q: %w", versionID, schema, err)
@@ -312,11 +317,410 @@ func (h *Handler) exportedVersionTags(ctx context.Context, schema string, versio
 	return tags, nil
 }
 
+// ── the skill attachments ───────────────────────────────────────────────────
+//
+// Five paths copy an agent version. Publish (handler.go, `Publish`) and the
+// embed under it (`embedSubAgentsRecursive`) carried the rows of
+// `entity_skill_mapping`. The export, the import and the fork did not, so an
+// agent that went through any of those three came back with every skill gone,
+// with no message on the response, on the log or in the wizard (#611).
+//
+// The document shape is pylon's, because the same files move between the two
+// implementations: a version carries a `skills` array of REFERENCES, and the
+// document carries one top-level `skills` array with the content of each
+// referenced skill (legacy/plugins/elitea_core/utils/export_import.py,
+// `_export_skills_main`). A reference names a skill by `import_uuid` and a
+// version by `version_name`. It cannot name them by id: `skills.id` is local to
+// the project the file came from, and an import writes into a different one.
+//
+// The reference also carries `entity_type`, because that column is part of the
+// key the table is unique on and part of the predicate the chat read matches on
+// (internal/db/queries/agent_chat.sql:132). A copy that defaulted it would write
+// rows that nothing reads.
+
+// exportedSkillReference is the placeholder key that `exportedVersionSkills`
+// writes and `exportedSkills` replaces.
+//
+// The version read runs before the skill read, so it knows the `skill_id` and
+// not yet the `import_uuid` the document must carry. It writes the id under
+// this key, and the skill read swaps it for the uuid once it has read the
+// skills. The key never reaches a response: `exportedSkills` deletes every one
+// of them, and refuses the export if it finds a reference it cannot resolve.
+const exportedSkillReference = "skill_id"
+
+// exportedVersionSkills reads one version's skill attachments.
+func (h *Handler) exportedVersionSkills(ctx context.Context, schema string, versionID int) ([]map[string]any, error) {
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT mapping.skill_id, mapping.entity_type, COALESCE(version.name, '')
+		FROM %s.entity_skill_mapping AS mapping
+		LEFT JOIN %s.skill_versions AS version ON version.id = mapping.skill_version_id
+		WHERE mapping.entity_version_id = $1
+		ORDER BY mapping.id`, schema, schema), versionID)
+	if err != nil {
+		return nil, fmt.Errorf("query the skill attachments of version %d in %q: %w", versionID, schema, err)
+	}
+	defer rows.Close()
+
+	references := make([]map[string]any, 0)
+	for rows.Next() {
+		var skillID int
+		var entityType, versionName string
+		if err := rows.Scan(&skillID, &entityType, &versionName); err != nil {
+			return nil, fmt.Errorf("scan a skill attachment of version %d in %q: %w", versionID, schema, err)
+		}
+		reference := map[string]any{
+			exportedSkillReference: skillID,
+			"entity_type":          entityType,
+		}
+		// `skill_version_id` is nullable, so an attachment can name no version
+		// at all. The key is left off rather than written empty: an absent key
+		// says "this file names no version", which is what the row holds, and
+		// the import resolves it to the skill's own base version.
+		if versionName != "" {
+			reference["version_name"] = versionName
+		}
+		references = append(references, reference)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the skill attachments of version %d in %q: %w", versionID, schema, err)
+	}
+	return references, nil
+}
+
+// exportedSkills builds the document's top-level `skills` array and rewrites
+// every version reference to name a skill by its `import_uuid`.
+//
+// It runs over the version entries the document will actually carry, and so
+// AFTER the fork branch has dropped the versions it does not export. A skill
+// that only a dropped version used is then not in the array, and the array
+// never names a skill no reference points at.
+func (h *Handler) exportedSkills(ctx context.Context, schema string, versions []map[string]any) ([]map[string]any, error) {
+	references, selectedVersions := collectedSkillReferences(versions)
+	if len(references) == 0 {
+		return nil, nil
+	}
+
+	skillIDs := make([]int, 0, len(references))
+	for skillID := range references {
+		skillIDs = append(skillIDs, skillID)
+	}
+	sort.Ints(skillIDs)
+
+	documents, uuidByID, err := h.exportedSkillDocuments(ctx, schema, skillIDs, selectedVersions)
+	if err != nil {
+		return nil, err
+	}
+	for skillID, entries := range references {
+		importUUID, resolved := uuidByID[skillID]
+		if !resolved {
+			// Unreachable while the foreign key holds: `skill_id` REFERENCES
+			// `skills(id) ON DELETE CASCADE` (001_initial.sql:422-432), so a
+			// deleted skill takes its attachments with it. It is refused rather
+			// than dropped, because dropping it is the defect this whole file
+			// repairs: the export would answer 200 with an agent that has lost
+			// a skill.
+			return nil, fmt.Errorf("skill %d of %q is attached to a version and has no row", skillID, schema)
+		}
+		for _, reference := range entries {
+			delete(reference, exportedSkillReference)
+			reference["import_uuid"] = importUUID
+		}
+	}
+	return documents, nil
+}
+
+// collectedSkillReferences groups every version reference by the skill it
+// names, and collects the version names those references use.
+//
+// Only the named versions are exported. A skill's unused version history says
+// nothing about the agent in the file, and importing it would create versions
+// in the destination project that nothing points at
+// (export_import.py:266-274).
+func collectedSkillReferences(versions []map[string]any) (map[int][]map[string]any, map[int]map[string]bool) {
+	references := map[int][]map[string]any{}
+	selectedVersions := map[int]map[string]bool{}
+	for _, version := range versions {
+		entries, ok := version["skills"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, reference := range entries {
+			skillID, ok := reference[exportedSkillReference].(int)
+			if !ok {
+				continue
+			}
+			references[skillID] = append(references[skillID], reference)
+			if versionName, named := reference["version_name"].(string); named && versionName != "" {
+				if selectedVersions[skillID] == nil {
+					selectedVersions[skillID] = map[string]bool{}
+				}
+				selectedVersions[skillID][versionName] = true
+			}
+		}
+	}
+	return references, selectedVersions
+}
+
+// exportedSkillDocuments reads the named skills with their versions and the
+// tags of those versions.
+//
+// It returns the document entries and the skill_id-to-import_uuid map the
+// references need. Every fault is reported, for the reason `exportedToolkits`
+// states: a skill this read loses is a skill the imported agent does not have.
+func (h *Handler) exportedSkillDocuments(
+	ctx context.Context, schema string, skillIDs []int, selectedVersions map[int]map[string]bool,
+) ([]map[string]any, map[int]string, error) {
+	versionsBySkill, versionIDs, err := h.exportedSkillVersions(ctx, schema, skillIDs, selectedVersions)
+	if err != nil {
+		return nil, nil, err
+	}
+	tagsByVersion, err := h.exportedSkillVersionTags(ctx, schema, versionIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, entries := range versionsBySkill {
+		for _, entry := range entries {
+			versionID, _ := entry["id"].(int)
+			tags := tagsByVersion[versionID]
+			if tags == nil {
+				tags = make([]map[string]any, 0)
+			}
+			entry["tags"] = tags
+		}
+	}
+
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT id, name, COALESCE(description, ''), COALESCE(uuid::text, ''),
+			COALESCE(meta::text, '{}'), owner_id
+		FROM %s.skills WHERE id = ANY($1) ORDER BY id`, schema), skillIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query the attached skills of %q: %w", schema, err)
+	}
+	defer rows.Close()
+
+	documents := make([]map[string]any, 0, len(skillIDs))
+	uuidByID := map[int]string{}
+	for rows.Next() {
+		var skillID, ownerID int
+		var name, description, skillUUID, metaText string
+		if err := rows.Scan(&skillID, &name, &description, &skillUUID, &metaText, &ownerID); err != nil {
+			return nil, nil, fmt.Errorf("scan an attached skill of %q: %w", schema, err)
+		}
+		var meta any
+		if err := json.Unmarshal([]byte(metaText), &meta); err != nil {
+			return nil, nil, fmt.Errorf("decode the meta of skill %d in %q: %w", skillID, schema, err)
+		}
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		// `skills.uuid` has a default but no NOT NULL, so a row written before
+		// that default existed can hold none. `skill-<id>` is then the key, in
+		// the idiom `exportedToolkits` already uses for a toolkit. It is unique
+		// inside one document, which is all a reference needs.
+		importUUID := skillUUID
+		if importUUID == "" {
+			importUUID = fmt.Sprintf("skill-%d", skillID)
+		}
+		uuidByID[skillID] = importUUID
+		documents = append(documents, map[string]any{
+			// `entity` is what the import wizard sets on every entry it sends
+			// (apps/elitea-ui .../importWizardParser.helpers.js,
+			// prepareImportWizardData, which reads the key of each top-level
+			// array). The export stamps it as well, so a file sent to the
+			// import route unchanged names its own entities.
+			"entity":      "skills",
+			"id":          fmt.Sprintf("%d", skillID),
+			"import_uuid": importUUID,
+			"name":        name,
+			"description": description,
+			"owner_id":    fmt.Sprintf("%d", ownerID),
+			"meta":        meta,
+			"versions":    versionsBySkill[skillID],
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the attached skills of %q: %w", schema, err)
+	}
+	return documents, uuidByID, nil
+}
+
+// exportedSkillVersions reads the versions of the named skills, keeping only
+// the versions the attachments name.
+func (h *Handler) exportedSkillVersions(
+	ctx context.Context, schema string, skillIDs []int, selectedVersions map[int]map[string]bool,
+) (map[int][]map[string]any, []int, error) {
+	// `status` is deliberately not selected. It says whether this project holds
+	// a twin of the version in the public project, which is true of the project
+	// the file came FROM and can never be true of the project it is imported
+	// into. Pylon leaves it out of the export model for the same reason
+	// (legacy/plugins/elitea_core/models/pd/skill_version.py,
+	// SkillVersionExportModel).
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT id, skill_id, name, instructions, COALESCE(meta::text, '{}'), author_id
+		FROM %s.skill_versions WHERE skill_id = ANY($1) ORDER BY skill_id, id`, schema), skillIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query the versions of the attached skills of %q: %w", schema, err)
+	}
+	defer rows.Close()
+
+	all := map[int][]map[string]any{}
+	for rows.Next() {
+		var versionID, skillID, authorID int
+		var name, instructions, metaText string
+		if err := rows.Scan(&versionID, &skillID, &name, &instructions, &metaText, &authorID); err != nil {
+			return nil, nil, fmt.Errorf("scan a version of an attached skill of %q: %w", schema, err)
+		}
+		var meta any
+		if err := json.Unmarshal([]byte(metaText), &meta); err != nil {
+			return nil, nil, fmt.Errorf("decode the meta of skill version %d in %q: %w", versionID, schema, err)
+		}
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		all[skillID] = append(all[skillID], map[string]any{
+			"id": versionID, "name": name, "instructions": instructions,
+			"author_id": authorID, "meta": meta,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the versions of the attached skills of %q: %w", schema, err)
+	}
+
+	kept := map[int][]map[string]any{}
+	versionIDs := make([]int, 0)
+	for _, skillID := range skillIDs {
+		entries := all[skillID]
+		selected := selectedVersions[skillID]
+		chosen := make([]map[string]any, 0, len(entries))
+		for _, entry := range entries {
+			name, _ := entry["name"].(string)
+			if len(selected) == 0 || selected[name] {
+				chosen = append(chosen, entry)
+			}
+		}
+		// A selection that matches nothing keeps the whole history rather than
+		// exporting a skill with fewer versions than it has: the reference would
+		// then fail on import for a reason that is the export's fault
+		// (export_import.py:293-302).
+		//
+		// It does NOT rescue a skill that holds no version at all. Nothing
+		// requires `skills` to have a `skill_versions` row, and
+		// `entity_skill_mapping.skill_version_id` is nullable, so an agent can be
+		// attached to such a skill. `entries` is then nil, and assigning it
+		// straight through put a JSON `null` in the document where every sibling
+		// array — tools, variables, tags — writes `[]`. The empty slice keeps the
+		// document's one shape. The import still refuses the entry, and says so:
+		// a skill with no instructions is a skill nothing attached to it can run.
+		if len(chosen) == 0 {
+			chosen = entries
+		}
+		if chosen == nil {
+			chosen = make([]map[string]any, 0)
+		}
+		kept[skillID] = chosen
+		for _, entry := range chosen {
+			if versionID, ok := entry["id"].(int); ok {
+				versionIDs = append(versionIDs, versionID)
+			}
+		}
+	}
+	return kept, versionIDs, nil
+}
+
+// exportedSkillVersionTags reads the tags of the exported skill versions.
+func (h *Handler) exportedSkillVersionTags(
+	ctx context.Context, schema string, versionIDs []int,
+) (map[int][]map[string]any, error) {
+	byVersion := map[int][]map[string]any{}
+	if len(versionIDs) == 0 {
+		return byVersion, nil
+	}
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT association.version_id, tag.name, COALESCE(tag.data::text, '{}')
+		FROM %s.skill_version_tag_association AS association
+		JOIN %s.tags AS tag ON tag.id = association.tag_id
+		WHERE association.version_id = ANY($1)
+		ORDER BY association.version_id, tag.id`, schema, schema), versionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query the tags of the attached skills of %q: %w", schema, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var versionID int
+		var name, dataText string
+		if err := rows.Scan(&versionID, &name, &dataText); err != nil {
+			return nil, fmt.Errorf("scan a tag of an attached skill of %q: %w", schema, err)
+		}
+		var data any
+		if err := json.Unmarshal([]byte(dataText), &data); err != nil {
+			return nil, fmt.Errorf("decode the data of a skill tag in %q: %w", schema, err)
+		}
+		if data == nil {
+			data = map[string]any{}
+		}
+		byVersion[versionID] = append(byVersion[versionID], map[string]any{"name": name, "data": data})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the tags of the attached skills of %q: %w", schema, err)
+	}
+	return byVersion, nil
+}
+
 // ── the import side ─────────────────────────────────────────────────────────
 
 // importWriteFailed is the message the import and the fork answer with when
 // they cannot reach a database at all.
 const importWriteFailed = "the import cannot run without a database connection"
+
+// importChannels builds one `result` or one `errors` envelope of an import or a
+// fork answer.
+//
+// # Every answer carries every channel
+//
+// The wizard reads `result[item.entity]` for EVERY row it sent, and it reads it
+// with no guard:
+//
+//	const foundInResult = result[item.entity].find(it => it.index === index);
+//
+// (apps/elitea-ui .../ImportWizardModal/IWModalForkButton.jsx). A channel the
+// answer leaves out is `undefined` there, `.find` on it raises a TypeError, and
+// the raise happens inside an async map callback. The `Promise.all` that awaits
+// the callbacks rejects, its `.then` never runs, and NEITHER the error toast
+// NOR the success branch fires: the user forks an agent that has toolkits and
+// the dialog stops with no message at all. The same line reads
+// `errors[item.entity]` through `getErrorImportUUID`, so both envelopes need
+// the same treatment.
+//
+// The set is the legacy set. `rpc/import_wizzard.py` seeds `result[key] = []`
+// and `errors[key] = []` for every key of ENTITY_IMPORT_MAPPER, which is
+// exactly agents, toolkits and skills
+// (legacy/plugins/elitea_core/utils/export_import_utils.py:21-25). The legacy
+// fork answers through that same wizard, so the fork and the import carry ONE
+// set, and a caller can read a channel of either answer with no guard.
+//
+// The fork answered with `datasources` and `prompts` instead of `toolkits` when
+// the request named no application. Those two keys are in no legacy mapper, no
+// path of this service can put an entry in them, and a read-only search of
+// EliteaUI, admin_ui, Maintenance-UI and elitea-web finds no reader. They are
+// removed, because a channel that only one of the two fork paths can carry is
+// the same defect in the other direction.
+//
+// An absent channel and a `null` channel break the wizard in the same way, so a
+// nil slice becomes an empty array here rather than at each call.
+func importChannels[T any](agents, toolkits, skills []T) map[string]any {
+	channel := func(entries []T) any {
+		if entries == nil {
+			return []T{}
+		}
+		return entries
+	}
+	return map[string]any{
+		"agents":   channel(agents),
+		"toolkits": channel(toolkits),
+		"skills":   channel(skills),
+	}
+}
 
 // importPrincipalUserID resolves the user that the import and the fork write
 // into applications.owner_id, application_versions.author_id and

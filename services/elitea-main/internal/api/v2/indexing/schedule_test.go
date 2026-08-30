@@ -146,7 +146,9 @@ func TestCurrentIndexScheduleRouteRejectsSuspendedPrincipalAndCrossProjectAccess
 				context.Context,
 				auth.User,
 			) (auth.User, error) {
-				return auth.User{}, errors.New("principal is suspended")
+				// The sentinel, not a bare error: only auth.ErrPrincipalInactive
+				// is a 401, so a database fault stays a 5xx (#537).
+				return auth.User{}, auth.ErrPrincipalInactive
 			}),
 			resolution: permissionResolverFunc(func(
 				context.Context,

@@ -213,7 +213,7 @@ WHERE status = 'embedded' AND meta ->> 'source_version_id' = $1`,
 // readEmbedSkillAttachments selects the attachments of one version through the
 // joins, predicate and ordering of the chat read
 // (internal/db/queries/agent_chat.sql:126-132), including its
-// COALESCE(skill_version.instructions, '') projection.
+// COALESCE(skill_version.instructions, ”) projection.
 func readEmbedSkillAttachments(t *testing.T, ctx context.Context, pool *pgxpool.Pool, versionID int) []embedSkillAttachment {
 	t.Helper()
 	rows, err := pool.Query(ctx, `

@@ -13,26 +13,27 @@ import type { JsonSchemaLike } from '../../indexes/lib/helpers/indexChat.helpers
  * `features/toolkits/api/useIsMcpVisible.ts` gives for staying feature-local
  * rather than being promoted: single consumer.
  *
- * **REAL BACKEND GAP (new, beyond the three the mission brief already
- * disclosed):** the baseline's third schema-resolution tier reads
- * `useToolkitAvailableToolsQuery({projectId, toolkitId})` (`api/toolkits.js:478-486`,
- * `GET {apiSlicePath}/toolkit_available_tools/prompt_lib/{projectId}/{toolkitId}`)
- * for OpenAPI-like toolkits that expose neither a static
- * `selected_tools.args_schemas` entry nor a pre-loaded MCP `args_schema`.
- * Grepped `shared/api/generated/toolkits/toolkits.ts` in full: it exports
- * exactly `useListToolkits`/`useListToolkitInstances` — no
- * `toolkit_available_tools`-shaped endpoint exists anywhere under
- * `shared/api/generated/**`. This tier is therefore dropped; `toolSchema`
- * resolves from the static/MCP tiers only. `TestToolSettings.tsx`'s own
- * doc comment discloses the identical gap for its sibling use of the same
- * missing endpoint (populating the tool picker's option list, not just
- * schemas) — one real, two call sites, cited once each.
+ * **CORRECTION (#440).** This comment used to say that no
+ * `toolkit_available_tools` endpoint existed. That was wrong.
+ * `services/elitea-main/internal/api/router.go:1912` registers
+ * `GET /elitea_core/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}`,
+ * and `entities/toolkit`'s `toolkitTools.useToolkitTools` now reads it. Only
+ * the OpenAPI spec, and therefore the generated client, lacked it.
  *
- * `toolkitId`/`projectId` are dropped from this hook's own signature
- * entirely (the baseline threads both through purely to drive the now-gap-
- * blocked dynamic query) rather than kept as accepted-but-unused
- * parameters — an honest narrowing of the port's surface, not a silent
- * behaviour change of what remains.
+ * The baseline's third schema-resolution tier still does not run here, for a
+ * different and narrower reason: the route carries NO argument schema. Its
+ * repository query selects `id, name, type, description` only
+ * (`internal/api/v2/toolkits/handler.go:1086-1100`), and the `Tool` struct
+ * it marshals has no schema field. So the route answers "which tools exist",
+ * which is what `TestToolSettings.tsx` reads it for, and it cannot answer
+ * "what arguments does this tool take". `toolSchema` therefore resolves from
+ * the static and pre-loaded-MCP tiers only. Restoring the third tier needs a
+ * schema field on that response first — a backend change, not a client one.
+ *
+ * `toolkitId`/`projectId` stay off this hook's own signature (the baseline
+ * threads both through purely to drive that dynamic query) rather than being
+ * kept as accepted-but-unused parameters — an honest narrowing of the port's
+ * surface, not a silent behaviour change of what remains.
  */
 export interface McpToolOption {
   readonly value?: string | undefined;

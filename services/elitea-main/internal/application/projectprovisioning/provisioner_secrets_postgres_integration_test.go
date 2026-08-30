@@ -178,6 +178,13 @@ func TestProvisionCompensationRemovesTheVault(t *testing.T) {
 type failingVaultBootstrapper struct{ err error }
 
 func (v failingVaultBootstrapper) EnsureProjectVault(context.Context, string) error { return v.err }
+
+func (v failingVaultBootstrapper) EnsureProjectSecretsHeaderValue(
+	context.Context, string,
+) (bool, error) {
+	return false, v.err
+}
+
 func (v failingVaultBootstrapper) RemoveProjectVault(context.Context, string) error { return nil }
 
 // TestProvisionRollsBackWhenTheVaultStepFails is the other direction: a failure

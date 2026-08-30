@@ -23,6 +23,17 @@ gateway writes, gives it to the SDK function, and looks at the scope that comes
 back. A structural check alone cannot see the defect above, because the
 structure was correct: only the two values were in the wrong fields.
 
+THE PINNED TREE IS CHECKED BY CONTENT, NOT ONLY BY REVISION
+-----------------------------------------------------------
+``git rev-parse HEAD`` answers which commit is checked out. It does not answer
+what the working tree holds. A dirty checkout keeps the pinned revision, and
+``git rev-parse`` walks up to an enclosing repository, so a hand-authored
+directory inside a pinned clone reports the pinned revision too. This gate
+therefore hashes every SDK file it reads and compares the digest with
+``internal/sdkpin/sdk-pin.json`` (#567). The check is scoped to those files:
+CI applies two cherry-picks with ``--no-commit``, so the CI tree is dirty on
+purpose and a whole-tree cleanliness check would fail every run.
+
 WHY THIS GATE MUST NOT SKIP QUIETLY
 -----------------------------------
 An absent input is the failure mode that this repository keeps finding: the
@@ -35,6 +46,7 @@ from __future__ import annotations
 
 import ast
 from collections import Counter
+import hashlib
 import json
 import os
 import re
@@ -56,6 +68,11 @@ ROUTER_GO = GATEWAY_ROOT / "internal" / "api" / "router.go"
 SDK_EXCEPTIONS_PY = Path("elitea_sdk") / "runtime" / "exceptions.py"
 SDK_CLIENT_PY = Path("elitea_sdk") / "runtime" / "clients" / "client.py"
 
+# Every SDK file this gate reads. The pin must state the content of each one,
+# and the test below compares the two lists. A gate that starts reading a third
+# file without pinning it measures bytes nobody recorded.
+GATE_SDK_FILES = (SDK_EXCEPTIONS_PY, SDK_CLIENT_PY)
+
 SDK_ROOT_ENV = "ELITEA_SDK_SOURCE_ROOT"
 
 # The gateway's own statement about which elitea-sdk revision its compatibility
@@ -69,6 +86,7 @@ SDK_ROOT_ENV = "ELITEA_SDK_SOURCE_ROOT"
 GATEWAY_SDK_PIN = GATEWAY_ROOT / "internal" / "sdkpin" / "sdk-pin.json"
 
 _FULL_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 # The two suffixes below are NOT in the SDK source. LangChain adds them to the
 # base_url that the SDK gives it. They are listed here with the class that adds
@@ -116,12 +134,12 @@ def _no_sdk(reason: str) -> None:
     pytest.skip(message)
 
 
-def _pinned_revision() -> str:
-    """Read the SDK revision the gateway declares it was verified against.
+def _load_pin() -> Dict[str, object]:
+    """Read the gateway SDK pin.
 
-    A missing, unparsable or malformed pin FAILS. It is a file in this
-    checkout, so it is never legitimately absent, and an empty value would make
-    the revision comparison below compare against nothing.
+    A missing or unparsable pin FAILS. It is a file in this checkout, so it is
+    never legitimately absent, and an absent pin would leave every comparison
+    below with nothing on the other side.
     """
     if not GATEWAY_SDK_PIN.is_file():
         pytest.fail(
@@ -133,7 +151,7 @@ def _pinned_revision() -> str:
             pytrace=False,
         )
     try:
-        pin = json.loads(GATEWAY_SDK_PIN.read_text(encoding="utf-8"))
+        return json.loads(GATEWAY_SDK_PIN.read_text(encoding="utf-8"))
     except ValueError as error:
         pytest.fail(
             "{path!s} does not parse as JSON: {error}".format(
@@ -141,6 +159,15 @@ def _pinned_revision() -> str:
             ),
             pytrace=False,
         )
+
+
+def _pinned_revision() -> str:
+    """Read the SDK revision the gateway declares it was verified against.
+
+    A malformed revision FAILS: an empty value would make the revision
+    comparison below compare against nothing.
+    """
+    pin = _load_pin()
     revision = str((pin.get("verified_against") or {}).get("revision") or "")
     if not _FULL_GIT_REVISION.match(revision):
         pytest.fail(
@@ -152,6 +179,95 @@ def _pinned_revision() -> str:
             pytrace=False,
         )
     return revision
+
+
+def _pinned_contents() -> Dict[str, str]:
+    """Give the sha256 the pin records for each SDK file the gates read.
+
+    WHY CONTENT, AND NOT ONLY A REVISION (#567). This gate used to identify the
+    SDK checkout by ``git rev-parse HEAD`` alone. That answers WHICH commit is
+    checked out, not WHAT the working tree holds. A DIRTY tree keeps the pinned
+    HEAD, so uncommitted SDK edits were invisible here; and ``git rev-parse``
+    walks UP to an enclosing repository, so a hand-authored directory inside a
+    pinned clone reported the pinned revision. Either one lets an operator mint
+    a fresh pin from a green run that measured other bytes.
+
+    An absent, empty or malformed list FAILS. A gate with nothing to hash
+    passes for every tree, which is the hole this list closes.
+    """
+    pin = _load_pin()
+    entries = (pin.get("verified_against") or {}).get("contents")
+    if not isinstance(entries, list) or not entries:
+        pytest.fail(
+            "{path!s} carries no verified_against.contents. This gate must "
+            "compare the CONTENT of the SDK files it reads, not only the "
+            "revision: a dirty checkout keeps the pinned revision and would "
+            "read as pinned.".format(path=GATEWAY_SDK_PIN),
+            pytrace=False,
+        )
+    digests: Dict[str, str] = {}
+    for entry in entries:
+        path = str((entry or {}).get("path") or "")
+        digest = str((entry or {}).get("sha256") or "")
+        if not path or not _SHA256_DIGEST.match(digest):
+            pytest.fail(
+                "{path!s} carries the contents entry {entry!r}, which is not a "
+                "path with a 64-character lowercase sha256. A digest that "
+                "matches nothing any hashing tool prints fails for the wrong "
+                "reason.".format(path=GATEWAY_SDK_PIN, entry=entry),
+                pytrace=False,
+            )
+        if path in digests:
+            pytest.fail(
+                "{path!s} lists {name} twice; two digests for one file cannot "
+                "both hold.".format(path=GATEWAY_SDK_PIN, name=path),
+                pytrace=False,
+            )
+        digests[path] = digest
+    return digests
+
+
+def _assert_checkout_content(root: Path) -> None:
+    """Hash every pinned file in the checkout and compare it with the pin.
+
+    This is the check the revision comparison cannot make. It ALWAYS fails on a
+    difference, under CI or not: a green result about bytes the pin does not
+    name is worse than no result.
+
+    It is SCOPED to the pinned files on purpose. ``.github/workflows/
+    ci-python.yml`` applies the two patch revisions with ``git cherry-pick
+    --no-commit``, so the CI tree is deliberately dirty. A whole-tree
+    cleanliness check would fail every CI run; those patches touch
+    ``toolkits/mcp.py``, ``utils/mcp_adapter.py`` and ``tests/`` only, and none
+    of them is a file this gate reads.
+    """
+    for relative, expected in sorted(_pinned_contents().items()):
+        path = root / Path(relative)
+        if not path.is_file():
+            pytest.fail(
+                "{pin!s} pins the content of {rel}, and {path!s} is not there. "
+                "The gate would then measure a tree the pin does not "
+                "describe.".format(pin=GATEWAY_SDK_PIN, rel=relative, path=path),
+                pytrace=False,
+            )
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            pytest.fail(
+                "the SDK checkout holds the pinned revision, and {rel} does NOT "
+                "hold the pinned content.\n"
+                "  {path!s}\n"
+                "    is       sha256 {actual}\n"
+                "    pinned as sha256 {expected}\n"
+                "A revision names which commit is checked out. It says nothing "
+                "about what the working tree holds, so an edited or "
+                "hand-authored file keeps the pinned revision and would "
+                "otherwise read as pinned. Restore the file, or — if the SDK "
+                "moved on purpose — re-run both compatibility gates and update "
+                "the pin AFTER they pass.".format(
+                    rel=relative, path=path, actual=actual, expected=expected
+                ),
+                pytrace=False,
+            )
 
 
 def _checkout_revision(root: Path) -> str:
@@ -221,6 +337,9 @@ def sdk_root() -> Path:
             ),
             pytrace=False,
         )
+
+    # The revision says WHICH commit. This says WHAT the tree holds (#567).
+    _assert_checkout_content(root)
     return root
 
 
@@ -1006,6 +1125,40 @@ def test_reader_matches_on_type_alone_and_reads_the_scope_from_code(
             )
 
 
+def test_the_pin_names_the_content_of_every_sdk_file_this_gate_reads() -> None:
+    """The pinned content list must cover exactly the files this gate reads.
+
+    ISSUE #567. The pin identified the SDK by revision alone, so a dirty
+    checkout minted a green pin. The content digests close that, and they close
+    it only for the files they name. This test holds the two lists together:
+    add a file to GATE_SDK_FILES and the pin must state its digest in the same
+    change.
+
+    It needs no SDK, so it runs even when the gates below skip. That matters:
+    the digest comparison itself lives in the sdk_root fixture, where the tree
+    is available, and a local developer without a checkout would otherwise see
+    nothing of this gate at all.
+    """
+    pinned = set(_pinned_contents())
+    read_here = {path.as_posix() for path in GATE_SDK_FILES}
+
+    unpinned = sorted(read_here - pinned)
+    assert not unpinned, (
+        "this gate reads {unpinned} and {pin} does not state their content. "
+        "The gate would then measure bytes the pin never recorded, which is "
+        "the hole #567 closed for the other files.".format(
+            unpinned=unpinned, pin=GATEWAY_SDK_PIN.name
+        )
+    )
+
+    unread = sorted(pinned - read_here)
+    assert not unread, (
+        "{pin} states the content of {unread}, and this gate does not read "
+        "them. A digest nobody checks is not a gate; either read the file or "
+        "remove its entry.".format(pin=GATEWAY_SDK_PIN.name, unread=unread)
+    )
+
+
 # ── The gate's own floor ──────────────────────────────────────────────────────
 #
 # Tier 2 refuses a run that reports fewer than EXPECTED_ASSERTIONS results, and
@@ -1021,6 +1174,7 @@ EXPECTED_TESTS = frozenset(
         "test_project_code_relies_on_the_sdk_default_scope",
         "test_sdk_llm_paths_are_mounted_by_the_gateway_router",
         "test_reader_matches_on_type_alone_and_reads_the_scope_from_code",
+        "test_the_pin_names_the_content_of_every_sdk_file_this_gate_reads",
     }
 )
 

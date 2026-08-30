@@ -41,6 +41,7 @@
  */
 import { z as zod } from "zod";
 import { ConversationStarters } from "./conversationStarters.zod";
+import { ExportedSkillReference } from "./exportedSkillReference.zod";
 import { LlmSettings } from "./llmSettings.zod";
 import { SelectedTools } from "./selectedTools.zod";
 import { VersionMeta } from "./versionMeta.zod";
@@ -68,6 +69,11 @@ export const ApplicationVersionExport = zod
     ),
     variables: zod.array(VersionVariable),
     tags: zod.array(VersionTag),
+    skills: zod
+      .array(ExportedSkillReference)
+      .describe(
+        "The skill attachments of this version. The key is ALWAYS present, and the array is empty when the version carries no attachment (internal\/api\/v2\/eliteacore\/export_import.go:364-382, written into the version entry at :169-185). Each entry names a skill in the document's top-level `skills` array. The import and the fork read this array to write the `entity_skill_mapping` rows of the version they create (internal\/api\/v2\/eliteacore\/import_skills.go:397-461).\n",
+      ),
     is_forked: zod.boolean(),
     import_version_uuid: zod
       .string()
@@ -75,7 +81,7 @@ export const ApplicationVersionExport = zod
       .describe("Present only when the version row has a uuid."),
   })
   .describe(
-    "NOTE(W2): ExportImportGet version entry, internal\/api\/v2\/eliteacore\/handler.go:2670-2683.\n",
+    "NOTE(W2): ExportImportGet version entry, internal\/api\/v2\/eliteacore\/export_import.go:176-188.\n",
   );
 
 export type ApplicationVersionExport = zod.input<

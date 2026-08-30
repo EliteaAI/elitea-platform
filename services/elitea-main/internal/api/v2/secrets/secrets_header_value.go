@@ -1,0 +1,211 @@
+package secrets
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+)
+
+// SecretsHeaderValueName is the project-vault secret the `X-SECRET` request
+// header is compared against.
+//
+// pylon's `check_secret_header` reads
+// `secrets.get("secrets_header_value", "secret")`
+// (legacy/plugins/elitea_core/utils/secrets.py:4-9). A project whose vault
+// holds no value under this name therefore accepts the literal string
+// "secret", and api/v2/applications reproduces that fallback for parity.
+//
+// This file removes the REASON for the fallback (#408). The provisioner writes
+// a random value into every new project vault, and
+// BackfillProjectSecretsHeaderValues writes one into every project vault that
+// already exists. The fallback itself stays until the SDK worker stops sending
+// the literal, which is work in another repository.
+const SecretsHeaderValueName = "secrets_header_value"
+
+// secretsHeaderValueBytes is how much entropy one generated value carries. 32
+// bytes is the same width as a Fernet key, and the base64url text of it is 43
+// characters, all of which are legal in an HTTP header value.
+const secretsHeaderValueBytes = 32
+
+// NewSecretsHeaderValue returns one header value from the operating system's
+// cryptographically secure source.
+//
+// The text is base64url with no padding. A header value must survive the SDK,
+// Traefik and pylon unchanged, so the alphabet holds no character that any of
+// them quotes, folds or strips.
+func NewSecretsHeaderValue() (string, error) {
+	raw := make([]byte, secretsHeaderValueBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate a secrets header value: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// EnsureProjectSecretsHeaderValue writes a random `secrets_header_value` into
+// one project vault, and reports whether it wrote one.
+//
+// It NEVER replaces a value that is already there. The value is a shared
+// credential: the SDK sends it on every sub-agent call, so a rewrite would
+// refuse calls that are in flight. A second call on the same project therefore
+// reports `false, nil`, and so does a project whose owner set the value by
+// hand.
+//
+// The vault must exist. This function does not create one, for the reason
+// StoreProjectSecrets does not: an absent vault means the caller ran before
+// the project_secrets provisioning step, and minting a vault here would put a
+// second minter beside EnsureProjectVault. The provisioning step calls
+// EnsureProjectVault first, and the backfill reads the vault table to find its
+// work, so neither caller can reach this with no vault.
+//
+// An UNREADABLE vault is an error and is never overwritten, exactly as every
+// other write path in this package treats one.
+func (h *Handler) EnsureProjectSecretsHeaderValue(ctx context.Context, projectID string) (bool, error) {
+	vaultID := dbKey(projectID)
+	vault, err := h.readVaultCtx(ctx, projectID)
+	if err != nil {
+		return false, fmt.Errorf("ensure the %s secrets header value: %w", vaultID, err)
+	}
+	if vault.Secrets == nil {
+		vault.Secrets = map[string]string{}
+	}
+	// Both maps are consulted because ResolveSecretValue reads both, in this
+	// order. A value hidden by the Hide route still answers the `X-SECRET`
+	// check, so it counts as set.
+	if strings.TrimSpace(vault.Secrets[SecretsHeaderValueName]) != "" ||
+		strings.TrimSpace(vault.HiddenSecrets[SecretsHeaderValueName]) != "" {
+		return false, nil
+	}
+	value, err := NewSecretsHeaderValue()
+	if err != nil {
+		return false, err
+	}
+	vault.Secrets[SecretsHeaderValueName] = value
+	if err := h.writeVaultCtx(ctx, projectID, vault); err != nil {
+		return false, fmt.Errorf("ensure the %s secrets header value: %w", vaultID, err)
+	}
+	return true, nil
+}
+
+// SecretsHeaderBackfillReport counts what one backfill pass did. The caller
+// logs it, so an operator can state how many projects the pass touched.
+type SecretsHeaderBackfillReport struct {
+	// Vaults is how many project vaults the pass examined.
+	Vaults int
+	// Written is how many of them received a new value.
+	Written int
+	// AlreadySet is how many of them held one already.
+	AlreadySet int
+	// Skipped is how many of them could not be opened. Each one is logged
+	// with its vault id. A value greater than zero means those projects still
+	// accept the literal "secret", so the count must never be read as noise.
+	Skipped int
+}
+
+// BackfillProjectSecretsHeaderValues gives a `secrets_header_value` to every
+// project that has a vault and no value (#408 step 2).
+//
+// IT IS GO AND NOT A MIGRATION, and it cannot be a migration. The value is
+// sealed with the project's Fernet key, which is itself wrapped with
+// SECRETS_MASTER_KEY. SQL cannot open the vault, so a migration could only
+// write a value the readers cannot read. The one minter rule (#399/#411) puts
+// every vault write in this handler, and this pass is a vault write.
+//
+// IT IS IDEMPOTENT. A project that holds a value keeps it, so the pass may run
+// on every start, and a project provisioned after the pass gets its value from
+// the provisioning step instead.
+//
+// A VAULT THAT WILL NOT OPEN DOES NOT STOP THE PASS. Such a vault is a
+// pre-existing condition — a key wrapped with a master key this deployment no
+// longer sets — and refusing to give the other projects a value would help
+// nobody. Each one is logged and counted in Skipped.
+//
+// A DATABASE FAULT DOES stop the pass. The two are told apart by a ping: a
+// vault that fails while the pool still answers is that vault's problem, and a
+// vault that fails while the pool does not answer is the deployment's. Without
+// that split, a database that goes away in the middle of the pass would report
+// every remaining project as skipped and the pass as a success.
+func (h *Handler) BackfillProjectSecretsHeaderValues(ctx context.Context) (SecretsHeaderBackfillReport, error) {
+	var report SecretsHeaderBackfillReport
+	if h == nil || h.pool == nil {
+		return report, errors.New("backfill the secrets header values: there is no database pool")
+	}
+	projectIDs, err := h.projectVaultProjectIDs(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.Vaults = len(projectIDs)
+	for _, projectID := range projectIDs {
+		if err := ctx.Err(); err != nil {
+			return report, fmt.Errorf("backfill the secrets header values: %w", err)
+		}
+		written, ensureErr := h.EnsureProjectSecretsHeaderValue(ctx, projectID)
+		switch {
+		case ensureErr == nil && written:
+			report.Written++
+		case ensureErr == nil:
+			report.AlreadySet++
+		default:
+			if pingErr := h.pool.Ping(ctx); pingErr != nil {
+				return report, fmt.Errorf(
+					"backfill the secrets header values: the database stopped answering: %w", ensureErr)
+			}
+			report.Skipped++
+			slog.WarnContext(ctx,
+				"the project vault would not open, so the project keeps the guessable X-SECRET default",
+				"project_id", projectID,
+				"variable", MasterKeyEnvVar,
+				"error", ensureErr)
+		}
+	}
+	return report, nil
+}
+
+// projectVaultProjectIDs lists the projects that have a vault.
+//
+// It joins centry.project so an ORPHAN vault — rows left by a project that is
+// gone — is not written to. RemoveProjectVault deletes those rows, and a vault
+// that outlived its project is adopted by the next project that draws the same
+// id, so writing a value into one would seal material into a vault the next
+// owner inherits.
+//
+// The three tables are checked with to_regclass first. An empty database has
+// none of them, and the service must start against one.
+func (h *Handler) projectVaultProjectIDs(ctx context.Context) ([]string, error) {
+	var present bool
+	if err := h.pool.QueryRow(ctx,
+		`SELECT to_regclass('centry.secrets_key') IS NOT NULL
+		    AND to_regclass('centry.secrets_data') IS NOT NULL
+		    AND to_regclass('centry.project') IS NOT NULL`,
+	).Scan(&present); err != nil {
+		return nil, fmt.Errorf("look for the project vault tables: %w", err)
+	}
+	if !present {
+		return nil, nil
+	}
+	rows, err := h.pool.Query(ctx,
+		`SELECT p.id::text
+		   FROM centry.project AS p
+		   JOIN centry.secrets_key AS k ON k.id = 'project-' || p.id::text
+		  ORDER BY p.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list the project vaults: %w", err)
+	}
+	defer rows.Close()
+
+	var projectIDs []string
+	for rows.Next() {
+		var projectID string
+		if err := rows.Scan(&projectID); err != nil {
+			return nil, fmt.Errorf("read a project vault row: %w", err)
+		}
+		projectIDs = append(projectIDs, projectID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the project vault rows: %w", err)
+	}
+	return projectIDs, nil
+}

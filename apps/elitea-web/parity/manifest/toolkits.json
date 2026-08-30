@@ -856,11 +856,11 @@
       ],
       "verify": {
         "type": "vitest",
-        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
-        "testId": "api > toolkits.js > discoverMcpTools"
+        "command": "npx vitest run --project node src/features/toolkits/ui/test-tools/TestToolSettings.test.tsx",
+        "testId": "TestToolSettings > dynamic tool catalogue (#440) > lists the tools the backend publishes for a dynamic toolkit type"
       },
       "unit": "A4",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/toolkits/index.ts",
         "min": 88
@@ -940,11 +940,11 @@
       ],
       "verify": {
         "type": "vitest",
-        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
-        "testId": "api > toolkits.js > toolkitAvailableTools"
+        "command": "npx vitest run --project node src/features/toolkits/ui/test-tools/TestToolSettings.test.tsx",
+        "testId": "TestToolSettings > dynamic tool catalogue (#440) > shows an error instead of the picker when the read fails"
       },
       "unit": "A4",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/toolkits/index.ts",
         "min": 88

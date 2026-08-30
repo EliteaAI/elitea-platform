@@ -5,6 +5,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENTRYPOINT="$SCRIPT_DIR/entrypoint.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# The floor helper (issue #534). This suite runs from the repository, never
+# from the image: docker/model-cache-init/.dockerignore keeps it out of the
+# build context, so the path above always resolves for every caller it has.
+# shellcheck source=../../scripts/lib/assertion-floor.sh
+. "${REPO_ROOT}/scripts/lib/assertion-floor.sh"
 TEST_DIR=""
 PASS=0
 FAIL=0
@@ -1064,16 +1070,25 @@ EOF
 #
 # This runner used to end at `if [ "$FAIL" -gt 0 ]`. Delete every call below
 # and the suite exits 0 with `0 passed, 0 failed`, which is the same shape as
-# the defect it tests for. EXPECTED_ASSERTIONS states the number of assertions
-# this file makes, and a shortfall turns the run red.
+# the defect it tests for. EXPECTED_ASSERTIONS holds the number of assertions
+# this file makes, and any other result count turns the run red.
 #
 # A counter sees only the assertions that REACH it. A test function that
 # returns early — every `teardown; return` path below does exactly that —
-# raises fewer results than it declares, and only a stated floor catches it.
+# raises fewer results than it declares, and only a floor catches it.
 #
-# Move this number when you add or remove an assertion. Do not lower it to
-# make a run agree.
-EXPECTED_ASSERTIONS=92
+# The number is DERIVED from this file, not written down (issue #534, item (a)
+# of #529). A stated number is true only when the pull request merges: an
+# assertion that a later merge ADDS, with the number left alone, makes the
+# floor under-count in silence for ever.
+#
+# An assertion site here is one call to an assert_ helper, or one inline pass
+# counter inside a test function. The helper DEFINITIONS hold an inline pass
+# counter too, so the range starts at the first test function. Read
+# scripts/lib/assertion-floor.sh.
+ASSERTION_SITE_PATTERN='^[[:space:]]+assert_[a-z_]+[[:space:]]|PASS=\$\(\(PASS \+ 1\)\)'
+ASSERTION_SITE_RANGE='/^# ---------- Test: /,$'
+EXPECTED_ASSERTIONS="$(derive_assertion_floor "$0" "$ASSERTION_SITE_PATTERN" "$ASSERTION_SITE_RANGE")"
 
 echo "=== Running entrypoint.sh tests ==="
 echo ""
@@ -1110,10 +1125,11 @@ echo ""
 echo "=== Results: $PASS passed, $FAIL failed; $RAN of $EXPECTED_ASSERTIONS expected assertions reported a result ==="
 
 if [ "$RAN" -ne "$EXPECTED_ASSERTIONS" ]; then
-    echo "FAILED: $RAN assertion(s) reported a result, and $EXPECTED_ASSERTIONS were expected." >&2
+    echo "FAILED: $RAN assertion(s) reported a result, and this file holds $EXPECTED_ASSERTIONS assertion site(s)." >&2
     echo "  An assertion that reports nothing is not a passed assertion. A test that" >&2
     echo "  returned early, or a deleted call, takes its assertions with it." >&2
-    echo "  If you added or removed an assertion, move EXPECTED_ASSERTIONS with it." >&2
+    echo "  The floor is derived from this file, so there is no number to move:" >&2
+    echo "  find the site that reported nothing." >&2
     exit 1
 fi
 

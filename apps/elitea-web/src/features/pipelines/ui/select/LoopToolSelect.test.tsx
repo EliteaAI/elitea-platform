@@ -38,6 +38,64 @@ describe('LoopToolSelect', () => {
     expect(queryByLabelText('Tool')).not.toBeInTheDocument();
   });
 
+  /**
+   * #440. The three outcomes this picker used to render identically: the
+   * toolkit offers no tools, the backend publishes them at runtime, and the
+   * read failed. One test alone cannot tell them apart, so all three are here.
+   */
+  describe('dynamic tool catalogue (#440)', () => {
+    const DISCOVER = `${BASE}/elitea_core/toolkit_discover_tools/prompt_lib/${PROJECT_ID}/github`;
+    /** A toolkit selected in the node, with NO explicit selected_tools — the case the catalogue answers. */
+    const DYNAMIC_TOOLKIT = { type: 'github', name: 'github', toolkit_name: 'github' };
+    const YAML_NODE = { id: 'Loop 1', toolkit_name: 'github', tool: '' };
+
+    it('lists the tools the backend publishes for a toolkit with no explicit selection', async () => {
+      server.use(http.post(DISCOVER, () => HttpResponse.json({ tools: [{ id: '1', name: 'create_issue', type: 'github' }], total: 1 })));
+
+      const { findByText, queryByTestId } = renderWithRouterAndProject(
+        <LoopToolSelect
+          yamlNode={YAML_NODE}
+          versionTools={[DYNAMIC_TOOLKIT]}
+        />,
+        PROJECT_ID,
+      );
+
+      expect(await findByText('Tool')).toBeInTheDocument();
+      expect(queryByTestId('loop-tool-list-error')).not.toBeInTheDocument();
+    });
+
+    it('shows an error instead of the tool dropdown when the read fails', async () => {
+      server.use(http.post(DISCOVER, () => HttpResponse.json({ error: 'read failed' }, { status: 500 })));
+
+      const { findByTestId, queryByLabelText } = renderWithRouterAndProject(
+        <LoopToolSelect
+          yamlNode={YAML_NODE}
+          versionTools={[DYNAMIC_TOOLKIT]}
+        />,
+        PROJECT_ID,
+      );
+
+      expect(await findByTestId('loop-tool-list-error')).toBeInTheDocument();
+      expect(queryByLabelText('Tool')).not.toBeInTheDocument();
+    });
+
+    it('shows no error, and no dropdown, when the read succeeds with no tools', async () => {
+      server.use(http.post(DISCOVER, () => HttpResponse.json({ tools: [], total: 0 })));
+
+      const { findByText, queryByTestId, queryByLabelText } = renderWithRouterAndProject(
+        <LoopToolSelect
+          yamlNode={YAML_NODE}
+          versionTools={[DYNAMIC_TOOLKIT]}
+        />,
+        PROJECT_ID,
+      );
+
+      await findByText('Toolkit');
+      expect(queryByTestId('loop-tool-list-error')).not.toBeInTheDocument();
+      expect(queryByLabelText('Tool')).not.toBeInTheDocument();
+    });
+  });
+
   it('renders a Tool dropdown once the selected toolkit has explicit selected_tools', async () => {
     const yamlNode = { id: 'Loop 1', toolkit_name: 'github', tool: '' };
     const { findByText } = renderWithRouterAndProject(

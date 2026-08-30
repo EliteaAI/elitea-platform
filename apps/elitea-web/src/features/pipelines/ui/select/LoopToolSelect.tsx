@@ -1,9 +1,12 @@
 import type { ReactNode } from 'react';
 import { useCallback, useMemo } from 'react';
 
+import Alert from '@mui/material/Alert';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { toolkitTools } from '@/entities/toolkit';
 import { t } from '@/shared/i18n';
+import { BaseBtn, BUTTON_VARIANTS } from '@/shared/ui/BaseBtn';
 import { SingleSelect, type SingleSelectOption } from '@/shared/ui/SingleSelect';
 
 import { getToolName } from '../../lib/flow-editor/helpers/flowEditor.helpers';
@@ -29,36 +32,31 @@ import type { PipelineToolEntry } from './pipelineToolEntry.types';
  *     resolved `toolkitTypeSchemas` + `EntityOptionIcon`'s entity-type
  *     fallback (see `ToolSelect.tsx`'s identical deviation #2).
  *
- * **Real, disclosed backend gap, NOT papered over** (baseline:
- * `useToolkitAvailableToolsQuery`, `api/toolkits.js:515` -- dynamic MCP
- * tool-name discovery for a toolkit with no explicit `selected_tools`).
- * No generated endpoint for this exists -- confirmed against
- * `shared/api/generated/toolkits/toolkits.ts`'s full export list
- * (`useListToolkits`/`useListToolkitInstances` only) and
- * `shared/api/endpoints.manifest.json` (no `toolkit_available_tools`/
- * `available_tools` operation anywhere), the SAME gap
- * `useFunctionInputMapping.ts`'s own header and `ui/nodes/deprecated/
- * useToolNodeEditing.ts`'s own header document in full for their own
- * `dynamicToolNames`/`functionOptions`. **This is a backend/codegen gap,
- * not a file this pass can fix by editing within this app** -- the fix
- * routes to whoever owns turning `toolkit_available_tools` into a real
- * generated (or `usePipelineTrigger.ts`-style hand-wrapped) endpoint.
+ * **CORRECTED (#440): the dynamic tool discovery is REAL and this
+ * component now reads it.** This header used to say that no endpoint for
+ * it existed. That was wrong. `internal/api/router.go` registers
+ * `toolkit_available_tools` (:1912) and `toolkit_discover_tools` (:1914);
+ * only the OpenAPI spec, and so the generated client, lacked them.
+ * `entities/toolkit`'s `toolkitTools.useToolkitTools` is the hand-written
+ * client (the `usePipelineTrigger.ts` shape this header asked for), and
+ * `shared/api/endpoints.manifest.json` carries both routes.
  *
- * **Partial, in-scope mitigation (this pass):** without that fetch, the
- * component used to gate the entire "Tool"/"Loop tool" dropdown on
- * `functionOptions.length > 0` -- so a toolkit relying on dynamic
- * discovery (no `selected_tools`) rendered NO dropdown at all, hiding a
- * `yamlNode`'s own already-configured `tool` value entirely (not just
- * "no more options to pick from", but genuinely invisible and
- * unrecoverable from this UI). `functionOptions` now also synthesises a
- * single-entry fallback option for the node's CURRENT `tool` value when
- * it isn't already covered by `selected_tools`, the same "value present
- * but absent from the known options list" pattern
- * `PipelineMultiSelect.tsx`'s own `canDelete` synthesis and
- * `InputSelect.tsx`'s `realInputOptions` already use. This does not
- * restore the full dynamically-discovered picker (still blocked on the
- * gap above) -- it only ensures the dropdown renders and the
- * already-configured value stays visible and clearable.
+ * `functionOptions` therefore resolves in the baseline's own order: the
+ * toolkit's explicit `selected_tools`, else the catalogue read from the
+ * backend for the selected toolkit.
+ *
+ * **A FAILED READ IS ITS OWN STATE.** #381 made both routes answer a failed
+ * database read with an error rather than `200 {"tools":[]}`. This
+ * component renders an error with a retry action for that case, so an empty
+ * picker keeps its one meaning: the toolkit offers no tools.
+ *
+ * **Kept from the earlier mitigation:** `functionOptions` still synthesises
+ * a single-entry fallback option for the node's CURRENT `tool` value when
+ * it is not otherwise in the list, the same "value present but absent from
+ * the known options list" pattern `PipelineMultiSelect.tsx`'s own
+ * `canDelete` synthesis and `InputSelect.tsx`'s `realInputOptions` use. It
+ * keeps an already-configured value visible and clearable while the
+ * catalogue is still loading, or when the toolkit no longer offers it.
  *
  * `useLoopToolSelection` bundles every derived-options computation into
  * one hook purely to keep this component's own cyclomatic complexity under
@@ -80,6 +78,8 @@ interface ToolkitOption extends SingleSelectOption {
 }
 
 const noop = (): void => {};
+/** A stable empty list — see `useLoopToolSelection`'s own note on why the fallback may not be a fresh literal. */
+const NO_TOOLS: readonly string[] = [];
 const toolkitSelectSx: SxProps<Theme> = { marginBottom: '0rem' };
 const toolSelectSx: SxProps<Theme> = { marginBottom: '0rem' };
 
@@ -87,6 +87,9 @@ interface LoopToolSelection {
   readonly toolkits: readonly ToolkitOption[];
   readonly toolkit: string | undefined;
   readonly functionOptions: readonly SingleSelectOption[];
+  /** The tool-catalogue read failed. Render it as its own state, never as an empty picker (#440). */
+  readonly toolsReadFailed: boolean;
+  readonly retryToolsRead: () => void;
 }
 
 function useLoopToolSelection(
@@ -119,24 +122,84 @@ function useLoopToolSelection(
     [getToolkitNameFromSchema, toolkit, versionTools],
   );
 
-  // Real, disclosed gap (see module doc comment): no dynamic MCP tool-name
-  // fetch exists, so only an explicit `selected_tools` list ever populates
-  // this dropdown from the backend. The node's OWN currently-configured
-  // `selectedTool` is still added as a fallback single-entry option when
-  // it isn't already one of `selected_tools` -- this is the partial
-  // mitigation the module doc comment describes: it keeps an
-  // already-configured value visible/clearable even for a dynamic-only
-  // toolkit, without inventing the missing fetch.
+  // `NO_TOOLS`, not a fresh `[]`: this value is a `useMemo` dependency below,
+  // and a new array literal on every render would rebuild the option list
+  // every time for a toolkit that has no explicit selection at all.
+  const enabledTools = selectedToolkit?.settings?.selected_tools ?? NO_TOOLS;
+
+  // The dynamic catalogue (#440). It runs only for a toolkit with no
+  // explicit `selected_tools`, which is the case the baseline fetched for.
+  const dynamicTools = toolkitTools.useToolkitTools({
+    projectId,
+    toolkitId: selectedToolkit?.id,
+    toolkitType: selectedToolkit?.type,
+    enabled: selectedToolkit !== undefined && enabledTools.length === 0,
+  });
+
+  // The node's OWN currently-configured `selectedTool` is added as a
+  // single-entry fallback when it is not otherwise in the list, so an
+  // already-configured value stays visible and clearable while the
+  // catalogue loads.
   const functionOptions = useMemo<SingleSelectOption[]>(() => {
-    const enabledTools = selectedToolkit?.settings?.selected_tools ?? [];
-    const options = enabledTools.map(item => ({ label: getToolName(item), value: getToolName(item) }));
+    const names = enabledTools.length > 0 ? enabledTools.map(getToolName) : dynamicTools.toolNames;
+    const options = names.map(name => ({ label: name, value: name }));
     if (selectedTool && !options.some(option => option.value === selectedTool)) {
       options.push({ label: selectedTool, value: selectedTool });
     }
     return options;
-  }, [selectedToolkit?.settings?.selected_tools, selectedTool]);
+  }, [dynamicTools.toolNames, enabledTools, selectedTool]);
 
-  return { toolkits, toolkit, functionOptions };
+  return { toolkits, toolkit, functionOptions, toolsReadFailed: dynamicTools.isError, retryToolsRead: dynamicTools.refetch };
+}
+
+interface ToolPickerProps {
+  readonly readFailed: boolean;
+  readonly onRetry: () => void;
+  readonly label: string;
+  readonly value: string;
+  readonly options: readonly SingleSelectOption[];
+  readonly onSelect: (value: string) => void;
+  readonly disabled: boolean;
+}
+
+/**
+ * The tool picker, or the error that replaces it (#440).
+ *
+ * A failed catalogue read is its own state. A missing picker means the
+ * toolkit offers no tools; it must never stand in for a failure. Split out
+ * to keep `LoopToolSelect` under the §3.5 complexity budget.
+ */
+function ToolPicker({ readFailed, onRetry, label, value, options, onSelect, disabled }: ToolPickerProps): ReactNode {
+  if (readFailed) {
+    return (
+      <Alert
+        severity="error"
+        data-testid="loop-tool-list-error"
+        action={
+          <BaseBtn
+            variant={BUTTON_VARIANTS.tertiary}
+            size="small"
+            onClick={onRetry}
+          >
+            {t('pipelines.loopToolSelect.retry', 'Retry')}
+          </BaseBtn>
+        }
+      >
+        {t('pipelines.loopToolSelect.toolListError', 'The tool list did not load. Try again.')}
+      </Alert>
+    );
+  }
+  if (options.length === 0) return null;
+  return (
+    <SingleSelect
+      sx={toolSelectSx}
+      label={label}
+      value={value}
+      onChange={onSelect}
+      options={[...options]}
+      disabled={disabled}
+    />
+  );
 }
 
 export function LoopToolSelect(props: LoopToolSelectProps): ReactNode {
@@ -152,7 +215,7 @@ export function LoopToolSelect(props: LoopToolSelectProps): ReactNode {
   } = props;
 
   const selectedTool = useMemo(() => (yamlNode ? ((yamlNode[toolField] as string | undefined) ?? '') : ''), [toolField, yamlNode]);
-  const { toolkits, toolkit, functionOptions } = useLoopToolSelection(yamlNode, toolkitField, toolField, versionTools, selectedTool);
+  const { toolkits, toolkit, functionOptions, toolsReadFailed, retryToolsRead } = useLoopToolSelection(yamlNode, toolkitField, toolField, versionTools, selectedTool);
 
   const handleToolkitChange = useCallback((newValue: string) => onChangeToolkit(newValue), [onChangeToolkit]);
   const onClear = useCallback(() => onChangeToolkit(null), [onChangeToolkit]);
@@ -170,16 +233,15 @@ export function LoopToolSelect(props: LoopToolSelectProps): ReactNode {
         options={[...toolkits]}
         disabled={disabled || toolkits.length === 0}
       />
-      {functionOptions.length > 0 && (
-        <SingleSelect
-          sx={toolSelectSx}
-          label={toolLabel}
-          value={selectedTool}
-          onChange={onChangeTool}
-          options={[...functionOptions]}
-          disabled={disabled}
-        />
-      )}
+      <ToolPicker
+        readFailed={toolsReadFailed}
+        onRetry={retryToolsRead}
+        label={toolLabel}
+        value={selectedTool}
+        options={functionOptions}
+        onSelect={onChangeTool}
+        disabled={disabled}
+      />
     </>
   );
 }

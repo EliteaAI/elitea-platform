@@ -53,7 +53,7 @@ export const ForkAgentResult = zod
     webhook_secret: zod
       .unknown()
       .nullable()
-      .describe("Always null today (handler.go:2465)."),
+      .describe("Always null today (handler.go:3380)."),
     versions: zod.array(
       zod.object({
         id: zod.string(),
@@ -63,12 +63,12 @@ export const ForkAgentResult = zod
       }),
     ),
     version_details: ApplicationVersionDetail.nullable().describe(
-      "Key ALWAYS present (null when no versions were created) — unconditionally set in the agentResult map (handler.go:2459-2467).\n",
+      "Key ALWAYS present (null when no versions were created) — unconditionally set in the agentResult map (handler.go:3375-3383).\n",
     ),
     version_id: zod.string().optional(),
   })
   .describe(
-    "NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:2459-2472 — version_details is required+nullable (always marshaled); only version_id is genuinely conditional (:2468-2470).\n",
+    "NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:3375-3387 — version_details is required+nullable (always marshaled); only version_id is genuinely conditional (:3384-3386).\n",
   );
 
 export type ForkAgentResult = zod.input<typeof ForkAgentResult>;

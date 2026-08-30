@@ -60,7 +60,10 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   (`LLM_STREAM_GRACE_MS`, default 5 s, clamped ≤15 s, 0 = disabled) during which
   a detached drain may still capture the authoritative usage trailer. If no
   trailer arrives, **nothing is billed** and a `budget.unbilled_stream` event is
-  emitted on gateway.events.*. *Rationale:* the free-inference lever is only
+  emitted on gateway.events.*. (AMENDED 2026-08-28 by the issue #79 entry
+  below: a cut stream now settles from the provider's own accumulated count
+  when there is one, and still publishes the event. Nothing is billed below
+  that floor, so the anti-estimate half of this decision is unchanged.) *Rationale:* the free-inference lever is only
   valuable to a client that already received nearly all the output, which is
   exactly when the trailer is closest — so a short grace covers the exploitable
   window. An observed-output-bytes estimate was explicitly REJECTED: it would
@@ -134,6 +137,37 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   raised ONLY for a genuine drop — "no gate wired", "no resolvable project" and
   "zero-priced model" are `billNotBillable` and stay silent, or the one alarm
   that detects real loss drowns in noise.
+- **[human decision] 2026-08-28 — A cut stream is billed from the provider's
+  accumulated count, and the loss event still fires (issue #79).** *Finding:*
+  when the gateway cuts a stream itself (grace expired, graceful shutdown,
+  drain-pool saturation) the provider has already processed tokens it will
+  charge for, and the gateway metered the whole stream as a total loss. bifrost
+  maintains that count for exactly this purpose. *Decision:* settle such a
+  stream from the accumulated count, under three rules — a first attempt
+  (0e75501, reverted in 32b3e3c) was wrong on all three. **(1) Source it from
+  the CONTEXT HANDLE** (`BifrostContextKeyStreamAccumulatedUsage`), never from
+  the cancellation chunk: bifrost sends that chunk with `select { send;
+  <-ctx.Done() }` against a context the gateway has ALREADY cancelled, so both
+  cases are ready and Go picks at random (measured: 19 of 40 cut streams
+  billed). **(2) Reject a count at or below `placeholderOutputTokens` (1).**
+  Anthropic and Bedrock-Anthropic emit `output_tokens: 1` in `message_start`
+  before any generation, and `accumulateAnthropicResponsesUsage` MAX-merges, so
+  a mid-stream cut sees that placeholder unchanged — the very value
+  `isTerminalResponsesEvent` exists to reject. An accumulated count is billable
+  because it measures work done, not because it is accumulated. **(3) A partial
+  bill STILL publishes `budget.unbilled_stream`**, with reason
+  `partial_provider_usage` and the partial counts on the payload. The first
+  attempt set `gotUsage` on the fallback, which suppressed the event and turned
+  a visible, alarmable loss into an invisible ~89% underbill. Billing something
+  is not the same as billing correctly. *Precedence:* terminal trailer >
+  partial > nothing; the partial is consulted only when no trailer arrived, so
+  a recovered trailer is never overwritten downward. *Synchronisation:* the
+  handle is a pointer the provider goroutine mutates in place, so it is read
+  ONLY after the provider closed the channel — every bifrost provider closes it
+  from that goroutine after its last write, and that close is the sole
+  happens-before edge. A settler cut off by the hard backstop reads nothing.
+  *Money-path rule untouched:* these are provider-reported counts of work done,
+  not a gateway-side estimate.
 - **[human decision] 2026-08-05 — `budget.unbilled_stream` is operator-only.**
   It publishes to `gateway.events.ops.budget` via a separate `OpsEventPublisher`
   port, NOT the per-project subject elitea-main relays to project members.
@@ -169,6 +203,107 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   **NOT done here, tracked as follow-up:** hop-marker detection (the actual
   mechanism), and amending spec §2.6 + `runbook-bifrost-cutover.mdx`, which
   still document 5/1s/30s and now disagree with the code — those live in
+  `elitea-docs`, a different repository. Both are now DONE — see the entry
+  below and EliteaAI/elitea-docs#13.
+
+- **[human decision] 2026-08-28 — the loop detector is a HOP MARKER, and
+  recognising one refuses exactly one request (issue #164).** *Mechanism:* the
+  gateway stamps `X-Elitea-Llm-Hop` on every outbound provider request
+  (`internal/account` → `NetworkConfig.ExtraHeaders`) and refuses any inbound
+  request that already carries this deployment's own value
+  (`internal/llmproxy/hopguard.go`, mounted on the router ROOT). A circular
+  route is contained on its FIRST re-entry, at any rate — including the one
+  request per hour that no threshold in `loopbreaker.go` can ever see. The
+  refusal is `400 invalid_request_error / circular_routing_detected`.
+  *Why 400 and not 508 Loop Detected:* 508 is a 5xx and the OpenAI-compatible
+  SDKs on this path retry 5xx, so a request already known to be a loop would
+  re-enter the platform twice more before the client gave up. No SDK retries a
+  400, and the condition genuinely is a caller-side configuration fault.
+  *Key material:* `GATEWAY_HOP_SECRET`, never `GATEWAY_IDENTITY_SECRET` and
+  never derived from it. The marker travels to every upstream and a provider
+  `api_base` is tenant-authored, so the key that signs the `X-Elitea-*`
+  identity headers must not follow it there, and marker rotation must not force
+  an identity rotation. Same value on every replica: a loop can leave through
+  replica A and re-enter on B.
+  *The security property, and why it constrains the design:* the marker cannot
+  be secret — every upstream receives a copy and the browser edge forwards it
+  on purpose. What holds instead is that recognising a marker refuses ONLY the
+  request carrying it. Detection reads one header, compares it in constant time
+  and records **nothing** — no counter, no circuit, no map. A hop refusal must
+  therefore never feed the amplification backstop or any shared state: a value
+  every upstream already holds would otherwise become a cross-tenant denial of
+  service, i.e. the guard would create the failure it exists to contain.
+  `TestHopGuard_ForgedMarkerDeniesOnlyTheForger` and
+  `TestHopGuard_LoopBreakerIsNotConsulted` pin this.
+  *Edge exception:* the browser edges delete the whole `X-Elitea-*` set (#326).
+  This ONE name is exempt, because it is not identity — it grants nothing,
+  names no project, and the only thing a client achieves by sending it is the
+  refusal of its own request. `mustForwardHeaders` in
+  `services/elitea-main/tests/deployedge/edge_identity_strip_test.go` enforces
+  the exemption; `internal/hopmarker/path_pin_test.go` fails when the two
+  modules drift, when any file under `deploy/` deletes the marker, or when
+  elitea-main's `/llm` proxy names it.
+  *Never silently disarmed:* `logHopMarkerMode` states ARMED or UNARMED once at
+  startup, in the idiom of `logLoopBreakerMode`.
+  **KNOWN GAP, deliberately left visible:** the Helm chart offers no
+  `GATEWAY_HOP_SECRET` knob, so a default install boots **loudly unarmed**.
+  Wiring `secrets.GATEWAY_HOP_SECRET` in `deploy/helm/elitea/values.yaml`
+  beside `GATEWAY_IDENTITY_SECRET` is what arms it; the reason and the
+  follow-up are recorded in `scripts/env-drift-allowlist.txt`, which is what
+  keeps CI green in the meantime.
+- **2026-08-28 (issue #315) — budget enforcement is INSTALLABLE at runtime, and
+  the install is monotonic.** *Finding:* `server.New` dials NATS once, and
+  nats.go only resurrects a connection that succeeded at least once, so a
+  gateway that starts during a NATS outage enforces nothing for the life of the
+  process. Issue #304 made that visible (`/readyz` reports not ready); it could
+  not make it recover, because `Handler.budgetGate` was a plain field that the
+  money path read with no synchronisation — installing it late was a data race
+  on billing. *Decision:* publish the whole NATS budget path (gate, price
+  calculator, both event publishers, the `budget_used` reader) as ONE immutable
+  value behind ONE `atomic.Pointer` (`internal/llmproxy/budget_plane.go`). A
+  reader takes a snapshot with `h.budget()` and uses the fields of THAT
+  snapshot; a writer publishes a new value. The composition root polls
+  `server.RedialNATS` and calls `Handler.InstallBudgetEnforcement`
+  (`cmd/elitea-llm-gateway/budget_recovery.go`). *Rules that hold this up:* the
+  install happens ONCE — `InstallBudgetEnforcement` refuses a nil gate and
+  refuses to replace an installed one, so the gate is never swapped under an
+  in-flight request and enforcement is never turned OFF by a transport error.
+  That monotonicity is what makes per-function snapshots safe for a request that
+  spans admission, billing and the soft alert. *Not done:* the authored
+  per-minute rate limiter is bound at startup and stays disabled until the pod
+  restarts; the recovery log line says so. Guarded by
+  `TestInstallBudgetEnforcement_UnderLoad` (which measures nothing without
+  `-race`), `TestEnforcementPlane_ReadyzFlipsUnderLoad`,
+  `TestBudgetRecovery_InstallsWhenNATSReturns` and the `startBudgetRecovery(`
+  wiring-gate entry.
+- **2026-08-28 (issue #510) — a ceiling that refuses owes its owner a warning,
+  so the soft alert is now per SCOPE.** *Finding:* #321 gave the gateway a
+  member ceiling that answers 402 `member_budget_exceeded`, and `trySoftAlert`
+  stayed project-scoped. A project crossed its threshold and an alert went out;
+  a member crossed the same threshold and nothing did. The refusal was the first
+  signal that a cap applied to that member. Before #321 the asymmetry cost
+  nothing, because a member cap refused nothing. *Decision:* `trySoftAlert`
+  takes `scope` + `scopeID` and runs for BOTH ceilings. The member gets its own
+  pre-increment snapshot, read beside the project one in the billing goroutine;
+  it is one more gate read for each request that bills a member, and FIX #27 has
+  already moved that block off the request goroutine, thus the caller waits for
+  none of it. *Rules that hold this up:* (1) the two crossing tests are
+  independent conditions, not early returns — a project increment that failed
+  must not silence the member's warning, because the member's counter moved;
+  (2) `TryAlertCooldown` derives its key from (scope, scope_id, period), thus
+  the two scopes claim different cooldowns and neither suppresses the other;
+  (3) the #322 platform switch gates both, because `userSnapshotSQL` reads
+  `alerts_enabled` from the same global row; (4) the event is published on the
+  PROJECT's subject for both scopes — `PublishSoftAlertEvent` turns its first
+  argument into `gateway.events.project.<id>.events`, and a member scope_id
+  there builds a subject nothing subscribes to. The payload carries `scope`,
+  `scope_id` and `user_id` instead; `project_id` stays the numeric project id on
+  both scopes, so the three fields a project alert already had keep their old
+  values. Guarded by `TestMemberSoftAlert_CrossingEmitsMemberScopedEvent`,
+  `TestMemberSoftAlert_BelowThresholdEmitsNothing`,
+  `TestMemberSoftAlert_NoMemberIDEmitsNothing` and
+  `TestMemberSoftAlert_PlatformSwitchSuppressesMember`. *Not done:* spec §8.3
+  still documents a project-only `budget.soft_alert` payload; it lives in
   `elitea-docs`, a different repository.
 
 ## Authored governance (issue #218, 2026-08-23)
@@ -950,6 +1085,39 @@ in a release note.**
   builds the binary, starts it, and scrapes it over HTTP. Remove the mount and
   that test answers 404, while every handler-level test still passes.
 
+- **[human decision] 2026-07-26, implemented 2026-08-28 (issue #17) —
+  `X-Elapsed-Ms` measures INSIDE the router, up to the resolved credential.**
+  *Finding:* the header fed the BFF.9d overhead gate (design §10.2) with
+  PRE-DISPATCH time alone. It missed the per-request credential resolution —
+  the Account's Postgres read plus the Fernet decrypt — and it missed core
+  routing, both of which §10.2 counts as gateway overhead. The staging result
+  (p99 17.1 ms) therefore understated the real cost.
+
+  *Decision:* "Move measurement inside the router." bifrost v1.7.3 gives no
+  seam around the provider round-trip (`ProviderConfig.NetworkConfig` takes no
+  RoundTripper), so "overhead = total minus provider" stays unavailable. The
+  boundary is the credential instead: core dials the provider only after it
+  holds the key.
+
+  *Mechanism:* the /llm Chat handler puts an `overhead.Meter`
+  (internal/overhead) on the `BifrostContext` before dispatch.
+  `account.GetKeysForProvider` marks it, because bifrost/core passes the
+  caller's own context to that method. The handler stamps the header AFTER the
+  router returns — after `ChatCompletionRequest`, and before `beginStream` on
+  the streaming path. The Meter keeps the EARLIEST mark: a later mark comes
+  from a retry or a fallback, which runs after a provider round-trip. Marks are
+  atomic, because core resolves credentials from its provider workers.
+
+  *What the header now covers:* decode, identity verification, loop breaker,
+  budget check, the wait in the core provider queue, core routing, and the
+  credential read. *What it still excludes:* the provider round-trip and the
+  gateway's own response marshalling. A request that resolves no credential (a
+  direct key, a plugin short-circuit) reports the pre-dispatch time alone.
+
+  *Consequence:* the number gets LARGER, and it now moves with Postgres and
+  with core queue depth. `internal/llmproxy/testdata/p99_overhead_benchmark.json`
+  records the OLD, narrower metric; do not read it as a measurement of this one.
+
 ## Resolved follow-ups
 - ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's
   `secrets:` block (valueFrom.secretKeyRef, optional:true default) — provision the
@@ -981,6 +1149,12 @@ in a release note.**
   elitea-main-only or chart-only change — see the next line).
 
 ## Known follow-ups (not blocking, need a human)
+- Re-baseline the BFF.9d threshold against the wider `X-Elapsed-Ms` (issue
+  #17). 50 ms was set against the pre-dispatch-only metric. The new value adds
+  a Postgres round-trip, a Fernet decrypt and the core queue wait, and a cold
+  pool can exceed 50 ms. The number needs a k6 run on staging
+  (`cmd/cutover-ctl/testdata/overhead_loadtest.js`); it cannot be measured from
+  a unit test, so the threshold is unchanged for now.
 - ~~Set `secrets.*.optional: false` ... for `GATEWAY_IDENTITY_SECRET`~~ — DONE
   2026-08-09 (issue #11, see the Trust-boundary entry above): it is `false` in
   the base chart for both the gateway and elitea-main. `SECRETS_MASTER_KEY`

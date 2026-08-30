@@ -31,25 +31,91 @@ kubectl apply -f deploy/argocd/app-of-apps.yaml
 `kubectl apply -f deploy/argocd/` reaches only that file — kubectl does not
 recurse — which is the intended behaviour: the children are created by ArgoCD.
 
+The root syncs nothing usable on its own. Two values have no chart default and
+cannot get one, and the platform chart refuses to render without them. Read
+[Values an operator supplies](#values-an-operator-supplies-and-where-each-one-goes-475)
+first.
+
 ## Chart × service × status
 
-| Chart (`deploy/helm/`) | Service / image | ArgoCD Application | Wave | Namespace | Status |
-|---|---|---|---|---|---|
-| `nats` | upstream NATS JetStream | `applications/nats.yaml` | -2 | `elitea-gateway` | **Production reference.** scale-1 profile by default; `values-ha.yaml` for HA. |
-| `nats-bootstrap` | JetStream KV buckets + stream (Job) | `applications/nats-bootstrap.yaml` | -1 | `elitea-gateway` | **Production reference.** Idempotent Helm hook; HA needs `replicas=3`. |
-| `elitea-llm-gateway` | `ghcr.io/eliteaai/elitea-llm-gateway` | `applications/elitea-llm-gateway.yaml` | 0 | `elitea-gateway` | **Mature — the conventions reference for new charts.** mTLS-only ClusterIP, custom-metric HPA, NetworkPolicy opt-in. |
-| `elitea-main` | `ghcr.io/eliteaai/elitea-main` | `applications/elitea-main.yaml` | 1 | `elitea` | **Prototype values** (self-labelled). Ships the migration hook Job; no TLS ingress, no NetworkPolicy, no split DB principals. |
-| `elitea-scheduler` | `ghcr.io/eliteaai/elitea-scheduler` | `applications/elitea-scheduler.yaml` | 2 | `elitea` | **New. Retirement caveat — read the chart README.** Legacy poller starts unconditionally; the two retained workers are off by default. |
-| `pylon-indexer` | `ghcr.io/eliteaai/pylon-indexer` | `applications/pylon-indexer.yaml` | 2 | `elitea` | **New. Legacy-by-design**, retained until the index path is replatformed (`INDEX_V2_CUTOVER.md`). No model-cache pre-seed. |
-| `elitea-web` | `ghcr.io/eliteaai/elitea-web` | `applications/elitea-web.yaml` | 3 | `elitea` | **New.** Static SPA behind nginx. In-cluster only until an ingress exists. |
-| — | `ghcr.io/eliteaai/elitea-ui` | — | — | — | **No chart.** The old UI is published and runs in compose; the Kubernetes path is `elitea-web`. |
-| — | `ghcr.io/eliteaai/elitea-worker-python` | — | — | — | **Image published, no chart yet.** The agent worker: compose calls it mandatory for agent execution, and it is now built by the release like every other image. Its chart is a separate change — the one open question is how a Kubernetes install serves the HTTPS `platform_origin` the worker requires. |
-| — | PostgreSQL, Redis | — | — | — | **Not provisioned here.** External prerequisites; see below. |
+The platform is ONE chart and ONE Application. It used to be eight charts and
+six Applications; they synced independently, nothing ordered them, and each
+carried its own copy of the database secret name, the NATS URL and the Redis
+address. Those copies had already drifted apart.
 
-Sync waves follow the issue's ordering — nats → migrations → backend →
-frontend. Migrations are not their own wave: `elitea-main`'s chart runs them as
-a `pre-install,pre-upgrade` Helm hook Job, and Helm blocks the release until it
-completes, so the ordering is enforced *inside* wave 1.
+| Chart (`deploy/helm/`) | ArgoCD Application | Wave | Namespace | Status |
+|---|---|---|---|---|
+| `nats` | `applications/nats.yaml` | -2 | `elitea-gateway` | **Production reference.** scale-1 profile by default; `values-ha.yaml` for HA. |
+| `nats-bootstrap` | `applications/nats-bootstrap.yaml` | -1 | `elitea-gateway` | **Production reference.** Idempotent Helm hook Job; HA needs `replicas=3`. |
+| `elitea` | `applications/elitea.yaml` | 0 | `elitea` | **The platform.** One release: elitea-main and its migration Job, elitea-web, the scheduler, the LLM gateway, the agent worker, the runtime Redis, the OTel collector, the `dbInit` Job. |
+
+Components of the `elitea` chart are switched by `<component>.enabled`, and
+`deploy/helm/elitea/values.yaml` holds every one of them. Ordering inside the
+platform is Helm hook ordering, not a sync wave: the migration runs
+`pre-install,pre-upgrade` and Helm blocks the release until it finishes, the
+workload-session Job follows it, and the Redis consumer groups are created
+`post-install`. A failed migration aborts the release, and the previous pods
+keep serving.
+
+Three charts, and that is all of them: `helm lint`, the template matrix and
+`publish.yml` each read `deploy/helm/*/Chart.yaml`, so a fourth chart fails CI
+until somebody templates and publishes it.
+
+Two images have no chart. `ghcr.io/eliteaai/elitea-ui` is the old UI: it runs
+in compose, and the Kubernetes path is the `web` component. `pylon-indexer` is
+not deployed at all — the Go runtime plane serves index ingest through the
+agent worker, on the same command stream.
+
+## Values an operator supplies, and where each one goes (#475)
+
+Read this before the first sync. A reader of the committed files alone can say
+where every value comes from, and this table is that answer.
+
+`deploy/argocd/applications/elitea.yaml` states its values in one
+`spec.source.helm` block. Nothing reaches the release from anywhere else.
+
+| Value | Where it comes from | Who supplies it |
+|---|---|---|
+| Everything with a default | `deploy/helm/elitea/values.yaml`, named in `spec.source.helm.valueFiles` | the chart |
+| `postgresql.existingSecret`, `postgresql.key` | `spec.source.helm.parameters` | the chart states a default; change it to your Secret |
+| `llmGateway.env.GATEWAY_SELF_LLM_ORIGINS` | `spec.source.helm.parameters`, **empty in git** | **the operator** |
+| `llmGateway.egressPosture` | `spec.source.helm.parameters`, **empty in git** | **the operator** |
+| the database password itself | the Kubernetes Secret that `postgresql.existingSecret` names | **the operator**, out of band |
+| the runtime material (CA, certificates, signing keyring, Redis password, spool key) | the Kubernetes Secrets that `main.runtime.material.secretName`, `worker.materialSecretName` and `runtimeRedis.materialSecretName` name | **the operator**, out of band — see [`runtime/README.md`](runtime/README.md) |
+
+**The two empty parameters are fields, not defaults.** Neither can get a chart
+default: both name addresses that only the operator knows, and a guessed origin
+would guard a name nobody uses and read as armed. The chart REFUSES to render
+while either is empty, so a sync of the committed file reports SyncFailed and
+names the field. It does not install a gateway with a disarmed guard.
+
+Fill them in your own GitOps copy of the Application, or with:
+
+```bash
+argocd app set elitea \
+  -p llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://elitea.example.com/llm/v1 \
+  -p llmGateway.egressPosture=public-unrestricted
+```
+
+**No secret goes in a parameter.** A Helm parameter is rendered into a
+ConfigMap, which anybody with `get` on the namespace can read. The database
+DSN carries a password, so the chart takes a Secret NAME and every component
+that reads the database reads that one Secret. Prove it after a change:
+
+```bash
+helm template elitea deploy/helm/elitea \
+  -f deploy/helm/elitea/values.yaml \
+  --set-string postgresql.existingSecret=elitea-main-db \
+  --set-string postgresql.key=database-url \
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://render-only.example.invalid/llm/v1 \
+  --set-string llmGateway.egressPosture=public-unrestricted \
+  | grep -A4 'name: DATABASE_URL'
+```
+
+`deploy/helm/tests/render-bf0-2b.sh` makes the same assertion in CI. It reads
+the parameters out of the Application, renders the chart from them, and reads
+DATABASE_URL back out of the manifest, so an Application that stops supplying
+its values fails there.
 
 ## Distribution — the charts are published to GHCR as OCI artifacts
 
@@ -63,7 +129,7 @@ oci://ghcr.io/eliteaai/charts/<chart>
 Install without cloning this repository:
 
 ```bash
-helm install elitea-main oci://ghcr.io/eliteaai/charts/elitea-main --version 1.2.3
+helm install elitea oci://ghcr.io/eliteaai/charts/elitea --version 1.2.3
 ```
 
 Four properties of the published artifact that the in-repo chart does not have:
@@ -73,19 +139,19 @@ Four properties of the published artifact that the in-repo chart does not have:
   non-SemVer tag is a foot-gun for every tool that enumerates the repository.
   The in-repo `Chart.yaml` files all stay at the placeholder `0.1.0`; only the
   packaged artifact carries a release number.
-- **`image.tag` defaults to the chart version**, for the five charts whose
-  image this repository publishes. The in-repo default is `"latest"` with
+- **`image.tag` defaults to the chart version** for the `elitea` chart, whose
+  images this repository publishes. The in-repo default is `"latest"` with
   `pullPolicy: IfNotPresent`, which means a node holding an older cached
   `latest` layer keeps serving it — the release job stamps the tag at package
   time so the published chart cannot install that way.
-- **`appVersion` tracks the platform release** for those same five charts. The
-  charts that deploy a third-party image (`nats`, `nats-bootstrap`,
-  `otel-collector`) keep their deliberate upstream pin, because a platform
-  release number means nothing to those images' registries.
+- **`appVersion` tracks the platform release** for that same chart. The two
+  charts that deploy a third-party image (`nats`, `nats-bootstrap`) keep their
+  deliberate upstream pin, because a platform release number means nothing to
+  those images' registries.
 - **Charts are cosign-signed**, keyless, exactly as the images are:
 
   ```bash
-  cosign verify ghcr.io/eliteaai/charts/elitea-main:1.2.3 \
+  cosign verify ghcr.io/eliteaai/charts/elitea:1.2.3 \
     --certificate-identity-regexp '^https://github.com/eliteaai/elitea-platform/' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
@@ -104,9 +170,9 @@ registers a route group only when that dependency exists.
 The chart used to set **none** of them. So the same image served the pylon-free
 configuration on compose and served none of it on Kubernetes — the platform
 could run without pylon on compose and could not on Kubernetes, which is the
-deployment target. `deploy/helm/elitea-main/values.yaml` now carries every
-flag, and `deploy/helm/elitea-main/values-standalone.yaml` is the values file
-whose capability set matches `docker-compose.standalone-full.yml`.
+deployment target. `deploy/helm/elitea/values.yaml` now carries every flag
+under `main.env`, and `deploy/helm/elitea/values-standalone.yaml` is the values
+file whose capability set matches `docker-compose.standalone-full.yml`.
 
 | Flag | Default install | `values-standalone.yaml` | Prerequisite |
 |---|---|---|---|
@@ -115,16 +181,39 @@ whose capability set matches `docker-compose.standalone-full.yml`.
 | `ELITEA_PROJECT_INFO_ENABLED` | off | **on** | production authentication |
 | `ELITEA_AI_PROJECT_ID` | empty | **set** | must name a project that exists |
 | `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` | off | off | `ELITEA_CONFIGURATIONS_ENABLED` **and** `runtime.enabled` — read below |
-| `ELITEA_INDEX_TYPES_ENABLED` | off | off | **must stay off** — issue #394 |
-| `ELITEA_APPLICATION_SKILLS_ENABLED` | off | off | **must stay off** — issue #395 |
+| `ELITEA_INDEX_TYPES_ENABLED` | off | **on** | production authentication |
+| `ELITEA_APPLICATION_SKILLS_ENABLED` | off | **on** | production authentication |
 | `REDIS_URL` | empty | **set at install** | a Redis the cluster can reach |
 | `ADMIN_UI_STATIC_DIR` | **set** | set | the image ships the bundle at it |
 | `ELITEA_RUNTIME_ENABLED` and its block | off | **on** | production authentication **and** runtime material — read below |
 
-Two flags stay off on purpose in **both** files. Their routes answer a shape
-the published contract and the generated client both reject, so turning either
-on breaks the web client. Issues #394 and #395 track the contract work that has
-to land first.
+No flag stays off in **both** files any more.
+
+Two used to. Each answered a body that only one of the two shipped clients
+could read, so the flag could not be turned on without breaking the other. Both
+were fixed the same way — ONE body carrying BOTH key sets, projected from the
+same rows, so the halves cannot disagree:
+
+- `ELITEA_APPLICATION_SKILLS_ENABLED` (#395). The attached-skills read answers
+  the published `SkillsList` keys (`items`, `total`, `page`, `page_size`,
+  `total_pages`) that `apps/elitea-web` reads, beside the Pylon keys (`skills`,
+  `max_skills`) that `apps/elitea-ui` reads.
+- `ELITEA_INDEX_TYPES_ENABLED` (#394). The index-types read answers the
+  published `DocumentLoadersResponse` keys (`items`, `total`) beside the Pylon
+  keys (`document_types`, `image_types`, `code_types`). Every entry of `items`
+  names one category and lists that category's extensions, so the two halves
+  are the same pinned SDK snapshot read twice.
+
+Both are off in a default install only because the capability needs production
+authentication, which a default install does not build — the same reason
+`ELITEA_CONFIGURATIONS_ENABLED` and `ELITEA_PROJECT_INFO_ENABLED` are off there.
+
+Turning the skills flag off again is a safe rollback: `internal/api/router.go`
+serves the same path from the skills handler, with the same rows in the same
+published envelope. Turning the index-types flag off is **not** free. The
+toolkits handler answers that path instead, with a static six-loader list that
+no data backs, and `apps/elitea-ui` reads that as an empty file-type
+allow-list. A default install therefore still ships that gap.
 
 ### Why `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` stays off
 
@@ -156,8 +245,8 @@ The flag stays off for two reasons that are true today.
 Prerequisites are checked while the chart renders, not when the pod starts. A
 values file that turns a capability on without what it needs fails
 `helm template` with a message naming the field and the Go source that would
-otherwise refuse at boot. `deploy/helm/elitea-main/tests/render-capabilities.sh`
-asserts all of this against the rendered YAML, and it reads the required
+otherwise refuse at boot. `deploy/helm/tests/render-capabilities.sh` asserts
+all of this against the rendered YAML, and it reads the required
 runtime names out of `internal/runtimecomposition/config.go`, so a newly
 required name fails the gate until the chart renders it.
 
@@ -285,15 +374,14 @@ exactly like their `runtime.material` counterparts, and
 `fileConfig.authConfig.material.volume` is the same alternative for a CSI secret
 driver.
 
-### `ELITEA_AI_PROJECT_ID` is set in two charts
+### `ELITEA_AI_PROJECT_ID` is set in two places
 
-`deploy/helm/elitea-main/values.yaml` and
-`deploy/helm/elitea-llm-gateway/values.yaml` both carry this key, and **both
-must name the same project**. elitea-main merges that project's configurations
-into every other project's option lookups; the gateway reads it to serve the
-shared models an operator publishes (issue #316). Empty on the gateway side
-leaves shared models unreachable — the model picker offers them and the request
-then finds no credential. Both ship empty, because an id naming a schema that
+`deploy/helm/elitea/values.yaml` carries this key under `main.env` and under
+`llmGateway.env`, and **both must name the same project**. elitea-main merges
+that project's configurations into every other project's option lookups; the
+gateway reads it to serve the shared models an operator publishes (issue
+#316). Empty on the gateway side leaves shared models unreachable: the model
+picker offers them, and the request then finds no credential. Both ship empty, because an id naming a schema that
 does not exist makes every credential read fail, so the operator must choose
 one project and set it in both places.
 
@@ -301,12 +389,29 @@ one project and set it in both places.
 
 Stated plainly, because the gap between compose and Helm is where deploys break:
 
-- **No PostgreSQL and no Redis.** No chart here provisions them. Wave 1's
-  migration hook fails against a cluster where they don't already exist and
-  where the charts' `DATABASE_URL` / `REDIS_URL` have not been pointed at them.
-- **No ingress or HTTPRoute, and no securityContext hardening.** A separate
-  issue owns both; the charts deliberately do not duplicate that work. Until
-  it lands, `elitea-web` and `elitea-main` are reachable in-cluster only.
+- **No PostgreSQL and no Redis.** No chart here provisions them. The migration
+  hook fails against a cluster where they do not already exist, and against one
+  where `postgresql.existingSecret` and `redis` have not been pointed at them.
+  The table in [Values an operator supplies](#values-an-operator-supplies-and-where-each-one-goes-475)
+  names both.
+  The database itself may be **empty**. `elitea-migrate` embeds the pylon-era
+  schema (`internal/infra/db/migrations/001_initial.sql`) and applies it first
+  when the database does not carry it, then applies the shared and tenant
+  histories. So the migration hook does build the schema, and nobody runs SQL
+  by hand before the install (#556). Two preparations stay outside it, because
+  both need rights the migrating role does not hold: `CREATE DATABASE` for the
+  agent-state store and `CREATE EXTENSION vector`. The `dbInit` Job does them,
+  and it needs an administrator DSN.
+- **No browser edge by default, and no securityContext hardening.** The charts
+  render neither an Ingress nor an HTTPRoute until `main.ingress.enabled` is
+  on, so a default install leaves `elitea-web` and `elitea-main` reachable
+  in-cluster only. Turning it on renders ONE `/` rule with elitea-main as the
+  only backend. A cluster that also serves the web app from `/app` needs a rule
+  per root-mounted Go route, or the SPA backend swallows them:
+  `deploy/gateway-api/httproute.yaml` is the reviewed edge for that shape, and
+  it must stay in step with `deploy/traefik/dynamic.yml`. Both are walked by
+  `services/elitea-main/tests/deployedge/`, so a new root-mounted family fails
+  CI until every edge routes it (#568).
 - **Cross-namespace DNS.** NATS and the gateway live in `elitea-gateway`; the
   rest live in `elitea`. Short names do not resolve across namespaces, so
   `LLM_GATEWAY_URL` and `GATEWAY_NATS_URL` must be FQDNs
@@ -390,8 +495,8 @@ stray space or tab **is** malformed.
   the table, and compose fails if you do not export it (#418).
 - `docker-compose.staging.yml` requires it from your shell, and compose fails
   if you do not export it.
-- No chart under `deploy/helm/elitea-main/` sets it. Supply it through a
-  Kubernetes Secret, or accept unwrapped storage.
+- No chart under `deploy/helm/` sets it. Supply it through a Kubernetes
+  Secret, or accept unwrapped storage.
 - The E2E stack sets no key on purpose. It seeds unwrapped key rows, so it
   needs none.
 
@@ -408,9 +513,9 @@ first. It rewraps the project key and never rewrites the secret values.
 
 1. **Helm Lint** — `helm lint` over every chart under `deploy/helm/`. New
    charts are picked up automatically. The job also runs
-   `deploy/helm/elitea-main/tests/render-capabilities.sh`, because `helm lint`
-   never reads the rendered environment: it stayed green for as long as the
-   chart set no capability flag at all (#382). Two coverage checks live here
+   `deploy/helm/tests/render-capabilities.sh`, because `helm lint` never reads
+   the rendered environment: it stayed green for as long as the chart set no
+   capability flag at all (#382). Two coverage checks live here
    rather than in the jobs they guard: every chart directory must appear in
    the **Helm Template** matrix below or be excluded by name with a reason,
    and every chart directory must appear in the `chart` matrix of
@@ -420,7 +525,7 @@ first. It rewraps the project key and never rewrites the secret values.
 2. **Helm Template (per chart)** — `helm template` with the chart's values
    files, *and* a second pass with its non-default toggles (HPA, PVC, optional
    Services and probes, hook Jobs render zero objects otherwise, so a break in
-   them would be invisible). `elitea-main` gets a third pass with
+   them would be invisible). `elitea` gets a third pass with
    `values-standalone.yaml`, which renders the runtime material Secret volume,
    the material init container and the three runtime listener ports that no
    other pass produces. Every pass is
@@ -431,6 +536,11 @@ first. It rewraps the project key and never rewrites the secret values.
    can make: a stray manifest directly in `deploy/argocd/` that the root never
    renders, a `spec.source.path` pointing at a chart that does not exist, a
    non-Application manifest in `applications/`, and a child with no sync-wave.
+   The **Helm Lint** job adds the value check that no schema can make either
+   (#475): every Application that syncs an in-repo chart must declare
+   `spec.source.helm`, and the `elitea` Application must render from what it
+   declares. An Application that declares nothing renders the chart from its
+   own defaults, and the platform chart refuses those defaults.
 
 Validation is `kubeconform`, **not** `kubectl apply --dry-run=client`, even
 though the latter is what issue #240 asked for: that command needs API

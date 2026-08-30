@@ -48,6 +48,12 @@ export interface UseGetCurrentToolkitSchemasParams {
 export interface UseGetCurrentToolkitSchemasResult {
   readonly toolkitSchemas: ToolkitTypeSchemaMap | undefined;
   readonly isFetching: boolean;
+  /**
+   * The read failed (#440). It used to be absent, so every caller rendered a
+   * failed read as an empty schema map — the same empty screen a toolkit
+   * with no schemas produces. A caller must keep the two apart.
+   */
+  readonly isError: boolean;
 }
 
 export function useGetCurrentToolkitSchemas(params: UseGetCurrentToolkitSchemasParams = {}): UseGetCurrentToolkitSchemasResult {
@@ -74,5 +80,6 @@ export function useGetCurrentToolkitSchemas(params: UseGetCurrentToolkitSchemasP
   return {
     toolkitSchemas,
     isFetching: query.isFetching,
+    isError: query.isError,
   };
 }

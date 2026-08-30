@@ -2,6 +2,7 @@ import type { ComponentType, ReactNode } from 'react';
 import { useCallback, useMemo } from 'react';
 
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -10,11 +11,14 @@ import { t } from '@/shared/i18n';
 import { BaseBtn, BUTTON_VARIANTS } from '@/shared/ui/BaseBtn';
 import { SingleSelect, type SingleSelectOption } from '@/shared/ui/SingleSelect';
 
+import { toolkitTools } from '@/entities/toolkit';
+
 import { IndexesToolsEnum } from '../../indexes/lib/constants/indexDetails.constants';
 import type { JsonSchemaLike } from '../../indexes/lib/helpers/indexChat.helpers';
 import type { UseIndexNameValidationResult } from '../../indexes/lib/hooks/useIndexNameValidation.hooks';
 import type { ToolkitConversationValues } from '../../lib/helpers/toolkitConversation.helpers';
 import { useGetCurrentToolkitSchemas } from '../../lib/hooks/useGetCurrentToolkitSchemas.hooks';
+import { useSelectedProjectId } from '../../lib/hooks/useSelectedProjectId';
 import type { LLMModelSelectorProps } from '../../indexes/ui/IndexDetails/IndexChat';
 import type { ToolFormContainerProperty, ToolFormContainerSchema } from '../form/ToolFormContainer';
 import { ToolFormContainer } from '../form/ToolFormContainer';
@@ -31,22 +35,21 @@ import { ToolFormContainer } from '../form/ToolFormContainer';
  *     no Formik dependency (established convention, e.g. `DeleteApplicationButton.tsx`'s
  *     own doc comment).
  *
- *  2. **REAL BACKEND GAP: no `toolkit_available_tools` endpoint** (same gap
- *     `./useGetSelectedToolSchema.ts`'s own module doc comment discloses in
- *     full for its own, separate use of the identical missing endpoint —
- *     cited once there, not re-litigated here). The baseline's
- *     `shouldFetchDynamicTools`/`useToolkitAvailableToolsQuery`/
- *     `dynamicToolNames` three-step dance is dropped entirely:
- *     `allToolsOptions` falls back to `schemaToolNames` (the static
- *     `selected_tools` schema's `args_schemas` keys or `items.enum`)
- *     whenever there is no explicit `values.settings.selected_tools`
- *     selection. OpenAPI-type toolkits that expose ONLY a dynamic tool
- *     catalogue (no static schema, no explicit selection) will show an
- *     empty tool picker — a real, disclosed narrowing, not invented
- *     behaviour. `toolkitId`/`projectId` are dropped from this component's
- *     own prop list entirely (the baseline threads both purely to drive
- *     this now-gap-blocked query) rather than kept as accepted-but-unused
- *     props.
+ *  2. **The dynamic tool catalogue is READ (#440).** This item used to claim
+ *     there was no `toolkit_available_tools` endpoint. That was wrong:
+ *     `internal/api/router.go` registers it (:1912) and
+ *     `toolkit_discover_tools` (:1914); only the OpenAPI spec, and so the
+ *     generated client, lacked them. The baseline's third tier is restored
+ *     through `entities/toolkit`'s `toolkitTools.useToolkitTools`, so
+ *     `allToolsOptions` resolves in the baseline's own order: an explicit
+ *     `values.settings.selected_tools`, else the static `selected_tools`
+ *     schema, else the catalogue fetched for `values.type`. A FAILED READ
+ *     IS ITS OWN STATE — #381 made both routes answer a failed read with an
+ *     error rather than `200 {"tools":[]}`, and `ToolPicker` below renders
+ *     that as an error with a retry, so an empty picker keeps its one
+ *     meaning. `projectId` comes from this slice's own
+ *     `useSelectedProjectId`; `toolkitId` stays off the prop list because
+ *     this panel knows the toolkit TYPE only.
  *
  *  3. **`SHARED_TOUR_TARGET_IDS.testSettings` (`features/interactive-tours`)
  *     is dropped.** That domain does not exist in this worktree and is out
@@ -144,11 +147,85 @@ function toToolOption(tool: ExplicitSelectedTool): SingleSelectOption {
   return { label, value: name };
 }
 
+/**
+ * Whether the dynamic catalogue is the tier that feeds the picker.
+ *
+ * It is not, while the schema read is still in flight: an empty schema map
+ * mid-flight is not yet "the static tier gave nothing". Split out of
+ * `TestToolSettings` to keep that function under the §3.5 complexity budget.
+ */
+function usesDynamicToolTier(isFetchingSchemas: boolean, explicitCount: number, schemaCount: number): boolean {
+  if (isFetchingSchemas) return false;
+  return explicitCount === 0 && schemaCount === 0;
+}
+
+interface ToolPickerProps {
+  /** Whether the dynamic tier is the one in use — an error from a tier nobody reads is not this picker's error. */
+  readonly dynamicTierActive: boolean;
+  readonly readFailed: boolean;
+  readonly onRetry: () => void;
+  readonly value: string;
+  readonly options: readonly SingleSelectOption[];
+  readonly onSelect: (value: string) => void;
+  readonly onClear: () => void;
+}
+
+/**
+ * The tool picker, or the error that replaces it (#440).
+ *
+ * A failed read is its own state. An empty picker means the toolkit offers
+ * no tools; it must never stand in for a failure. Split into its own
+ * component to keep `TestToolSettings` under the §3.5 complexity budget.
+ */
+function ToolPicker({ dynamicTierActive, readFailed, onRetry, value, options, onSelect, onClear }: ToolPickerProps): ReactNode {
+  if (dynamicTierActive && readFailed) {
+    return (
+      <Alert
+        severity="error"
+        data-testid="tool-list-error"
+        action={
+          <BaseBtn
+            variant={BUTTON_VARIANTS.tertiary}
+            size="small"
+            onClick={onRetry}
+          >
+            {t('features.toolkits.testToolSettings.toolListRetry', 'Retry')}
+          </BaseBtn>
+        }
+      >
+        {t('features.toolkits.testToolSettings.toolListError', 'The tool list did not load. Try again.')}
+      </Alert>
+    );
+  }
+
+  return (
+    <SingleSelect
+      value={value}
+      label={t('features.toolkits.testToolSettings.toolLabel', 'Tool')}
+      onChange={onSelect}
+      onClear={onClear}
+      options={[...options]}
+    />
+  );
+}
+
+/** The baseline's three tiers, in its own order: an explicit selection, then the static schema, then the catalogue the backend publishes at runtime. */
+function resolveAvailableTools(
+  explicitSelectedTools: readonly ExplicitSelectedTool[],
+  schemaToolNames: readonly string[],
+  dynamicToolNames: readonly string[],
+): readonly ExplicitSelectedTool[] {
+  if (explicitSelectedTools.length > 0) return explicitSelectedTools;
+  if (schemaToolNames.length > 0) return schemaToolNames;
+  return dynamicToolNames;
+}
+
 export function TestToolSettings(props: TestToolSettingsProps): ReactNode {
   const { selectedTool, onChangeTool, toolInputVariables, onChangeInputVariables, onRunTool, isRunning, isValidForm, selectedToolSchema, values, llm, LLMModelSelector, indexNameValidation } = props;
   const { clearIndexNameError, updateIndexNameError, isIndexNameValid, indexNameError } = indexNameValidation;
 
-  const { toolkitSchemas } = useGetCurrentToolkitSchemas();
+  const projectId = useSelectedProjectId();
+  const { toolkitSchemas, isFetching: isFetchingSchemas } = useGetCurrentToolkitSchemas();
   const selectedToolsSchema = values.type !== undefined ? (toolkitSchemas?.[values.type] as { properties?: { selected_tools?: SelectedToolsSchemaShape } } | undefined)?.properties?.selected_tools : undefined;
   const disabledRunTool = !isValidForm || isRunning || Boolean(indexNameError);
 
@@ -158,15 +235,26 @@ export function TestToolSettings(props: TestToolSettingsProps): ReactNode {
     return [...(selectedToolsSchema?.items?.enum ?? [])];
   }, [selectedToolsSchema]);
 
-  const allToolsOptions = useMemo<SingleSelectOption[]>(() => {
-    const explicitSelectedTools = (values.settings?.['selected_tools'] as readonly ExplicitSelectedTool[] | undefined) ?? [];
-    const hasExplicitSelection = explicitSelectedTools.length > 0;
-    // The baseline's third tier (`dynamicToolNames`) never resolves — see
-    // the module doc comment's item 2 (no `toolkit_available_tools` endpoint).
-    const availableTools = hasExplicitSelection ? explicitSelectedTools : schemaToolNames;
+  const explicitSelectedTools = useMemo<readonly ExplicitSelectedTool[]>(
+    () => (values.settings?.['selected_tools'] as readonly ExplicitSelectedTool[] | undefined) ?? [],
+    [values.settings],
+  );
 
+  // The baseline's third tier. It runs only when the first two tiers give
+  // nothing, which is the toolkit type that publishes its tools at runtime.
+  // It also waits for the schema read to settle: an empty schema map while
+  // that read is still in flight is not yet "the static tier gave nothing".
+  const usesDynamicTier = usesDynamicToolTier(isFetchingSchemas, explicitSelectedTools.length, schemaToolNames.length);
+  const dynamicTools = toolkitTools.useToolkitTools({
+    projectId,
+    toolkitType: values.type,
+    enabled: usesDynamicTier,
+  });
+
+  const allToolsOptions = useMemo<SingleSelectOption[]>(() => {
+    const availableTools = resolveAvailableTools(explicitSelectedTools, schemaToolNames, dynamicTools.toolNames);
     return availableTools.map(toToolOption).sort((first, second) => first.label.toLowerCase().localeCompare(second.label.toLowerCase()));
-  }, [schemaToolNames, values.settings]);
+  }, [dynamicTools.toolNames, explicitSelectedTools, schemaToolNames]);
 
   const onChangeInputVariablesWrapper = useCallback(
     (value: Readonly<Record<string, unknown>>) => {
@@ -201,12 +289,14 @@ export function TestToolSettings(props: TestToolSettingsProps): ReactNode {
           <LLMModelSelector {...llm} />
         </Box>
         <Box sx={toolSelectContainerSx}>
-          <SingleSelect
+          <ToolPicker
+            dynamicTierActive={usesDynamicTier}
+            readFailed={dynamicTools.isError}
+            onRetry={dynamicTools.refetch}
             value={selectedTool ?? ''}
-            label={t('features.toolkits.testToolSettings.toolLabel', 'Tool')}
-            onChange={onSelectTool}
-            onClear={onClearTool}
             options={allToolsOptions}
+            onSelect={onSelectTool}
+            onClear={onClearTool}
           />
         </Box>
 

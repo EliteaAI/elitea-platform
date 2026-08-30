@@ -92,6 +92,99 @@ WHERE outbox_id = 'outbox-agent'`); err != nil {
 	}
 }
 
+// TestPostgresAgentDispatchHeldPublisherStillAppendsDurableWinner pins the same
+// competing-publisher window that lost one index publish attempt. One publisher
+// is held at the signing barrier until a competitor stores, appends and
+// publishes the command, which moves the job to DISPATCHED. No worker holds
+// authority, so the held publisher must still receive the durable winner,
+// append it, and count its publish attempt. A refusal there reaches the
+// dispatcher as success and drops the attempt without an error.
+func TestPostgresAgentDispatchHeldPublisherStillAppendsDurableWinner(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	policy := AgentExecutionDispatchPolicy{
+		StreamName:        "elitea:runtime:agent:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "agent",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "agent-limits-v1",
+		MaxOutstanding:    2,
+	}
+	repository, err := NewAgentExecutionJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := admitPostgresAgentExecution(
+		t,
+		pool,
+		"10000000-0000-4000-8000-000000000022",
+		"20000000-0000-4000-8000-000000000022",
+		"30000000-0000-4000-8000-000000000022",
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	appender := &postgresIndexDispatchAppender{}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	heldSigner := &postgresIndexDispatchSigner{
+		keyID:   "agent-held-loser",
+		started: started,
+		release: release,
+	}
+	winnerSigner := &postgresIndexDispatchSigner{keyID: "agent-held-winner"}
+	heldDispatcher, err := agentexecutionapp.NewDispatcher(
+		repository,
+		newPostgresAgentProducer(t, policy, heldSigner, appender),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerDispatcher, err := agentexecutionapp.NewDispatcher(
+		repository,
+		newPostgresAgentProducer(t, policy, winnerSigner, appender),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heldResult := make(chan error, 1)
+	go func() {
+		heldResult <- heldDispatcher.Dispatch(ctx, "outbox-agent")
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatalf("held agent publisher did not reach the signing barrier: %v", ctx.Err())
+	}
+
+	if err := winnerDispatcher.Dispatch(ctx, "outbox-agent"); err != nil {
+		t.Fatalf("winning agent publisher: %v", err)
+	}
+	assertPostgresAgentDispatchState(t, ctx, pool, admitted.ExecutionID, true, "DISPATCHED", 1)
+
+	close(release)
+	select {
+	case err := <-heldResult:
+		if err != nil {
+			t.Fatalf("held agent publisher: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("held agent publisher did not return: %v", ctx.Err())
+	}
+
+	prepared := assertPostgresAgentDispatchState(t, ctx, pool, admitted.ExecutionID, true, "DISPATCHED", 2)
+	if appender.callCount() != 2 ||
+		!bytes.Equal(appender.callBytes(0), prepared) ||
+		!bytes.Equal(appender.callBytes(1), prepared) {
+		t.Fatalf("held agent publisher dropped its append of the durable winner: appends=%d", appender.callCount())
+	}
+	if winnerSigner.callCount() != 1 || heldSigner.callCount() != 1 {
+		t.Fatal("held agent publisher race re-signed the durable envelope")
+	}
+}
+
 func newPostgresAgentProducer(
 	t *testing.T,
 	policy AgentExecutionDispatchPolicy,

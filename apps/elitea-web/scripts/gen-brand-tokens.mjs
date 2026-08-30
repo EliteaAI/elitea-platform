@@ -30,6 +30,7 @@ import {
   keyTree,
   renderTypeLiteral,
 } from './lib/brand-tokens-core.mjs';
+import { compareGenerated } from './lib/generated-drift.mjs';
 
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(APP_DIR, 'src/shared/brand/tokens');
@@ -291,13 +292,15 @@ const PACK_META = {
 };
 
 function parseArgs(argv) {
-  const args = { baseline: null };
+  const args = { baseline: null, check: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--baseline') {
       const value = argv[i + 1];
       if (!value) throw new Error('--baseline requires a path to apps/elitea-ui');
       args.baseline = resolve(value);
       i++;
+    } else if (argv[i] === '--check') {
+      args.check = true;
     } else {
       throw new Error(`unknown argument: ${argv[i]}`);
     }
@@ -438,21 +441,61 @@ ${groups}
 `;
 }
 
+function readOrNull(filePath) {
+  try {
+    return readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * --check mode (issue #490): compare both committed outputs with what this
+ * run renders, and write nothing. The header of this file already states the
+ * rule ("both committed; regenerate and diff, never hand-edit"); this is what
+ * performs the diff. An absent committed file and an empty render are both
+ * failures — see scripts/lib/generated-drift.mjs.
+ */
+function runCheck(packJson, augmentTs) {
+  const result = compareGenerated([
+    {
+      path: 'apps/elitea-web/src/shared/brand/tokens/default.pack.json',
+      expected: packJson,
+      actual: readOrNull(join(OUT_DIR, 'default.pack.json')),
+    },
+    {
+      path: 'apps/elitea-web/src/shared/brand/tokens/palette.augment.d.ts',
+      expected: augmentTs,
+      actual: readOrNull(join(OUT_DIR, 'palette.augment.d.ts')),
+    },
+  ]);
+  if (!result.ok) {
+    console.error('gen-brand-tokens: --check FAIL');
+    for (const failure of result.failures) console.error(`  ${failure}`);
+    console.error('  command: node scripts/gen-brand-tokens.mjs --baseline ../elitea-ui');
+    process.exit(1);
+  }
+  console.log('gen-brand-tokens: --check OK — default.pack.json and palette.augment.d.ts are up to date.');
+}
+
 function main() {
-  const { baseline } = parseArgs(process.argv.slice(2));
+  const { baseline, check } = parseArgs(process.argv.slice(2));
   const schemes = applyTables(loadSchemes(baseline));
   const pack = {
     ...PACK_META,
     schemes: { light: sortRecord(schemes.light), dark: sortRecord(schemes.dark) },
   };
+  const packJson = `${JSON.stringify(pack, null, 2)}\n`;
+  const augmentTs = renderAugmentation(Object.keys(pack.schemes.dark));
+
+  if (check) {
+    runCheck(packJson, augmentTs);
+    return;
+  }
 
   mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 'default.pack.json'), `${JSON.stringify(pack, null, 2)}\n`, 'utf8');
-  writeFileSync(
-    join(OUT_DIR, 'palette.augment.d.ts'),
-    renderAugmentation(Object.keys(pack.schemes.dark)),
-    'utf8',
-  );
+  writeFileSync(join(OUT_DIR, 'default.pack.json'), packJson, 'utf8');
+  writeFileSync(join(OUT_DIR, 'palette.augment.d.ts'), augmentTs, 'utf8');
 
   const n = Object.keys(pack.schemes.dark).length;
   console.log(`gen-brand-tokens: ${n} token ids per scheme (baseline + fills + additions)`);

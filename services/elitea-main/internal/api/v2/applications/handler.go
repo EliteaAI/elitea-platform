@@ -340,6 +340,11 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		}
 	}
 
+	// #345 — this key was the literal `[]any{}` on every read. The editor
+	// reloads through here, so a tag a user saved came back missing and the
+	// control blanked itself. The rows exist; nothing read them.
+	tags := h.versionTagsOrEmpty(ctx, s, versionID)
+
 	return map[string]any{
 		"id":                    strconv.Itoa(id),
 		"application_id":        strconv.Itoa(appID),
@@ -355,7 +360,7 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		"pipeline_settings":     pipelineSettings,
 		"author_id":             authorIDStr,
 		"tools":                 tools,
-		"tags":                  []any{},
+		"tags":                  tags,
 		"variables":             variables,
 	}
 }
@@ -475,7 +480,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		"created_at":  app.CreatedAt,
 	}
 	if len(app.Versions) > 0 {
-		versionDetails := versionDetailsResponse(app.Versions[0], user, userID)
+		// Create writes no tag association, so the echo says "none" and is
+		// true. `tags` on the write body is read by UpdateVersion only.
+		versionDetails := versionDetailsResponse(app.Versions[0], user, userID, nil)
 		resp["version_details"] = versionDetails
 		resp["versions"] = []any{versionDetails}
 	}
@@ -519,7 +526,16 @@ func versionFromBody(vBody map[string]any, authorID int64) *applications.Version
 
 const defaultStepLimit = 25
 
-func versionDetailsResponse(ver applications.Version, user auth.User, userID string) map[string]any {
+// versionDetailsResponse builds the write echo. `tags` is the version's
+// STORED tag list, read back by the caller after its own write — #345: the
+// echo used to answer a hardcoded empty list, so a save that persisted tags
+// still reported none and the editor blanked the control it had just sent.
+// Pass nil from a path that writes no tags; the echo then says "none", which
+// is what those paths really store.
+func versionDetailsResponse(ver applications.Version, user auth.User, userID string, tags []map[string]any) map[string]any {
+	if tags == nil {
+		tags = []map[string]any{}
+	}
 	llm := ver.LLMSettings
 	if llm == nil {
 		llm = map[string]any{}
@@ -550,7 +566,7 @@ func versionDetailsResponse(ver applications.Version, user auth.User, userID str
 		"conversation_starters": starters,
 		"tools":                 []any{},
 		"variables":             variables,
-		"tags":                  []any{},
+		"tags":                  tags,
 	}
 }
 
@@ -672,7 +688,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			}
 			ver, vErr := h.repo.UpdateVersion(r.Context(), projectID, applicationID, versionID, v)
 			if vErr == nil {
-				resp["version_details"] = versionDetailsResponse(ver, user, userID)
+				// This branch writes name/instructions only, but the echo
+				// still reports the version's real tags: they are stored
+				// state, not something this request cleared (#345).
+				s, _ := tenantSchema(projectID)
+				resp["version_details"] = versionDetailsResponse(ver, user, userID, h.versionTagsOrEmpty(r.Context(), s, versionID))
 			}
 		}
 	}
@@ -814,7 +834,9 @@ func (h *Handler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, userID))
+	// "Save as a new version" clones no tag association — see the `tags`
+	// note on VersionWriteRequest in api/openapi/v2.yaml.
+	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, userID, nil))
 }
 
 func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
@@ -891,6 +913,13 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 	// the silent no-op this branch exists to fix. A body with no
 	// `variables` key at all still leaves the stored value alone.
 	variables, hasVariables := body["variables"].([]any)
+	// #345 — `tags` had no branch here either, and the two read paths
+	// answered a hardcoded empty list, so a tag edit was accepted with a 201
+	// and lost twice over. Presence-based for the same reason `variables`
+	// above is: an empty array is a real user action ("I removed my last
+	// tag") and must delete the association rows, while a body with no
+	// `tags` key leaves the stored set alone.
+	tags, hasTags := body["tags"].([]any)
 	// The write-side fold `versionFromBody` performs (variables have no
 	// column on application_versions), kept so this endpoint's own 201 echo
 	// — built by `versionDetailsResponse`, which reads `meta["variables"]`
@@ -934,7 +963,157 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, strconv.FormatInt(ownerID, 10)))
+	if hasTags {
+		if err := h.replaceVersionTags(r.Context(), projectID, versionID, tags); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+	}
+	// The echo reports the tags the database holds AFTER the write, not the
+	// list the caller sent: a duplicate name collapses to one row and a
+	// blank name is dropped, so echoing the request would over-report.
+	s, _ := tenantSchema(projectID)
+	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, strconv.FormatInt(ownerID, 10), h.versionTagsOrEmpty(r.Context(), s, versionID)))
+}
+
+// versionTagsOrEmpty reads the version's tags in the shape pylon's
+// TagListModel serializes — {id, name, data} — which is what the agent
+// editor's tag control binds to
+// (legacy/plugins/elitea_core/models/pd/version.py:73-74).
+//
+// It answers an empty list, never nil, so the JSON always carries `[]`
+// rather than `null`. A nil pool (the repository-only unit wiring) answers
+// an empty list too, matching every other pool-guarded read in this file. A
+// query failure is logged and answered as "no tags": the caller is a
+// response builder with no error channel, and a tag read must not turn a
+// readable version into a 500.
+func (h *Handler) versionTagsOrEmpty(ctx context.Context, schema, versionID string) []map[string]any {
+	tags := make([]map[string]any, 0)
+	if h.pool == nil || schema == "" {
+		return tags
+	}
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT t.id, t.name, COALESCE(t.data::text, 'null')
+		FROM %s.application_version_tag_association a
+		JOIN %s.tags t ON t.id = a.tag_id
+		WHERE a.version_id = $1
+		ORDER BY t.name`, schema, schema), versionID)
+	if err != nil {
+		slog.ErrorContext(ctx, "could not read the tags of a version",
+			"schema", schema, "version_id", versionID, "err", err)
+		return tags
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var name, dataText string
+		if err := rows.Scan(&id, &name, &dataText); err != nil {
+			slog.ErrorContext(ctx, "could not scan a tag of a version",
+				"schema", schema, "version_id", versionID, "err", err)
+			return tags
+		}
+		var data any
+		// dataText is DB-stored JSON — cannot fail.
+		_ = json.Unmarshal([]byte(dataText), &data)
+		tags = append(tags, map[string]any{"id": id, "name": name, "data": data})
+	}
+	if err := rows.Err(); err != nil {
+		slog.ErrorContext(ctx, "could not read every tag of a version",
+			"schema", schema, "version_id", versionID, "err", err)
+	}
+	return tags
+}
+
+// tagNameFrom reads the name out of one entry of a `tags` write list.
+//
+// The wire shape is the object VersionTag declares ({id, name, data}), which
+// is what pylon's PromptTagUpdateModel accepts and what the editor sends. A
+// bare string is accepted as well, because the skills write path speaks that
+// shape (repos/skills.go upsertBaseSkillVersion takes []string) and a client
+// that reuses it must not have its tags silently dropped.
+func tagNameFrom(raw any) (string, any) {
+	if name, ok := raw.(string); ok {
+		return strings.TrimSpace(name), nil
+	}
+	entry, _ := raw.(map[string]any)
+	if entry == nil {
+		return "", nil
+	}
+	name, _ := entry["name"].(string)
+	return strings.TrimSpace(name), entry["data"]
+}
+
+// replaceVersionTags makes `application_version_tag_association` match the
+// list the caller sent, exactly — deleting the associations they dropped,
+// not only adding the ones they kept. It mirrors
+// repos/skills.go's upsertBaseSkillVersion, which does the same job for a
+// skill version, and pylon's own `version.tags.clear()` then re-append
+// (legacy/plugins/elitea_core/utils/application_utils.py:214-227).
+//
+// Transactional: a partial application would leave the version showing a
+// mixture of the old and the new list with nothing reporting a failure. A
+// nil pool is a no-op, matching replaceVersionVariables.
+//
+// Tags are keyed by name — `tags.name` is UNIQUE per tenant schema, so one
+// name is one row shared by every version that carries it. An entry's `id`
+// is therefore ignored, exactly as pylon ignores it. `data` is written only
+// when the name is NEW: an existing tag keeps the data it already has,
+// because it belongs to every other version using that name too.
+func (h *Handler) replaceVersionTags(ctx context.Context, projectID, versionID string, tags []any) error {
+	if h.pool == nil {
+		return nil
+	}
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		return apierr.BadRequest("invalid project id")
+	}
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return apierr.Internal("could not save tags")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, fmt.Sprintf(
+		`DELETE FROM %s.application_version_tag_association WHERE version_id = $1`, s), versionID); err != nil {
+		return apierr.Internal("could not save tags")
+	}
+	seen := make(map[string]bool, len(tags))
+	for _, raw := range tags {
+		name, data := tagNameFrom(raw)
+		// A nameless tag cannot be stored (`tags.name` is NOT NULL) and the
+		// editor emits one the moment a user opens the control, so it is
+		// skipped rather than failing the whole save — the same rule
+		// replaceVersionVariables applies to a nameless variable.
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		var dataJSON []byte
+		if data != nil {
+			encoded, err := json.Marshal(data)
+			if err != nil {
+				return apierr.BadRequest("invalid tag data")
+			}
+			dataJSON = encoded
+		}
+		var tagID int
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %s.tags (name, data) VALUES ($1, $2::jsonb)
+			ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+			RETURNING id`, s), name, dataJSON).Scan(&tagID); err != nil {
+			return apierr.Internal("could not save tags")
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %s.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+			ON CONFLICT DO NOTHING`, s), versionID, tagID); err != nil {
+			return apierr.Internal("could not save tags")
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return apierr.Internal("could not save tags")
+	}
+	return nil
 }
 
 // replaceVersionVariables makes `application_variables` match the list the
@@ -1297,11 +1476,13 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 		"pipeline_settings":     pipelineSettings,
 		"author_id":             authorIDStr,
 		"tools":                 tools,
-		"tags":                  []any{},
-		"variables":             variables,
-		"icon_meta":             iconMetaFromMeta(metaMap),
-		"is_forked":             isForkedFromMeta(metaMap),
-		"attached_skills":       attachedSkills,
+		// #345 — the SDK reads this expanded detail too, and it answered a
+		// hardcoded empty list here as well.
+		"tags":            h.versionTagsOrEmpty(ctx, s, versionID),
+		"variables":       variables,
+		"icon_meta":       iconMetaFromMeta(metaMap),
+		"is_forked":       isForkedFromMeta(metaMap),
+		"attached_skills": attachedSkills,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

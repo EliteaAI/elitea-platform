@@ -15,12 +15,40 @@
 # groups are created post-install. A failed migration aborts the release and the
 # previous pods keep serving.
 #
+# ── WHERE THE VALUES COME FROM (issue #475) ─────────────────────────────────
+#
+# Every value this release reads comes from ONE of three places, and each place
+# is named in `spec.source.helm` below. Nothing comes from anywhere else.
+#
+#   1. deploy/helm/elitea/values.yaml — the chart's own defaults. `valueFiles`
+#      names it rather than implying it, so a reader of this file alone can see
+#      which file supplies the defaults.
+#
+#   2. The `parameters` block below — the settings this Application states.
+#      `postgresql.existingSecret` and `postgresql.key` are here because they
+#      point the whole release at ONE database Secret, and because DATABASE_URL
+#      is the value an operator most often has to change. Read them beside
+#      the Secret prerequisite below.
+#
+#   3. The two EMPTY parameters below, which you MUST fill in. Neither has a
+#      chart default, and neither can get one: both name addresses that only
+#      the operator knows. The chart REFUSES to render while they are empty, so
+#      this Application reports SyncFailed with the field name instead of
+#      installing a gateway whose guard is disarmed. Fill them in your own
+#      GitOps copy of this file, or with `argocd app set elitea -p …`.
+#
+# NO SECRET GOES IN THIS FILE. The database password lives in the Kubernetes
+# Secret that `postgresql.existingSecret` names, never in a parameter — a
+# parameter is rendered into a ConfigMap and read by anybody with get on it.
+#
 # BEFORE FIRST SYNC, in the `elitea` namespace:
 #
 #   - PostgreSQL must already exist. No chart here provisions it: CloudNativePG
 #     installs cluster-scoped CRDs and a controller whose lifecycle is not this
 #     application's, so bundling it would let a delete reach the database.
-#     Publish its DSN as a Secret and name it in `postgresql.existingSecret`.
+#     Publish its DSN as a Secret. `postgresql.existingSecret` below names that
+#     Secret and `postgresql.key` names the key inside it, and the chart makes
+#     every component that reads the database read that one pair.
 #
 #   - The database must be BOOTSTRAPPED, and this is not the same as existing.
 #     elitea-main's migrations cannot run against an empty database: shared/0030
@@ -31,11 +59,6 @@
 #   - The material Secrets the runtime plane mounts (runtime CA, server and
 #     client certificates, the command-signing keyring, the Redis ACL password,
 #     the output-spool key) must exist. deploy/runtime/README.md names the keys.
-#
-#   - The LLM gateway REFUSES to render until two postures are stated —
-#     `llmGateway.env.GATEWAY_SELF_LLM_ORIGINS` and `llmGateway.egressPosture`.
-#     Only the operator knows their own origins, so there is deliberately no
-#     default; supply them in the values file this Application points at.
 #
 # CHAT is off unless you turn on all three of `main.runtime.enabled`,
 # `worker.enabled` and `runtimeRedis.enabled` together. The chart refuses the
@@ -56,6 +79,40 @@ spec:
     repoURL: https://github.com/eliteaai/elitea-platform
     targetRevision: main
     path: deploy/helm/elitea
+    helm:
+      valueFiles:
+        # The chart's own defaults, relative to `path` above. Helm reads this
+        # file whether or not it is named here; naming it makes this
+        # Application state where its values come from.
+        - values.yaml
+      parameters:
+        # The database. One Secret serves elitea-main, its migration Job, the
+        # scheduler, the LLM gateway and the workload-session Job, because the
+        # chart derives every DATABASE_URL from this pair. Change the two
+        # values to the Secret your PostgreSQL operator publishes.
+        - name: postgresql.existingSecret
+          value: "elitea-main-db"
+        - name: postgresql.key
+          value: "database-url"
+
+        # ── YOU MUST FILL THESE IN ────────────────────────────────────────
+        #
+        # Both are empty on purpose. They are FIELDS, not defaults: a guessed
+        # origin would guard a name nobody uses and read as armed, and a
+        # guessed egress posture would choose, for you, whether a tenant may
+        # send its own credential to an address of its choosing.
+        #
+        # GATEWAY_SELF_LLM_ORIGINS lists every origin that reaches this
+        # deployment's /llm surface, public and in-cluster, comma-separated.
+        # Example: "https://elitea.example.com/llm/v1,http://elitea-main:8080/llm/v1"
+        - name: llmGateway.env.GATEWAY_SELF_LLM_ORIGINS
+          value: ""
+        # egressPosture takes "allowlist" or "public-unrestricted". Read the
+        # block at the end of deploy/helm/elitea/values.yaml: it states what
+        # each posture permits, and "allowlist" needs
+        # llmGateway.env.GATEWAY_EGRESS_ALLOWLIST as well.
+        - name: llmGateway.egressPosture
+          value: ""
   destination:
     server: https://kubernetes.default.svc
     namespace: elitea

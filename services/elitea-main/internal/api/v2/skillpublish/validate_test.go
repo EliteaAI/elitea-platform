@@ -5,7 +5,11 @@ package skillpublish
 // the behaviour suite next door needs ELITEA_TEST_DATABASE_URL and skips
 // without it.
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
+)
 
 func passingRow() skillVersionRow {
 	return skillVersionRow{
@@ -138,13 +142,20 @@ func TestApplyCategoryToTags(t *testing.T) {
 }
 
 func TestProjectSchemaRejectsNonNumericSegments(t *testing.T) {
-	for _, raw := range []string{`1"; DROP SCHEMA public; --`, "abc", "-1", "0", "", "1 OR 1=1"} {
+	for _, raw := range []string{`1"; DROP SCHEMA public; --`, "abc", "-1", "0", "007", "", "1 OR 1=1"} {
 		if _, ok := projectSchema(raw); ok {
 			t.Errorf("projectSchema(%q) was accepted; a non-numeric id must never reach an interpolated identifier", raw)
 		}
 	}
-	if schema, ok := projectSchema("42"); !ok || schema != "p_42" {
-		t.Errorf("projectSchema(\"42\") = %q, %v; want p_42, true", schema, ok)
+	// The name that does pass is QUOTED as a PostgreSQL identifier, ready to
+	// interpolate with %s. The expected value is built the same way the
+	// handlers build theirs, so the test cannot drift from the quoting.
+	want, err := tenantschema.Quote("42")
+	if err != nil {
+		t.Fatalf("Quote(42) failed: %v", err)
+	}
+	if schema, ok := projectSchema("42"); !ok || schema != want {
+		t.Errorf("projectSchema(\"42\") = %q, %v; want %q, true", schema, ok, want)
 	}
 }
 

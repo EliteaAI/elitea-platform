@@ -82,7 +82,30 @@ import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
 
 adminTest.use({ storageState: STORAGE_STATE.admin });
 
-adminTest.describe.configure({ mode: 'serial' });
+/*
+ * THIS FILE IS NOT SERIAL (issue #539).
+ *
+ * It used to be. `describe.configure({ mode: 'serial' })` stops the whole group
+ * at the first failure, so one failed test made Playwright report the eight
+ * tests after it as "did not run". That is not a pass and it is not a failure,
+ * and the summary line counts it as neither. Three runs of `E2E (webkit)`
+ * reported the same shape — "N failed, 8 did not run" — and the eight were
+ * always the same eight. Ten journeys then told a reader about two.
+ *
+ * Three of these tests need an ORDER, and they keep `serial` in their own
+ * describe below: journey 36g writes a Help Center card, journey 36h forges
+ * writes at the same section, and journey 36j puts the card back and asserts
+ * the value.
+ *
+ * The others need EXCLUSION, and a mode that orders tests within a project
+ * cannot give it to them — chromium and webkit run this file at the same time
+ * against ONE platform configuration table. Each test that writes a
+ * platform-wide section takes the exclusive half of the platform-flag lock
+ * instead (`withPlatformFlags` below). That lock holds across browser projects
+ * and across worker processes, which is what these tests actually need.
+ *
+ * A failure of journey 36b now costs one result, not nine.
+ */
 
 /** The Help Center card this browser project owns. See the header. */
 function ownedCard(projectName: string): {
@@ -177,9 +200,11 @@ async function putValues(
  *
  * Measured, on `mcp_enabled`: one restore answered 401, the flag stayed off,
  * and the two MCP journeys plus the toolkit journey then failed for a reason
- * that was not theirs. The whole file is `mode: 'serial'`, so the eight tests
+ * that was not theirs. The file was `mode: 'serial'` then, so the eight tests
  * after the failing one were reported as "did not run" — which is not a pass
- * and is not a failure, and nothing in the output says which.
+ * and is not a failure, and nothing in the output says which. #539 removed the
+ * file-level serial for that reason; this restore is what stops the failure
+ * that started it.
  *
  * The status alone was also not enough to say WHY. A 401 on this route has
  * two very different causes in elitea-main — a principal that is no longer
@@ -226,6 +251,53 @@ async function restoreSection(
 }
 
 /**
+ * True while the RUNNING test holds, or has held, the exclusive lock.
+ *
+ * The net below reads it. Before #539 the file was serial, so only one of its
+ * tests could run in a browser project at a time. They run in parallel now, and
+ * a test that never wrote a platform-wide section must not write the defaults
+ * back on its way out: another worker can be inside its own window at that
+ * moment, and the write would switch MCP back on under journey 36b.
+ *
+ * A worker process runs one test at a time, so a module-level flag is per-test
+ * state here — the same property `readsPlatformFlags` relies on.
+ */
+let heldPlatformFlags = false;
+
+adminTest.beforeEach(() => {
+  heldPlatformFlags = false;
+});
+
+/** Takes the exclusive platform-flag lock, and records that this test took it. */
+async function withPlatformFlags<T>(body: () => Promise<T>): Promise<T> {
+  // Set BEFORE the lock is taken. A test that fails while it waits wrote
+  // nothing, so the net costs one wasted restore; a test that fails after the
+  // lock is taken and is NOT recorded leaves the platform switched off.
+  heldPlatformFlags = true;
+
+  /*
+   * THE BUDGET MUST COVER THE QUEUE (issue #539).
+   *
+   * A test's 30 s default budget starts when the test starts, and the wait for
+   * this lock is inside it. While the file was serial, only one of its tests
+   * could be waiting per browser project, so the queue was one window long.
+   * Parallel, five of them can ask at once per project, and a test that waits
+   * behind four windows would fail on its own clock — a "timed out" result that
+   * says nothing about the product, and one that loses the page mid-restore.
+   * The measured harm of that is written on the `afterEach` net below.
+   *
+   * 210 s is the arithmetic of the lock, not a round number: `platformFlags.ts`
+   * waits up to STALE_MS (90 s) to take the writer, then up to STALE_MS again
+   * for the readers to drain, and the assertions after that need about 30 s.
+   * Both 90 s bounds are the degenerate case — a token left by a run that was
+   * killed — and neither can wedge the suite, because the lock breaks a stale
+   * token and continues.
+   */
+  adminTest.setTimeout(210_000);
+  return withPlatformFlagLock(body);
+}
+
+/**
  * The platform-wide sections this file writes, and the values the seed leaves
  * behind. Used by the net below.
  */
@@ -256,17 +328,19 @@ const PLATFORM_DEFAULTS: readonly { section: string; values: Record<string, unkn
  * this hook opens its OWN request context, so neither the dead page nor the
  * test's spent clock can stop it.
  *
- * Only after a test that did not pass: a passing test has already restored,
- * and writing these rows on every test would put a second writer on a
- * platform-wide row for no reason. The lock is not taken here — the run is
- * already in the state the lock exists to avoid, and leaving the platform
- * switched off is the worse of the two.
+ * Only after a test that did not pass AND took the exclusive lock: a passing
+ * test has already restored, a test that never entered the window wrote none of
+ * these rows, and writing them on every test would put a second writer on a
+ * platform-wide row for no reason. Since #539 that second condition also keeps
+ * one test's teardown out of another test's window — see `withPlatformFlags`.
+ * The lock is not taken here — the run is already in the state the lock exists
+ * to avoid, and leaving the platform switched off is the worse of the two.
  */
 // Playwright requires the fixture parameter to be an object pattern, and this
 // hook takes no fixture.
 // eslint-disable-next-line no-empty-pattern
 adminTest.afterEach(async ({}, testInfo) => {
-  if (testInfo.status === 'passed') return;
+  if (testInfo.status === 'passed' || !heldPlatformFlags) return;
   const api = await apiRequest.newContext({
     baseURL: BASE_URL,
     storageState: STORAGE_STATE.admin,
@@ -343,7 +417,7 @@ adminTest(
   'J36b: switching MCP off is read by the platform AND closes the API',
   async ({ page }) => {
     await openFeatures(page);
-    await withPlatformFlagLock(async () => {
+    await withPlatformFlags(async () => {
       try {
         const settingsBefore = await page.evaluate(async () => {
           const response = await fetch('/api/v2/elitea_core/platform_settings/prompt_lib', {
@@ -362,7 +436,7 @@ adminTest(
          * the flag was never put back. Every remaining MCP-reading journey in
          * the run — the two MCP ones, the toolkit one — failed for a reason
          * that had nothing to do with them, and the eight tests after this one
-         * in this serial file were reported "did not run".
+         * were reported "did not run" — the file was serial then (#539).
          *
          * From inside the try, a retry that finds the flag off still restores
          * it on its way out.
@@ -444,7 +518,7 @@ adminTest('J36c: blocking publishing is enforced by the publish endpoint', async
   await openSection(page, 'Agent Publishing');
   await expect(page.getByRole('switch', { name: 'Block Agent Publishing' })).toBeVisible();
 
-  await withPlatformFlagLock(async () => {
+  await withPlatformFlags(async () => {
     try {
       const blocked = await putValues(page, 'agent_publishing', {
         is_publish_blocked: true,
@@ -491,20 +565,36 @@ adminTest(
     await expect(field.getByRole('textbox')).toBeDisabled();
     await expect(field).toContainText('no AI evaluator');
 
-    // Forged, because the page offers no way to send it.
-    const refused = await putValues(page, 'agent_publishing', {
-      publish_validation_rules: 'reject anything mentioning production',
-    });
-    // 400, not 501: the SECTION is implemented. What is wrong is the field, and
-    // the message names it.
-    expect(refused.status).toBe(400);
-    expect(refused.body).toContain('publish_validation_rules');
+    /*
+     * THE WRITES TAKE THE EXCLUSIVE LOCK (issue #539).
+     *
+     * Both address `agent_publishing`, and journey 36c holds that section
+     * switched ON for the length of its window. The accepted write below clears
+     * `is_publish_blocked`, so without the lock it can land inside that window
+     * and journey 36c reads a publish that succeeds — a failure that belongs to
+     * neither test. The file-level `serial` used to hide this by ordering the
+     * two within a project; it never ordered them across projects, and it is
+     * gone.
+     *
+     * The page assertions above stay outside the window, which keeps the window
+     * as short as the writes.
+     */
+    await withPlatformFlags(async () => {
+      // Forged, because the page offers no way to send it.
+      const refused = await putValues(page, 'agent_publishing', {
+        publish_validation_rules: 'reject anything mentioning production',
+      });
+      // 400, not 501: the SECTION is implemented. What is wrong is the field,
+      // and the message names it.
+      expect(refused.status).toBe(400);
+      expect(refused.body).toContain('publish_validation_rules');
 
-    // The sibling fields of the same section still save.
-    const accepted = await putValues(page, 'agent_publishing', {
-      is_publish_blocked: false,
+      // The sibling fields of the same section still save.
+      const accepted = await putValues(page, 'agent_publishing', {
+        is_publish_blocked: false,
+      });
+      expect(accepted.status).toBe(200);
     });
-    expect(accepted.status).toBe(200);
   },
 );
 
@@ -513,20 +603,26 @@ adminTest(
   async ({ page }) => {
     await openFeatures(page);
 
-    // Both consumers type-assert their elements and SKIP what does not match, so
-    // a wrongly-typed entry would be stored, echoed back by the GET, rendered in
-    // the form — and do nothing. That is "saves into a void" one level down.
-    const refusedCategory = await putValues(page, 'agent_publishing', {
-      agent_categories: [{ name: 'Security Review' }],
-    });
-    expect(refusedCategory.status).toBe(400);
-    expect(refusedCategory.body).toContain('agent_categories');
+    // The exclusive lock, for the reason journey 36d states: this is the same
+    // platform-wide section journey 36c switches on, and a refusal is only
+    // proof of a refusal while nobody else is writing the section (#539).
+    await withPlatformFlags(async () => {
+      // Both consumers type-assert their elements and SKIP what does not match,
+      // so a wrongly-typed entry would be stored, echoed back by the GET,
+      // rendered in the form — and do nothing. That is "saves into a void" one
+      // level down.
+      const refusedCategory = await putValues(page, 'agent_publishing', {
+        agent_categories: [{ name: 'Security Review' }],
+      });
+      expect(refusedCategory.status).toBe(400);
+      expect(refusedCategory.body).toContain('agent_categories');
 
-    const refusedProject = await putValues(page, 'agent_publishing', {
-      publish_whitelist_project_ids: ['1'],
+      const refusedProject = await putValues(page, 'agent_publishing', {
+        publish_whitelist_project_ids: ['1'],
+      });
+      expect(refusedProject.status).toBe(400);
+      expect(refusedProject.body).toContain('publish_whitelist_project_ids');
     });
-    expect(refusedProject.status).toBe(400);
-    expect(refusedProject.body).toContain('publish_whitelist_project_ids');
   },
 );
 
@@ -545,7 +641,7 @@ adminTest(
         return (await response.json()) as Record<string, unknown>;
       });
 
-    await withPlatformFlagLock(async () => {
+    await withPlatformFlags(async () => {
       try {
         const [saved] = await Promise.all([
           page.waitForResponse(
@@ -591,91 +687,144 @@ adminTest(
 
 /* ── the Help Center round trip, moved here with its section ───────────── */
 
-adminTest(
-  'J36g: a Help Center link saved here survives a reload and reaches /help-center',
-  async ({ page }, testInfo) => {
-    await openFeatures(page);
-    await openSection(page, 'Help Center');
+adminTest.describe('the Help Center round trip', () => {
+  /*
+   * SERIAL, AND ONLY THESE THREE (issue #539).
+   *
+   * These three share the `resources` section and they run in an order.
+   * Journey 36g writes the card, journey 36h forges writes at the same
+   * section, and journey 36j puts the card back and reads the value. Journey
+   * 36j is the assertion that the write is reversible, so it says nothing at
+   * all about a journey 36g that did not run.
+   *
+   * `serial` orders them within a browser project. The two projects still run
+   * this group at the same time, and what keeps them apart is the OWNED CARD
+   * — see `ownedCard` and the file header.
+   *
+   * The rest of the file stays parallel. That is what #539 asks for: the group
+   * that stops at its first failure must be the smallest group that really
+   * needs an order.
+   */
+  adminTest.describe.configure({ mode: 'serial' });
 
-    const card = ownedCard(testInfo.project.name);
-    const link = probeLink(testInfo.project.name);
+  adminTest(
+    'J36g: a Help Center link saved here survives a reload and reaches /help-center',
+    async ({ page }, testInfo) => {
+      await openFeatures(page);
+      await openSection(page, 'Help Center');
 
-    const title = page.getByRole('textbox', { name: card.title });
-    // The seed clears this card, so the baseline is the schema default. Starting
-    // from "already set to the probe value" would prove nothing about the write.
-    await expect(title).toHaveValue(card.cardName);
-    await title.fill(probeTitle(testInfo.project.name));
+      const card = ownedCard(testInfo.project.name);
+      const link = probeLink(testInfo.project.name);
 
-    // Every link interaction is scoped to the OWNED card's editor: both engines
-    // run this file at once against one platform-wide table, so `.last()` over
-    // the page's link fields would sometimes be the other engine's row.
-    const editor = page.getByTestId(`admin-config-links-${card.linksKey}`);
-    await editor.getByRole('button', { name: `Add link — ${card.linksLabel}` }).click();
-    await editor.getByRole('textbox', { name: 'URL' }).last().fill(link.url);
-    await editor.getByRole('textbox', { name: 'Title', exact: true }).last().fill(link.title);
+      const title = page.getByRole('textbox', { name: card.title });
+      // The seed clears this card, so the baseline is the schema default. Starting
+      // from "already set to the probe value" would prove nothing about the write.
+      await expect(title).toHaveValue(card.cardName);
+      await title.fill(probeTitle(testInfo.project.name));
 
-    const [saved] = await Promise.all([
-      page.waitForResponse(
-        (r) =>
-          r.url().includes('/admin/plugin_config_values/administration/resources') &&
-          r.request().method() === 'PUT',
-      ),
-      page.getByRole('button', { name: 'Save' }).click(),
-    ]);
-    expect(saved.status(), 'the configuration write must be authorised server-side').toBe(200);
+      // Every link interaction is scoped to the OWNED card's editor: both engines
+      // run this file at once against one platform-wide table, so `.last()` over
+      // the page's link fields would sometimes be the other engine's row.
+      const editor = page.getByTestId(`admin-config-links-${card.linksKey}`);
+      await editor.getByRole('button', { name: `Add link — ${card.linksLabel}` }).click();
+      await editor.getByRole('textbox', { name: 'URL' }).last().fill(link.url);
+      await editor.getByRole('textbox', { name: 'Title', exact: true }).last().fill(link.title);
 
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await openFeatures(page);
-    await openSection(page, 'Help Center');
-    await expect(page.getByRole('textbox', { name: card.title })).toHaveValue(
-      probeTitle(testInfo.project.name),
-    );
+      const [saved] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().includes('/admin/plugin_config_values/administration/resources') &&
+            r.request().method() === 'PUT',
+        ),
+        page.getByRole('button', { name: 'Save' }).click(),
+      ]);
+      expect(saved.status(), 'the configuration write must be authorised server-side').toBe(200);
 
-    // …and the product reads it, from a page the section's move did not touch:
-    // the Help Center calls the public `prompt_lib` route, which has no notion of
-    // which admin page authored the row. This is issue #26's end-to-end claim,
-    // and the proof that moving the section did not break it.
-    await page.goto(BASE_URL + '/app/help-center', {
-      waitUntil: 'domcontentloaded',
-    });
-    await expect(page.getByRole('link', { name: link.title })).toHaveAttribute('href', link.url, {
-      timeout: 20_000,
-    });
-  },
-);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await openFeatures(page);
+      await openSection(page, 'Help Center');
+      await expect(page.getByRole('textbox', { name: card.title })).toHaveValue(
+        probeTitle(testInfo.project.name),
+      );
 
-adminTest(
-  'J36h: the server refuses a link URL that would run in a reader’s browser',
-  async ({ page }, testInfo) => {
-    await openFeatures(page);
-    const card = ownedCard(testInfo.project.name);
+      // …and the product reads it, from a page the section's move did not touch:
+      // the Help Center calls the public `prompt_lib` route, which has no notion of
+      // which admin page authored the row. This is issue #26's end-to-end claim,
+      // and the proof that moving the section did not break it.
+      await page.goto(BASE_URL + '/app/help-center', {
+        waitUntil: 'domcontentloaded',
+      });
+      await expect(page.getByRole('link', { name: link.title })).toHaveAttribute('href', link.url, {
+        timeout: 20_000,
+      });
+    },
+  );
 
-    // Forged, not typed. The form warns about the scheme, so typing it would only
-    // prove the form does — and a client-side check is not a boundary.
-    const refused = await putValues(page, 'resources', {
-      [card.linksKey]: [{ title: 'Docs', url: 'javascript:alert(document.cookie)' }],
-    });
-    expect(
-      refused.status,
-      'a link scheme that executes in every reader’s browser must be refused by the SERVER',
-    ).toBe(400);
-    expect(refused.body).toContain('http or https');
+  adminTest(
+    'J36h: the server refuses a link URL that would run in a reader’s browser',
+    async ({ page }, testInfo) => {
+      await openFeatures(page);
+      const card = ownedCard(testInfo.project.name);
 
-    // A caller that believes it set something the schema does not declare has a
-    // wrong model of the system, and a 200 would confirm it.
-    const unknown = await putValues(page, 'resources', {
-      resources_backdoor: 'x',
-    });
-    expect(unknown.status).toBe(400);
-    expect(unknown.body).toContain('resources_backdoor');
+      // Forged, not typed. The form warns about the scheme, so typing it would only
+      // prove the form does — and a client-side check is not a boundary.
+      const refused = await putValues(page, 'resources', {
+        [card.linksKey]: [{ title: 'Docs', url: 'javascript:alert(document.cookie)' }],
+      });
+      expect(
+        refused.status,
+        'a link scheme that executes in every reader’s browser must be refused by the SERVER',
+      ).toBe(400);
+      expect(refused.body).toContain('http or https');
 
-    // And nothing was stored: the Help Center must not be carrying it.
-    await page.goto(BASE_URL + '/app/help-center', {
-      waitUntil: 'domcontentloaded',
-    });
-    await expect(page.getByRole('link', { name: 'Docs' })).toHaveCount(0);
-  },
-);
+      // A caller that believes it set something the schema does not declare has a
+      // wrong model of the system, and a 200 would confirm it.
+      const unknown = await putValues(page, 'resources', {
+        resources_backdoor: 'x',
+      });
+      expect(unknown.status).toBe(400);
+      expect(unknown.body).toContain('resources_backdoor');
+
+      // And nothing was stored: the Help Center must not be carrying it.
+      await page.goto(BASE_URL + '/app/help-center', {
+        waitUntil: 'domcontentloaded',
+      });
+      await expect(page.getByRole('link', { name: 'Docs' })).toHaveCount(0);
+    },
+  );
+
+  adminTest(
+    'J36j: the probe values are restored so the run is repeatable',
+    async ({ page }, testInfo) => {
+      await openFeatures(page);
+      await openSection(page, 'Help Center');
+      const card = ownedCard(testInfo.project.name);
+
+      await page.getByRole('textbox', { name: card.title }).fill(card.cardName);
+
+      const editor = page.getByTestId(`admin-config-links-${card.linksKey}`);
+      const remove = editor.getByRole('button', { name: /^Remove link/ });
+      if ((await remove.count()) > 0) {
+        await remove.last().click();
+      }
+
+      const [saved] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().includes('/admin/plugin_config_values/administration/resources') &&
+            r.request().method() === 'PUT',
+        ),
+        page.getByRole('button', { name: 'Save' }).click(),
+      ]);
+      expect(saved.status()).toBe(200);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await openFeatures(page);
+      await openSection(page, 'Help Center');
+      await expect(page.getByRole('textbox', { name: card.title })).toHaveValue(card.cardName);
+    },
+  );
+});
 
 /* ── the sections with no consumer ─────────────────────────────────────── */
 
@@ -751,39 +900,5 @@ adminTest(
     expect(accepted.status, 'skill_publishing is implemented and must accept its write').toBe(200);
 
     await checkA11y(page);
-  },
-);
-
-/* ── repeatability ─────────────────────────────────────────────────────── */
-
-adminTest(
-  'J36j: the probe values are restored so the run is repeatable',
-  async ({ page }, testInfo) => {
-    await openFeatures(page);
-    await openSection(page, 'Help Center');
-    const card = ownedCard(testInfo.project.name);
-
-    await page.getByRole('textbox', { name: card.title }).fill(card.cardName);
-
-    const editor = page.getByTestId(`admin-config-links-${card.linksKey}`);
-    const remove = editor.getByRole('button', { name: /^Remove link/ });
-    if ((await remove.count()) > 0) {
-      await remove.last().click();
-    }
-
-    const [saved] = await Promise.all([
-      page.waitForResponse(
-        (r) =>
-          r.url().includes('/admin/plugin_config_values/administration/resources') &&
-          r.request().method() === 'PUT',
-      ),
-      page.getByRole('button', { name: 'Save' }).click(),
-    ]);
-    expect(saved.status()).toBe(200);
-
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await openFeatures(page);
-    await openSection(page, 'Help Center');
-    await expect(page.getByRole('textbox', { name: card.title })).toHaveValue(card.cardName);
   },
 );

@@ -1,15 +1,18 @@
 import type { ReactNode } from 'react';
+import { useCallback, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import type { ApplicationVersionDetail, VersionWriteRequest } from '@/shared/api/generated/model';
 
+import { useSetDefaultVersion } from '../model/useSetDefaultVersion';
 import type { AgentPipelineVersionOption } from '../lib/types';
 
 import { AgentPipelineVersionSelector } from './AgentPipelineVersionSelector';
 import { DeleteVersionButton } from './DeleteVersionButton';
 import { SaveNewVersionButton } from './SaveNewVersionButton';
+import { SetDefaultVersionDialog } from './SetDefaultVersionDialog';
 
 /**
  * The agent editor's version bar: the version dropdown plus "Save As
@@ -32,6 +35,32 @@ import { SaveNewVersionButton } from './SaveNewVersionButton';
  * invalidation after a new version is created) stays with the page, matching
  * `AgentPipelineVersionSelector`'s own "the version-SWITCH mutation is
  * entirely caller-owned" contract.
+ *
+ * **SET DEFAULT (#147) is the one mutation this component does own, and the
+ * reason is that the page has nothing to do with the result.** JRNY-015's
+ * middle step ("create a new version -> SET DEFAULT -> delete old") had no
+ * UI at all: the route, the handler, the repo write and the generated
+ * `setApplicationDefaultVersion` all existed, and nothing in the app called
+ * any of them. A page-owned `onDefaultVersionSet` callback would have been
+ * one more prop that only ever forwarded to a query invalidation that
+ * changes nothing — see the disclosed read gap below — so the whole
+ * affordance is mounted here, gated on the same `canSaveNewVersion` flag the
+ * other two write controls use.
+ *
+ * **DISCLOSED GAP — the current default is not readable, so it is
+ * remembered, not fetched.** `applications.meta.default_version_id` is
+ * written by `SetDefaultVersion` (`repos/applications.go:650-682`) and
+ * emitted by NO documented response: the `Get` handler builds its map from
+ * seven keys and `meta` is not one of them
+ * (`applications/handler.go:121-152`), `ApplicationVersionSummary` carries
+ * no `is_default`, and the 2-segment `GET /default_version/...` that would
+ * answer the question is deliberately absent from the contract
+ * (`api/openapi/v2.yaml:7048-7052` — "no API item calls it, do not add
+ * unused surface"). So on first render this component does not know which
+ * version is the default, which is exactly the state the baseline's own
+ * `disableSetAsADefault` already handles ("no default recorded -> treat
+ * `base` as it"), and after a successful PATCH it knows because it just set
+ * it. Closing this properly is a backend/spec change, not a UI one.
  */
 export interface AgentVersionControlsProps {
   readonly applicationId: string;
@@ -83,12 +112,59 @@ export function AgentVersionControls({
   onNewVersionError,
   versionDelete,
 }: AgentVersionControlsProps): ReactNode {
+  /* #147 — the version awaiting confirmation, and the default this component
+     has itself set (see the module doc: the server never reports one back). */
+  const [pendingDefault, setPendingDefault] = useState<AgentPipelineVersionOption | undefined>(undefined);
+  const [defaultVersionId, setDefaultVersionId] = useState<number | undefined>(undefined);
+
+  // The hook's ids are non-optional; the item is only offered once `projectId`
+  // resolves, so the placeholder below is never the one a request is made with
+  // — the same guard `DeleteVersionButton` states for its own ids.
+  const { doSetDefaultVersion, isSettingDefaultVersion, errorMessage, resetError } = useSetDefaultVersion({
+    projectId: projectId ?? '',
+    applicationId: Number(applicationId),
+  });
+
+  const canSetDefault = canSaveNewVersion && projectId !== undefined;
+
+  const requestSetDefault = useCallback(
+    (version: AgentPipelineVersionOption) => {
+      resetError();
+      setPendingDefault(version);
+    },
+    [resetError],
+  );
+
+  const closeSetDefault = useCallback(() => setPendingDefault(undefined), []);
+
+  const confirmSetDefault = useCallback(async (): Promise<void> => {
+    if (pendingDefault === undefined) return;
+    const ok = await doSetDefaultVersion(pendingDefault.id);
+    // Left open on failure: the default is unchanged, and closing the dialog
+    // would read as "done". `errorMessage` carries the server's own refusal.
+    if (!ok) return;
+    setDefaultVersionId(pendingDefault.id);
+    setPendingDefault(undefined);
+  }, [doSetDefaultVersion, pendingDefault]);
+
   return (
     <Box sx={wrapperSx}>
       <AgentPipelineVersionSelector
         applicationVersionId={activeVersionId}
         versions={versions}
         onSelectVersion={onSelectVersion}
+        defaultVersionId={defaultVersionId}
+        {...(canSetDefault ? { onSetDefaultVersion: requestSetDefault } : {})}
+      />
+      <SetDefaultVersionDialog
+        open={pendingDefault !== undefined}
+        versionName={pendingDefault?.name ?? ''}
+        confirming={isSettingDefaultVersion}
+        errorMessage={errorMessage}
+        onClose={closeSetDefault}
+        onConfirm={() => {
+          void confirmSetDefault();
+        }}
       />
       {versionDelete !== undefined && canSaveNewVersion && (
         <DeleteVersionButton

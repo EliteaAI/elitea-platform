@@ -41,7 +41,7 @@ func (h *Handler) ExportFork(w http.ResponseWriter, r *http.Request) {
 	var createdAt time.Time
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT name, COALESCE(description, ''), author_id, created_at, COALESCE(meta::text, '{}')
-		FROM %q.skills WHERE id = $1`, schema), skillID).
+		FROM %s.skills WHERE id = $1`, schema), skillID).
 		Scan(&skillName, &skillDescription, &authorID, &createdAt, &skillMetaText); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": fmt.Sprintf("Skill %s not found", skillID)})
 		return
@@ -105,7 +105,7 @@ func (h *Handler) resolveExportVersion(ctx context.Context, schema, skillID, ver
 	}
 	var resolvedID int
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT id FROM %q.skill_versions
+		SELECT id FROM %s.skill_versions
 		WHERE skill_id = $1
 		ORDER BY (name = $2) DESC, created_at ASC, id ASC
 		LIMIT 1`, schema), skillID, defaultVersionName).Scan(&resolvedID); err != nil {

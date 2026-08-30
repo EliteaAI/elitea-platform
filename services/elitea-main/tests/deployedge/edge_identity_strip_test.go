@@ -81,6 +81,11 @@ var browserEdgeFiles = []string{
 // tryTrustedProxyHeaders. The X-Elitea-* names are the elitea-main to gateway
 // identity projection, never a browser input; they are listed so that a future
 // route through either edge cannot inherit a client-chosen project or tenant.
+//
+// ADD A NAME HERE when a header carries identity, authentication, or any other
+// claim elitea-main or the gateway would BELIEVE. See mustForwardHeaders below
+// for the one X-Elitea-* name that is deliberately NOT in this list, and the
+// test that keeps it out.
 var requiredStrippedHeaders = []string{
 	"X-Auth-Type",
 	"X-Auth-ID",
@@ -95,6 +100,59 @@ var requiredStrippedHeaders = []string{
 	"X-Elitea-Project-Id",
 	"X-Elitea-User-Id",
 	"X-Elitea-Tenant-Id",
+}
+
+// hopMarkerHeader is the LLM gateway's hop marker (issue #164). The gateway
+// stamps it on every outbound provider request and refuses any inbound request
+// that already carries this deployment's own value, which contains a circular
+// route on its first re-entry.
+//
+// The literal is repeated here on purpose. elitea-llm-gateway is a SEPARATE Go
+// module (deliberately outside go.work), so this module cannot import its
+// constant. Its internal/hopmarker/path_pin_test.go reads THIS file and fails
+// if the two names drift apart, which is what stops the gateway renaming the
+// header and leaving this gate protecting a name nothing sets any more.
+const hopMarkerHeader = "X-Elitea-Llm-Hop"
+
+// mustForwardHeaders are the names the browser edges must NOT delete. It is the
+// exact inverse of requiredStrippedHeaders and, today, it holds one name.
+//
+// WHY THE HOP MARKER IS EXEMPT WHEN EVERY OTHER X-Elitea-* NAME IS STRIPPED.
+//
+// The canonical circular route leaves the gateway as an ordinary provider call
+// and comes back in through this very edge:
+//
+//	gateway → provider (= the platform's own /llm) → EDGE → elitea-main → gateway
+//
+// The marker is the only thing that distinguishes that request from a first
+// visit. An edge that deleted it would leave the gateway stamping every
+// outbound request and never recognising one coming back — hop detection armed
+// in the code and dead on the wire, with every unit test still green. Issue
+// #12 established that the remaining layer cannot cover for it: the
+// per-(project, model) breaker counts requests and does no hop detection at
+// all, and no rate threshold there can separate a loop from ordinary traffic.
+//
+// The exemption is safe because the marker is NOT identity, which is the
+// property every other name on the strip list has:
+//
+//   - It grants nothing. It names no user, project or tenant, and no code path
+//     reads a permission, a credential or a budget from it.
+//   - Recognising it REFUSES a request; it never admits one. The strip list
+//     exists because elitea-main BELIEVES X-Auth-ID and X-Elitea-Project-Id, so
+//     a client that chooses them chooses its own identity. Nothing is believed
+//     here.
+//   - It cannot be turned against anybody else. Detection reads one header of
+//     one request, compares it in constant time and records nothing — no
+//     counter, no circuit, no shared state — so a client that sends a harvested
+//     marker gets its own request refused and reaches no other request,
+//     project or tenant. (That statelessness is load-bearing: the marker is
+//     transmitted to every upstream, so a marker that opened a shared circuit
+//     would become a cross-tenant denial of service.)
+//
+// KEEP THIS LIST TINY. A name belongs here only if the same three statements
+// are true of it.
+var mustForwardHeaders = []string{
+	hopMarkerHeader,
 }
 
 // edgeWithHeaders re-reads the edge YAML with the header fields this gate needs.
@@ -125,6 +183,104 @@ func parseEdgeWithHeaders(t *testing.T, path string) edgeWithHeaders {
 		t.Fatalf("parse %s as Traefik dynamic configuration: %v", path, err)
 	}
 	return parsed
+}
+
+// TestBrowserEdgesForwardTheHopMarker is the second half of the same gate, and
+// it points the OPPOSITE way: it fails when an edge deletes a name that has to
+// survive (issue #164).
+//
+// Two edits disarm the LLM gateway's loop detection, and neither one breaks any
+// other test in either module:
+//
+//  1. adding the hop marker to strip-client-identity's customRequestHeaders —
+//     it reads as tidying up, because every other X-Elitea-* name belongs
+//     there;
+//  2. adding it to requiredStrippedHeaders above, which then FORCES edit 1 on
+//     whoever next runs this gate.
+//
+// After either, the gateway keeps stamping the marker on every outbound
+// provider request and never sees one come back. Hop detection is armed in the
+// code, dead on the wire, and the only remaining layer is the amplification
+// backstop, which does no hop detection at all (issue #12).
+//
+// See mustForwardHeaders for why this one name is exempt from the rule the rest
+// of the file enforces.
+func TestBrowserEdgesForwardTheHopMarker(t *testing.T) {
+	root := repoRoot(t)
+
+	// 0. The floor on this gate's OWN input. An empty mustForwardHeaders makes
+	//    every loop below iterate zero times and the whole gate report a clean
+	//    tree, which is how a gate stops gating without anyone noticing.
+	if len(mustForwardHeaders) == 0 {
+		t.Fatal("mustForwardHeaders is empty, so this gate checked nothing.\n" +
+			"It must name the LLM gateway's hop marker: an edge that deletes that header disarms " +
+			"loop detection completely, with every unit test in both modules still green.")
+	}
+	found := false
+	for _, name := range mustForwardHeaders {
+		if name == hopMarkerHeader {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("mustForwardHeaders does not name %s, so the browser edges are free to delete it "+
+			"and the LLM gateway can no longer recognise its own traffic coming back.", hopMarkerHeader)
+	}
+
+	// 1. The two lists must stay disjoint. A name cannot be both required to
+	//    go and required to stay, and this is where that contradiction shows
+	//    up first — before anybody edits the YAML to satisfy it.
+	for _, forwarded := range mustForwardHeaders {
+		for _, stripped := range requiredStrippedHeaders {
+			if !strings.EqualFold(forwarded, stripped) {
+				continue
+			}
+			t.Errorf(
+				"%s is in BOTH requiredStrippedHeaders and mustForwardHeaders.\n"+
+					"Deleting it disarms the LLM gateway's hop detection; keeping it is what lets a "+
+					"circular route be recognised on its first re-entry. Decide which, and say why "+
+					"beside the list you change.",
+				forwarded,
+			)
+		}
+	}
+
+	// 2. Neither browser edge may delete it. Traefik deletes a header whose
+	//    customRequestHeaders value is empty, which is the exact shape the
+	//    strip list uses, so presence AT ALL in that map is the failure.
+	for _, relative := range browserEdgeFiles {
+		absolute := filepath.Join(root, relative)
+		if _, err := os.Stat(absolute); err != nil {
+			t.Fatalf(
+				"%s does not exist. The edge moved and this gate stopped gating. "+
+					"Update browserEdgeFiles in this file.",
+				relative,
+			)
+		}
+		definition, defined := parseEdgeWithHeaders(t, absolute).HTTP.Middlewares[stripMiddlewareName]
+		if !defined {
+			// TestBrowserEdgesStripClientIdentity already reports this, and it
+			// reports it as the more serious fault. Nothing to add here.
+			continue
+		}
+		for _, forwarded := range mustForwardHeaders {
+			value, present := definition.Headers.CustomRequestHeaders[forwarded]
+			if !present {
+				continue
+			}
+			t.Errorf(
+				"%s: %q names %s (value %q).\n"+
+					"This header must reach elitea-main untouched. The LLM gateway stamps it on every "+
+					"outbound provider request and recognises it coming back, which is how a circular "+
+					"route — gateway → provider (= this platform's own /llm) → this edge → elitea-main "+
+					"→ gateway — is contained on its first re-entry. An edge that deletes it leaves the "+
+					"gateway unable to recognise its own traffic, with every unit test still green.\n"+
+					"It is not identity: it grants nothing, names no project, and the only thing a "+
+					"client achieves by sending it is the refusal of its own request.",
+				relative, stripMiddlewareName, forwarded, value,
+			)
+		}
+	}
 }
 
 // TestBrowserEdgesStripClientIdentity is the gate.

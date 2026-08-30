@@ -29,7 +29,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 )
@@ -86,14 +85,14 @@ func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
 		orderColumn = "app.name"
 	}
 
-	schema := fmt.Sprintf("p_%s", publicProjectIDForAdmin())
+	schema := publicTenantSchema()
 	publishedPredicate := fmt.Sprintf(`EXISTS (
-    SELECT 1 FROM %q.application_versions version
+    SELECT 1 FROM %s.application_versions version
     WHERE version.application_id = app.id AND version.status = 'published')`, schema)
 
 	var total int
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.applications app WHERE %s`, schema, publishedPredicate),
+		`SELECT COUNT(*) FROM %s.applications app WHERE %s`, schema, publishedPredicate),
 	).Scan(&total); err != nil {
 		// A read failure is reported as one. An empty page here would be
 		// indistinguishable from "this deployment has published nothing".
@@ -143,10 +142,10 @@ SELECT app.id,
                        'published_at', to_char(version.created_at, 'YYYY-MM-DD"T"HH24:MI:SS'),
                        'published_by', version.meta -> 'published_by')
                    ORDER BY version.created_at DESC, version.id DESC)
-            FROM %[1]q.application_versions version
+            FROM %[1]s.application_versions version
             WHERE version.application_id = app.id AND version.status = 'published')::text,
            '[]')
-FROM %[1]q.applications app
+FROM %[1]s.applications app
 WHERE %[2]s
 ORDER BY %[3]s DESC, app.id DESC
 LIMIT $1 OFFSET $2`, schema, publishedPredicate, orderColumn), limit, offset)
@@ -213,17 +212,4 @@ func positiveQueryInt(r *http.Request, name string, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-// publicProjectIDForAdmin resolves the public project the catalogue lives in,
-// the same way every other public read in this package does.
-func publicProjectIDForAdmin() string {
-	id := os.Getenv("PUBLIC_PROJECT_ID")
-	if id == "" {
-		return "1"
-	}
-	if parsed, err := strconv.Atoi(id); err != nil || parsed <= 0 {
-		return "1"
-	}
-	return id
 }

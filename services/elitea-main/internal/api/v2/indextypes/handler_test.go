@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -127,13 +128,8 @@ func TestCurrentIndexTypesRoutePreservesUnchangedUIContract(t *testing.T) {
 			"11",
 		),
 	)
-	want, err := os.ReadFile("testdata/current_index_types_ui_response.json")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if response.Code != http.StatusOK ||
 		response.Header().Get("Content-Type") != "application/json" ||
-		response.Body.String() != string(want) ||
 		reader.calls != 1 || reader.projectID != 7 || permissionCalls != 1 {
 		t.Fatalf(
 			"status=%d reader=%d project=%d permission=%d body=%q",
@@ -145,12 +141,27 @@ func TestCurrentIndexTypesRoutePreservesUnchangedUIContract(t *testing.T) {
 		)
 	}
 
+	// The Pylon half stays byte for byte what the pinned SDK fixture holds.
+	// The body also carries the published `items`/`total` envelope since #394,
+	// so the whole body is no longer the fixture; decode the three maps back
+	// out and compare those. TestCurrentIndexTypesRouteAnswersPublishedEnvelope
+	// BesidePylonKeys covers the published half and holds the two halves to
+	// the same rows.
+	var pylon handler.CurrentIndexTypes
+	if err := json.Unmarshal(response.Body.Bytes(), &pylon); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(pylon, fixture) {
+		t.Fatalf("pylon half drifted from the fixture: %+v", pylon)
+	}
+
 	var topLevel map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &topLevel); err != nil {
 		t.Fatal(err)
 	}
-	if len(topLevel) != 3 || topLevel["document_types"] == nil ||
+	if len(topLevel) != 5 || topLevel["document_types"] == nil ||
 		topLevel["image_types"] == nil || topLevel["code_types"] == nil ||
+		topLevel["items"] == nil || topLevel["total"] == nil ||
 		topLevel["index_types"] != nil {
 		t.Fatalf("incompatible top-level response=%v", topLevel)
 	}
@@ -179,9 +190,12 @@ func TestCurrentIndexTypesRouteAuthenticatesAndAuthorizesBeforeSnapshotRead(
 			method:        http.MethodGet,
 			path:          "/api/v2/elitea_core/index_types/prompt_lib/7",
 			authenticated: true,
-			principalErr:  errors.New("principal suspended"),
-			allowed:       true,
-			wantStatus:    http.StatusUnauthorized,
+			// A real suspension carries auth.ErrPrincipalInactive; only that
+			// answer is a 401, because a database fault must not read as one
+			// (#537).
+			principalErr: auth.ErrPrincipalInactive,
+			allowed:      true,
+			wantStatus:   http.StatusUnauthorized,
 		},
 		{
 			name:          "permission denied",
@@ -316,9 +330,23 @@ func TestCurrentIndexTypesRoutePreservesEmptyCategoriesAndSafeFailure(
 			"11",
 		),
 	)
+	// Empty categories still answer all three, and the published half still
+	// lists all three with empty extension arrays. An absent category would
+	// read to a client as "this deployment indexes no images".
 	if response.Code != http.StatusOK ||
 		response.Body.String() !=
-			"{\"document_types\":{},\"image_types\":{},\"code_types\":{}}\n" {
+			"{\"items\":["+
+				"{\"type\":\"document_types\",\"name\":\"Document types\","+
+				"\"description\":\"File extensions the indexer loads as documents.\","+
+				"\"supported_extensions\":[]},"+
+				"{\"type\":\"image_types\",\"name\":\"Image types\","+
+				"\"description\":\"File extensions the indexer loads as images.\","+
+				"\"supported_extensions\":[]},"+
+				"{\"type\":\"code_types\",\"name\":\"Code types\","+
+				"\"description\":\"File extensions the indexer loads as plain-text code.\","+
+				"\"supported_extensions\":[]}"+
+				"],\"total\":3,"+
+				"\"document_types\":{},\"image_types\":{},\"code_types\":{}}\n" {
 		t.Fatalf("empty status=%d body=%q", response.Code, response.Body.String())
 	}
 

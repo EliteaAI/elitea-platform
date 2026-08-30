@@ -158,4 +158,91 @@ describe('AgentPipelineVersionSelector', () => {
     await user.click(getByRole('button', { name: 'Refresh versions' }));
     expect(onRefreshVersions).toHaveBeenCalledTimes(1);
   });
+  /*
+   * #147 — the set-default affordance. Two behaviours matter here and neither
+   * is "the item renders": that it stays ABSENT for every caller that does not
+   * ask for it (the tool card in `ToolCardBody` is one), and that the
+   * baseline's own eligibility rule still decides when it may be used.
+   */
+  it('renders no set-default item at all when the caller supplies no handler', async () => {
+    const user = userEvent.setup();
+    const { getByTestId, queryByTestId } = renderWithTheme(
+      <AgentPipelineVersionSelector
+        applicationVersionId={2}
+        versions={versions}
+        onSelectVersion={vi.fn()}
+      />,
+    );
+    await user.click(getByTestId('version-selector-trigger'));
+    expect(queryByTestId('agent-version-set-default')).not.toBeInTheDocument();
+    expect(queryByTestId('agent-version-default-marker')).not.toBeInTheDocument();
+  });
+
+  it('reports the SELECTED version to onSetDefaultVersion and closes the menu behind it', async () => {
+    const user = userEvent.setup();
+    const onSetDefaultVersion = vi.fn();
+    const { getByTestId, queryByRole } = renderWithTheme(
+      <AgentPipelineVersionSelector
+        applicationVersionId={2}
+        versions={versions}
+        onSelectVersion={vi.fn()}
+        onSetDefaultVersion={onSetDefaultVersion}
+      />,
+    );
+    await user.click(getByTestId('version-selector-trigger'));
+    await user.click(getByTestId('agent-version-set-default'));
+
+    expect(onSetDefaultVersion).toHaveBeenCalledTimes(1);
+    expect(onSetDefaultVersion.mock.calls[0]?.[0]).toMatchObject({ id: 2, name: 'v1' });
+    // The caller answers with a modal; a menu left open behind it stacks a
+    // second focus trap.
+    expect(queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('marks the default version and refuses to re-pin it — entities/version isSetDefaultDisabled', async () => {
+    const user = userEvent.setup();
+    const { getByTestId } = renderWithTheme(
+      <AgentPipelineVersionSelector
+        applicationVersionId={2}
+        versions={versions}
+        defaultVersionId={2}
+        onSelectVersion={vi.fn()}
+        onSetDefaultVersion={vi.fn()}
+      />,
+    );
+    await user.click(getByTestId('version-selector-trigger'));
+
+    expect(getByTestId('agent-version-default-marker')).toBeInTheDocument();
+    expect(getByTestId('agent-version-set-default')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('refuses to pin "base" while no default is recorded, and refuses a published version', async () => {
+    const user = userEvent.setup();
+    const base = renderWithTheme(
+      <AgentPipelineVersionSelector
+        applicationVersionId={1}
+        versions={versions}
+        onSelectVersion={vi.fn()}
+        onSetDefaultVersion={vi.fn()}
+      />,
+    );
+    await user.click(base.getByTestId('version-selector-trigger'));
+    expect(base.getByTestId('agent-version-set-default')).toHaveAttribute('aria-disabled', 'true');
+    base.unmount();
+
+    const publishedVersions: readonly AgentPipelineVersionOption[] = [
+      { id: 1, name: 'base', created_at: '2026-01-01T12:00:00Z' },
+      { id: 2, name: 'v1', created_at: '2026-02-01T12:00:00Z', status: 'published' },
+    ];
+    const published = renderWithTheme(
+      <AgentPipelineVersionSelector
+        applicationVersionId={2}
+        versions={publishedVersions}
+        onSelectVersion={vi.fn()}
+        onSetDefaultVersion={vi.fn()}
+      />,
+    );
+    await user.click(published.getByTestId('version-selector-trigger'));
+    expect(published.getByTestId('agent-version-set-default')).toHaveAttribute('aria-disabled', 'true');
+  });
 });

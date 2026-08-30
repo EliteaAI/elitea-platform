@@ -131,9 +131,16 @@ export function toVersionWriteBody(
  * cannot drift apart, and adds the two keys only the UPDATE path carries:
  * the version's own `name` (unchanged — `UpdateVersion` writes whatever
  * `name` it is given, so omitting it is fine but sending the current one is
- * closer to the baseline's whole-object PUT) and `meta`, which
- * `toVersionWriteBody` deliberately omits because the CREATE handler
- * discards it.
+ * closer to the baseline's whole-object PUT), `meta`, and `tags` — both of
+ * which `toVersionWriteBody` deliberately omits because the CREATE handler
+ * discards them.
+ *
+ * #345 — `tags` is ALWAYS sent, never gated on being non-empty: removing
+ * the last tag has to reach the wire, and the handler reads the key's
+ * presence (an absent key leaves the stored set alone, an empty array
+ * clears it). The placeholder id `AgentTagEditor` gives a tag the user
+ * just typed is stripped: the server matches by name and a negative id
+ * would be fiction on the wire.
  *
  * `meta` is MERGED over the stored blob rather than replaced: the Go
  * handler assigns the whole `meta` map it receives
@@ -161,6 +168,11 @@ export function toVersionSaveBody(
       ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
       internal_tools: [...edits.internalTools],
     },
+    tags: edits.tags.map((tag) => ({
+      ...(tag.id > 0 ? { id: tag.id } : {}),
+      name: tag.name,
+      ...(tag.data === null || tag.data === undefined ? {} : { data: tag.data }),
+    })),
   };
 }
 

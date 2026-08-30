@@ -20,43 +20,32 @@
  *    see that file's header).
  * 4. `useSelectedProjectId` -> `./useSelectedProjectId.ts` (local
  *    duplicate of `features/apps/api/useSelectedProjectId.ts`).
- * 5. **Real, disclosed backend gap, not papered over:** the baseline's
- *    `useToolkitAvailableToolsQuery` (dynamic, non-MCP tool arg-schema fetch,
- *    `api/toolkits.js:478-486`, `GET {apiSlicePath}/toolkit_available_tools/
- *    prompt_lib/{projectId}/{toolkitId}`) has NO generated equivalent —
- *    checked directly against `src/shared/api/generated/toolkits/
- *    toolkits.ts`'s full export list (only `useListToolkits`/
- *    `useListToolkitInstances`). `dynamicArgsSchemas`/`dynamicToolNames`
- *    are therefore always empty here (`shouldFetchDynamicSchemas` stays
- *    permanently unresolved) — a dynamic (non-statically-schema'd, non-MCP)
- *    tool cannot get real input-mapping defaults from this hook alone
- *    today. Static schemas (`toolkitTypes[...].properties.selected_tools.
+ * 5. **CORRECTED (#440): the endpoint exists; the ARGUMENT SCHEMA does
+ *    not.** This item used to say that no `toolkit_available_tools`
+ *    endpoint existed. It does: `internal/api/router.go:1912` registers it,
+ *    `toolkit_discover_tools` sits at :1914, and `entities/toolkit`'s
+ *    `toolkitTools.useToolkitTools` reads both.
+ *
+ *    That does NOT unblock this hook. Both routes return tool
+ *    `id`/`name`/`type`/`description` only — their repository query selects
+ *    exactly those four columns (`internal/api/v2/toolkits/handler.go:1086`)
+ *    — and this hook needs `args_schemas`, which no column carries. So
+ *    `dynamicArgsSchemas` stays empty, and a dynamic (non-statically-
+ *    schema'd, non-MCP) tool still cannot get real input-mapping defaults
+ *    here. Static schemas (`toolkitTypes[...].properties.selected_tools.
  *    args_schemas`) and the MCP `available_mcp_tools` path both still work;
  *    `isSchemaResolved` (below) keeps this from silently wiping an
- *    already-saved `input_mapping` to `{}` while unresolved, but it cannot
- *    populate one for the first time. Two other Wave-2 units hit the
- *    identical missing endpoint independently — `features/toolkits/ui/
- *    test-tools/useGetSelectedToolSchema.ts` and `TestToolSettings.tsx`'s
- *    own doc comments — confirming this is one real, pre-existing,
- *    cross-cutting backend/codegen gap, not a bug local to this file.
+ *    already-saved `input_mapping` to `{}` while unresolved.
  *
- *    **Exact fix, routed out of this cluster's scope (`features/pipelines/
- *    lib/flow-editor/**` only):** (a) add a `toolkit_available_tools`-
- *    shaped operation to the OpenAPI spec elitea-main serves and regenerate
- *    `src/shared/api/generated/toolkits/toolkits.ts` (owned by the shared
- *    codegen pipeline, not this feature) so it exports a
- *    `useToolkitAvailableTools`-equivalent hook; (b) back in this file,
- *    replace the `EMPTY_DYNAMIC_ARGS_SCHEMAS`/`EMPTY_DYNAMIC_TOOL_NAMES`
- *    constants below with that hook's `args_schemas`/`tools`, gated the
- *    same way the baseline's `shouldFetchDynamicSchemas` was (only fetch
- *    when `projectId` + `selectedToolkit.id` exist AND no static schema
- *    covers this toolkit type); (c) once real data can flow, a later pass
- *    on the consuming node/select components (`ui/nodes/BaseToolNode.tsx`,
- *    `ui/select/*` — a different A2 sub-cluster, out of this file's scope)
- *    should surface `isSchemaResolved` (already returned below) to warn a
- *    user when a tool's required fields could not be auto-populated,
- *    instead of silently rendering none.
+ *    **Exact fix, still out of this cluster's scope:** add an argument
+ *    schema to the tool rows those two routes return (a BACKEND change —
+ *    the column does not exist), then read it here through
+ *    `toolkitTools.useToolkitTools` and gate it the way the baseline's
+ *    `shouldFetchDynamicSchemas` did. `dynamicToolNames` (names only, no
+ *    schema) CAN be filled from the endpoint today — that is a wiring gap,
+ *    not a data gap, and `ui/select/LoopToolSelect.tsx` shows the shape.
  *
+
  * `isMcpToolkit` is inlined rather than imported from `entities/toolkit`:
  * that export's parameter type (`Toolkit`) requires `id`/`name` fields this
  * hook's `selectedToolkit` (a `version_details.tools[]` entry, not a full

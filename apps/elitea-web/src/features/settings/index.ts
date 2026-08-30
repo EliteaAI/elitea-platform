@@ -41,9 +41,11 @@ import { SettingsFormProvider } from './ui/ai-personality/SettingsFormProvider';
 import { MemoryFormContent } from './ui/memory/MemoryFormContent';
 
 import ConfigurationsPanel from './ui/ai-configuration/ConfigurationsPanel';
+import ModelCapabilitiesSection from './ui/ai-configuration/ModelCapabilitiesSection';
 import OpenAITemplate from './ui/ai-configuration/OpenAITemplate';
 import ProjectAIConfiguration from './ui/ai-configuration/ProjectAIConfiguration';
 import { useConfigurationsBySection } from './lib/ai-configuration/useConfigurationsBySection';
+import { useModelConfigurationLayer } from './lib/ai-configuration/useModelConfigurationLayer';
 import { useModelsQuery } from './api/ai-configuration/api';
 
 /** Users tab (`pages/settings/Users.tsx`). */
@@ -86,11 +88,20 @@ export const memoryFeature = { MemoryFormContent };
 /** Environment tab (`pages/settings/Environment.tsx`). */
 export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, parseFieldValue, validateFieldValue, EnvironmentFieldRow };
 
-/** AI-configuration tab (`pages/settings/AIConfiguration.tsx`). */
+/**
+ * AI-configuration tab (`pages/settings/AIConfiguration.tsx`).
+ *
+ * `ModelCapabilitiesSection` + `useModelConfigurationLayer` are the baseline's
+ * `Configuration/ModelConfiguration.jsx` level, which the port had skipped
+ * (issue #80): the chips component existed with no importer, and the helpers
+ * it needs had no caller.
+ */
 export const aiConfigurationFeature = {
   ConfigurationsPanel,
+  ModelCapabilitiesSection,
   OpenAITemplate,
   ProjectAIConfiguration,
   useConfigurationsBySection,
+  useModelConfigurationLayer,
   useModelsQuery,
 };

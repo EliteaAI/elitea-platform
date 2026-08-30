@@ -28,6 +28,12 @@ export interface StoredMcpToken {
   refresh_token?: string | undefined;
   token_endpoint?: string | undefined;
   client_id?: string | undefined;
+  /**
+   * NEVER PERSISTED (issue #177). `storage.ts` strips it on the way to
+   * `sessionStorage` and puts it back from `clientSecretVault.ts` on the way
+   * out, so it is populated for as long as this document lives and absent
+   * after a reload. Do not "fix" a missing value by writing it to storage.
+   */
   client_secret?: string | undefined;
   project_id?: string | undefined;
   toolkit_id?: string | undefined;
@@ -53,6 +59,35 @@ export interface StoredMcpToken {
 export type StoredMcpTokenMap = Record<string, StoredMcpToken>;
 
 /**
+ * OAuth metadata carried alongside a new access token, used to seed/preserve
+ * refresh-time fields. `T | undefined` throughout (`exactOptionalPropertyTypes`)
+ * — callers construct this from computed, possibly-absent values (a form
+ * field, a prior token's cached metadata).
+ *
+ * It lives here, next to the record it feeds, rather than in `storage.ts`,
+ * which re-exports it: that file sits against the §3.5 400-line budget and a
+ * type declaration is what it can shed without losing behaviour.
+ *
+ * `client_secret` is accepted here and is NEVER written to storage — see
+ * `clientSecretVault.ts` (issue #177).
+ */
+export interface SetAccessTokenOAuthMeta {
+  issued_at?: number | undefined;
+  token_endpoint?: string | undefined;
+  client_id?: string | undefined;
+  client_secret?: string | undefined;
+  project_id?: string | undefined;
+  toolkit_id?: string | undefined;
+  authorization_endpoint?: string | undefined;
+  revocation_endpoint?: string | undefined;
+  registration_endpoint?: string | undefined;
+  issuer?: string | undefined;
+  grant_types_supported?: readonly string[] | undefined;
+  code_challenge_methods_supported?: readonly string[] | undefined;
+  used_dcr?: boolean | undefined;
+}
+
+/**
  * Fields are `T | undefined`, not bare `?: T` — under `exactOptionalPropertyTypes`
  * every one of these is legitimately CONSTRUCTED from a computed,
  * possibly-absent value (`savedCredentials?.client_secret`, a form field
@@ -61,6 +96,7 @@ export type StoredMcpTokenMap = Record<string, StoredMcpToken>;
  */
 export interface StoredMcpCredential {
   client_id?: string | undefined;
+  /** NEVER PERSISTED — same treatment as `StoredMcpToken.client_secret` above. */
   client_secret?: string | undefined;
 }
 

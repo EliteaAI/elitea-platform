@@ -148,7 +148,7 @@ func (h *Handler) typeIsInternalMCP(ctx context.Context, schema, toolkitType str
 		return false, errNoPool
 	}
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(
-		`SELECT COALESCE(settings ->> 'url', '') FROM %q.elitea_tools WHERE type = $1`, schema), toolkitType)
+		`SELECT COALESCE(settings ->> 'url', '') FROM %s.elitea_tools WHERE type = $1`, schema), toolkitType)
 	if err != nil {
 		return false, err
 	}

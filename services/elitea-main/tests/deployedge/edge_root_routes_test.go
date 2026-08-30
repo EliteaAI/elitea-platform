@@ -50,6 +50,11 @@ import (
 // edge files that serve a browser directly. The centry-hybrid set is out of
 // scope for the same reason it is there. Its base.yml holds a catch-all to
 // pylon, so a root-mounted Go path resolves by a different mechanism.
+//
+// The cluster runs a THIRD browser edge, a Gateway API HTTPRoute, and for a
+// whole release this file could not see it (#568). edge_gateway_api_test.go
+// now reads it and holds it to the classification below, through the two
+// helpers at the end of this file.
 
 // rootMountedGoPaths are sample request paths that the Go router serves from
 // the root, outside the /api/ prefix. Each names the router.go site that
@@ -202,15 +207,27 @@ func TestRootRedirectKeepsTheQueryString(t *testing.T) {
 	}
 }
 
-// notAtTheBrowserEdge names the router patterns that no rule forwards on
-// purpose. Each entry gives the reason. The gate below fails on a pattern that
-// is neither forwarded nor listed here, so a new root-mounted family cannot
-// reach production without a decision.
+// notAtTheBrowserEdge names the router patterns that NO browser edge forwards,
+// on purpose. Each entry gives the reason. The gate below fails on a pattern
+// that is neither forwarded nor listed here, so a new root-mounted family
+// cannot reach production without a decision.
+//
+// This map holds what is true of EVERY edge. An edge that alone cannot carry a
+// route declares that beside itself — see notAtTheGatewayAPIEdge in
+// edge_gateway_api_test.go — so the reason stays next to the edge it belongs
+// to and never widens to the edges that do carry the route.
 var notAtTheBrowserEdge = map[string]string{
 	"/readyz":   "the readiness body names each dependency's state; the Helm probe and the compose healthcheck reach the pod directly",
 	"/startupz": "the startup probe, for the same reason as /readyz",
 	"/docs":     "the Swagger UI. No product page links to it on this origin, so this edge does not publish it",
 }
+
+// edgeForwards answers whether one edge sends requestPath to elitea-main. Each
+// edge language gets its own implementation: a traefik rule list reads one way
+// and a Gateway API match list reads another, and the classification below must
+// not care which. The two gates then share ONE definition of "classified", so a
+// change to that definition reaches every edge.
+type edgeForwards func(t *testing.T, requestPath string) bool
 
 // browserFacingRouterConfig builds the router with the browser-facing families
 // composed. A field left empty removes routes from the walk, and this gate
@@ -337,41 +354,46 @@ func TestBrowserEdgesClassifyEveryRootMountedGoRoute(t *testing.T) {
 			if len(rules) == 0 {
 				t.Fatalf("%s has no router that serves elitea-main", relative)
 			}
-			assertPatternsClassified(t, relative, patterns, rules)
-			assertNoStaleExclusions(t, relative, patterns, rules)
+			forwards := func(t *testing.T, requestPath string) bool {
+				return anyRuleMatches(t, rules, requestPath)
+			}
+			assertPatternsClassified(t, relative, patterns, forwards, notAtTheBrowserEdge)
+			assertNoStaleExclusions(t, relative, patterns, forwards, notAtTheBrowserEdge)
 		})
 	}
 }
 
-func assertPatternsClassified(t *testing.T, relative string, patterns, rules []string) {
+// assertPatternsClassified fails on a root-mounted route that this edge neither
+// forwards nor excludes with a reason.
+func assertPatternsClassified(t *testing.T, relative string, patterns []string, forwards edgeForwards, excluded map[string]string) {
 	t.Helper()
 	for _, pattern := range patterns {
-		if anyRuleMatches(t, rules, sampleRequestPath(pattern)) {
+		if forwards(t, sampleRequestPath(pattern)) {
 			continue
 		}
-		if _, excluded := notAtTheBrowserEdge[pattern]; excluded {
+		if _, listed := excluded[pattern]; listed {
 			continue
 		}
-		t.Errorf("%s: the Go router serves %s and no rule forwards it; traefik answers its own 404. Add a rule, or add the pattern to notAtTheBrowserEdge with the reason", relative, pattern)
+		t.Errorf("%s: the Go router serves %s and no rule forwards it; the edge answers its own 404. Add a rule, or add the pattern to the exclusion list for this edge with the reason", relative, pattern)
 	}
 }
 
-// assertNoStaleExclusions keeps notAtTheBrowserEdge honest. An entry for a
+// assertNoStaleExclusions keeps an exclusion list honest. An entry for a
 // pattern the router dropped, or for a pattern the edge now forwards, states
-// something untrue.
-func assertNoStaleExclusions(t *testing.T, relative string, patterns, rules []string) {
+// something untrue. The caller passes the list that applies to its edge.
+func assertNoStaleExclusions(t *testing.T, relative string, patterns []string, forwards edgeForwards, excluded map[string]string) {
 	t.Helper()
 	registered := map[string]bool{}
 	for _, pattern := range patterns {
 		registered[pattern] = true
 	}
-	for pattern, why := range notAtTheBrowserEdge {
+	for pattern, why := range excluded {
 		if !registered[pattern] {
-			t.Errorf("notAtTheBrowserEdge lists %s (%s), but the Go router does not register it; delete the entry", pattern, why)
+			t.Errorf("the exclusion list names %s (%s), but the Go router does not register it; delete the entry", pattern, why)
 			continue
 		}
-		if anyRuleMatches(t, rules, sampleRequestPath(pattern)) {
-			t.Errorf("%s: notAtTheBrowserEdge says %s stays off this edge (%s), but a rule forwards it", relative, pattern, why)
+		if forwards(t, sampleRequestPath(pattern)) {
+			t.Errorf("%s: the exclusion list says %s stays off this edge (%s), but a rule forwards it", relative, pattern, why)
 		}
 	}
 }

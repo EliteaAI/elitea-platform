@@ -44,6 +44,7 @@ import { ConversationStarters } from "./conversationStarters.zod";
 import { LlmSettings } from "./llmSettings.zod";
 import { PipelineSettings } from "./pipelineSettings.zod";
 import { VersionMeta } from "./versionMeta.zod";
+import { VersionTag } from "./versionTag.zod";
 import { VersionVariable } from "./versionVariable.zod";
 
 export const VersionWriteRequest = zod.object({
@@ -59,6 +60,12 @@ export const VersionWriteRequest = zod.object({
   llm_settings: LlmSettings.optional(),
   conversation_starters: ConversationStarters.optional(),
   variables: zod.array(VersionVariable).optional(),
+  tags: zod
+    .array(VersionTag)
+    .optional()
+    .describe(
+      "NOTE(#345): the version's topical tags. Send the key to replace the stored set; an empty array removes every association row. Omit the key to leave the stored set alone. Each entry is matched by `name`: an existing `tags` row is reused, a new name creates one. Only the PUT (UpdateVersion) writes them — the two create paths still ignore the key, exactly as they ignore `meta`.\n",
+    ),
   meta: VersionMeta.optional(),
   pipeline_settings: PipelineSettings.optional().describe(
     "Pipeline flow-graph layout ({nodes, edges, orientation, layout_version}). Written verbatim to the application_versions.pipeline_settings jsonb column; omit the key to leave the stored value untouched.\n",

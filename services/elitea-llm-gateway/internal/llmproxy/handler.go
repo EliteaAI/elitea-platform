@@ -15,6 +15,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/hopmarker"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/overhead"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/pkg/ssewriter"
 )
@@ -35,29 +37,35 @@ type Handler struct {
 	// (design §4.2, §3.4). nil when the gateway is booted without a database:
 	// the /v1/models surface then reports an empty set rather than erroring.
 	models *ModelResolver
-	// budgetGate is the pre-LLM admission gate (design §8.5, BF0.9b).
-	// nil means the gate is disabled — skip all budget enforcement. This keeps
-	// existing tests that build a Handler without governance wired up passing.
-	budgetGate BudgetChecker
-	// costCalc converts the response's token counts into a billed amount in
-	// nano-USD. Post-completion only — admission passes no estimate (issue #10).
-	// Required when budgetGate is non-nil; ignored (and may be nil) otherwise.
-	costCalc CostEstimator
+	// budgetRef publishes the whole NATS budget path — the admission gate, the
+	// price calculator, the two event publishers and the budget_used reader —
+	// as ONE immutable value (budget_plane.go).
+	//
+	// It is an atomic pointer because the wiring can arrive AFTER the handler
+	// serves traffic: a gateway that starts while NATS is unreachable has no
+	// gate at all, and a later re-dial installs one (issue #315). The fields it
+	// replaces were plain struct fields read on the money path with no
+	// synchronisation, so a late install was a data race on billing.
+	//
+	// Read it with h.budget(); never touch this field directly.
+	budgetRef atomic.Pointer[budgetPlane]
+
+	// installMu serialises the read-modify-write in mutateBudget. The atomic
+	// pointer makes every READ safe on its own; two concurrent WRITES would
+	// still lose one of the two updates.
+	installMu sync.Mutex
 
 	// policy supplies the authored governance DEFINITIONS from
 	// gateway.governance_config (policy_gate.go). nil disables every authored
 	// control — model allowlists, rate limits, MCP allowlists, routing rules
 	// and rate policy — and is the posture of a gateway with no database.
-	// It is a DIFFERENT plane from budgetGate: that one enforces spend against
-	// a counter, this one enforces what an operator wrote down.
+	// It is a DIFFERENT plane from the budget gate: that one enforces spend
+	// against a counter, this one enforces what an operator wrote down.
 	policy PolicySource
 	// rateLimiter enforces the authored per-minute ceilings against the shared
 	// NATS counter. nil (or a limiter with no counter) disables rate limiting
 	// while leaving the other authored controls in force.
 	rateLimiter *policy.Limiter
-	// budgetUsage supplies the CEL `budget_used` variable to routing rules. nil
-	// resolves it to 0.
-	budgetUsage BudgetUsageReader
 	// routePick is the weighted-target draw for routing rules. nil selects a
 	// random source; a test sets it to make a weighted rule determinate.
 	routePick func(total float64) float64
@@ -74,16 +82,14 @@ type Handler struct {
 	// production wiring arms it via WithLoopBreaker.
 	loopGuard *loopBreaker
 
-	// alertEvents publishes budget.soft_alert to gateway.events.* when the
-	// 80% soft alert fires (spec §8.3). nil = publishing disabled.
-	alertEvents AlertEventPublisher
-
-	// opsEvents publishes operator-only events (budget.unbilled_stream) onto
-	// gateway.events.ops.*. Deliberately NOT alertEvents: the loss record must
-	// not reach the tenant-facing project channel, where it would tell a
-	// project in real time which of its streams went unbilled (gateway-review).
-	// nil = publishing disabled (the WARN log remains).
-	opsEvents OpsEventPublisher
+	// hopMarker is the deployment's hop marker — the actual anti-circular-
+	// routing mechanism (issue #164, hopguard.go). nil = detection UNARMED
+	// (unit-test construction, or a deployment with no GATEWAY_HOP_SECRET);
+	// production wiring arms it via WithHopMarker.
+	//
+	// It is a DIFFERENT layer from loopGuard above and neither replaces the
+	// other: this one detects a loop, that one bounds amplification.
+	hopMarker *hopmarker.Marker
 
 	// streamGrace is how long a stream whose SSE loop exited early may keep its
 	// provider stream alive waiting for the authoritative usage trailer
@@ -222,8 +228,10 @@ func WithBudgetGate(gate BudgetChecker, calc CostEstimator) HandlerOption {
 		if gate == nil {
 			return
 		}
-		h.budgetGate = gate
-		h.costCalc = calc
+		h.mutateBudget(func(p *budgetPlane) {
+			p.gate = gate
+			p.calc = calc
+		})
 	}
 }
 
@@ -271,14 +279,18 @@ func WithLoopBreakerClock(p LoopBreakerParams, now func() time.Time) HandlerOpti
 // "a soft-alert is recorded on gateway.events.*"). nil is a no-op (the alert
 // still logs; nothing is published).
 func WithAlertEventPublisher(p AlertEventPublisher) HandlerOption {
-	return func(h *Handler) { h.alertEvents = p }
+	return func(h *Handler) {
+		h.mutateBudget(func(bp *budgetPlane) { bp.alerts = p })
+	}
 }
 
 // WithOpsEventPublisher wires the operator-only gateway.events.ops.* publisher
 // used for budget.unbilled_stream (issue #9). nil is a no-op (the loss still
 // logs at WARN; nothing is published).
 func WithOpsEventPublisher(p OpsEventPublisher) HandlerOption {
-	return func(h *Handler) { h.opsEvents = p }
+	return func(h *Handler) {
+		h.mutateBudget(func(bp *budgetPlane) { bp.ops = p })
+	}
 }
 
 // WithStreamGrace sets how long an early-exiting stream may keep its provider
@@ -557,15 +569,22 @@ func finish(h http.Header) {
 // "stream": true, else returns a unary chat completion.
 func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	// t0 anchors the hop-overhead measurement (design §10.2 / gate BFF.9d).
-	// X-Elapsed-Ms reports the gateway's PRE-DISPATCH overhead — body decode,
-	// identity verification, loop breaker and the NATS budget check — i.e.
-	// everything between accepting the request and handing it to the router.
-	// It deliberately does NOT include what happens inside the router call:
-	// per-request credential resolution (Account/vault lookup) and core routing
-	// run there, inseparably from the provider round-trip, so no measurement
-	// taken outside the router can attribute them. The k6 overhead script
-	// consumes this header and must be read as "pre-dispatch overhead", not
-	// "total gateway overhead".
+	// X-Elapsed-Ms reports the gateway's overhead up to the instant core holds
+	// the provider credential: body decode, identity verification, loop
+	// breaker, the NATS budget check, the wait in the core provider queue, core
+	// routing, and the per-request credential resolution (the Account's
+	// Postgres read and Fernet decrypt).
+	//
+	// The credential half runs INSIDE the router call, so an overhead.Meter on
+	// the context carries it back out: account.GetKeysForProvider marks the
+	// Meter, and the stamp below reads the mark (issue #17).
+	//
+	// The header still EXCLUDES the provider round-trip — core dials the
+	// provider only after it holds the key — and it excludes the gateway's own
+	// response marshalling. A request that resolves no credential (a plugin
+	// short-circuit, a direct key, a failure before the provider worker)
+	// reports the pre-dispatch time alone. The k6 overhead script consumes this
+	// header.
 	t0 := time.Now()
 	var req openai.OpenAIChatRequest
 	raw, ok0 := decodeJSONRaw(w, r, &req)
@@ -577,6 +596,9 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The Meter must reach the context BEFORE dispatch: the account marks it
+	// from inside the router call.
+	meter := overhead.Attach(ctx, t0)
 	bifReq := req.ToBifrostChatRequest(ctx)
 
 	// Map the caller's model id onto the provider's own model name (issue #317)
@@ -598,8 +620,16 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// preDispatch is what the Meter reports when the router resolved no
+	// credential. Take the snapshot HERE: after the router call, time.Since(t0)
+	// carries the provider round-trip.
+	preDispatch := time.Since(t0)
+
 	if streaming {
 		ch, bErr := h.router.ChatCompletionStreamRequest(ctx, bifReq)
+		// Stamp before streamOpenAI: beginStream writes the response head, and
+		// a header set after that never reaches the client.
+		setElapsedHeader(w, meter.Overhead(preDispatch))
 		// FIX #5: pass billing context so streamOpenAI can call updateUsage
 		// after the channel drains with the final usage-carrying chunk.
 		// Issue #9: streamOpenAI takes ownership of sc — it settles the stream
@@ -609,10 +639,11 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sc.cancel()
-	// Stamp the header BEFORE dispatch: the value is the pre-dispatch overhead
-	// (see t0 above), and headers must be set before the first body write anyway.
-	setElapsedHeader(w, time.Since(t0))
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
+	// Stamp AFTER the router returns: credential resolution is the part of the
+	// overhead that runs inside that call (issue #17). writeUnary below writes
+	// the first body byte, so the header is still in time.
+	setElapsedHeader(w, meter.Overhead(preDispatch))
 	// Write the response FIRST (client-visible), then bill asynchronously.
 	// updateUsage spawns a bounded goroutine so the HTTP response latency does
 	// not include the NATS billing round-trip (FIX #18).

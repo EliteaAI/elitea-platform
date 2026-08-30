@@ -30,6 +30,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 func TestListQueryCarriesEveryParameterTheClientSends(t *testing.T) {
@@ -154,8 +156,15 @@ func TestSharedBlockReadsThePublicProjectOnly(t *testing.T) {
 
 	wired := &Handler{publicProjectID: 1}
 	schema, ok := wired.sharedConfigurationSchema("7", shared)
-	if !ok || schema != "p_1" {
-		t.Fatalf("schema = %q ok = %v, want the public project's schema", schema, ok)
+	// The block reads the PUBLIC project's schema, as a quoted identifier
+	// ready to interpolate with %s. The expected value is built the same way
+	// the handlers build theirs, so the test cannot drift from the quoting.
+	wantSchema, err := tenantschema.QuoteInt(1)
+	if err != nil {
+		t.Fatalf("QuoteInt(1) failed: %v", err)
+	}
+	if !ok || schema != wantSchema {
+		t.Fatalf("schema = %q ok = %v, want %q, the public project's schema", schema, ok, wantSchema)
 	}
 	// The public project does not read its own rows as "shared with me".
 	if _, ok := wired.sharedConfigurationSchema("1", shared); ok {

@@ -48,10 +48,10 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	schema := "p_" + publicProjectID()
+	schema := publicSchema()
 	query := r.URL.Query()
 
-	conditions := []string{`EXISTS (SELECT 1 FROM ` + fmt.Sprintf("%q", schema) + `.skill_versions v WHERE v.skill_id = sk.id AND v.status = 'published')`}
+	conditions := []string{`EXISTS (SELECT 1 FROM ` + schema + `.skill_versions v WHERE v.skill_id = sk.id AND v.status = 'published')`}
 	var args []any
 
 	if search := strings.TrimSpace(query.Get("query")); search != "" {
@@ -61,9 +61,9 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 	if category := strings.TrimSpace(query.Get("category")); category != "" {
 		args = append(args, category)
 		conditions = append(conditions, fmt.Sprintf(`EXISTS (
-			SELECT 1 FROM %[1]q.skill_versions v
-			JOIN %[1]q.skill_version_tag_association a ON a.version_id = v.id
-			JOIN %[1]q.tags t ON t.id = a.tag_id
+			SELECT 1 FROM %[1]s.skill_versions v
+			JOIN %[1]s.skill_version_tag_association a ON a.version_id = v.id
+			JOIN %[1]s.tags t ON t.id = a.tag_id
 			WHERE v.skill_id = sk.id AND v.status = 'published' AND t.name = $%[2]d)`, schema, len(args)))
 	}
 	if tagIDs := parseIDList(query.Get("tags")); len(tagIDs) > 0 {
@@ -72,8 +72,8 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 		for _, tagID := range tagIDs {
 			args = append(args, tagID)
 			conditions = append(conditions, fmt.Sprintf(`EXISTS (
-				SELECT 1 FROM %[1]q.skill_versions v
-				JOIN %[1]q.skill_version_tag_association a ON a.version_id = v.id
+				SELECT 1 FROM %[1]s.skill_versions v
+				JOIN %[1]s.skill_version_tag_association a ON a.version_id = v.id
 				WHERE v.skill_id = sk.id AND v.status = 'published' AND a.tag_id = $%[2]d)`, schema, len(args)))
 		}
 	}
@@ -81,7 +81,7 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 
 	var total int
 	if err := h.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT COUNT(*) FROM %q.skills sk`, schema)+where, args...).Scan(&total); err != nil {
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s.skills sk`, schema)+where, args...).Scan(&total); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"total": 0, "rows": []any{}})
 		return
 	}
@@ -118,7 +118,7 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT sk.id, sk.name, COALESCE(sk.description, ''), sk.owner_id, sk.created_at,
 		       COALESCE(sk.meta::text, '{}')
-		FROM %q.skills sk`, schema)+where+
+		FROM %s.skills sk`, schema)+where+
 		fmt.Sprintf(` ORDER BY %s %s LIMIT $%d OFFSET $%d`, sortColumn, sortDirection, len(args)-1, len(args)),
 		args...)
 	if err != nil {
@@ -221,7 +221,7 @@ func (h *Handler) publishedVersionsFor(ctx context.Context, schema string, skill
 	}
 
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT skill_id, id, name, status, created_at FROM %q.skill_versions
+		SELECT skill_id, id, name, status, created_at FROM %s.skill_versions
 		WHERE skill_id = ANY($1) AND status = 'published'
 		ORDER BY skill_id, created_at DESC, id DESC`, schema), skillIDs)
 	if err != nil {
@@ -255,8 +255,8 @@ func (h *Handler) publishedVersionsFor(ctx context.Context, schema string, skill
 
 	tagRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT a.version_id, t.name
-		FROM %q.skill_version_tag_association a
-		JOIN %q.tags t ON t.id = a.tag_id
+		FROM %s.skill_version_tag_association a
+		JOIN %s.tags t ON t.id = a.tag_id
 		WHERE a.version_id = ANY($1)
 		ORDER BY a.version_id, t.name`, schema, schema), versionIDs)
 	if err != nil {
@@ -287,11 +287,11 @@ func (h *Handler) PublicSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	schema := "p_" + publicProjectID()
+	schema := publicSchema()
 
 	selector := fmt.Sprintf(`
 		SELECT id, name, instructions, status, author_id, created_at, COALESCE(meta::text, '{}')
-		FROM %q.skill_versions
+		FROM %s.skill_versions
 		WHERE skill_id = $1 AND status = 'published'`, schema)
 	args := []any{skillID}
 	if versionName != "" {
@@ -330,7 +330,7 @@ func (h *Handler) PublicSkill(w http.ResponseWriter, r *http.Request) {
 	var createdAt time.Time
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT name, COALESCE(description, ''), owner_id, created_at, COALESCE(meta::text, '{}')
-		FROM %q.skills WHERE id = $1`, schema), skillID).
+		FROM %s.skills WHERE id = $1`, schema), skillID).
 		Scan(&skillName, &skillDescription, &ownerID, &createdAt, &skillMetaText); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"error": fmt.Sprintf("No skill found with id '%s' or no published version", skillID),

@@ -68,6 +68,22 @@ jobs:
             exit 1
           fi
           echo "shell syntax: ${scripts_found} file(s) parse"
+      # Issue #534. Three guards STATED the number of assertions they make.
+      # A stated number is correct when its author writes it and true only
+      # when the pull request MERGES, so a merge that added an assertion, and
+      # left the number alone, made the floor under-count in silence for ever.
+      #
+      # Each of those guards derives its floor from its own source now. This
+      # step holds the property that correction depends on: add a site and the
+      # floor rises, remove a site and it falls, and no guard states a literal
+      # count. It finds the guards in the tree and reads each guard's OWN
+      # pattern, so it cannot hold a stale list or a stale pattern.
+      #
+      # It needs no stack, no cluster and no network, and it takes about a
+      # second. It lives here because this workflow has no path filter, and
+      # the guards it reads sit in three different trees.
+      - name: The derived assertion floors move with their assertions
+        run: bash scripts/lib/assertion-floor-test.sh
       # This gate lives here, and not only in ci-go.yml, because ci-go.yml is
       # path-filtered and does not select deploy/centry-hybrid/**. A pull
       # request that edits only the edge YAML would not run it there. Traefik
@@ -228,9 +244,9 @@ jobs:
           MIGRATION_BASE_REF: ${{ github.base_ref }}
         run: bash scripts/database/check-migration-version.sh
 
-  # Issue #485. `docker/model-cache-init/test_entrypoint.sh` holds 81 assertions
-  # on the model-cache entrypoint, and no workflow, Taskfile task or script
-  # called it. The image cannot run it either, because
+  # Issue #485. `docker/model-cache-init/test_entrypoint.sh` holds the
+  # assertions on the model-cache entrypoint, and no workflow, Taskfile task or
+  # script called it. The image cannot run it either, because
   # `docker/model-cache-init/.dockerignore` excludes it from the build context.
   # Running it here needs no image at all: the suite states that it runs without
   # Docker, against a temporary directory.
@@ -239,15 +255,134 @@ jobs:
   # `docker/model-cache-init/**`, and this one has no path filter. About 15
   # seconds.
   #
-  # NOTE for issue #484: that issue corrects the entrypoint so that an empty
-  # manifest FAILS instead of reporting a full cache. `test_empty_models` in
-  # this suite asserts the present behaviour (exit 0), so the change that
-  # corrects the entrypoint must correct that test in the same commit. That is
-  # what a gate is for.
+  # Issue #529 adds the second half of that directory. `validate-manifest.sh`
+  # had no caller either, and `manifest-schema.json` had no reader at all. The
+  # validator reads the schema now, so the step below measures both files.
   model-cache-init:
-    name: Model cache entrypoint suite
+    name: Model cache entrypoint suite and manifest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Read the COUNT, not the exit status (#529). The suite already exits
+      # non-zero on a shortfall, and a job that reads the status alone believes
+      # whatever the suite reports about itself. This step reads the result
+      # line, so a suite that stops printing one is red here as well.
+      #
+      # It states NO number of its own. The floor is derived inside the suite
+      # (#534), and a number restated here would put the same stale count in a
+      # second place.
       - name: Run the entrypoint assertions
-        run: bash docker/model-cache-init/test_entrypoint.sh
+        run: |
+          set +e
+          set -uo pipefail
+          output="$(bash docker/model-cache-init/test_entrypoint.sh 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          line="$(printf '%s\n' "$output" | grep -E '^=== Results: [0-9]+ passed, [0-9]+ failed; [0-9]+ of [0-9]+ expected assertions reported a result ===$')"
+          if [ -z "$line" ]; then
+            echo "::error::the suite printed no result line, so the number of assertions it made was never reported"
+            exit 1
+          fi
+          ran="$(printf '%s' "$line" | sed -E 's/.*; ([0-9]+) of ([0-9]+) .*/\1/')"
+          expected="$(printf '%s' "$line" | sed -E 's/.*; ([0-9]+) of ([0-9]+) .*/\2/')"
+          if [ "$expected" -lt 1 ]; then
+            echo "::error::the suite derived ${expected} assertion site(s); a floor of zero passes every run"
+            exit 1
+          fi
+          if [ "$ran" -ne "$expected" ]; then
+            echo "::error::${ran} of ${expected} assertions reported a result; an assertion that reports nothing is not a passed assertion"
+            exit 1
+          fi
+          echo "model cache entrypoint: ${ran} of ${expected} assertions reported a result"
+          exit "$status"
+      # jq and the aws CLI are both on ubuntu-latest. A missing aws CLI turns
+      # this step RED on purpose (#429): every URL in the manifest is an s3://
+      # URL, and a host that cannot look at one has measured nothing about it.
+      # The bucket is private, so the answer itself is a counted warning and not
+      # an error, and the step does not depend on a credential.
+      - name: Validate the model cache manifest against its schema
+        run: bash docker/model-cache-init/validate-manifest.sh docker/model-cache-init/manifest.json
+
+  # Issue #541. A squash merge writes whole files. A squash from a branch that
+  # was cut before an earlier pull request landed therefore DELETES that pull
+  # request's work, and it leaves the deleted pull request in the history.
+  # Pull request #502 corrected the logout flight and its journey. Pull request
+  # #516 merged four hours later and wrote the five files back to their
+  # pre-#502 copies, byte for byte. This repository still holds both blobs, and
+  # they show it: logout.ts is object da9ba899 before #502, c2f5564a after it,
+  # and da9ba899 again at #516.
+  #
+  # The check that cleared it was `git merge-base --is-ancestor`, and it
+  # answered "true". That answer is correct and it is not evidence. Ancestry
+  # reports the commit. It says nothing about the content. Three agents then
+  # cleared a red journey by calling it "pre-existing on staging". Each was
+  # right, and the reason it was pre-existing was this deletion, so the
+  # reasoning closed on itself.
+  #
+  # This job reads content. It walks the trunk, takes the diff of each merged
+  # pull request against its own base, and looks for the lines that pull
+  # request added. It names BOTH pull requests, and the one that deleted the
+  # work is the one to fix.
+  #
+  # It reads the BASE branch head on a pull request, never the proposed tree. A
+  # pull request may rewrite lines an earlier pull request added, and that is
+  # ordinary work, so a gate that read its own tree would be red on most of
+  # them. The measurement is about what ALREADY merged. On a push it reads the
+  # new trunk head, so a bad merge turns red within minutes of landing.
+  #
+  # It lives here, and not in a path-filtered workflow, for the reason the
+  # header of this file gives. A deletion of this kind can land in any tree.
+  landed-line-survival:
+    name: A merged pull request's work is still in the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The walk needs the trunk. The checker REFUSES a shallow clone
+          # rather than reporting a short walk as a pass.
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # The suite builds throwaway bare repositories with git plumbing. It
+      # reads only the standard library, so there is nothing to install.
+      #
+      # Read the COUNT of scenarios, not the exit status alone. `unittest`
+      # exits 0 when it collects nothing, so a renamed file or a renamed method
+      # would turn this step into a silent no-op (#534). The number comes from
+      # the suite file itself, so adding a scenario raises it.
+      - name: The checker still sees the deletion it exists for
+        run: |
+          set -euo pipefail
+          expected="$(grep -c '^    def test_' scripts/ci/test_check_landed_line_survival.py)"
+          if [ "${expected}" -lt 8 ]; then
+            echo "::error::found ${expected} scenario(s) in the suite, expected at least 8 — the pattern stopped matching, so this step checked nothing"
+            exit 1
+          fi
+          output="$(python -m unittest discover -s scripts/ci -p 'test_check_landed_line_survival.py' -v 2>&1)"
+          printf '%s\n' "${output}"
+          ran="$(printf '%s\n' "${output}" | sed -n 's/^Ran \([0-9][0-9]*\) test.*/\1/p')"
+          if [ -z "${ran}" ]; then
+            echo "::error::unittest printed no result line, so the number of scenarios it ran was never reported"
+            exit 1
+          fi
+          if [ "${ran}" -ne "${expected}" ]; then
+            echo "::error::the suite file holds ${expected} scenario(s) and unittest ran ${ran}; a scenario that does not run is not a passed scenario"
+            exit 1
+          fi
+          echo "line-survival checker: ${ran} of ${expected} scenarios ran"
+      - name: The lines the last merged pull requests added are still on the trunk
+        env:
+          # A pull request measures its BASE. A push measures the new head.
+          SURVIVAL_TIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          tip="${SURVIVAL_TIP}"
+          if ! git rev-parse -q --verify "${tip}^{commit}" >/dev/null 2>&1; then
+            # A force-push to the base branch can retire the recorded sha. On a
+            # pull request the checkout is the merge commit, so its first
+            # parent IS the base.
+            echo "::notice::${tip} is not in this clone; reading the first parent of HEAD instead"
+            tip="$(git rev-parse HEAD^1 2>/dev/null || git rev-parse HEAD)"
+          fi
+          python scripts/ci/check_landed_line_survival.py --tip "${tip}"

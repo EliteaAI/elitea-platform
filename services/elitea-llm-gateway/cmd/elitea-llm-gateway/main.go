@@ -45,6 +45,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/governance"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/hopmarker"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
@@ -116,6 +117,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ISSUE #164: the hop marker, built from its OWN key material.
+	//
+	// GATEWAY_HOP_SECRET, never cfg.IdentitySecret and never derived from it:
+	// the marker is stamped on every outbound provider request, and a provider
+	// api_base is tenant-authored, so the marker is published to addresses a
+	// tenant chooses. The key that signs the X-Elitea-* identity headers must
+	// not travel there, and rotating the marker must not force an identity
+	// rotation.
+	//
+	// It is built HERE, before both halves that use it — the Account stamps it
+	// outbound, the Handler recognises it inbound — so the two can never be
+	// armed with different values.
+	hopMarker := hopmarker.New([]byte(cfg.HopSecret))
+	logHopMarkerMode(logger, hopMarker.Armed())
+
 	// BFF.6: assemble the vault-backed Account (BF0.2-account) so bifrost can
 	// resolve real per-project provider credentials. Without a pool the
 	// gateway keeps the zero-provider bootstrap account — it will start, but
@@ -143,6 +159,7 @@ func main() {
 			SelfOrigins:         cfg.SelfLLMOrigins,
 			EgressAllowlist:     cfg.EgressAllowlist,
 			PublicProjectID:     cfg.PublicProjectIDString(),
+			HopMarker:           hopMarker,
 			Logger:              logger,
 		})
 		if aerr != nil {
@@ -192,6 +209,11 @@ func main() {
 	//
 	// Fix round-3 #1: hoist govStore to a scope visible at shutdown so
 	// govStore.Drain() can be called in the graceful shutdown path.
+	//
+	// plane holds the store for the three readers that are NOT this goroutine:
+	// /readyz, the shutdown drain, and the recovery loop that can install a
+	// store after boot (issue #315, budget_recovery.go).
+	plane := &enforcementPlane{cfg: cfg}
 	var (
 		budgetOpts []llmproxy.HandlerOption
 		govStore   *governance.GovernanceStore
@@ -206,6 +228,7 @@ func main() {
 			govStore = nil // ensure nil so drain is skipped on error path
 		} else {
 			budgetOpts = append(budgetOpts, llmproxy.WithBudgetGate(govStore, calcResult))
+			plane.install(govStore)
 			logger.Info("budget enforcement ENABLED", "nats_url", cfg.NATSURL)
 			recordBudgetEnforcementEnabled(true)
 		}
@@ -225,9 +248,8 @@ func main() {
 	// Issue #304: "unconditionally" was wrong for one specific case — NATS
 	// CONFIGURED but never reachable, so server.New left the client nil and
 	// govStore was never built. That pod serves /llm with no budget gate and
-	// no billing for the whole life of the process (server.New connects once;
-	// nats.MaxReconnects(-1) only ever resurrects a connection that succeeded
-	// at least once, and there is no later re-wire), yet reported ready.
+	// no billing (server.New connects once; nats.MaxReconnects(-1) only ever
+	// resurrects a connection that succeeded at least once), yet reported ready.
 	//
 	// This is NOT a new fail-open/closed policy — it removes an inconsistency.
 	// Lose NATS one second AFTER boot and Ping already fails, so /readyz
@@ -235,10 +257,14 @@ func main() {
 	// it one second BEFORE boot and the same outage produced the opposite
 	// outcome: ready, serving, unmetered. The gate below makes the two agree.
 	//
+	// Issue #315 made the state TEMPORARY: startBudgetRecovery re-dials NATS
+	// and installs enforcement on the running gateway, which clears this gate
+	// without a restart. The gate is therefore read per request, not decided
+	// once here.
+	//
 	// Scoped to GATEWAY_NATS_URL being set, so the NATS-less dev/CI posture
 	// (URL unset ⇒ enforcement deliberately off) still reports ready.
-	unwired := budgetEnforcementUnwired(cfg, govStore)
-	if unwired {
+	if plane.unwired() {
 		logger.Error("READINESS GATED: budget enforcement is configured but was not wired; /readyz will report not_ready",
 			"reason", budgetDisabledReason(cfg, nc, pool))
 	}
@@ -252,7 +278,11 @@ func main() {
 	// which is the one guard this needs: any future caller that boxes a typed
 	// nil *GovernanceStore into an interface is covered too, not just this
 	// call site. Measured against the standalone compose stack.
-	mux.HandleFunc("/readyz", makeReadyzHandler(govStore, unwired))
+	// Both arguments read the LIVE store, not the one this goroutine saw at
+	// boot: a background re-dial can install enforcement while the process runs,
+	// and a pod that recovers must return to the rotation without a restart
+	// (issue #315).
+	mux.HandleFunc("/readyz", makeReadyzHandler(plane, plane.unwired))
 
 	// The authored-governance plane (issue #218). It is a SEPARATE wiring from
 	// the budget engine above and has different preconditions:
@@ -341,6 +371,12 @@ func main() {
 	// WithLoopBreakerParams arms the amplification backstop (spec §2.6 guard
 	// #2's implementation) — it MUST be present in production wiring;
 	// TestMainWiring asserts it.
+	// WithHopMarker arms the INBOUND half of hop-marker detection (issue
+	// #164) — the actual anti-circular-routing mechanism, as distinct from the
+	// backstop above, which counts requests and detects no hop at all. The
+	// outbound half is the same marker handed to account.New. Both halves take
+	// the SAME *hopmarker.Marker, so neither can be armed without the other;
+	// TestMainWiring asserts this call.
 	// WithStreamGrace / WithStreamDrainLimit arm the disconnect-billing path
 	// (issue #9): a streamed response whose client vanishes keeps its provider
 	// stream alive for a bounded grace period so the authoritative usage
@@ -361,6 +397,7 @@ func main() {
 		[]llmproxy.HandlerOption{
 			llmproxy.WithModelResolver(modelResolver),
 			llmproxy.WithLoopBreakerParams(breakerParams),
+			llmproxy.WithHopMarker(hopMarker),
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
 			llmproxy.WithEgressPolicy(egressPolicy),
@@ -402,6 +439,26 @@ func main() {
 
 	mux.Handle("/llm/", api.NewRouterWithLog(handler, requestLogger))
 
+	// Issue #315: recover budget enforcement when NATS returns.
+	//
+	// It runs AFTER the handler exists, because the install target IS the
+	// running handler. A gateway that boots during a NATS outage would
+	// otherwise enforce nothing until an operator restarts it, and they can
+	// only do that after NATS is back — so the outage and the restart never
+	// overlap and the pod stays out of service for the whole window.
+	//
+	// The call is a no-op on every other posture: enforcement already wired,
+	// GATEWAY_NATS_URL unset, or no database pool.
+	startBudgetRecovery(ctx, budgetRecovery{
+		cfg:     cfg,
+		srv:     srv,
+		pool:    pool,
+		plane:   plane,
+		handler: handler,
+		policy:  policyStore,
+		logger:  logger,
+	})
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 
@@ -420,7 +477,10 @@ func main() {
 		slog.Info("shutdown signal received")
 	}
 
-	if err := shutdownSequence(context.Background(), handler, srv, handler, handler, govStore); err != nil {
+	// plane.current() and not govStore: a background re-dial can install the
+	// store after this goroutine passed the wiring block, and the drain has to
+	// see the store the handler actually billed through (issue #315).
+	if err := shutdownSequence(context.Background(), handler, srv, handler, handler, plane.current()); err != nil {
 		slog.Error("gateway shutdown error", "err", err)
 		failed = true
 	}
@@ -570,6 +630,33 @@ func startupIdentityCheck(identitySecret string, budgetEnforcement, credentialAc
 			"enforcement is enabled (GATEWAY_NATS_URL is set) — the per-project HMAC would be bypassable")
 	}
 	return nil
+}
+
+// logHopMarkerMode states, once at startup, whether hop-marker detection — the
+// actual anti-circular-routing mechanism — is armed (issue #164).
+//
+// It exists for the failure this project has already shipped twice: a guard
+// that reads as present in the code, is believed to be on, and is inert in
+// every install because its key defaulted to "". An operator must be able to
+// answer "is loop detection running?" from the startup log alone, without
+// reading the chart or the source.
+//
+// The ARMED line names no key material and no marker value. The marker is
+// published to every upstream anyway, but a startup log is read and copied in
+// places a provider request is not.
+func logHopMarkerMode(logger *slog.Logger, armed bool) {
+	if !armed {
+		logger.Warn("HOP DETECTION UNARMED: GATEWAY_HOP_SECRET is empty, so no hop marker is set on outbound " +
+			"provider requests and no re-entering request is recognised. A credential api_base that routes back " +
+			"into this platform's /llm surface is then caught only by the SELF_REFERENTIAL_CREDENTIAL origin " +
+			"match (guard #1, which needs GATEWAY_SELF_LLM_ORIGINS) and bounded only by the amplification " +
+			"backstop, which does no hop detection at all (issue #164)")
+		return
+	}
+	logger.Info("HOP DETECTION ARMED: every outbound provider request carries the hop marker, and an inbound "+
+		"request that already carries this deployment's marker is refused with 400 circular_routing_detected. "+
+		"A routing loop is contained on its first re-entry (issue #164)",
+		"header", hopmarker.Header)
 }
 
 // logLoopBreakerMode states, once at startup, whether the per-(project, model)
@@ -1002,15 +1089,18 @@ func livenessHandler(w http.ResponseWriter, _ *http.Request) {
 // be mounted at /healthz.
 //
 // enforcementUnwired (issue #304) is the one case a nil p must NOT be read as
-// "deliberately disabled": NATS was configured, the connect failed at boot,
-// and nothing re-wires enforcement for the life of the process. It is decided
-// once at startup because that is exactly how long it stays true — a nil
-// govStore never becomes non-nil. Checked BEFORE the p == nil guard because
-// the disabled path passes a typed-nil *GovernanceStore, which is non-nil as
-// an interface and whose Ping is nil-receiver safe and returns success.
-func makeReadyzHandler(p pinger, enforcementUnwired bool) http.HandlerFunc {
+// "deliberately disabled": NATS was configured and the connect failed at boot.
+// It is a FUNCTION and not a bool because that state is no longer permanent —
+// a background re-dial installs enforcement and clears it while the process
+// runs (issue #315), and a pod that stayed not-ready after recovering would
+// make the recovery worthless. A nil function reads as "wired".
+//
+// It is checked BEFORE the p == nil guard because the disabled path passes a
+// typed-nil *GovernanceStore, which is non-nil as an interface and whose Ping
+// is nil-receiver safe and returns success.
+func makeReadyzHandler(p pinger, enforcementUnwired func() bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if enforcementUnwired {
+		if enforcementUnwired != nil && enforcementUnwired() {
 			writeHealthJSON(w, http.StatusServiceUnavailable, healthStatus{
 				Status: "not_ready",
 				Checks: map[string]string{"budget_enforcement": "unwired"},

@@ -132,7 +132,7 @@ func TestSoftAlertEvent_EnvelopeShape(t *testing.T) {
 	pub := &fakeAlertPublisher{}
 	h := NewHandler(&trackingRouter{}, nil, nil, WithAlertEventPublisher(pub))
 
-	h.publishSoftAlertEvent(context.Background(), "42", 750_000, 1_750_000_000)
+	h.publishSoftAlertEvent(context.Background(), h.budget().alerts, 42, budgetScopeProject, "42", 750_000, 1_750_000_000)
 
 	if pub.calls != 1 {
 		t.Fatalf("publisher calls = %d, want 1", pub.calls)
@@ -172,7 +172,7 @@ func TestSoftAlertEvent_EnvelopeShape(t *testing.T) {
 // publisher is wired.
 func TestSoftAlertEvent_NilPublisherNoOp(t *testing.T) {
 	h := NewHandler(&trackingRouter{}, nil, nil)
-	h.publishSoftAlertEvent(context.Background(), "42", 1, 1) // must not panic
+	h.publishSoftAlertEvent(context.Background(), h.budget().alerts, 42, budgetScopeProject, "42", 1, 1) // must not panic
 }
 
 // TestChat_EmitsElapsedHeader asserts the unary chat path stamps X-Elapsed-Ms
