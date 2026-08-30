@@ -26,13 +26,32 @@ import { useEffect, useRef } from 'react';
 
 import { useQueryClient } from '@tanstack/react-query';
 
-import { getGetApplicationQueryKey } from '@/shared/api/generated/applications/applications';
+import {
+  getGetApplicationQueryKey,
+  getGetApplicationVersionDetailQueryKey,
+} from '@/shared/api/generated/applications/applications';
 
+/**
+ * @param versionId The version the URL explicitly names, or `undefined` on the
+ * version-less route. **Load-bearing, and only became reachable when the
+ * version selector was mounted.** `useEditPipelineData` serves `activeVersion`
+ * from the application DETAIL on `/pipelines/:tab/:id`, but from a SEPARATE
+ * `getApplicationVersionDetail` query — a different cache key — the moment the
+ * URL carries a `:version` segment. Invalidating only the detail therefore
+ * re-seeded the editor on the default version and never on any other: a user
+ * who switched versions and saved kept a permanently-dirty editor, with the
+ * test chat closed ("Save the pipeline to test it") and the unsaved-changes
+ * guard prompting on every navigation — including the next version switch,
+ * about changes that were already on the server. Latent until now, because
+ * before the selector existed nothing in the app navigated to a `:version`
+ * route at all.
+ */
 export function useRefetchPipelineAfterSave(
   isSaving: boolean,
   saveError: unknown,
   projectId: string | undefined,
   applicationId: number | undefined,
+  versionId: number | undefined,
 ): void {
   const queryClient = useQueryClient();
   const wasSavingRef = useRef(false);
@@ -43,5 +62,9 @@ export function useRefetchPipelineAfterSave(
     if (!wasSaving || isSaving || saveError !== undefined) return;
     if (projectId === undefined || applicationId === undefined) return;
     void queryClient.invalidateQueries({ queryKey: getGetApplicationQueryKey(projectId, applicationId) });
-  }, [isSaving, saveError, projectId, applicationId, queryClient]);
+    if (versionId === undefined) return;
+    void queryClient.invalidateQueries({
+      queryKey: getGetApplicationVersionDetailQueryKey(projectId, applicationId, versionId),
+    });
+  }, [isSaving, saveError, projectId, applicationId, versionId, queryClient]);
 }

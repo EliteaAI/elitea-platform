@@ -36,6 +36,23 @@ export interface StoredPipelineVersion {
   readonly name: string;
   /** The pipeline YAML document. This is what the worker compiles. */
   readonly instructions: string;
+  /**
+   * `openai` or `pipeline`. Load-bearing on a version CREATE: `insertVersion`
+   * substitutes the literal `"openai"` for an empty value
+   * (`internal/infra/db/repos/applications.go:29, 493-496`), so a
+   * save-as-version that failed to pin it would mint an agent out of a
+   * pipeline — same rows, wrong executor, nothing on screen to say so.
+   */
+  readonly agentType: string;
+  /**
+   * `pipeline_settings` — the laid-out node/edge geometry. `{}` when the
+   * column was never written, which is exactly what a version created by the
+   * POST alone looks like: `versionFromBody` reads no such key and
+   * `insertVersion`'s INSERT does not name the column.
+   */
+  readonly pipelineSettings: Readonly<Record<string, unknown>>;
+  /** `meta` — carries `step_limit`/`internal_tools`, both of which a clone must not reset. */
+  readonly meta: Readonly<Record<string, unknown>>;
 }
 
 /** The parsed pipeline document — only the fields these journeys assert on. */
@@ -114,7 +131,14 @@ export async function readStoredPipelineVersion(
         'If this is a 401, pass `page.request` (which shares the browser context cookies), not the bare `request` fixture.',
     );
   }
-  const body = (await resp.json()) as { id?: string; name?: string; instructions?: unknown };
+  const body = (await resp.json()) as {
+    id?: string;
+    name?: string;
+    instructions?: unknown;
+    agent_type?: unknown;
+    pipeline_settings?: unknown;
+    meta?: unknown;
+  };
   if (typeof body.instructions !== 'string') {
     throw new Error(
       `readStoredPipelineVersion: version ${versionId} stored no \`instructions\` string ` +
@@ -122,7 +146,52 @@ export async function readStoredPipelineVersion(
         `would look exactly like this: ${JSON.stringify(body).slice(0, 300)}`,
     );
   }
-  return { id: String(body.id ?? versionId), name: String(body.name ?? ''), instructions: body.instructions };
+  return {
+    id: String(body.id ?? versionId),
+    name: String(body.name ?? ''),
+    instructions: body.instructions,
+    agentType: typeof body.agent_type === 'string' ? body.agent_type : '',
+    pipelineSettings: asRecord(body.pipeline_settings),
+    meta: asRecord(body.meta),
+  };
+}
+
+/** A jsonb column as an object, or `{}` — never `null`, which `pipeline_settings`/`meta` can both be on the wire. */
+function asRecord(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * The version elitea-main currently considers this application's DEFAULT.
+ *
+ * `GET {API_BASE}/elitea_core/default_version/prompt_lib/{projectId}/{applicationId}`
+ * — a route the router really serves (`internal/api/router.go:1780`,
+ * `appHandler.GetDefaultVersion`) and that `api/openapi/v2.yaml:7548-7553`
+ * deliberately does NOT document, so no generated client exists for it and
+ * the UI cannot read it. That asymmetry is exactly why this helper is here:
+ * "set as default" is otherwise unassertable from outside. The bar REMEMBERS
+ * the id it just set, so reading the screen back would prove only that the
+ * component kept its own state — this reads what the server stored.
+ */
+export async function readDefaultPipelineVersionId(
+  request: APIRequestContext,
+  projectId: string,
+  applicationId: string,
+): Promise<string> {
+  const url = `${API_BASE}/elitea_core/default_version/prompt_lib/${projectId}/${applicationId}`;
+  const resp = await request.get(url);
+  if (!resp.ok()) {
+    throw new Error(
+      `readDefaultPipelineVersionId: GET ${url} -> ${describeResponse(resp.status(), resp.statusText(), await resp.text())}`,
+    );
+  }
+  const body = (await resp.json()) as { id?: unknown };
+  if (typeof body.id !== 'string' && typeof body.id !== 'number') {
+    throw new Error(`readDefaultPipelineVersionId: no id in ${JSON.stringify(body).slice(0, 300)}`);
+  }
+  return String(body.id);
 }
 
 /**

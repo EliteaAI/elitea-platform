@@ -194,16 +194,47 @@
       "route": "/pipelines/:tab/:agentId",
       "targetComponent": "src/features/pipelines/ui/FlowEditor.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Three panes: config column (GENERAL with tag chips, TOOLS with +Toolkit/+MCP/+Agent/+Pipeline and an attached agent card w/ version select, INTERNAL TOOLS Attachments toggle), Flow/Yaml canvas with dotted grid, End node, State button, zoom/fit/lock/layout controls and a round + add-node FAB, then a right test-chat panel. Collapsible via the << chevrons."
+      "wiringStatus": "wired",
+      "wiringStatusWas": "ready",
+      "notes": "Three panes: config column (GENERAL with tag chips, TOOLS with +Toolkit/+MCP/+Agent/+Pipeline and an attached agent card w/ version select, INTERNAL TOOLS Attachments toggle), Flow/Yaml canvas with dotted grid, End node, State button, zoom/fit/lock/layout controls and a round + add-node FAB, then a right test-chat panel. Collapsible via the << chevrons. WHAT WE RENDER is narrower than that production screen and the baseline pins ours, not it: the configuration column is the model picker plus a disclosed gap notice (`pipelineConfigurationTabGaps.tsx`), and the TOOLS/tag sections are the agent-domain panels this app has not composed yet. The panes, the canvas and the test-chat pane are real.",
+      "baseline": "e2e/snapshots/visual/pipeline-editor.visual.spec.ts-snapshots/pipeline-editor-empty-visual-linux.png"
     },
     {
       "file": "pipeline-flow-editor.light.jpeg",
       "route": "/pipelines/:tab/:agentId",
       "targetComponent": "src/features/pipelines/ui/FlowEditor.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Light counterpart; canvas grid and node chrome invert, add-node FAB is magenta."
+      "wiringStatus": "wired",
+      "wiringStatusWas": "ready",
+      "notes": "Light counterpart; canvas grid and node chrome invert, add-node FAB is magenta — the `accentHue` split, not a recolour. Same narrowing as the dark row.",
+      "baseline": "e2e/snapshots/visual/pipeline-editor.visual.spec.ts-snapshots/pipeline-editor-empty-light-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/pipelines/:tab/:agentId",
+      "targetComponent": "src/features/pipelines/ui/AddNodeMenu.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "STATE SHOT (58600cb0): three node families placed through the Add-node menu, each showing the id the editor minted — `LLM_1`/`Router_1`/`Printer_1`, underscored, because `valid_graph_id` (worker `graph/yaml.rs:362`) refuses the space the editor used to mint. No admission alert anywhere (these three are complete the moment they are added), and the test-chat pane in its `Save the pipeline to test it` state, which is what an unsaved graph produces.",
+      "baseline": "e2e/snapshots/visual/pipeline-editor.visual.spec.ts-snapshots/pipeline-editor-authored-graph-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/pipelines/:tab/:agentId",
+      "targetComponent": "src/features/pipelines/ui/settings/NodeAdmissionIssues.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "STATE SHOT (58600cb0): an Agent node whose runtime-required `tool` is seeded empty, so the graph is one the native runtime would refuse. Pins all three halves of the surface at once — the per-node `NodeAdmissionIssues` alert on the offending card, the `GraphAdmissionGate` summary in the configuration column, and the DISABLED Save button that is the veto itself.",
+      "baseline": "e2e/snapshots/visual/pipeline-editor.visual.spec.ts-snapshots/pipeline-editor-node-admission-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/pipelines/:tab/:agentId",
+      "targetComponent": "src/features/pipelines/ui/settings/CommonInterruptSettings.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "STATE SHOT (58600cb0): a stored admissible one-node graph whose card shows the two interrupt switches DISABLED with the reason printed beneath them. The switches were kept rather than removed precisely so the withheld capability stays visible, which makes how they look the whole point — the Rust runtime refuses any pipeline declaring interrupts (`compiler.rs:470-474`) while the SDK worker honours them, so the editor authors the intersection.",
+      "baseline": "e2e/snapshots/visual/pipeline-editor.visual.spec.ts-snapshots/pipeline-editor-interrupts-disabled-visual-linux.png"
     },
     {
       "file": "credentials-list-populated.dark.jpeg",
@@ -709,12 +740,21 @@
     }
   },
   "coverage": {
-    "shots": 75,
+    "shots": 79,
     "routes": 39,
     "bothSchemes": true,
     "listAndGridModes": true,
     "emptyAndPopulated": true,
-    "provenance": "63 shots captured from production (see `source`/`captured`); 12 admin shots added by #229 with no production capture — see `adminSurface`."
+    "provenance": "63 shots captured from production (see `source`/`captured`); 12 admin shots added by #229 with no production capture — see `adminSurface`; 3 pipeline-editor STATE shots added with no production capture — see `pipelineEditorSurface`. `shots` read 75 while the array held 76: the `/admin/app/governance` row was appended without it, and the number is now the real count rather than a stale one nothing checks (no gate reads this field — `scripts/check-visual-coverage.mjs` counts the array)."
+  },
+  "pipelineEditorSurface": {
+    "added": "2026-08-30",
+    "commit": "58600cb0",
+    "what": "The pipeline editor's three NEW states, on the route the index already carried two rows for: a canvas authored through the Add-node menu, a node card carrying admission issues, and the interrupt switches disabled with their reason. The two existing rows move from `ready` to `wired` in the same change and are claimed by the same spec.",
+    "whyTheyAreStates": "The index is otherwise one row per ROUTE-and-theme, because a production capture is a screenshot of a URL. These three are not new URLs — they are states of one editor that only exist once a user has acted, and each is a distinct rendering with its own failure mode. Filing them as rows is what makes `scripts/check-visual-coverage.mjs` able to see them at all; the alternative was three baselines with no index row, which is the shape of gap #229 was about.",
+    "file": "null on all three, and on nothing else about them: there is NO production JPEG, because these states postdate the 2026-08-06 capture by two months. `baseline` names the Playwright PNG instead, the way the admin rows do.",
+    "howTheyAreReached": "e2e/visual/pipeline-editor.visual.spec.ts serves the pipeline's OWN application-detail GET from a fixed document and lets every other request reach the real stack. It creates no server row, deliberately: a pipeline alive in the tenant would break `pipelines-list-empty`, which waits for `You have no pipelines.` in a parallel worker of the same run. That file's header states in full what the arrangement does and does not pin.",
+    "notCaptured": "The RUN FEED (`data-performing`, the `Run N details` node) — it needs a live turn, so it needs the runtime plane, the worker and a model backend, none of which the `visual` job's stack has. It is asserted instead, against a real run, by e2e/streaming/chat.pipeline-authored.spec.ts. Also the Yaml tab, the collapsed panels, and the node configuration pickers."
   },
   "wiringStatusReview": {
     "reviewed": "2026-08-10",

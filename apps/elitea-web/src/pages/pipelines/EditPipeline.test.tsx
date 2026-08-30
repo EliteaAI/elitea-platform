@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 
 import { getGetApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
@@ -588,4 +588,270 @@ describe('talking to the pipeline', () => {
     await waitFor(() => expect(screen.getByTestId('chat-with-pipeline-button')).toBeEnabled(), { timeout: 2_000 });
     expect(screen.getByTestId('chat-with-pipeline-button')).toHaveTextContent('Chat');
   }, 15_000);
+});
+
+/**
+ * The version bar (dropdown + Set-as-default + Delete version + Save As
+ * Version), asserted AT THE COMPOSITION ROOT rather than only through
+ * `lib/usePipelineVersionControls.test.tsx`.
+ *
+ * That split is the point. The hook's own tests hand it a stub
+ * `readGraphDraft` and a hand-built `control`; both halves can be perfectly
+ * correct while the page wires neither — which is exactly how this codebase
+ * has repeatedly shipped components that were "ported, tested and imported by
+ * nothing" (#134/#307/#345, and #597 where 2,475 green unit tests could not
+ * see a clobbered ref). Every test below drives the REAL page: the real
+ * `useFormContext`, the real `usePipelineGraphDraft` reading the real
+ * flow-editor stores, and the real `features/agents` components.
+ */
+describe('pipeline versioning', () => {
+  const twoVersions = [
+    { id: '1', name: 'base', status: 'draft', agent_type: 'pipeline', created_at: '2026-01-01T00:00:00Z' },
+    { id: '2', name: 'v1', status: 'draft', agent_type: 'pipeline', created_at: '2026-02-01T00:00:00Z' },
+  ];
+
+  /** Open the version dropdown and pick a row by its displayed label. */
+  async function pickVersion(user: ReturnType<typeof userEvent.setup>, label: string | RegExp): Promise<void> {
+    await user.click(await screen.findByTestId('version-selector-trigger'));
+    await user.click(await screen.findByRole('menuitem', { name: label }));
+  }
+
+  it('mounts the version bar on the editor page', async () => {
+    server.use(getGetApplicationMockHandler(detail({ versions: twoVersions })));
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    // The dropdown shows the open version, and the write affordance is there.
+    expect(await screen.findByTestId('version-selector-trigger')).toHaveTextContent('base');
+    expect(await screen.findByRole('button', { name: 'Save As Version' })).toBeVisible();
+  }, 20_000);
+
+  /**
+   * The acceptance for "a version selector that loads a chosen version's
+   * graph into the editor". The navigation is the mechanism, but navigating
+   * is not the outcome — the outcome is that the FLOW EDITOR now holds the
+   * chosen version's document. Asserting the store (which
+   * `usePipelineVersionSync` seeds from the newly-fetched version) is the
+   * only assertion that distinguishes the two.
+   */
+  it('choosing a version loads THAT version graph into the flow editor', async () => {
+    /*
+     * Asserted with `toContain` on the distinguishing NODE ID rather than byte
+     * equality with the seed string. The live editor re-dumps the document it
+     * holds (`dumpYaml`), so an exact-match assertion here passes or fails on
+     * formatting — measured directly: it was green running this file alone and
+     * red under the full `src/features/pipelines` + `src/pages/pipelines` run,
+     * which is a flake, not a finding. Which node ids are present is the real
+     * claim: it is what tells "the editor loaded the other version" apart from
+     * "the trigger relabelled itself".
+     */
+    const baseYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n';
+    const v2Yaml = 'entry_point: Printer_2\nnodes:\n  - id: Printer_2\n    type: printer\n';
+    usePipelineYamlStore.setState({ yamlCode: '', yamlJsonObject: {}, layoutVersion: undefined });
+    const base = detail({ versions: twoVersions });
+    server.use(
+      getGetApplicationMockHandler({ ...base, version_details: { ...base.version_details, instructions: baseYaml } }),
+      http.get('*/elitea_core/version/prompt_lib/:projectId/:applicationId/2', () =>
+        HttpResponse.json({
+          id: '2',
+          application_id: '42',
+          name: 'v1',
+          status: 'draft',
+          agent_type: 'pipeline',
+          instructions: v2Yaml,
+        }),
+      ),
+    );
+    const { router } = renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByTestId('version-selector-trigger');
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toContain('Printer_1'));
+
+    await pickVersion(user, /v1/);
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/pipelines/all/42/2'));
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toContain('Printer_2'));
+    expect(usePipelineYamlStore.getState().yamlCode).not.toContain('Printer_1');
+  }, 20_000);
+
+  /**
+   * "Save as a new version" end to end, through the page's own composition.
+   *
+   * Two assertions no stub could satisfy. The POST body must pin
+   * `agent_type: 'pipeline'` and carry `meta` — omit either and the created
+   * row is an `openai` agent with a reset step limit (see
+   * `lib/editPipelineMappers.ts`). And the follow-up PUT must carry a
+   * `pipeline_settings.nodes` array derived from the LIVE editor stores by
+   * the REAL `usePipelineGraphDraft`, aimed at the id the POST minted —
+   * because `CreateVersion` cannot store the graph geometry at all.
+   */
+  it('saves a new version, then carries the live graph onto it', async () => {
+    const graphYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n';
+    const base = detail({ versions: twoVersions });
+    const posts: Record<string, unknown>[] = [];
+    const puts: { url: string; body: Record<string, unknown> }[] = [];
+    server.use(
+      getGetApplicationMockHandler({
+        ...base,
+        version_details: { ...base.version_details, instructions: graphYaml },
+      }),
+      http.post('*/elitea_core/versions/prompt_lib/:projectId/:applicationId', async ({ request }) => {
+        posts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '3', application_id: '42', name: 'v2', status: 'draft' }, { status: 201 });
+      }),
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        puts.push({ url: request.url, body: (await request.json()) as Record<string, unknown> });
+        return HttpResponse.json({ id: '3', application_id: '42', name: 'v2', status: 'draft' });
+      }),
+      http.get('*/elitea_core/version/prompt_lib/:projectId/:applicationId/3', () =>
+        HttpResponse.json({ id: '3', application_id: '42', name: 'v2', status: 'draft', agent_type: 'pipeline', instructions: graphYaml }),
+      ),
+    );
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    // Wait for the real editor stores to hold this version's graph — the
+    // reader returns `undefined` until they do, and the carry is skipped.
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toContain('Printer_1'));
+
+    await user.click(await screen.findByRole('button', { name: 'Save As Version' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    // A name the pipeline does not already have — `SaveNewVersionButton`
+    // refuses a duplicate client-side before sending anything.
+    await user.type(dialog.getByLabelText('Version name'), 'v2');
+    await user.click(dialog.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.['name']).toBe('v2');
+    expect(posts[0]?.['agent_type']).toBe('pipeline');
+    expect(posts[0]?.['meta']).toEqual({ step_limit: 25, internal_tools: [] });
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]?.url).toContain('/version/prompt_lib/9/42/3');
+    // The node id, not the seed string byte-for-byte — the editor re-dumps the
+    // document it holds, and the claim under test is that the LIVE document
+    // travelled, not that its formatting survived.
+    expect(puts[0]?.body['instructions']).toContain('Printer_1');
+    const settings = puts[0]?.body['pipeline_settings'] as Record<string, unknown>;
+    // Laid out by the real `doLayout` off the real store — an empty array is
+    // what a page that never reached the flow editor would send.
+    expect(Array.isArray(settings['nodes'])).toBe(true);
+    expect((settings['nodes'] as unknown[]).length).toBeGreaterThan(0);
+  }, 30_000);
+
+  /**
+   * `Set as default` (#147) comes with the reused bar rather than being
+   * rebuilt — it is the one mutation `AgentVersionControls` owns. Proven by
+   * the PATCH actually leaving, because the current default is not READABLE
+   * (the 2-segment `GET /default_version/...` the router serves is
+   * deliberately absent from the contract, `api/openapi/v2.yaml:7548-7553`),
+   * so nothing on screen can stand in for the request.
+   */
+  it('pins the open version as the default through the version menu', async () => {
+    const patched: string[] = [];
+    server.use(
+      getGetApplicationMockHandler(detail({ versions: twoVersions })),
+      http.patch('*/elitea_core/default_version/prompt_lib/:projectId/:applicationId/:versionId', ({ request }) => {
+        patched.push(request.url);
+        return HttpResponse.json({ ok: true });
+      }),
+      http.get('*/elitea_core/version/prompt_lib/:projectId/:applicationId/2', () =>
+        HttpResponse.json({ id: '2', application_id: '42', name: 'v1', status: 'draft', agent_type: 'pipeline', instructions: 'nodes: []\n' }),
+      ),
+    );
+    // Opened on `v1`, not on `base`: `isSetDefaultDisabled` deliberately
+    // refuses to pin `base` while no default is recorded, because `base` IS
+    // the fallback in that state (`entities/version/model/selectors.ts:60`).
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42/2', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('version-selector-trigger'));
+    await user.click(await screen.findByTestId('agent-version-set-default'));
+    await user.click(await screen.findByRole('button', { name: 'Set as a default' }));
+
+    await waitFor(() => expect(patched).toHaveLength(1));
+    expect(patched[0]).toContain('/default_version/prompt_lib/9/42/2');
+
+    // The marker lives on the dropdown's own row, so the menu has to be
+    // reopened to see it. It is REMEMBERED, not fetched: no response this app
+    // can read reports a default (see `AgentVersionControls`' disclosed gap),
+    // which is precisely why the PATCH above is the load-bearing assertion
+    // and this one is the corroborating half.
+    await user.click(await screen.findByTestId('version-selector-trigger'));
+    expect(await screen.findByTestId('agent-version-default-marker')).toBeVisible();
+  }, 20_000);
+
+  /**
+   * Saving while a `:version` route is open must re-seed the editor.
+   *
+   * `useEditPipelineData` serves `activeVersion` off the application DETAIL on
+   * `/pipelines/:tab/:id`, but off a SEPARATE `getApplicationVersionDetail`
+   * query — a different cache key — once the URL carries a version. The
+   * after-save refetch invalidated only the first, so on any non-default
+   * version a save left `initYamlCode` frozen at the pre-edit document: the
+   * editor stayed permanently "dirty", the test chat stayed closed behind
+   * "Save the pipeline to test it", and the unsaved-changes guard prompted on
+   * every navigation — including the next version switch, about changes that
+   * were already on the server. Measured on the live stack, where it blocked
+   * the switch outright.
+   *
+   * Latent until this unit: before the selector existed, nothing in the app
+   * ever navigated to a `:version` route.
+   */
+  it('refetches the OPEN version after a save, not just the application detail', async () => {
+    const versionGets: string[] = [];
+    const puts: Record<string, unknown>[] = [];
+    server.use(
+      getGetApplicationMockHandler(detail({ versions: twoVersions })),
+      http.get('*/elitea_core/version/prompt_lib/:projectId/:applicationId/2', ({ request }) => {
+        versionGets.push(request.url);
+        return HttpResponse.json({
+          id: '2',
+          application_id: '42',
+          name: 'v1',
+          status: 'draft',
+          agent_type: 'pipeline',
+          instructions: 'nodes: []\n',
+        });
+      }),
+      // Delayed on purpose. `useRefetchPipelineAfterSave` fires on the save's
+      // completion EDGE — `isSaving` going true and then false across two
+      // renders. An msw handler that answers inside the same React batch never
+      // produces that edge, so an instant PUT would make this test green
+      // whatever the hook does. (That is a real fragility in the hook's
+      // trigger, not only in the test; noted, out of this unit's scope.)
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        puts.push((await request.json()) as Record<string, unknown>);
+        await delay(30);
+        return HttpResponse.json({ id: '2', application_id: '42', name: 'v1', status: 'draft' });
+      }),
+    );
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42/2', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await waitFor(() => expect(versionGets.length).toBeGreaterThan(0));
+    const before = versionGets.length;
+
+    const saveButton = await screen.findByTestId('pipeline-save-button');
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await user.click(saveButton);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    await waitFor(() => expect(versionGets.length).toBeGreaterThan(before));
+  }, 20_000);
+
+  /**
+   * Old app `ApplicationTabBar.jsx:65`: a public-project viewer keeps the
+   * version list and loses only the write affordances. Rendering the bar
+   * outside this page's writer-only block is what makes the first half true;
+   * `canSaveNewVersion` is what makes the second half true.
+   */
+  it('keeps the selector but withholds Save As Version from a public-project viewer', async () => {
+    setPublicProjectId('9');
+    server.use(getGetApplicationMockHandler(detail({ versions: twoVersions })));
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    expect(await screen.findByTestId('version-selector-trigger')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Save As Version' })).toBeNull();
+  }, 20_000);
 });

@@ -138,6 +138,10 @@ describe('useEditApplicationVersionControls', () => {
       welcome_message: 'hi',
       conversation_starters: ['typed but unsaved'],
       variables: [{ name: 'k', value: 'v' }],
+      // The create path DOES read `meta` (`versionFromBody`,
+      // `applications/handler.go:504`), so the clone carries it — otherwise a
+      // Save-As-Version resets `step_limit` and drops `internal_tools`.
+      meta: { internal_tools: [] },
     });
   });
 

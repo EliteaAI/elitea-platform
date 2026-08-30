@@ -388,6 +388,57 @@ describe('useDeleteItems: Delete-key trigger', () => {
     expect(result.current.confirmContent).toBe('Are you sure to delete the selected edge ');
   });
 
+  it('queues the doomed node’s connected edges too, so the source transition is repaired to END rather than blanked', () => {
+    /*
+     * The measured defect (see `useDeleteKeyTrigger`'s own doc comment): with
+     * only the SELECTED edges queued, deleting `B` left `A.transition: ''` —
+     * a target that is neither `END` nor a `valid_graph_id`, which the
+     * editor's own admission gate refuses, so Save went disabled and the
+     * pipeline could not be stored at all. Backspace and the node card's
+     * Delete both produced `END` on the identical graph.
+     *
+     * `edgeAB` is deliberately NOT `selected`: selecting the node is all a
+     * user does.
+     */
+    const setYamlJsonObject = vi.fn();
+    const nodeA = flowNode('A', 'llm');
+    const nodeB = flowNode('B', 'llm', true);
+    const edgeAB: FlowEdge = { id: 'e1', source: 'A', target: 'B' };
+    const { setFlowNodes } = makeStatefulSetFlowNodes([nodeA, nodeB]);
+    const { setFlowEdges, getEdges } = makeStatefulSetFlowEdges([edgeAB]);
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'A', transition: 'B' }, { id: 'B', transition: 'END' }],
+      entry_point: 'A',
+    };
+
+    const { result } = renderHook(() =>
+      useDeleteItems({
+        display: 'flex',
+        yamlJsonObject,
+        flowNodes: [nodeA, nodeB],
+        flowEdges: [edgeAB],
+        setYamlJsonObject,
+        setFlowNodes,
+        setFlowEdges,
+      }),
+    );
+
+    act(() => {
+      pressDelete();
+    });
+    // The copy still describes what the USER selected — one node, no edges.
+    expect(result.current.confirmContent).toBe('Are you sure to delete the selected node ');
+
+    act(() => {
+      result.current.onConfirmDelete();
+    });
+
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    expect(written.nodes?.map(node => node.id)).toEqual(['A']);
+    expect(written.nodes?.[0]?.transition).toBe('END');
+    expect(getEdges()).toEqual([]);
+  });
+
   it('does nothing on Delete when nothing is selected', () => {
     const setYamlJsonObject = vi.fn();
     const nodeA = flowNode('A', 'agent', false);

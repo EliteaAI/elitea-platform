@@ -10,7 +10,6 @@ import { FormProvider } from 'react-hook-form';
 import { ConfigurationTab, resetPipelineDraft, usePipelineVersionSync } from '@/features/pipelines';
 import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
-import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
@@ -31,7 +30,9 @@ import { useEditPipelineForm } from './lib/useEditPipelineForm';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditPipelineActions } from './ui/EditPipelineActions';
+import { EditPipelineNotFound } from './ui/EditPipelineNotFound';
 import { EditPipelineSaveBar } from './ui/EditPipelineSaveBar';
+import { EditPipelineVersionBar } from './ui/EditPipelineVersionBar';
 
 /**
  * The `||` lives here rather than inline in `EditPipeline` purely to keep
@@ -178,7 +179,7 @@ export function EditPipeline(): ReactNode {
   const applicationId = parseApplicationId(params.agentId);
   const requestedVersionId = params.version;
 
-  const { detail, versions, activeVersion, isFetching, isError, isDetailNotFound } = useEditPipelineData(
+  const { detail, versions, activeVersion, isFetching, isError, isDetailNotFound, explicitVersionId } = useEditPipelineData(
     projectId,
     applicationId,
     requestedVersionId,
@@ -209,7 +210,7 @@ export function EditPipeline(): ReactNode {
     applicationId,
   );
   const { setFieldValue, versionDetails } = useEditPipelineConfigurationTabBridge(activeVersion, form.setValue);
-  useRefetchPipelineAfterSave(isSaving, saveError, projectId, applicationId);
+  useRefetchPipelineAfterSave(isSaving, saveError, projectId, applicationId, explicitVersionId);
   // The real `ChatConversationAdapter`, and the signed-in user the test chat's
   // conversation names as its author — both page-owned because `pages/` is the
   // layer allowed to reach `entities/conversation`, `entities/participant` and
@@ -308,30 +309,10 @@ export function EditPipeline(): ReactNode {
     [projectId, llmSettings.value, handleModelSettingsChange, isReadOnlyView, isFetching, chatSlotContext],
   );
 
-  if (isDetailNotFound) {
-    return (
-      <Box sx={pageSx}>
-        <NoResultsMessage
-          title={t('pages.pipelines.editPipeline.pipelineNotFound.title', 'Pipeline not found')}
-          description={t(
-            'pages.pipelines.editPipeline.pipelineNotFound.description',
-            'This pipeline no longer exists.',
-          )}
-        />
-      </Box>
-    );
-  }
-
-  if (isVersionMissing) {
-    return (
-      <Box sx={pageSx}>
-        <NoResultsMessage
-          title={t('pages.pipelines.editPipeline.notFound.title', 'Version not found')}
-          description={t('pages.pipelines.editPipeline.notFound.description', 'This version no longer exists.')}
-        />
-      </Box>
-    );
-  }
+  // Both dead ends render from `./ui/EditPipelineNotFound.tsx` — same copy,
+  // same keys; see that file for why they left this one.
+  if (isDetailNotFound) return <EditPipelineNotFound kind="pipeline" />;
+  if (isVersionMissing) return <EditPipelineNotFound kind="version" />;
 
   return (
     <FormProvider {...form}>
@@ -340,6 +321,23 @@ export function EditPipeline(): ReactNode {
           <Typography variant="headingSmall">
             {detail ? pipelineDetailDisplayName(detail) : t('pages.pipelines.editPipeline.title', 'Pipeline')}
           </Typography>
+          {/*
+            The version bar: version dropdown, Set-as-default, Delete version
+            and Save-As-Version. Rendered OUTSIDE the writer-only block below
+            on purpose — a public viewer keeps the selector and loses only the
+            write affordances, which is what `AgentVersionControls`' own
+            `canSaveNewVersion` gate (and `ApplicationTabBar.jsx:65`) means.
+          */}
+          <EditPipelineVersionBar
+            projectId={projectId}
+            applicationId={applicationId}
+            tab={params.tab}
+            versions={versions}
+            activeVersion={activeVersion}
+            isReadOnly={isReadOnlyView}
+            isFetching={isFetching}
+            llmSettings={llmSettings.value}
+          />
           {!isFetching && !isReadOnlyView && (
             <>
               {/* The Chat action — the only way to actually TALK to this

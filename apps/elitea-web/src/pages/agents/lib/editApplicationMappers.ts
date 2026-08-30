@@ -133,6 +133,38 @@ function selectLlmSettings(
   return version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings };
 }
 
+/**
+ * The `meta` blob both write paths send, MERGED over the version's stored
+ * one rather than replacing it: the Go handler assigns the whole map it
+ * receives (`applications/handler.go:826-828` on the PUT,
+ * `versionFromBody` on the POST), so sending `{step_limit}` alone would
+ * drop `internal_tools` and every other key the version already carries.
+ *
+ * Shared by `toVersionWriteBody` and `toVersionSaveBody` so a Save and a
+ * Save-As-Version cannot disagree about it — which is the same reason those
+ * two already share their field selection.
+ */
+function toVersionMetaBody(
+  version: ApplicationVersionDetail,
+  edits?: EditApplicationVersionFields,
+): Pick<VersionWriteRequest, 'meta'> {
+  const storedMeta: Record<string, unknown> = version.meta ?? {};
+  if (edits === undefined) return { meta: { ...storedMeta } };
+  return {
+    meta: {
+      ...storedMeta,
+      ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
+      /*
+       * #307 — `internal_tools` is the Tools panel's internal-tool switches.
+       * Always sent (not gated on being non-empty): turning the LAST one off
+       * has to reach the wire, and an `undefined`-when-empty guard would make
+       * exactly that one edit silently unsaveable.
+       */
+      internal_tools: [...edits.internalTools],
+    },
+  };
+}
+
 export function toVersionWriteBody(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
@@ -148,6 +180,23 @@ export function toVersionWriteBody(
       name: variable.name ?? '',
       value: variable.value ?? '',
     })),
+    /*
+     * `meta` REACHES THE CREATE PATH — the comment that used to say otherwise
+     * here was wrong, and so is `VersionWriteRequest.tags`' generated
+     * description ("the two create paths still ignore the key, exactly as
+     * they ignore `meta`"). Traced end to end: `CreateVersion`
+     * (`applications/handler.go:811`) calls `versionFromBody`, which reads
+     * `vBody["meta"]` (`:504`) and only DEFAULTS `step_limit` when the key is
+     * absent; `insertVersion` (`repos/applications.go:517-525`) then persists
+     * it as the tenth column. Omitting it made every Save-As-Version reset
+     * `step_limit` to the default and drop `internal_tools` — the two keys
+     * the native Rust runtime gates admission on, so a cloned agent could
+     * stop running.
+     *
+     * `tags` stays omitted: that half of the old comment is correct.
+     * `versionFromBody` reads no `tags` key, so only the PUT writes them.
+     */
+    ...toVersionMetaBody(version, edits),
   };
 }
 
@@ -157,9 +206,10 @@ export function toVersionWriteBody(
  * cannot drift apart, and adds the two keys only the UPDATE path carries:
  * the version's own `name` (unchanged — `UpdateVersion` writes whatever
  * `name` it is given, so omitting it is fine but sending the current one is
- * closer to the baseline's whole-object PUT), `meta`, and `tags` — both of
- * which `toVersionWriteBody` deliberately omits because the CREATE handler
- * discards them.
+ * closer to the baseline's whole-object PUT) and `tags`, which
+ * `toVersionWriteBody` omits because `versionFromBody` reads no `tags` key
+ * on the create path. `meta` is NOT in that list: it comes through the
+ * shared `toVersionMetaBody`, because the create path reads it too.
  *
  * #345 — `tags` is ALWAYS sent, never gated on being non-empty: removing
  * the last tag has to reach the wire, and the handler reads the key's
@@ -168,32 +218,16 @@ export function toVersionWriteBody(
  * just typed is stripped: the server matches by name and a negative id
  * would be fiction on the wire.
  *
- * `meta` is MERGED over the stored blob rather than replaced: the Go
- * handler assigns the whole `meta` map it receives
- * (`applications/handler.go:826-828`), so sending `{step_limit}` alone
- * would drop `internal_tools` and every other key the version already
- * carries.
+ * See `toVersionMetaBody` for why `meta` is merged rather than replaced.
  */
 export function toVersionSaveBody(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
   edits: EditApplicationVersionFields,
 ): VersionWriteRequest {
-  const storedMeta: Record<string, unknown> = version.meta ?? {};
   return {
     name: version.name,
     ...toVersionWriteBody(version, conversationStarters, edits),
-    /*
-     * #307 — `internal_tools` is the Tools panel's internal-tool switches.
-     * Always sent (not gated on being non-empty): turning the LAST one off
-     * has to reach the wire, and an `undefined`-when-empty guard would make
-     * exactly that one edit silently unsaveable.
-     */
-    meta: {
-      ...storedMeta,
-      ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
-      internal_tools: [...edits.internalTools],
-    },
     tags: edits.tags.map((tag) => ({
       ...(tag.id > 0 ? { id: tag.id } : {}),
       name: tag.name,

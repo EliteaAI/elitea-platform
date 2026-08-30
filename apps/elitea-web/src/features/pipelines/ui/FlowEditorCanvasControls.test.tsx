@@ -1,3 +1,4 @@
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ReactFlowProvider } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -46,6 +47,30 @@ describe('FlowEditorCanvasControls', () => {
     const buttons = container.querySelectorAll('.react-flow__controls-button');
     await user.click(buttons[5]!);
     expect(onReLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it('names both custom controls, so they are reachable by role and by a screen reader', () => {
+    /*
+     * The `Tooltip` never named them: MUI applies `title`/`aria-describedby`
+     * to the element it wraps, which here is the `<Box component="span">`
+     * around each `ControlButton` (a `ControlButton` renders a bare `<button>`
+     * and forwards no ref, so it cannot be the Tooltip child itself). The
+     * buttons therefore had NO accessible name while `<Controls>`'s own four
+     * built-ins all have one — and axe never saw it, because
+     * `e2e/fixtures/axe.ts` excludes the whole `.react-flow` subtree.
+     */
+    renderWithTheme(
+      <ReactFlowProvider>
+        <FlowEditorCanvasControls
+          expandAll
+          onExpandAll={vi.fn()}
+          onReLayout={vi.fn()}
+        />
+      </ReactFlowProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Toggle cards size' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Auto-arrange' })).toBeInTheDocument();
   });
 });
 

@@ -5,7 +5,9 @@ import type { ApplicationDetail, ApplicationVersionDetail, ApplicationVersionSum
 import {
   pipelineDetailDisplayName,
   toFormValues,
+  toNewPipelineVersionBody,
   toVersionDraft,
+  toVersionOptions,
   toVersionSummaries,
 } from './editPipelineMappers';
 
@@ -201,5 +203,94 @@ describe('toVersionDraft', () => {
   it('leaves llmSettings undefined for a version that names no model', () => {
     const version = { name: 'base', llm_settings: {} } as unknown as ApplicationVersionDetail;
     expect(toVersionDraft(version, []).llmSettings).toBeUndefined();
+  });
+});
+
+describe('toVersionOptions', () => {
+  // The selector compares its option id against `applicationVersionId` with
+  // `===`; the wire sends "numeric id serialized as string", so a string on
+  // one side means the selected tick never renders and the trigger falls back
+  // to the first option's label.
+  it('narrows the wire id to a number', () => {
+    const wire: readonly ApplicationVersionSummary[] = [
+      { id: '7', name: 'v1', status: 'draft', agent_type: 'pipeline', created_at: '2026-02-01T00:00:00Z' },
+    ];
+    const [option] = toVersionOptions(wire);
+    expect(option?.id).toBe(7);
+    expect(typeof option?.id).toBe('number');
+    expect(option?.name).toBe('v1');
+  });
+});
+
+describe('toNewPipelineVersionBody', () => {
+  const storedVersion = {
+    id: '1',
+    name: 'base',
+    agent_type: 'pipeline',
+    instructions: 'entry_point: LLM_1\nnodes: []\n',
+    welcome_message: 'hi',
+    variables: [{ name: 'k', value: 'v' }],
+    meta: { step_limit: 40, internal_tools: ['internal_mcp'] },
+  } as unknown as ApplicationVersionDetail;
+
+  /**
+   * The load-bearing one. `insertVersion` substitutes `defaultAgentType` —
+   * the literal `"openai"` (`internal/infra/db/repos/applications.go:29,
+   * 493-496`) — for an empty `agent_type`, so a body that cloned a blank or
+   * absent value would turn a pipeline into an OPENAI AGENT on the way to the
+   * new version: same rows, wrong executor, and nothing on screen to say so.
+   */
+  it('pins agent_type to pipeline even when the stored version names something else', () => {
+    const odd = { ...storedVersion, agent_type: 'openai' } as unknown as ApplicationVersionDetail;
+    expect(toNewPipelineVersionBody(odd, [], undefined).agent_type).toBe('pipeline');
+
+    const blank = { ...storedVersion, agent_type: undefined } as ApplicationVersionDetail;
+    expect(toNewPipelineVersionBody(blank, [], undefined).agent_type).toBe('pipeline');
+  });
+
+  /**
+   * `versionFromBody` DOES read `meta` off the create body and only defaults
+   * `step_limit` when the caller sent none (`applications/handler.go:504-510`)
+   * — contradicting `features/agents/model/useSaveNewVersion.ts`'s doc
+   * comment, which still says the handler ignores the key. Omitting it here
+   * would silently reset this pipeline's step limit to 25 and drop its
+   * internal tools on every save-as-version.
+   */
+  it('carries meta.step_limit and meta.internal_tools onto the new version', () => {
+    const body = toNewPipelineVersionBody(storedVersion, [], undefined);
+    expect(body.meta).toEqual({ step_limit: 40, internal_tools: ['internal_mcp'] });
+  });
+
+  it('defaults step_limit to 25 and internal_tools to [] for a version with no meta', () => {
+    const bare = { ...storedVersion, meta: undefined } as unknown as ApplicationVersionDetail;
+    expect(toNewPipelineVersionBody(bare, [], undefined).meta).toEqual({ step_limit: 25, internal_tools: [] });
+  });
+
+  // Same edit-wins-over-stored rule the ordinary Save applies: the live
+  // starters come off the form, not off the server's last-saved copy.
+  it('clones the LIVE conversation starters, not the stored ones', () => {
+    const withStored = { ...storedVersion, conversation_starters: ['old'] } as unknown as ApplicationVersionDetail;
+    expect(toNewPipelineVersionBody(withStored, ['typed but unsaved'], undefined).conversation_starters).toEqual([
+      'typed but unsaved',
+    ]);
+  });
+
+  it('prefers the picked model over the stored blob, and forwards the stored one verbatim with no pick', () => {
+    const withModel = {
+      ...storedVersion,
+      llm_settings: { model_name: 'gpt-4o', model_project_id: 3 },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toNewPipelineVersionBody(withModel, [], { model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1 }).llm_settings).toEqual(
+      { model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1 },
+    );
+    expect(toNewPipelineVersionBody(withModel, [], undefined).llm_settings).toEqual({
+      model_name: 'gpt-4o',
+      model_project_id: 3,
+    });
+  });
+
+  it('omits llm_settings entirely for a version that names no model', () => {
+    expect(toNewPipelineVersionBody(storedVersion, [], undefined)).not.toHaveProperty('llm_settings');
   });
 });

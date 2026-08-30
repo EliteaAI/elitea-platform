@@ -2792,5 +2792,6 @@
   "pages.pipelines.testChat.defaultName": "Pipeline test chat",
   "pages.pipelines.testChat.disabled.description": "This chat runs the version stored on the server, so it stays closed while the editor holds unsaved changes.",
   "pages.pipelines.testChat.disabled.title": "Save the pipeline to test it",
-  "pages.pipelines.testChat.error": "Could not start a test conversation. Click the message box to try again."
+  "pages.pipelines.testChat.error": "Could not start a test conversation. Click the message box to try again.",
+  "pages.pipelines.editPipeline.versionGraphCarryError": "The new version was created, but its flow graph could not be copied onto it."
 }

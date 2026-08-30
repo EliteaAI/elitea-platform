@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApplicationDetail, ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
 import { VersionWriteRequest } from '@/shared/api/generated/model/versionWriteRequest.zod';
 
+import type { EditApplicationVersionFields } from './useEditApplicationVersionFields';
 import {
   applicationDetailDisplayName,
   toFormValues,
@@ -49,6 +50,7 @@ describe('toVersionWriteBody', () => {
       llm_settings: { model_name: 'gpt' },
       conversation_starters: ['s1'],
       variables: [{ name: 'k', value: 'v' }],
+      meta: { step_limit: 25 },
     });
   });
 
@@ -56,10 +58,67 @@ describe('toVersionWriteBody', () => {
     const version = { id: '1', name: 'base' } as ApplicationVersionDetail;
     const body = toVersionWriteBody(version, []);
 
-    expect(body).toEqual({ instructions: '', welcome_message: '', conversation_starters: [], variables: [] });
-    expect(body).not.toHaveProperty('meta');
+    expect(body).toEqual({
+      instructions: '',
+      welcome_message: '',
+      conversation_starters: [],
+      variables: [],
+      meta: {},
+    });
+    // `tags` stays omitted — `versionFromBody` reads no `tags` key, so only
+    // the PUT writes them. `meta` is NOT in that category; see below.
     expect(body).not.toHaveProperty('tags');
     expect(body).not.toHaveProperty('agent_type');
+  });
+
+  /*
+   * Save-As-Version used to drop `meta`, on the premise that "the CREATE
+   * handler discards it". That premise was false, and the cost was real:
+   * `step_limit` silently reset to the handler's default and `internal_tools`
+   * vanished — the two keys the native Rust runtime gates admission on, so a
+   * cloned agent could stop running while every screen still looked right.
+   *
+   * Traced end to end before this test was written: `CreateVersion`
+   * (`applications/handler.go:811`) calls `versionFromBody`, which reads
+   * `vBody["meta"]` (`:504`) and only DEFAULTS `step_limit` when the key is
+   * absent; `insertVersion` (`repos/applications.go:517-525`) persists it as
+   * the tenth column.
+   */
+  it('carries `meta` onto the new version, so a clone keeps its step limit and internal tools', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      meta: { step_limit: 40, internal_tools: ['internal_mcp'], category: 'sales' },
+    } as unknown as ApplicationVersionDetail;
+
+    const body = toVersionWriteBody(version, [], {
+      instructions: 'i',
+      welcomeMessage: 'w',
+      variables: [],
+      stepLimit: 12,
+      internalTools: ['internal_mcp', 'internal_web'],
+      tags: [],
+    } as unknown as EditApplicationVersionFields);
+
+    // The live edits win...
+    expect(body.meta?.step_limit).toBe(12);
+    expect(body.meta?.internal_tools).toEqual(['internal_mcp', 'internal_web']);
+    // ...and a key the editor does not model survives rather than being
+    // replaced away, which is the whole point of merging over the stored blob.
+    expect(body.meta?.['category']).toBe('sales');
+  });
+
+  it('keeps the stored `meta` verbatim when there are no live edits to fold in', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      meta: { step_limit: 40, internal_tools: ['internal_mcp'] },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionWriteBody(version, []).meta).toEqual({
+      step_limit: 40,
+      internal_tools: ['internal_mcp'],
+    });
   });
 
   /*
