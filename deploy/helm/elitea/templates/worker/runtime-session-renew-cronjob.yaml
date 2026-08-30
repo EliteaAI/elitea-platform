@@ -1,0 +1,72 @@
+{{- if .Values.worker.enabled }}
+{{- if .Values.worker.runtimeSession.enabled }}
+{{- if .Values.worker.runtimeSession.renew.enabled }}
+{{- $renew := .Values.worker.runtimeSession.renew }}
+# Recurring half of runtime-session-job.yaml's authorization: re-stamps
+# elitea_runtime.workload_sessions.expires_at on a schedule, because nothing
+# else does. That Job only fires at install/upgrade; ttl (default 2160h = 90
+# days) is finite and NOT NULL, and WorkloadSessionsRepository.VerifyActiveSession
+# requires issued_at <= now() < expires_at AND revoked_at IS NULL. Left alone, a
+# cluster that goes 90 days without a `helm upgrade` goes dark with exactly the
+# same "unauthorized at ClaimCommand" signature as never having been provisioned
+# — and that resembles a fresh-install bug, not an expiry, which is what made it
+# worth automating rather than documenting as an operator runbook step.
+#
+# Runs the SAME upsert-and-verify script as the pre-install hook, via
+# _runtime-session.tpl — not a re-implementation, so the two can never
+# authorize different things for the same certificate.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "elitea-worker-python.fullname" . }}-runtime-session-renew
+  labels:
+    {{- include "elitea-worker-python.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runtime-session-renew
+spec:
+  schedule: {{ required "worker.runtimeSession.renew.schedule is required" $renew.schedule | quote }}
+  concurrencyPolicy: {{ $renew.concurrencyPolicy | default "Forbid" }}
+  startingDeadlineSeconds: {{ $renew.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $renew.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $renew.failedJobsHistoryLimit }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "elitea-worker-python.labels" . | nindent 8 }}
+        app.kubernetes.io/component: runtime-session-renew
+    spec:
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            {{- include "elitea-worker-python.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: runtime-session-renew
+        spec:
+          restartPolicy: Never
+          {{- include "elitea.imagePullSecrets" (dict "local" .Values.worker.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 10 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ .Values.worker.runAsUser }}
+            runAsGroup: {{ .Values.worker.runAsGroup }}
+            fsGroup: {{ .Values.worker.runAsGroup }}
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            {{- include "elitea-worker-python.runtimeSessionContainer" . | nindent 12 }}
+          volumes:
+            {{- include "elitea-worker-python.runtimeSessionVolumes" . | nindent 12 }}
+          {{- with .Values.worker.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.worker.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.worker.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,115 @@
+{{- if .Values.objectInit.enabled }}
+{{- $o := .Values.objectInit }}
+{{- $env := .Values.main.env }}
+# Creates the artifact bucket named by main.env.STORAGE_CONTAINER if it does
+# not already exist — the same job compose's `rustfs-bucket-init` does.
+#
+# WHY THIS EXISTS: elitea-main's object-store readiness probe TOLERATES a
+# missing bucket (mapS3Error maps NoSuchBucket the same as any other "not
+# found"), so a fresh install with no bucket looks healthy through the probe
+# and then fails one step later, inside configureObjectStoreRetentionLifecycle
+# — which has no such tolerance — crash-looping the elitea-main Deployment
+# AFTER the migration Job and the rest of the release already reported
+# success. This Job removes that trap for the topology it can safely cover.
+#
+# S3-COMPATIBLE ONLY, ON PURPOSE. See values.yaml's `objectInit` block for why
+# this defaults off and why Azure/GCS are refused rather than silently
+# skipped below.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: elitea-object-init
+  labels:
+    {{- include "elitea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: object-init
+  annotations:
+    # Same phase as dbInit, and for the same reason: elitea-main's Deployment
+    # must never start before the bucket it depends on at boot exists. Order
+    # relative to dbInit is not load-bearing — the two prepare unrelated
+    # dependencies — so this sits one weight after it for a readable timeline.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-15"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-15"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ $o.backoffLimit }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "elitea.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: object-init
+    spec:
+      restartPolicy: Never
+      {{- include "elitea.imagePullSecrets" (dict "local" $o.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $o.runAsUser }}
+        runAsGroup: {{ $o.runAsGroup }}
+        fsGroup: {{ $o.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: object-init
+          image: "{{ $o.image.repository }}:{{ $o.image.tag }}"
+          imagePullPolicy: {{ $o.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: STORAGE_BACKEND
+              value: {{ required "main.env.STORAGE_BACKEND is required for objectInit.enabled=true" $env.STORAGE_BACKEND | quote }}
+            - name: STORAGE_CONTAINER
+              value: {{ required "main.env.STORAGE_CONTAINER is required for objectInit.enabled=true" $env.STORAGE_CONTAINER | quote }}
+            - name: S3_ENDPOINT_URL
+              value: {{ $env.S3_ENDPOINT_URL | default "https://s3.amazonaws.com" | quote }}
+            - name: S3_REGION
+              value: {{ $env.S3_REGION | default "us-east-1" | quote }}
+            - name: MC_HOST_ALIAS
+              value: elitea-object-init
+            - name: ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "objectInit.credentials.secretName is required for objectInit.enabled=true" $o.credentials.secretName }}
+                  key: {{ required "objectInit.credentials.accessKeyKey is required for objectInit.enabled=true" $o.credentials.accessKeyKey }}
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $o.credentials.secretName }}
+                  key: {{ required "objectInit.credentials.secretKeyKey is required for objectInit.enabled=true" $o.credentials.secretKeyKey }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              if [ "$STORAGE_BACKEND" != "s3" ]; then
+                echo "ERROR: objectInit.enabled=true only supports STORAGE_BACKEND=s3" >&2
+                echo "       (mc has no equivalent for '$STORAGE_BACKEND' here)." >&2
+                echo "       Pre-create the container out-of-band, or set" >&2
+                echo "       objectInit.enabled=false." >&2
+                exit 1
+              fi
+
+              mc --config-dir /.mc alias set "$MC_HOST_ALIAS" "$S3_ENDPOINT_URL" "$ACCESS_KEY" "$SECRET_KEY"
+              mc --config-dir /.mc mb --ignore-existing --region "$S3_REGION" "$MC_HOST_ALIAS/$STORAGE_CONTAINER"
+              echo "bucket $STORAGE_CONTAINER present on $S3_ENDPOINT_URL"
+          resources:
+            {{- toYaml $o.resources | nindent 12 }}
+          volumeMounts:
+            - name: mc-config
+              mountPath: /.mc
+      volumes:
+        - name: mc-config
+          emptyDir: {}
+      {{- with $o.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $o.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

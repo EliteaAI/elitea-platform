@@ -17,6 +17,10 @@
 {{- fail "worker.enabled=true needs runtimeRedis.enabled=true, unless you are pointing worker.runtime.redisUrl at a runtime Redis outside this release. The worker reads its commands from that bus and nothing else; with no bus it starts, reports Ready, and consumes nothing forever. Set runtimeRedis.enabled=true, or point worker.runtime.redisUrl elsewhere and set this guard's expectation by disabling the worker." }}
 {{- end }}
 
+{{- if and .Values.worker.enabled (not .Values.dbInit.enabled) (not .Values.dbInit.externallyManaged) }}
+{{- fail "worker.enabled=true with dbInit.enabled=false needs dbInit.externallyManaged=true. templates/dbInit/job.yaml is what creates the agent-state database (dbInit.agentStateDatabase) and the vector extension the worker's LangGraph checkpointer opens; with it disabled and no evidence the database exists some other way, the release installs cleanly, every pod reports Ready, and the worker fails per-execution with \"The durable agent checkpoint store is unavailable\" — an install-green-fail-later shape identical to the ones the other guards above exist to remove. Set dbInit.enabled=true, or set dbInit.externallyManaged=true after confirming the database and extension already exist." }}
+{{- end }}
+
 {{- /*
   NOT guarded: main.runtime.enabled with worker.enabled=false.
   That combination looks like the one above but is a supported topology — an
