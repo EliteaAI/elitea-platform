@@ -86,6 +86,49 @@ describe('SimpleLLMInputItem', () => {
     expect(getByRole('combobox', { name: 'Value' })).toBeInTheDocument();
   });
 
+  /*
+   * React Flow's escape hatch, pinned because losing it is INVISIBLE to every
+   * other test in this file: the canvas's drag layer swallows the mouse-down,
+   * so a click on either dropdown focuses the combobox and never opens its
+   * menu, while keyboard interaction — which is what these tests use — keeps
+   * working. It was measured on the live stack as a combobox `[active]` with
+   * no `listbox` in the accessibility tree.
+   *
+   * The class is asserted on an ANCESTOR rather than the control itself:
+   * `hasSelector` (@xyflow/system) walks up from the event target, and
+   * `SingleSelect` is shared and already at the 12-prop budget, so it cannot
+   * take a `className`.
+   */
+  it('keeps the Type dropdown out of the canvas drag layer', () => {
+    const { getByLabelText } = renderItem({
+      variableName: 'task',
+      variable: 'task',
+      type: 'fixed',
+      value: '',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+    });
+
+    const escapeHatch = getByLabelText('Type').closest('.nodrag');
+    expect(escapeHatch, 'the Type select must sit inside a `nodrag` ancestor').not.toBeNull();
+    expect(escapeHatch).toHaveClass('nopan');
+  });
+
+  it('keeps the Value dropdown out of the canvas drag layer', () => {
+    const { getByLabelText } = renderItem({
+      variableName: 'task',
+      variable: 'task',
+      type: 'variable',
+      value: '',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+    });
+
+    const escapeHatch = getByLabelText('Value').closest('.nodrag');
+    expect(escapeHatch, 'the Value select must sit inside a `nodrag` ancestor').not.toBeNull();
+    expect(escapeHatch).toHaveClass('nopan');
+  });
+
   it('JSON.stringifies a non-string value for the resolved display value', () => {
     const { getByLabelText } = renderItem({
       variableName: 'system',

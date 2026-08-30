@@ -292,7 +292,34 @@ export function SimpleLLMInputItem(props: SimpleLLMInputItemProps): ReactNode {
       <HeadingChip label={capitalizeFirstChar(variableName.replaceAll('_', ' '))} />
 
       <Box sx={fieldRowSx}>
-        <Box sx={typeSelectWrapperSx}>
+        {/*
+         * `nopan nodrag` — React Flow's escape hatch, and it is load-bearing
+         * for the two `SingleSelect`s below. The canvas's drag layer handles
+         * the mouse-down on the node, so without it a click on either
+         * dropdown FOCUSES the combobox and never opens its menu: measured on
+         * the standalone stack, the accessibility tree showed the combobox
+         * `[active]` with no `listbox` anywhere. Keyboard (focus + Enter)
+         * still worked, which is why unit tests saw a working control and
+         * only an e2e click caught it.
+         *
+         * MUI's `Select` is a `div[role="combobox"]` that opens from its own
+         * click handler, which is why it breaks where a plain `<input>` does
+         * not — an input still takes native focus. `hasSelector`
+         * (@xyflow/system) walks UP from the event target, so the class sits
+         * on these wrappers rather than on `SingleSelect`: that component is
+         * shared and already at the §3.5 12-prop budget, so giving it a
+         * `className` fails the gate.
+         *
+         * The sibling selects on this card carry the same escape hatch via
+         * `PipelineMultiSelect` (`ui/select/InputSelect.tsx` and its two
+         * siblings). They add `nowheel` as well; these do not, because their
+         * menus render in a portal outside the canvas and wheel-to-zoom over
+         * the closed control is the canvas behaviour a user expects.
+         */}
+        <Box
+          className="nopan nodrag"
+          sx={typeSelectWrapperSx}
+        >
           <SingleSelect
             sx={selectSx}
             label={t('pipelines.simpleLLMInputItem.type', 'Type')}
@@ -302,7 +329,10 @@ export function SimpleLLMInputItem(props: SimpleLLMInputItemProps): ReactNode {
             disabled={disabled}
           />
         </Box>
-        <Box sx={valueWrapperSx(isStringType)}>
+        <Box
+          className="nopan nodrag"
+          sx={valueWrapperSx(isStringType)}
+        >
           {isStringType ? (
             <NodeFieldInput
               shouldEnableAIAssistant={shouldEnableAIAssistant}

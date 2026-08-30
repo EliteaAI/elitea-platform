@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   batchUpdateYamlNode,
+  NEW_NODE_VERTICAL_GAP,
+  NODE_CARD_WIDTH,
   calculatePositionForNewNode,
   canConnectToTarget,
   canCreateNodeType,
@@ -19,7 +21,7 @@ import {
   updateYamlNode,
   updateYamlNodeInputMappingVariable,
 } from './flowEditor.helpers';
-import { PipelineNodeTypes } from '../constants/flowEditor.constants';
+import { NodeHeightMap, PipelineNodeTypes } from '../constants/flowEditor.constants';
 
 describe('measureNodes', () => {
   it('measures each node found in the DOM, leaves unfound nodes untouched', () => {
@@ -218,13 +220,67 @@ describe('getToolName', () => {
 });
 
 describe('calculatePositionForNewNode', () => {
-  it('nudges the position by 60px steps until a free spot is found', () => {
-    const flowNodes = [{ position: { x: 60, y: 200 } }, { position: { x: 120, y: 260 } }];
-    expect(calculatePositionForNewNode(60, 200, flowNodes)).toEqual({ xPos: 180, yPos: 320 });
+  it('returns the start position immediately when the canvas is empty', () => {
+    expect(calculatePositionForNewNode(60, 200, [], PipelineNodeTypes.LLM)).toEqual({ xPos: 60, yPos: 200 });
   });
 
-  it('returns the start position immediately when it is free', () => {
-    expect(calculatePositionForNewNode(60, 200, [])).toEqual({ xPos: 60, yPos: 200 });
+  /**
+   * The Add-node menu always computes the SAME start position (the viewport
+   * centre), so a sequence of adds is exactly this loop. Node cards are
+   * `NODE_CARD_WIDTH` wide and several hundred px tall (`NodeHeightMap`), so
+   * the placement rule has to clear the rendered bounds, not just the
+   * top-left point.
+   */
+  const addInSequence = (types: readonly string[]) => {
+    const placed: { id: string; type: string; position: { x: number; y: number } }[] = [];
+    for (const [index, type] of types.entries()) {
+      const { xPos, yPos } = calculatePositionForNewNode(170, 100, placed, type);
+      placed.push({ id: `${type}_${index}`, type, position: { x: xPos, y: yPos } });
+    }
+    return placed;
+  };
+
+  const boundsOf = (node: { type: string; position: { x: number; y: number } }) => ({
+    left: node.position.x,
+    right: node.position.x + NODE_CARD_WIDTH,
+    top: node.position.y,
+    bottom: node.position.y + (NodeHeightMap[node.type] ?? 500),
+  });
+
+  it('places LLM, Router and Printer added in sequence so their rendered cards never intersect', () => {
+    const placed = addInSequence([PipelineNodeTypes.LLM, PipelineNodeTypes.Router, PipelineNodeTypes.Printer]);
+
+    for (let i = 0; i < placed.length; i += 1) {
+      for (let j = i + 1; j < placed.length; j += 1) {
+        const a = boundsOf(placed[i]!);
+        const b = boundsOf(placed[j]!);
+        const intersects = a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        expect(`${placed[i]!.id} vs ${placed[j]!.id}: ${intersects ? 'overlaps' : 'clear'}`).toBe(
+          `${placed[i]!.id} vs ${placed[j]!.id}: clear`,
+        );
+      }
+    }
+  });
+
+  it('stacks each new node below the lowest existing card, keeping the start x', () => {
+    const placed = addInSequence([PipelineNodeTypes.LLM, PipelineNodeTypes.Router]);
+
+    // LLM at the viewport centre; Router below its 460px-tall card + the gap.
+    expect(placed[0]!.position).toEqual({ x: 170, y: 100 });
+    expect(placed[1]!.position).toEqual({ x: 170, y: 100 + 460 + NEW_NODE_VERTICAL_GAP });
+  });
+
+  it('prefers a measured height over the NodeHeightMap estimate', () => {
+    const measuredTall = [{ id: 'LLM_1', type: PipelineNodeTypes.LLM, position: { x: 170, y: 100 }, measured: { width: 460, height: 900 } }];
+    expect(calculatePositionForNewNode(170, 100, measuredTall, PipelineNodeTypes.Printer)).toEqual({
+      xPos: 170,
+      yPos: 100 + 900 + NEW_NODE_VERTICAL_GAP,
+    });
+  });
+
+  it('leaves the start position alone when existing cards are horizontally clear of it', () => {
+    const faraway = [{ id: 'LLM_1', type: PipelineNodeTypes.LLM, position: { x: 2000, y: 100 } }];
+    expect(calculatePositionForNewNode(170, 100, faraway, PipelineNodeTypes.LLM)).toEqual({ xPos: 170, yPos: 100 });
   });
 });
 

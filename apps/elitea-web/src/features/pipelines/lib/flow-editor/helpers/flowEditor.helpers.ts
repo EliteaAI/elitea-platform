@@ -27,6 +27,7 @@ import {
   CONDITION_NODE_ID_SUFFIX,
   DECISION_NODE_ID_SUFFIX,
   HITL_HANDLE_ID_SUFFIX,
+  NodeHeightMap,
   PipelineNodeTypes,
   ROUTER_HANDLE_ID_SUFFIX,
 } from '../constants/flowEditor.constants';
@@ -304,25 +305,69 @@ export const getAllowedNodeTypes = (): readonly string[] =>
 export const getToolName = (tool: string | { readonly name?: string; readonly description?: string; readonly path?: string }): string =>
   typeof tool === 'string' ? tool : (tool.name || tool.description || tool.path || '');
 
+/**
+ * Canvas width every node card is laid out at — the same 460 the dagre
+ * auto-arrange pass feeds `g.setNode` with (`layout.helpers.ts`), so
+ * placement and auto-arrange agree on a card's footprint.
+ */
+export const NODE_CARD_WIDTH = 460;
+/** Vertical breathing room left between a newly added card and the one above it. */
+export const NEW_NODE_VERTICAL_GAP = 40;
+/** Height assumed for a node type `NodeHeightMap` does not cover — the same fallback `layout.helpers.ts` uses. */
+const DEFAULT_NODE_CARD_HEIGHT = 500;
+
+interface PlacedFlowNode {
+  readonly type?: string | undefined;
+  readonly position: { readonly x: number; readonly y: number };
+  readonly measured?: { readonly height?: number | undefined } | null | undefined;
+}
+
+/**
+ * A card's rendered height is not knowable before React Flow has rendered
+ * it, so this uses the same two sources the dagre auto-arrange pass uses
+ * (`layout.helpers.ts:computeNodeHeight`): the node's own `measured.height`
+ * once React Flow has measured it on the canvas, and otherwise the
+ * per-type `NodeHeightMap` estimate (500 for unknown types). The node being
+ * added has no rendered card yet by definition, so only the estimate is
+ * available for it.
+ */
+const estimatedNodeHeight = (node: PlacedFlowNode): number =>
+  node.measured?.height ?? NodeHeightMap[node.type ?? ''] ?? DEFAULT_NODE_CARD_HEIGHT;
+
+/**
+ * Places a newly added node at `xStartPos`/`yStartPos` (the viewport
+ * centre) when that leaves its card clear of every existing card, and
+ * otherwise stacks it below the lowest existing card.
+ *
+ * The previous rule only dodged an EXACT position collision (a 60px
+ * diagonal nudge per coincident top-left), which is far smaller than a
+ * card — several hundred px tall, `NODE_CARD_WIDTH` wide — so two or three
+ * nodes added from the menu were drawn on top of each other.
+ */
 export const calculatePositionForNewNode = (
   xStartPos: number,
   yStartPos: number,
-  flowNodes: readonly { readonly position: { readonly x: number; readonly y: number } }[],
+  flowNodes: readonly PlacedFlowNode[],
+  newNodeType?: string,
 ): { xPos: number; yPos: number } => {
-  let xPos = xStartPos;
-  let yPos = yStartPos;
-  for (;;) {
-    if (
-      !flowNodes.find(
-        node => Math.abs(node.position.x - xPos) < 0.01 && Math.abs(node.position.y - yPos) < 0.01,
-      )
-    ) {
-      break;
-    }
-    xPos += 60;
-    yPos += 60;
+  const newHeight = NodeHeightMap[newNodeType ?? ''] ?? DEFAULT_NODE_CARD_HEIGHT;
+  const overlaps = flowNodes.some(node => {
+    const height = estimatedNodeHeight(node);
+    return (
+      xStartPos < node.position.x + NODE_CARD_WIDTH &&
+      xStartPos + NODE_CARD_WIDTH > node.position.x &&
+      yStartPos < node.position.y + height &&
+      yStartPos + newHeight > node.position.y
+    );
+  });
+
+  if (!overlaps) {
+    return { xPos: xStartPos, yPos: yStartPos };
   }
-  return { xPos, yPos };
+
+  // Below every existing card, so the result cannot overlap any of them.
+  const lowestBottom = Math.max(...flowNodes.map(node => node.position.y + estimatedNodeHeight(node)));
+  return { xPos: xStartPos, yPos: lowestBottom + NEW_NODE_VERTICAL_GAP };
 };
 
 

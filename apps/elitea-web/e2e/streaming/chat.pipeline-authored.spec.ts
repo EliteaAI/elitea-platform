@@ -146,27 +146,28 @@ async function mapTaskToTurnInput(page: Page, nodeId: string): Promise<void> {
 }
 
 /**
- * Open a `SingleSelect` that lives INSIDE a React Flow node, by keyboard.
+ * Open a `SingleSelect` that lives INSIDE a React Flow node, WITH THE MOUSE.
  *
- * MEASURED, and it is a finding about the app rather than about Playwright:
- * a `click()` on these two dropdowns focuses them and does NOT open the
- * menu. The failure snapshot showed the combobox `[active]` with no listbox
- * anywhere in the tree, and the wait ran the test out of time. The canvas
- * handles mouse-down on a node itself (React Flow's drag layer), and the
- * escape hatch for that is the `nodrag` class — which every SIBLING field on
- * this card carries (`InputSelect`/`OutputSelect`/`ToolkitsSelect` all pass
- * `className="nopan nodrag nowheel"`) and `SimpleLLMInputItem`'s two
- * dropdowns do not. So a real user cannot open them with the mouse either.
+ * This used to be keyboard-only, and the reason was a real defect rather than
+ * a Playwright quirk: `SimpleLLMInputItem`'s two dropdowns carried none of
+ * React Flow's escape-hatch classes, while every sibling field on the same
+ * card did. The canvas's drag layer handled the mouse-down, so a `click()`
+ * focused the combobox and never opened its menu — the failure snapshot
+ * showed it `[active]` with no listbox anywhere in the tree. A real user
+ * could not open them with the mouse at all; only the keyboard worked, which
+ * is why the unit suite saw a working control.
  *
- * `focus()` dispatches no mouse event at all, and MUI's `Select` opens on
- * Enter, so this path is unaffected by the canvas. The options render in a
- * portal at the document root, outside the canvas, so clicking THEM is fine.
- * That file is another unit's (`ui/settings/**`); this journey drives the
- * surface as it is rather than reaching across the fence to change it.
+ * Both wrappers now carry `nopan nodrag`, so the click is the real user path
+ * again — and driving it here is deliberate: this is the only test that
+ * exercises the mouse on those dropdowns, so it is what stops the escape
+ * hatch being dropped again. The unit test pins the class; this pins that the
+ * class actually does its job inside the canvas.
+ *
+ * The options themselves render in a portal at the document root, outside the
+ * canvas, so clicking THEM was never affected.
  */
 async function openSelect(select: Locator): Promise<void> {
-  await select.focus();
-  await select.press('Enter');
+  await select.click();
   await expect(page_listbox(select)).toBeVisible({ timeout: 10_000 });
 }
 

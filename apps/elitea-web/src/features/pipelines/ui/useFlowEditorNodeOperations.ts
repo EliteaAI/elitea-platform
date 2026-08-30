@@ -94,7 +94,7 @@ function useOnNodeCreateAtPosition(args: Pick<UseFlowEditorNodeOperationsArgs, '
   );
 }
 
-/** `FlowEditor.jsx:263-276` — picks a free canvas position centred in the current viewport, then delegates to `onNodeCreateAtPosition`. */
+/** `FlowEditor.jsx:263-276` — picks a free canvas position centred in the current viewport (stacked below the existing cards when the centre is taken — see `calculatePositionForNewNode`), then delegates to `onNodeCreateAtPosition`. */
 function useOnAddNode(
   args: Pick<UseFlowEditorNodeOperationsArgs, 'flowNodes' | 'getViewport' | 'editorWidth' | 'editorHeight'>,
   onNodeCreateAtPosition: UseFlowEditorNodeOperationsResult['onNodeCreateAtPosition'],
@@ -108,6 +108,7 @@ function useOnAddNode(
         (editorWidth / 2 - 230 - viewPort.x) / viewPort.zoom,
         (editorHeight / 2 - 200 - viewPort.y) / viewPort.zoom,
         flowNodes,
+        type,
       );
       return onNodeCreateAtPosition(type, { x: xPos, y: yPos });
     },
