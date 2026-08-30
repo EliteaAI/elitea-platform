@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw';
 import { QueryClient } from '@tanstack/react-query';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -11,6 +12,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { getGetApplicationQueryKey } from '@/shared/api/generated/applications/applications';
 import type { ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
 import { server } from '@/test/setup';
+import { useNavBlockerStore } from '@/widgets/app-shell';
 
 import { renderPipelinesRoute } from '../__tests__/testRouter';
 
@@ -40,8 +42,11 @@ const activeVersion = {
   meta: { step_limit: 40, internal_tools: [] },
 } as unknown as ApplicationVersionDetail;
 
+const ADMITTED = { document: {}, parseFailed: false, issues: [], hasGraph: true, isAdmissible: true } as const;
+
 const liveGraph: PipelineGraphDraft = {
   instructions: 'entry_point: LLM_9\nnodes:\n  - id: LLM_9\n    type: llm\n',
+  admission: ADMITTED,
   pipelineSettings: {
     nodes: [{ id: 'LLM_9', position: { x: 120, y: 240 } }],
     edges: [],
@@ -50,12 +55,23 @@ const liveGraph: PipelineGraphDraft = {
   },
 };
 
+/** The same graph, but one the native runtime would refuse — `readGraphDraft` reports that verdict alongside the document it is about to store. */
+const inadmissibleGraph: PipelineGraphDraft = {
+  ...liveGraph,
+  admission: { ...ADMITTED, isAdmissible: false, issues: [] },
+};
+
 interface ProbeProps {
   readonly readGraphDraft: () => PipelineGraphDraft | undefined;
   readonly version?: ApplicationVersionDetail | undefined;
+  readonly isGraphAdmissible?: boolean;
 }
 
-function Probe({ readGraphDraft, version = activeVersion }: ProbeProps) {
+function Probe({ readGraphDraft, version = activeVersion, isGraphAdmissible = true }: ProbeProps) {
+  // The active version is LOCAL state, not a prop, because the fixture bakes
+  // this element into the router's route component — a `rerender` of the tree
+  // above would not reach it.
+  const [current, setCurrent] = useState(version);
   const form = useForm<ApplicationCreationInput>({
     values: { name: 'p', description: 'd', version_details: { conversation_starters: ['live starter'] } },
   });
@@ -64,17 +80,32 @@ function Probe({ readGraphDraft, version = activeVersion }: ProbeProps) {
     applicationId: 42,
     tab: 'my',
     versions,
-    activeVersion: version,
+    activeVersion: current,
     control: form.control,
     llmSettings: undefined,
     readGraphDraft,
     isReadOnly: false,
     isFetching: false,
+    isGraphAdmissible,
   });
   return (
     <div>
       <span data-testid="body">{JSON.stringify(state.versionBody)}</span>
       <span data-testid="error">{String(state.versionError)}</span>
+      <span data-testid="can-save-version">{String(state.canSaveNewVersion)}</span>
+      <span data-testid="save-version-blocked">{String(state.isSaveNewVersionBlocked)}</span>
+      <button
+        data-testid="switch-active-version"
+        onClick={() => setCurrent({ ...activeVersion, id: '2' })}
+      >
+        switch active version
+      </button>
+      <button
+        data-testid="delete-failed"
+        onClick={() => state.versionDelete?.onVersionDeleteError('Published version can not be updated/deleted.')}
+      >
+        delete failed
+      </button>
       <button
         data-testid="select"
         onClick={() => state.handleSelectVersion({ id: 2, name: 'v1' })}
@@ -111,7 +142,11 @@ function captureVersionPuts(): { url: string; body: Record<string, unknown> }[] 
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
-  return () => resetGeneratedClient();
+  useNavBlockerStore.getState().setBlockNav(false);
+  return () => {
+    resetGeneratedClient();
+    useNavBlockerStore.getState().setBlockNav(false);
+  };
 });
 
 describe('usePipelineVersionControls', () => {
@@ -223,5 +258,123 @@ describe('usePipelineVersionControls', () => {
     expect(body['agent_type']).toBe('pipeline');
     expect(body['conversation_starters']).toEqual(['live starter']);
     expect(body['meta']).toEqual({ step_limit: 40, internal_tools: [] });
+  });
+  /**
+   * #133 + the version bar. `EditPipeline` arms the app-wide guard off its own
+   * dirty state, and `NavBlockerDialog`'s `shouldBlockFn` blocks ANY pathname
+   * change while it is raised — including the two this hook owns. The fixture
+   * mounts the real dialog (`withNavBlocker`) because a router without it
+   * cannot fail: that absence is exactly why the unit suite never saw this.
+   *
+   * Red without `disarmUnsavedChangesNavBlocker()` in `finishNewVersion`: the
+   * pathname stays on `/pipelines/my/42/1` with the guard's dialog rendered,
+   * asking the user whether to discard the changes that were just persisted.
+   */
+  it('lands on the created version even while the page has the unsaved-changes guard armed', async () => {
+    captureVersionPuts();
+    useNavBlockerStore.getState().setBlockNav(true);
+    const { router } = renderPipelinesRoute(<Probe readGraphDraft={() => liveGraph} />, '/pipelines/my/42/1', {
+      withNavBlocker: true,
+    });
+
+    await userEvent.setup().click(await screen.findByTestId('saved'));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/pipelines/my/42/7'));
+  });
+
+  /**
+   * The same disarm on the delete path, where being blocked is worse: the
+   * navigation is an ESCAPE from a URL whose version no longer exists.
+   * Red without it: pathname stays `/pipelines/my/42/1`.
+   */
+  it('escapes the deleted version even while the unsaved-changes guard is armed', async () => {
+    useNavBlockerStore.getState().setBlockNav(true);
+    const { router } = renderPipelinesRoute(<Probe readGraphDraft={() => undefined} />, '/pipelines/my/42/1', {
+      withNavBlocker: true,
+    });
+
+    await userEvent.setup().click(await screen.findByTestId('deleted'));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/pipelines/my/42'));
+  });
+
+  /**
+   * An ORDINARY version switch must still be guarded — the user really would
+   * lose unsaved work. This is the discriminator that stops the two disarms
+   * above from being written as one blanket disarm inside `goToVersion`.
+   */
+  it('still blocks an ordinary version switch while the guard is armed', async () => {
+    useNavBlockerStore.getState().setBlockNav(true);
+    const { router } = renderPipelinesRoute(<Probe readGraphDraft={() => undefined} />, '/pipelines/my/42/1', {
+      withNavBlocker: true,
+    });
+
+    await userEvent.setup().click(await screen.findByTestId('select'));
+
+    await waitFor(() => expect(screen.getByTestId('nav-blocker-dialog')).toBeInTheDocument());
+    expect(router.state.location.pathname).toBe('/pipelines/my/42/1');
+  });
+
+  /**
+   * "Save As Version" is a SECOND write path onto the same document. Gated
+   * only on `!isReadOnly && activeVersion !== undefined`, it persisted exactly
+   * the graph the Save veto had refused.
+   */
+  it('withholds Save As Version while the live graph is inadmissible, and only that button', async () => {
+    renderPipelinesRoute(<Probe readGraphDraft={() => liveGraph} isGraphAdmissible={false} />, '/pipelines/my/42/1');
+
+    expect(await screen.findByTestId('save-version-blocked')).toHaveTextContent('true');
+    // The writer gate is untouched: `canSaveNewVersion` also governs "Delete
+    // version" and "Set as default", and an inadmissible canvas must not take
+    // away the delete that is sometimes the only way out of a bad version.
+    expect(screen.getByTestId('can-save-version')).toHaveTextContent('true');
+  });
+
+  /**
+   * And the carry itself re-asks, against the document actually about to be
+   * written — for a graph that went inadmissible between the click and the
+   * POST's response. The version exists either way, so the navigation still
+   * happens; what must not happen is the PUT.
+   */
+  it('refuses to carry an inadmissible graph onto the created version, and says so', async () => {
+    const puts = captureVersionPuts();
+    const { router } = renderPipelinesRoute(<Probe readGraphDraft={() => inadmissibleGraph} />, '/pipelines/my/42/1');
+
+    await userEvent.setup().click(await screen.findByTestId('saved'));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/pipelines/my/42/7'));
+    expect(puts).toHaveLength(0);
+    expect(screen.getByTestId('error')).toHaveTextContent('the runtime would refuse that graph');
+  });
+
+  /**
+   * `DeleteVersionButton` treats `onError` as its only failure channel and
+   * renders nothing itself, so a refused delete used to leave its confirm
+   * dialog sitting open with no message anywhere.
+   */
+  it('routes a refused version delete into the version bar banner', async () => {
+    renderPipelinesRoute(<Probe readGraphDraft={() => undefined} />, '/pipelines/my/42/1');
+
+    await userEvent.setup().click(await screen.findByTestId('delete-failed'));
+
+    expect(screen.getByTestId('error')).toHaveTextContent('Published version can not be updated/deleted.');
+  });
+
+  /**
+   * The banner is scoped to the version it was raised on. It used to be
+   * cleared only inside the successful-carry branch, so one transient 500
+   * pinned it next to the dropdown for the rest of the page's life — this bar
+   * stays mounted across every version navigation.
+   */
+  it('clears a stale version-write banner once the active version changes', async () => {
+    renderPipelinesRoute(<Probe readGraphDraft={() => undefined} />, '/pipelines/my/42/1');
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('delete-failed'));
+    expect(screen.getByTestId('error')).toHaveTextContent('Published version can not be updated/deleted.');
+
+    await user.click(screen.getByTestId('switch-active-version'));
+
+    await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('undefined'));
   });
 });

@@ -20,6 +20,7 @@ import { resetConfigForTests } from '@/shared/config/get-config';
 import { server } from '@/test/setup';
 
 import { renderPipelinesRoute } from '../__tests__/testRouter';
+import { resetPipelineTestConversationsForTests } from '../lib/usePipelineTestConversation';
 import { PipelineTestChat } from './PipelineTestChat';
 
 const globals = globalThis as unknown as Record<string, unknown>;
@@ -81,6 +82,10 @@ beforeEach(() => {
   globals['elitea_ui_config'] = { vite_server_url: '/api/v2', vite_base_uri: '/', vite_public_project_id: 'public-1' };
   resetConfigForTests();
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  // The pane reuses a conversation across MOUNTS via a module-scope map, which
+  // outlives a `render`. Without this reset the create-count assertions below
+  // would depend on which test ran first.
+  resetPipelineTestConversationsForTests();
 });
 
 afterEach(() => {
@@ -159,6 +164,26 @@ describe('PipelineTestChat', () => {
 
     await user.click(await screen.findByTestId('chat-message-input'));
     await waitFor(() => expect(routes.creates).toBe(0));
+  });
+
+  it("renders the version's own conversation starters, which are plain strings", async () => {
+    installConversationRoutes();
+    renderPane(
+      <PipelineTestChat
+        settings={{ conversationStarters: ['Explain this pipeline'] }}
+        disableChat={false}
+        slotRef={undefined}
+        identity={IDENTITY}
+        user={USER}
+      />,
+    );
+
+    // The starters a pipeline version stores are strings, and
+    // `ChatConversationStarters` stringifies whatever it renders. The pane
+    // used to keep only `{id, text}` rows — a shape nothing produces and
+    // nothing reads — so every real starter was filtered out before it could
+    // reach the grid, and the empty chat showed no suggestions at all.
+    expect(await screen.findByText('Explain this pipeline')).toBeInTheDocument();
   });
 
   it('shows why the chat is closed instead of a composer that could not send', async () => {

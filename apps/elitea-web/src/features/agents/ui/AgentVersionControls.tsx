@@ -77,6 +77,19 @@ export interface AgentVersionControlsProps {
   readonly versionBody: Omit<VersionWriteRequest, 'name'>;
   /** `false` for a read-only (public-project) viewer, mirroring `ApplicationTabBar.jsx:65` — the selector stays, only the write affordance goes. */
   readonly canSaveNewVersion: boolean;
+  /**
+   * Disables "Save As Version" ALONE, leaving the selector, "Set as default"
+   * and "Delete version" alive.
+   *
+   * Deliberately separate from `canSaveNewVersion`, which is the
+   * writer-vs-public-viewer gate and also governs those other two controls.
+   * The pipelines editor needs to withhold this one button while the live
+   * flow graph is one the runtime would refuse — that write persists the
+   * graph, so it must obey the same veto the Save button does — and it must
+   * NOT thereby take away the user's ability to delete a version or pin a
+   * default, neither of which touches the canvas.
+   */
+  readonly saveNewVersionDisabled?: boolean | undefined;
   readonly onNewVersionSaved: (created: ApplicationVersionDetail) => void;
   readonly onNewVersionError?: ((message: string) => void) | undefined;
   /**
@@ -108,6 +121,7 @@ export function AgentVersionControls({
   onSelectVersion,
   versionBody,
   canSaveNewVersion,
+  saveNewVersionDisabled = false,
   onNewVersionSaved,
   onNewVersionError,
   versionDelete,
@@ -182,6 +196,7 @@ export function AgentVersionControls({
           projectId={projectId}
           existingVersionNames={versions.map((version) => version.name)}
           version={versionBody}
+          disabled={saveNewVersionDisabled}
           onSuccess={onNewVersionSaved}
           {...(onNewVersionError === undefined ? {} : { onError: onNewVersionError })}
         />

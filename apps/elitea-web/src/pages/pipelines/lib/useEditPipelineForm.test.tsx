@@ -109,7 +109,14 @@ describe('useEditPipelineForm', () => {
   // conversationStarters)` and nothing else — the live canvas never reached
   // the wire, the PUT answered 200, and the graph was gone on reload.
   it('handleSave sends the LIVE editor YAML as instructions plus the laid-out pipeline_settings', async () => {
-    const liveYaml = 'entry_point: Agent 1\nnodes:\n  - id: Agent 1\n    type: llm\n';
+    /*
+     * A REAL one-node graph, not `id: Agent 1`. A space fails the compiler's
+     * `valid_graph_id` (`yaml.rs:362`), and `handleSave` now refuses a
+     * document the runtime would refuse — so the old fixture was asserting
+     * that an inadmissible graph reaches the wire, which is the opposite of
+     * what this test is for. Same fixture `EditPipeline.test.tsx` uses.
+     */
+    const liveYaml = 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n    transition: END\n';
     usePipelineYamlStore.setState({ yamlCode: liveYaml });
     usePipelineEditorStore.setState({ nodes: [], edges: [] });
 
@@ -128,7 +135,7 @@ describe('useEditPipelineForm', () => {
 
     await waitFor(() => expect(body['instructions']).toBe(liveYaml));
     const settings = body['pipeline_settings'] as { nodes: readonly { id: string }[] };
-    expect(settings.nodes.map((node) => node.id)).toContain('Agent 1');
+    expect(settings.nodes.map((node) => node.id)).toContain('Printer_1');
   });
 
   it('handleSave falls back to the stored instructions and sends no pipeline_settings when the editor holds nothing', async () => {
@@ -178,6 +185,60 @@ describe('useEditPipelineForm', () => {
 
     await waitFor(() => expect(result.current.saveError).toBeDefined());
     expect(result.current.isSaving).toBe(false);
+  });
+
+  /**
+   * The veto's SECOND enforcement point, and the reason one was not enough.
+   *
+   * `GraphAdmissionGate` publishes the refusal as an RHF `root.*` error,
+   * which disables the Save button — and `form.handleSubmit` deletes every
+   * `root.*` error before deciding whether to submit (react-hook-form 7.83:
+   * the resolver's errors are assigned wholesale, then
+   * `unset(_formState.errors, 'root')`, `dist/index.esm.mjs:2989/3002`). So
+   * the submit path itself had no admission check: any route to a Save click
+   * that bypassed the disabled button PUT the inadmissible document. One is
+   * reachable today — `useRefetchPipelineAfterSave` fires a detail refetch
+   * after every save, and a failed one puts `ConfigurationTab` into its error
+   * branch, which unmounts the gate while `EditPipeline` keeps the Save bar.
+   *
+   * Note this test never renders the gate at all, which is the point: it
+   * asserts that the SAVE PATH refuses on its own.
+   */
+  it('handleSave refuses to store a graph the runtime would refuse, and says so', async () => {
+    // `Agent 1` — a space is not a legal graph id (`yaml.rs:362`).
+    usePipelineYamlStore.setState({ yamlCode: 'entry_point: Agent 1\nnodes:\n  - id: Agent 1\n    type: llm\n' });
+    const saveSpy = vi.fn(() => ({ id: '1', application_id: '42', name: 'base', status: 'draft' }));
+    server.use(getUpdateApplicationVersionMockHandler(saveSpy));
+    const { result } = renderHook(() => useEditPipelineForm(DETAIL, VERSION, '9', 42), { wrapper });
+
+    act(() => {
+      result.current.handleSave();
+    });
+
+    await waitFor(() => expect(result.current.admissionRefused).toBe(true));
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('handleSave clears the admission refusal once the graph is fixed', async () => {
+    usePipelineYamlStore.setState({ yamlCode: 'entry_point: Agent 1\nnodes:\n  - id: Agent 1\n    type: llm\n' });
+    server.use(
+      getUpdateApplicationVersionMockHandler({ id: '1', application_id: '42', name: 'base', status: 'draft' }),
+    );
+    const { result } = renderHook(() => useEditPipelineForm(DETAIL, VERSION, '9', 42), { wrapper });
+
+    act(() => {
+      result.current.handleSave();
+    });
+    await waitFor(() => expect(result.current.admissionRefused).toBe(true));
+
+    act(() => {
+      usePipelineYamlStore.setState({
+        yamlCode: 'entry_point: Printer_1\nnodes:\n  - id: Printer_1\n    type: printer\n    transition: END\n',
+      });
+      result.current.handleSave();
+    });
+
+    await waitFor(() => expect(result.current.admissionRefused).toBe(false));
   });
 
   it('saveError clears once a subsequent save attempt succeeds', async () => {

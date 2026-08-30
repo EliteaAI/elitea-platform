@@ -253,7 +253,7 @@ describe('deriveChatBoxIds', () => {
 });
 
 describe('resolveConversationStarters', () => {
-  const starters = [{ id: '1', text: 'Hi' }];
+  const starters = ['Hi'];
 
   it('returns starters when fresh', () => {
     expect(resolveConversationStarters(false, 0, starters)).toBe(starters);

@@ -92,6 +92,28 @@ export function toVersionDraft(
   const internalTools = Array.isArray(internalToolsRaw)
     ? internalToolsRaw.filter((entry): entry is string => typeof entry === 'string')
     : [];
+  /*
+   * `meta` is MERGED over the version's stored blob, not replaced with the
+   * two keys this mapper knows about. `versionFromBody`
+   * (`applications/handler.go:504`) takes `vBody["meta"]` as the whole map
+   * and `insertVersion` persists it verbatim, so every other key the source
+   * version carried is dropped on the clone. `icon_meta` is the one that was
+   * measurably lost — `toChatPipelineVersionDetails`, in this same file,
+   * reads it off a pipeline version's `meta` and forwards it to the chat, and
+   * rows carrying it are real — and `category`/`attachment_storage` went the
+   * same way. Nothing writes them back, so a Save-As-Version was permanent.
+   *
+   * `variables` is DROPPED from the stored blob, and that is deliberate: it
+   * is the one key both handlers rebuild from the body's TOP-LEVEL
+   * `variables` list, so a copy carried inside `meta` can only contradict the
+   * authoritative one — and on the create path it WINS, because
+   * `versionFromBody` folds the list only when it is non-empty. The agents
+   * twin (`pages/agents/lib/editApplicationMappers.ts`'s `toVersionMetaBody`)
+   * makes exactly this cut, for a measured reason: forwarding it resurrected
+   * deleted variables, secrets included. The two halves of this pair now
+   * agree; they did not before, and this mapper was the half that replaced.
+   */
+  const { variables: _storedVariables, ...storedMeta } = metaRecord;
   return {
     name: version.name,
     agentType: 'pipeline',
@@ -104,7 +126,7 @@ export function toVersionDraft(
       name: variable.name ?? '',
       value: variable.value ?? '',
     })),
-    meta: { step_limit: stepLimit, internal_tools: internalTools },
+    meta: { ...storedMeta, step_limit: stepLimit, internal_tools: internalTools },
     // Same edit-wins-over-stored rule the agents twin applies in
     // `toVersionWriteBody`: this page's model picker holds the live choice, and
     // a save that re-read the stored blob would drop it. Falls back to the
@@ -298,6 +320,28 @@ export function toNewPipelineVersionBody(
   const internalTools = Array.isArray(internalToolsRaw)
     ? internalToolsRaw.filter((entry): entry is string => typeof entry === 'string')
     : [];
+  /*
+   * `meta` is MERGED over the version's stored blob, not replaced with the
+   * two keys this mapper knows about. `versionFromBody`
+   * (`applications/handler.go:504`) takes `vBody["meta"]` as the whole map
+   * and `insertVersion` persists it verbatim, so every other key the source
+   * version carried is dropped on the clone. `icon_meta` is the one that was
+   * measurably lost — `toChatPipelineVersionDetails`, in this same file,
+   * reads it off a pipeline version's `meta` and forwards it to the chat, and
+   * rows carrying it are real — and `category`/`attachment_storage` went the
+   * same way. Nothing writes them back, so a Save-As-Version was permanent.
+   *
+   * `variables` is DROPPED from the stored blob, and that is deliberate: it
+   * is the one key both handlers rebuild from the body's TOP-LEVEL
+   * `variables` list, so a copy carried inside `meta` can only contradict the
+   * authoritative one — and on the create path it WINS, because
+   * `versionFromBody` folds the list only when it is non-empty. The agents
+   * twin (`pages/agents/lib/editApplicationMappers.ts`'s `toVersionMetaBody`)
+   * makes exactly this cut, for a measured reason: forwarding it resurrected
+   * deleted variables, secrets included. The two halves of this pair now
+   * agree; they did not before, and this mapper was the half that replaced.
+   */
+  const { variables: _storedVariables, ...storedMeta } = metaRecord;
   return {
     agent_type: 'pipeline',
     instructions: version.instructions ?? '',
@@ -308,6 +352,6 @@ export function toNewPipelineVersionBody(
       name: variable.name ?? '',
       value: variable.value ?? '',
     })),
-    meta: { step_limit: stepLimit, internal_tools: internalTools },
+    meta: { ...storedMeta, step_limit: stepLimit, internal_tools: internalTools },
   };
 }

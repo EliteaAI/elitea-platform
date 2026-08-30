@@ -464,3 +464,112 @@ describe('useDeleteItems: Delete-key trigger', () => {
     expect(result.current.showDeleteConfirmDlg).toBe(false);
   });
 });
+
+describe('useDeleteItems: the End node is not a doomed node', () => {
+  it('selecting End and pressing Delete leaves every END target intact in the stored document', () => {
+    /*
+     * The End node is a normal, selectable React Flow node
+     * (`parsePipelineTraversal.helpers.ts:127-132` pushes `{id:'END'}` with no
+     * `selectable:false`), and `onDelete` filters it out of node deletion. When
+     * `doomedNodeIds` was built from the RAW selection, selecting End and
+     * pressing Delete queued EVERY edge terminating at END. `onDelete` removes
+     * no YAML node (End is filtered out), but the queued edges are still run
+     * through `processEdgeDeletion` and then dropped from `flowEdges` — so both
+     * arrows into END vanish from the canvas while the document still routes
+     * there, and canvas and document disagree until a reload.
+     *
+     * The assertion is on the surviving EDGES, not on the document: the
+     * repair-to-END fix in `deletionOperations.helpers.ts` means the stored
+     * targets read `END` either way, so a document-only assertion cannot
+     * discriminate (verified by reverting this fix — it stayed green).
+     */
+    const setYamlJsonObject = vi.fn();
+    const endNode = flowNode('END', 'END', true);
+    const router = flowNode('Router_1', 'router');
+    const llm = flowNode('LLM_1', 'llm');
+    const edgeRouterEnd: FlowEdge = { id: 'e1', source: 'Router_1', target: 'END', sourceHandle: 'routerNode_default_output' };
+    const edgeLlmEnd: FlowEdge = { id: 'e2', source: 'LLM_1', target: 'END' };
+    const { setFlowNodes } = makeStatefulSetFlowNodes([router, llm, endNode]);
+    const { setFlowEdges, getEdges } = makeStatefulSetFlowEdges([edgeRouterEnd, edgeLlmEnd]);
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [
+        { id: 'Router_1', type: 'router', routes: ['LLM_1'], default_output: 'END' },
+        { id: 'LLM_1', type: 'llm', transition: 'END' },
+      ],
+      entry_point: 'Router_1',
+    };
+
+    const { result } = renderHook(() =>
+      useDeleteItems({
+        display: 'flex',
+        yamlJsonObject,
+        flowNodes: [router, llm, endNode],
+        flowEdges: [edgeRouterEnd, edgeLlmEnd],
+        setYamlJsonObject,
+        setFlowNodes,
+        setFlowEdges,
+      }),
+    );
+
+    act(() => {
+      pressDelete();
+    });
+    act(() => {
+      result.current.onConfirmDelete();
+    });
+
+    // Neither arrow into END may be removed: the user deleted nothing.
+    expect(getEdges().map(edge => edge.id)).toEqual(['e1', 'e2']);
+    const stored = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+    expect(stored.nodes?.find(n => n.id === 'Router_1')?.default_output).toBe('END');
+    expect(stored.nodes?.find(n => n.id === 'LLM_1')?.transition).toBe('END');
+  });
+});
+
+describe('useDeleteItems: the stored document does not depend on React evaluating an updater eagerly', () => {
+  it('publishes the edge repairs even when setFlowNodes defers the updater', () => {
+    /*
+     * `setFlowNodes` is React Flow's `useNodesState` setter — a plain React
+     * `useState` dispatch. React only evaluates a function updater at dispatch
+     * time via the eager-state fast path, which is SKIPPED whenever the owning
+     * fiber already has pending lanes; otherwise the updater runs during the
+     * later render pass. Computing the repairs inside that updater meant
+     * `setYamlJsonObject` (called on the next line) stored a document with none
+     * of them. This mock never invokes the updater, which is exactly the
+     * deferred ordering; the assertion is on the STORED document.
+     */
+    const setYamlJsonObject = vi.fn();
+    // Deliberately does NOT call the updater — models the deferred ordering.
+    const setFlowNodes = vi.fn<SetFlowNodes>(() => undefined);
+    const { setFlowEdges } = makeStatefulSetFlowEdges([]);
+    const nodeA = flowNode('A', 'llm');
+    const nodeB = flowNode('B', 'llm');
+    const edgeAB: FlowEdge = { id: 'e1', source: 'A', target: 'B', selected: true };
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'A', type: 'llm', transition: 'B' }, { id: 'B', type: 'llm', transition: 'END' }],
+      entry_point: 'A',
+    };
+
+    const { result } = renderHook(() =>
+      useDeleteItems({
+        display: 'flex',
+        yamlJsonObject,
+        flowNodes: [nodeA, nodeB],
+        flowEdges: [edgeAB],
+        setYamlJsonObject,
+        setFlowNodes,
+        setFlowEdges,
+      }),
+    );
+
+    act(() => {
+      result.current.onBeforeDelete({ nodes: [], edges: [edgeAB] });
+    });
+    act(() => {
+      result.current.onConfirmDelete();
+    });
+
+    const stored = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+    expect(stored.nodes?.find(n => n.id === 'A')?.transition).toBe('END');
+  });
+});

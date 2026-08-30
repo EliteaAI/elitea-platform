@@ -18,6 +18,7 @@ import {
 import type { YamlPipelineDocument, YamlPipelineNode } from './pipelineFlow.types';
 import type { FlowEdge, FlowNode } from '../reactFlowTypes';
 import * as FlowNodeUpdateHelpers from './flowNodeUpdate.helpers';
+import * as DeletionRepairHelpers from './deletionRepair.helpers';
 import * as NodeOperationsHelpers from './nodeOperations.helpers';
 import * as NodeTypeHelpers from './nodeType.helpers';
 import * as YamlUpdateHelpers from './yamlUpdate.helpers';
@@ -137,40 +138,37 @@ export function handleLegacyDecisionNodeDeletion(node: FlowNode, yamlJsonObject:
 
 export function cleanupNodeReferences(yamlNode: YamlPipelineNode, nodeId: string): YamlPipelineNode {
   if (yamlNode.condition && yamlNode.type !== PipelineNodeTypes.Router) {
-    return YamlUpdateHelpers.updateYamlNodeCondition(yamlNode, {
-      [DEFAULT_OUTPUT]: NodeOperationsHelpers.clearFieldIfMatchesNodeId(yamlNode.condition[DEFAULT_OUTPUT] ?? '', nodeId),
-    });
+    const repaired = DeletionRepairHelpers.repairTargetIfMatches(yamlNode.condition[DEFAULT_OUTPUT], nodeId);
+    if (repaired === undefined) return yamlNode;
+    return YamlUpdateHelpers.updateYamlNodeCondition(yamlNode, { [DEFAULT_OUTPUT]: repaired });
   }
 
   if (yamlNode.decision) {
-    return YamlUpdateHelpers.updateYamlNodeDecision(yamlNode, {
-      [DEFAULT_OUTPUT]: NodeOperationsHelpers.clearFieldIfMatchesNodeId(yamlNode.decision[DEFAULT_OUTPUT] ?? '', nodeId),
-    });
+    const repaired = DeletionRepairHelpers.repairTargetIfMatches(yamlNode.decision[DEFAULT_OUTPUT], nodeId);
+    if (repaired === undefined) return yamlNode;
+    return YamlUpdateHelpers.updateYamlNodeDecision(yamlNode, { [DEFAULT_OUTPUT]: repaired });
   }
 
-  if (yamlNode.type === PipelineNodeTypes.Decision) {
-    return {
-      ...yamlNode,
-      [DEFAULT_OUTPUT]: NodeOperationsHelpers.clearFieldIfMatchesNodeId(yamlNode[DEFAULT_OUTPUT] ?? '', nodeId),
-    };
+  if (yamlNode.type === PipelineNodeTypes.Router || yamlNode.type === PipelineNodeTypes.Decision) {
+    return DeletionRepairHelpers.repairBranchNode(yamlNode, nodeId);
   }
 
   if (yamlNode.type === PipelineNodeTypes.Hitl) {
-    const routes = (yamlNode.routes as Record<string, string> | undefined) ?? {};
+    const routes = yamlNode.routes as Record<string, string> | undefined;
+    // `transition: undefined` is kept from the original: `RawHitlNodeDefinition`
+    // is `#[serde(deny_unknown_fields)]` and declares no `transition`
+    // (`hitl.rs:103-117`), so a stray one refuses the whole document. js-yaml
+    // omits undefined values when it dumps, which is how this strips the key.
     return {
       ...yamlNode,
       transition: undefined,
-      routes: Object.entries(routes).reduce<Record<string, string>>(
-        (result, [action, target]) => ({ ...result, [action]: target === nodeId ? '' : target }),
-        {},
-      ),
+      ...(routes === undefined ? {} : { routes: DeletionRepairHelpers.repairHitlRoutes(routes, nodeId) }),
     } as unknown as YamlPipelineNode;
   }
 
-  return YamlUpdateHelpers.updateYamlNodeTransition(
-    yamlNode,
-    NodeOperationsHelpers.clearFieldIfMatchesNodeId(yamlNode.transition ?? '', nodeId),
-  );
+  const repairedTransition = DeletionRepairHelpers.repairTargetIfMatches(yamlNode.transition, nodeId);
+  if (repairedTransition === undefined) return yamlNode;
+  return YamlUpdateHelpers.updateYamlNodeTransition(yamlNode, repairedTransition);
 }
 
 export function handleNormalNodeDeletion(node: FlowNode, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
@@ -270,7 +268,7 @@ function handleEdgeFromNewDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipel
     edge.source,
     yamlNode =>
       (isDefault
-        ? { ...yamlNode, [DEFAULT_OUTPUT]: '' }
+        ? { ...yamlNode, [DEFAULT_OUTPUT]: PipelineNodeTypes.End }
         : { ...yamlNode, nodes: NodeOperationsHelpers.removeNodeIdFromArray(yamlNode.nodes, edge.target) }) as YamlPipelineNode,
     node => node, // Flow node doesn't need update - nodes array is only in YAML
   );
@@ -282,7 +280,7 @@ function handleEdgeFromRouterNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDo
   return updateYamlNodeById(yamlJsonObject, edge.source, yamlNode => ({
     ...yamlNode,
     ...(isDefault
-      ? { [DEFAULT_OUTPUT]: '' }
+      ? { [DEFAULT_OUTPUT]: PipelineNodeTypes.End }
       : { routes: NodeOperationsHelpers.removeNodeIdFromArray(yamlNode.routes as readonly string[] | undefined, edge.target) }),
   } as YamlPipelineNode));
 }
@@ -294,11 +292,18 @@ function handleEdgeFromHitlNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocu
     return yamlJsonObject;
   }
 
-  return updateYamlNodeById(yamlJsonObject, edge.source, yamlNode => ({
-    ...yamlNode,
-    transition: undefined,
-    routes: { ...(yamlNode.routes as Record<string, string> | undefined), [action]: '' },
-  } as unknown as YamlPipelineNode));
+  return updateYamlNodeById(yamlJsonObject, edge.source, yamlNode => {
+    const routes = { ...(yamlNode.routes as Record<string, string> | undefined) };
+    // Same repair as `repairHitlRoutes`: drop `edit`, point the rest at END.
+    // `''` is refused by `validate_routes` (`hitl.rs:459-466`) and by the
+    // admission gate's `node.route-target`, which is what disabled Save.
+    if (action === DeletionRepairHelpers.HITL_EDIT_ACTION) {
+      delete routes[action];
+    } else {
+      routes[action] = PipelineNodeTypes.End;
+    }
+    return { ...yamlNode, transition: undefined, routes } as unknown as YamlPipelineNode;
+  });
 }
 
 function handleEdgeFromNormalNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {

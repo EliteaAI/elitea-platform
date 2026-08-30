@@ -2793,5 +2793,9 @@
   "pages.pipelines.testChat.disabled.description": "This chat runs the version stored on the server, so it stays closed while the editor holds unsaved changes.",
   "pages.pipelines.testChat.disabled.title": "Save the pipeline to test it",
   "pages.pipelines.testChat.error": "Could not start a test conversation. Click the message box to try again.",
-  "pages.pipelines.editPipeline.versionGraphCarryError": "The new version was created, but its flow graph could not be copied onto it."
+  "pages.pipelines.editPipeline.versionGraphCarryError": "The new version was created, but its flow graph could not be copied onto it.",
+  "features.pipelines.graphAdmissionGate.unparseable": "The YAML does not parse, so the runtime cannot read a graph out of it.",
+  "pages.pipelines.editPipeline.admissionRefused": "This pipeline was not saved: the runtime would refuse this flow graph.",
+  "pages.pipelines.editPipeline.versionGraphInadmissible": "The new version was created, but its flow graph was not copied onto it: the runtime would refuse that graph.",
+  "pages.pipelines.testChat.staleVersion": "Could not switch this chat to the selected version. Replies still run version {{versionId}}."
 }

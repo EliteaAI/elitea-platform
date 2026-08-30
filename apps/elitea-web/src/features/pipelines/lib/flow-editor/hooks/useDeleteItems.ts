@@ -92,20 +92,23 @@ export function useDeleteItems({
         }
       }
 
-      // Process flow nodes update
-      setFlowNodes(prev => {
-        let newFlowNodes = prev.filter(node => !filteredNodes.find(nodeDel => nodeDel.id === node.id));
+      // The edge repairs below mutate `newYamlJsonObject`, and that document is
+      // published by the `setYamlJsonObject` call underneath. Computing it here
+      // — BEFORE any setter runs — rather than inside a `setFlowNodes` updater
+      // is what makes the publish deterministic: React only evaluates a
+      // function updater eagerly when the owning fiber has no pending lanes,
+      // so in the other ordering the updater ran during the later render pass
+      // and `setYamlJsonObject` stored a document without any of the edge
+      // repairs (`transition: END`, route pruning) — intermittently, depending
+      // on what else scheduled an update on FlowEditor's fiber in the same tick.
+      let newFlowNodes = flowNodes.filter(node => !filteredNodes.find(nodeDel => nodeDel.id === node.id));
+      for (const edge of edges) {
+        const result = DeletionOperationsHelpers.processEdgeDeletion(edge, flowNodes, newYamlJsonObject, newFlowNodes);
+        newYamlJsonObject = result.yamlJsonObject;
+        newFlowNodes = result.flowNodes;
+      }
 
-        // Process edge deletions
-        for (const edge of edges) {
-          const result = DeletionOperationsHelpers.processEdgeDeletion(edge, flowNodes, newYamlJsonObject, newFlowNodes);
-          newYamlJsonObject = result.yamlJsonObject;
-          newFlowNodes = result.flowNodes;
-        }
-
-        return newFlowNodes;
-      });
-
+      setFlowNodes(newFlowNodes);
       setYamlJsonObject(newYamlJsonObject);
       setFlowEdges(prev => prev.filter(edge => !edges.find(edgeDel => edgeDel.id === edge.id)));
       setNodesToDelete([]);
@@ -232,7 +235,14 @@ function useDeleteKeyTrigger({
       const nodes = flowNodes.filter(node => node.selected);
       const selectedEdges = flowEdges.filter(edge => edge.selected);
       if (nodes.length || selectedEdges.length) {
-        const doomedNodeIds = new Set(nodes.map(node => node.id));
+        // Only nodes that will actually be DELETED may pull their edges in.
+        // `onDelete` filters the End node out (it is a normal selectable React
+        // Flow node, `parsePipelineTraversal.helpers.ts:127-132`), so building
+        // this set from the raw selection meant selecting End and pressing
+        // Delete queued every edge terminating at END — wiping them from the
+        // canvas and blanking the Router `default_output` / HITL routes that
+        // pointed there, while no YAML node was removed.
+        const doomedNodeIds = new Set(nodes.filter(node => node.type !== PipelineNodeTypes.End).map(node => node.id));
         const edges = flowEdges.filter(
           edge => edge.selected || doomedNodeIds.has(edge.source) || doomedNodeIds.has(edge.target),
         );

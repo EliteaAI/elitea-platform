@@ -53,8 +53,10 @@ import { documentLevelIssues } from '../../lib/graphAdmission.helpers';
 import type { GraphAdmissionIssue } from '../../lib/graphAdmission.types';
 import { useGraphAdmission } from './useGraphAdmission';
 
-/** The RHF error path the veto occupies. `root.*` errors are RHF's own channel for non-field, externally-sourced refusals. */
-const GRAPH_ADMISSION_FIELD = 'root.pipelineGraphAdmission';
+/** The key under `errors.root` the veto occupies. `root.*` errors are RHF's own channel for non-field, externally-sourced refusals. */
+const GRAPH_ADMISSION_KEY = 'pipelineGraphAdmission';
+/** The same path in the form `setError`/`clearErrors` take. */
+const GRAPH_ADMISSION_FIELD = `root.${GRAPH_ADMISSION_KEY}`;
 
 const alertSx: SxProps<Theme> = { width: '100%', boxSizing: 'border-box' };
 const listSx: SxProps<Theme> = { margin: '0.25rem 0 0', paddingLeft: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' };
@@ -78,6 +80,27 @@ function useGraphAdmissionSaveVeto(blocked: boolean): void {
    */
   const form = useFormContext() as UseFormReturn<FieldValues> | null;
   const isValid = form?.formState.isValid;
+  /*
+   * The veto's own record of itself, read off the FORM rather than off this
+   * component. A component-local ref alone was a real stuck-Save bug: the
+   * gate can unmount while vetoing — `ConfigurationTab` swaps
+   * `GeneralFormPanel` (and therefore this gate) for an error box the moment
+   * the detail refetch `useRefetchPipelineAfterSave` now fires after every
+   * save fails, and `PipelineConfigurationTabBoundary` can catch it away too
+   * — while `EditPipeline` keeps the Save bar mounted. On remount the ref is
+   * `false` again, so the lift below returned early, `trigger()` never ran,
+   * and `isValid` kept the `false` the vanished veto had published. Nothing
+   * on that page recovers it: the configuration form is still a disclosed
+   * gap, so there is no RHF-registered input whose edit would re-run the
+   * resolver. Only a reload did.
+   *
+   * The error survives that unmount because it lives on the page's form, so
+   * it is the durable half of the answer; the ref stays as the same-mount
+   * half, for the window in which a later resolver pass has already dropped
+   * the root error (this module's doc comment, point 1) and the re-assert
+   * has not yet landed.
+   */
+  const hasPublishedVeto = form?.formState.errors.root?.[GRAPH_ADMISSION_KEY] !== undefined;
   const setError = form?.setError;
   const clearErrors = form?.clearErrors;
   const trigger = form?.trigger;
@@ -90,13 +113,13 @@ function useGraphAdmissionSaveVeto(blocked: boolean): void {
       setError(GRAPH_ADMISSION_FIELD, { type: 'graph-admission', message: 'the pipeline graph is not admissible' });
       return;
     }
-    if (!isVetoing.current) return;
+    if (!isVetoing.current && !hasPublishedVeto) return;
     isVetoing.current = false;
     clearErrors(GRAPH_ADMISSION_FIELD);
     // `clearErrors` leaves `isValid` where the veto put it; only a real
     // validation pass lifts it. See this module's doc comment, point 2.
     void trigger();
-  }, [blocked, isValid, setError, clearErrors, trigger]);
+  }, [blocked, isValid, hasPublishedVeto, setError, clearErrors, trigger]);
 }
 
 /** Stable key for one issue — see `NodeAdmissionIssues.tsx`. */
@@ -110,10 +133,18 @@ function offendingNodeIds(issues: readonly GraphAdmissionIssue[]): readonly stri
 }
 
 export function GraphAdmissionGate({ summaryHidden = false }: GraphAdmissionGateProps): ReactNode {
-  const { issues, hasGraph } = useGraphAdmission();
-  useGraphAdmissionSaveVeto(hasGraph && issues.length > 0);
+  const { issues, hasGraph, parseFailed } = useGraphAdmission();
+  /*
+   * `parseFailed` is a veto in its own right. It is reachable only from the
+   * Yaml tab, and only because that tab is the one place the stored document
+   * (`yamlCode`) can be edited into something `js-yaml` cannot read — see
+   * `lib/livePipelineGraphAdmission.ts`. The runtime's refusal for it is
+   * `serde_yaml`'s, before any transcribed rule runs, which is why it carries
+   * no `GraphAdmissionIssue` and needs its own line below.
+   */
+  useGraphAdmissionSaveVeto(hasGraph && (parseFailed || issues.length > 0));
 
-  if (summaryHidden || issues.length === 0) return null;
+  if (summaryHidden || (!parseFailed && issues.length === 0)) return null;
 
   const documentIssues = documentLevelIssues(issues);
   const nodeIds = offendingNodeIds(issues);
@@ -133,6 +164,14 @@ export function GraphAdmissionGate({ summaryHidden = false }: GraphAdmissionGate
         component="ul"
         sx={listSx}
       >
+        {parseFailed && (
+          <Typography
+            component="li"
+            variant="bodySmall"
+          >
+            {t('features.pipelines.graphAdmissionGate.unparseable', 'The YAML does not parse, so the runtime cannot read a graph out of it.')}
+          </Typography>
+        )}
         {documentIssues.map((issue) => (
           <Typography
             key={issueKey(issue)}

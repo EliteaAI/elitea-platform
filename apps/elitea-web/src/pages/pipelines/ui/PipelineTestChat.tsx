@@ -65,11 +65,19 @@ function readAgentEventSink(settings: ChatSlotProps['settings']): ((event: unkno
   return typeof sink === 'function' ? (sink as (event: unknown) => void) : undefined;
 }
 
-/** `settings.conversationStarters`, narrowed to the `{id,text}` rows `ChatBox` renders. */
-function readConversationStarters(settings: ChatSlotProps['settings']): readonly { id: string; text: string }[] {
+/**
+ * `settings.conversationStarters`, narrowed to the strings `ChatBox` renders.
+ *
+ * This used to keep only `{id, text}` rows, which discarded EVERY real
+ * starter: the version detail stores them as plain strings, and
+ * `ChatConversationStarters` stringifies whatever it is given anyway. The
+ * `{id, text}` shape came from `ChatBox`'s own declared prop type, which was
+ * wrong at both ends and is now `readonly string[]`.
+ */
+function readConversationStarters(settings: ChatSlotProps['settings']): readonly string[] {
   const starters = settings['conversationStarters'];
   if (!Array.isArray(starters)) return [];
-  return starters.filter((entry): entry is { id: string; text: string } => typeof (entry as { id?: unknown })?.id === 'string' && typeof (entry as { text?: unknown })?.text === 'string');
+  return starters.filter((entry): entry is string => typeof entry === 'string');
 }
 
 export function PipelineTestChat({ settings, disableChat, slotRef, identity, user }: PipelineTestChatProps): ReactNode {
@@ -136,6 +144,22 @@ export function PipelineTestChat({ settings, disableChat, slotRef, identity, use
       // have to click away and back to get a conversation.
       onKeyDownCapture={ensure}
     >
+      {testConversation.staleVersionId !== undefined && (
+        // The version is SERVER-side state on the participant row, so a failed
+        // switch means turns keep running the old graph while the canvas shows
+        // the new one. Silence here is the one outcome nobody can debug.
+        <Box
+          role="alert"
+          data-testid="edit-pipeline-test-chat-stale-version"
+          sx={{ px: 2, pt: 1 }}
+        >
+          {t(
+            'pages.pipelines.testChat.staleVersion',
+            'Could not switch this chat to the selected version. Replies still run version {{versionId}}.',
+            { versionId: testConversation.staleVersionId },
+          )}
+        </Box>
+      )}
       {testConversation.hasFailed && (
         <Box
           role="alert"

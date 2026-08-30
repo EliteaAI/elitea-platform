@@ -90,6 +90,7 @@ describe('toVersionDraft', () => {
     const version = { name: 'base', instructions: 'stale yaml', meta: {} } as unknown as ApplicationVersionDetail;
     const graph = {
       instructions: 'entry_point: Agent 1\n',
+      admission: { document: {}, parseFailed: false, issues: [], hasGraph: true, isAdmissible: true },
       pipelineSettings: {
         nodes: [{ id: 'Agent 1' }],
         edges: [],
@@ -292,5 +293,56 @@ describe('toNewPipelineVersionBody', () => {
 
   it('omits llm_settings entirely for a version that names no model', () => {
     expect(toNewPipelineVersionBody(storedVersion, [], undefined)).not.toHaveProperty('llm_settings');
+  });
+
+  /**
+   * `versionFromBody` takes `vBody["meta"]` as the WHOLE map and
+   * `insertVersion` persists it verbatim, so anything this mapper does not
+   * re-send is gone from the clone — permanently, since nothing writes it
+   * back. `icon_meta` is the measurable one: `toChatPipelineVersionDetails`,
+   * in this same file, reads it off a pipeline version's `meta` and forwards
+   * it to the chat.
+   */
+  it('merges over the stored meta instead of replacing it, so icon_meta and friends survive the clone', () => {
+    const rich = {
+      ...storedVersion,
+      meta: {
+        step_limit: 40,
+        internal_tools: ['internal_mcp'],
+        icon_meta: { id: 9, name: 'robot.png' },
+        category: 'ops',
+        attachment_storage: 'artifacts',
+      },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toNewPipelineVersionBody(rich, [], undefined).meta).toEqual({
+      step_limit: 40,
+      internal_tools: ['internal_mcp'],
+      icon_meta: { id: 9, name: 'robot.png' },
+      category: 'ops',
+      attachment_storage: 'artifacts',
+    });
+  });
+
+  /**
+   * `variables` is the one stored-meta key that must NOT be forwarded, and the
+   * agents twin (`editApplicationMappers.ts`'s `toVersionMetaBody`) makes the
+   * same cut for a measured reason: both handlers rebuild `meta.variables`
+   * from the body's TOP-LEVEL list, and on the create path the carried copy
+   * WINS, because `versionFromBody` folds the list only when it is non-empty
+   * (`applications/handler.go:509-511`). Forwarding it resurrected deleted
+   * variables — secrets among them — into every turn of the cloned version.
+   */
+  it('drops meta.variables, which the handler rebuilds from the top-level list', () => {
+    const withMetaVariables = {
+      ...storedVersion,
+      variables: [],
+      meta: { step_limit: 40, internal_tools: [], variables: [{ name: 'deleted_secret', value: 'hunter2' }] },
+    } as unknown as ApplicationVersionDetail;
+
+    const body = toNewPipelineVersionBody(withMetaVariables, [], undefined);
+
+    expect(body.meta).not.toHaveProperty('variables');
+    expect(body.variables).toEqual([]);
   });
 });

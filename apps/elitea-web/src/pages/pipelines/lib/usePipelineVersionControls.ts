@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
@@ -9,6 +9,7 @@ import type { PipelineGraphDraft } from '@/features/pipelines';
 import { getGetApplicationQueryKey } from '@/shared/api/generated/applications/applications';
 import { t } from '@/shared/i18n';
 import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
+import { disarmUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 import type {
   ApplicationVersionDetail,
   ApplicationVersionSummary,
@@ -40,6 +41,19 @@ export interface PipelineVersionControlsArgs {
   readonly isReadOnly: boolean;
   /** While the detail is in flight there is neither a version list nor an active version to show. */
   readonly isFetching: boolean;
+  /**
+   * Whether the live graph is one the native runtime would accept.
+   *
+   * "Save As Version" is a SECOND write path onto the same document, and it
+   * used to be gated only on `!isReadOnly && activeVersion !== undefined`. It
+   * therefore persisted exactly the graph the Save veto
+   * (`features/pipelines`' `GraphAdmissionGate`) had just refused: the POST
+   * mints the version, `carryPipelineGraphToVersion` PUTs the live graph onto
+   * it, and `goToVersion` then OPENS it — so the inadmissible document is
+   * both stored and the one the editor shows, and the runtime refuses it with
+   * `graph.pipeline.invalid_configuration` at first run.
+   */
+  readonly isGraphAdmissible: boolean;
 }
 
 export interface PipelineVersionControlsState {
@@ -50,10 +64,23 @@ export interface PipelineVersionControlsState {
   readonly activeVersionId: number | undefined;
   readonly versionBody: Omit<VersionWriteRequest, 'name'>;
   readonly canSaveNewVersion: boolean;
+  /**
+   * Withholds "Save As Version" alone — NOT the selector, "Set as default" or
+   * "Delete version", none of which write the graph. Folding this into
+   * `canSaveNewVersion` would have taken all three away from a user whose
+   * canvas is mid-edit, including the delete that is sometimes the only way
+   * out.
+   */
+  readonly isSaveNewVersionBlocked: boolean;
   readonly handleSelectVersion: (version: EditPipelineVersionOption) => void;
   readonly handleNewVersionSaved: (created: ApplicationVersionDetail) => void;
   readonly versionDelete:
-    | { readonly applicationVersionId: number | undefined; readonly versionName: string; readonly onVersionDeleted: () => void }
+    | {
+        readonly applicationVersionId: number | undefined;
+        readonly versionName: string;
+        readonly onVersionDeleted: () => void;
+        readonly onVersionDeleteError: (message: string) => void;
+      }
     | undefined;
   /** The most recent version-write failure, already resolved to a message; `undefined` once a later attempt succeeds. */
   readonly versionError: string | undefined;
@@ -107,13 +134,30 @@ const EMPTY_VERSION_BODY: Omit<VersionWriteRequest, 'name'> = {};
  */
 export function usePipelineVersionControls(args: PipelineVersionControlsArgs): PipelineVersionControlsState {
   const { projectId, applicationId, tab, versions, activeVersion } = args;
-  const { control, llmSettings, readGraphDraft, isReadOnly, isFetching } = args;
+  const { control, llmSettings, readGraphDraft, isReadOnly, isFetching, isGraphAdmissible } = args;
 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [versionError, setVersionError] = useState<string | undefined>(undefined);
 
   const versionOptions = useMemo(() => toVersionOptions(versions), [versions]);
+
+  /*
+   * The banner is scoped to the version it was raised on. `setVersionError`
+   * used to be cleared ONLY inside the successful-carry branch, and nothing
+   * else reset it — not a version switch, not an ordinary Save, not a later
+   * Save-As-Version taken when `readGraphDraft()` returns `undefined` (that
+   * branch skips the try/catch entirely). One transient 500 on the carry PUT
+   * therefore pinned "the flow graph could not be copied" next to the version
+   * dropdown for the rest of the page's life, still claiming it about a
+   * version the user had long since navigated away from: this bar stays
+   * mounted across every version navigation, because the `$version` route has
+   * no component of its own.
+   */
+  const activeVersionKey = activeVersion?.id;
+  useEffect(() => {
+    setVersionError(undefined);
+  }, [activeVersionKey]);
 
   const watchedStarters = useWatch({ control, name: 'version_details.conversation_starters' });
 
@@ -142,6 +186,28 @@ export function usePipelineVersionControls(args: PipelineVersionControlsArgs): P
     async (created: ApplicationVersionDetail): Promise<void> => {
       const graph = readGraphDraft();
       const createdId = Number(created.id);
+      /*
+       * The same admission question `canSaveNewVersion` asks, re-asked at
+       * carry time against the document actually about to be written. The
+       * button is the primary gate; this is what stops a graph that went
+       * inadmissible between the click and the POST's response from being
+       * PUT onto the new version. Refusing the CARRY (rather than the whole
+       * finish) is deliberate: the version already exists on the server, and
+       * leaving it holding the previously stored — admissible — graph is the
+       * only outcome that is not data loss.
+       */
+      if (graph !== undefined && !graph.admission.isAdmissible) {
+        setVersionError(
+          t(
+            'pages.pipelines.editPipeline.versionGraphInadmissible',
+            'The new version was created, but its flow graph was not copied onto it: the runtime would refuse that graph.',
+          ),
+        );
+        invalidateDetail();
+        disarmUnsavedChangesNavBlocker();
+        goToVersion(createdId);
+        return;
+      }
       if (graph !== undefined && projectId !== undefined && applicationId !== undefined && !Number.isNaN(createdId)) {
         try {
           await carryPipelineGraphToVersion(queryClient, {
@@ -164,6 +230,23 @@ export function usePipelineVersionControls(args: PipelineVersionControlsArgs): P
         }
       }
       invalidateDetail();
+      /*
+       * The one navigation on this page that must NOT be second-guessed. The
+       * page arms the app-wide unsaved-changes guard off its own dirty state
+       * (`EditPipeline.tsx`'s `useUnsavedChangesNavBlocker`), and
+       * `NavBlockerDialog`'s `shouldBlockFn` blocks any pathname change while
+       * it is raised — including this one. Without the disarm the user got a
+       * modal asking whether to discard the changes that had JUST been
+       * persisted, and Cancel left the URL on the OLD version while the new
+       * one silently held their work. `disarmUnsavedChangesNavBlocker`'s own
+       * doc comment names this exact failure, and `EditPipeline`'s discard
+       * path already calls it; the two version-bar navigations were the ones
+       * that did not.
+       *
+       * It takes effect in this same handler because `shouldBlockFn` reads
+       * the live store snapshot rather than a closed-over render value.
+       */
+      disarmUnsavedChangesNavBlocker();
       goToVersion(createdId);
     },
     [readGraphDraft, projectId, applicationId, queryClient, invalidateDetail, goToVersion],
@@ -186,6 +269,18 @@ export function usePipelineVersionControls(args: PipelineVersionControlsArgs): P
   const handleVersionDeleted = useCallback(() => {
     invalidateDetail();
     if (applicationId === undefined) return;
+    /*
+     * Same disarm as `finishNewVersion`, and the failure it prevents is
+     * worse here: this navigation is an ESCAPE, not a convenience. Cancelling
+     * the spurious "unsaved changes" dialog stranded the user on the URL of a
+     * version that no longer exists — the refreshed detail's `versions[]` no
+     * longer lists it, so `useIsVersionNotFound` flips and the page falls to
+     * `EditPipelineNotFound kind="version"` with no way back except editing
+     * the URL. The comment above states the whole point of this navigation is
+     * that "`useEditPipelineData` would 404 on the next fetch", which is
+     * exactly what a block leaves in place.
+     */
+    disarmUnsavedChangesNavBlocker();
     void navigate({
       to: '/pipelines/$tab/$agentId',
       params: { tab: tab ?? 'latest', agentId: String(applicationId) },
@@ -198,6 +293,17 @@ export function usePipelineVersionControls(args: PipelineVersionControlsArgs): P
       applicationVersionId: Number(activeVersion.id),
       versionName: activeVersion.name,
       onVersionDeleted: handleVersionDeleted,
+      /*
+       * `DeleteVersionButton` treats `onError` as its ONLY failure channel:
+       * on a refusal it deliberately leaves its confirm dialog open and
+       * renders nothing itself. Omitting this left a refused delete — the
+       * server answers "Published version can not be updated/deleted.
+       * Unpublish first." for a published or embedded version — with the
+       * dialog just sitting there, spinner off, and every re-Confirm failing
+       * silently. The banner and its `reportVersionError` setter were already
+       * wired for the other two version writes; this was the third.
+       */
+      onVersionDeleteError: setVersionError,
     };
   }, [activeVersion, handleVersionDeleted]);
 
@@ -213,6 +319,7 @@ export function usePipelineVersionControls(args: PipelineVersionControlsArgs): P
     activeVersionId: activeVersion === undefined ? undefined : Number(activeVersion.id),
     versionBody,
     canSaveNewVersion: !isReadOnly && activeVersion !== undefined,
+    isSaveNewVersionBlocked: !isGraphAdmissible,
     handleSelectVersion,
     handleNewVersionSaved,
     versionDelete,

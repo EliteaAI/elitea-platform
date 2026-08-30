@@ -109,3 +109,21 @@ export type { PipelineGraphDraft } from './model/usePipelineGraphDraft';
  * persisted the "discarded" canvas edits. See its own doc comment.
  */
 export { resetPipelineDraft } from './model/resetPipelineDraft';
+
+/**
+ * The save VETO, for the one caller that has to DISABLE a control on it:
+ * `pages/pipelines`' version bar, whose "Save As Version" button was gated
+ * only on `!isReadOnly` and so stored precisely the graph the Save veto had
+ * refused.
+ *
+ * The other half of the veto — the page's own save path, where
+ * react-hook-form's `handleSubmit` deletes every `root.*` error before
+ * deciding whether to submit (7.83, `index.esm.mjs:3002`), leaving that path
+ * with no admission check at all — rides on `usePipelineGraphDraft`'s reader
+ * instead of a second export here: it needs the judgement at CLICK time, on
+ * exactly the `yamlCode` it is about to store, and that reader already reads
+ * exactly that string. See `PipelineGraphDraft.admission`. §3.3 keeps this
+ * slice's public API at 20 symbols, which is the other reason there is one
+ * export here and not two.
+ */
+export { useLivePipelineGraphAdmission } from './lib/livePipelineGraphAdmission';

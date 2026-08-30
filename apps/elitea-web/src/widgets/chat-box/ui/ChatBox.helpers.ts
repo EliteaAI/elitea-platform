@@ -318,7 +318,7 @@ export function buildChatBoxStateParams(params: {
   readonly activeParticipant: Participant | undefined;
   readonly participants: readonly Participant[] | undefined;
   readonly userId: string | undefined;
-  readonly conversationStarters: readonly { readonly id: string; readonly text: string }[] | undefined;
+  readonly conversationStarters: readonly string[] | undefined;
   readonly isAgentsPage: boolean | undefined;
   readonly chatInput: UseChatBoxStateParams['chatInput'];
   readonly projectId: string | number | undefined;
@@ -372,7 +372,7 @@ export function deriveChatBoxIds(activeConversation: ChatBoxActiveConversation |
 export function resolveConversationStarters(
   hasStarterBeenSent: boolean,
   messageCount: number,
-  conversationStarters: readonly { readonly id: string; readonly text: string }[] | undefined,
-): readonly { readonly id: string; readonly text: string }[] | undefined {
+  conversationStarters: readonly string[] | undefined,
+): readonly string[] | undefined {
   return hasStarterBeenSent || messageCount > 0 ? [] : conversationStarters;
 }

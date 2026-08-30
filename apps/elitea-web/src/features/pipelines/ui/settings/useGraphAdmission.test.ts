@@ -13,9 +13,21 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { dumpYaml } from '../../lib/dumpYaml.helpers';
 import type { YamlPipelineDocument } from '../../lib/flow-editor/helpers/pipelineFlow.types';
 import { usePipelineYamlStore } from '../../model/pipelineYamlStore';
 import { useGraphAdmission } from './useGraphAdmission';
+
+/**
+ * Seed the store the way the real editor does: `yamlCode` and
+ * `yamlJsonObject` in step. The two used to be seeded INCONSISTENTLY here
+ * (`yamlCode: 'seeded'`, a placeholder that is not the document at all),
+ * which was harmless only while this hook read `yamlJsonObject`. It reads the
+ * live `yamlCode` now, because that is the string the save path stores.
+ */
+function seed(document: YamlPipelineDocument): void {
+  usePipelineYamlStore.setState({ yamlCode: dumpYaml(document), yamlJsonObject: document });
+}
 
 /**
  * What `handleNormalNodeDeletion` leaves behind after the last node on the
@@ -61,10 +73,50 @@ describe('useGraphAdmission', () => {
   });
 
   it('leaves an admissible graph unblocked', () => {
-    usePipelineYamlStore.setState({ yamlCode: 'seeded', yamlJsonObject: ADMISSIBLE });
+    seed(ADMISSIBLE);
     const { result } = renderHook(() => useGraphAdmission());
 
     expect(result.current.hasGraph).toBe(true);
     expect(result.current.issues).toEqual([]);
+    expect(result.current.parseFailed).toBe(false);
+  });
+
+  /**
+   * THE YAML-TAB WINDOW. `EditorPanel`'s `onChangeCode` writes only
+   * `yamlCode`; `onParseCodeToJson` runs only when the user clicks back to
+   * Flow. So while the Yaml tab is open the two stores legitimately disagree
+   * — and the save path (`usePipelineGraphDraft`) stores `yamlCode`.
+   *
+   * Judged on `yamlJsonObject`, as this hook used to be, the assertion below
+   * reads "no issues": the last good parse is still the admissible document,
+   * the banner stays clear, and Save stays enabled on a graph the runtime
+   * refuses. The e2e that covers this surface always clicks Flow first, which
+   * is exactly the step that closes the window.
+   */
+  it('judges the live yamlCode, not the canvas last-good parse, when the two disagree', () => {
+    usePipelineYamlStore.setState({
+      // `Agent 1` fails `valid_graph_id` (a space is not admitted) — typed in
+      // the Yaml tab, so the canvas has not re-parsed it.
+      yamlCode: dumpYaml({ ...ADMISSIBLE, entry_point: 'Agent 1', nodes: [{ ...ADMISSIBLE.nodes![0], id: 'Agent 1' }] }),
+      yamlJsonObject: ADMISSIBLE,
+    });
+    const { result } = renderHook(() => useGraphAdmission());
+
+    expect(result.current.hasGraph).toBe(true);
+    expect(result.current.issues.map((issue) => issue.rule)).toContain('node.id');
+  });
+
+  /**
+   * Text that is not YAML at all is refused as its own state rather than as
+   * an issue: `GraphAdmissionIssue.rule` is a closed union of rules
+   * transcribed from the compiler, and `serde_yaml` refuses before any of
+   * them runs.
+   */
+  it('reports unparseable yamlCode as a graph that cannot be admitted', () => {
+    usePipelineYamlStore.setState({ yamlCode: 'nodes: [\n  - id: "unterminated', yamlJsonObject: ADMISSIBLE });
+    const { result } = renderHook(() => useGraphAdmission());
+
+    expect(result.current.hasGraph).toBe(true);
+    expect(result.current.parseFailed).toBe(true);
   });
 });

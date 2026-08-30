@@ -36,7 +36,7 @@ import { FlowEditorContext } from '../../lib/flow-editor/flowEditorContext';
 import type { YamlPipelineDocument } from '../../lib/flow-editor/helpers/pipelineFlow.types';
 import { collectGraphAdmissionIssues, issuesForNode } from '../../lib/graphAdmission.helpers';
 import type { GraphAdmissionIssue } from '../../lib/graphAdmission.types';
-import { usePipelineYamlStore } from '../../model/pipelineYamlStore';
+import { useLivePipelineGraphAdmission } from '../../lib/livePipelineGraphAdmission';
 
 const NO_ISSUES: readonly GraphAdmissionIssue[] = [];
 
@@ -71,23 +71,41 @@ export interface GraphAdmission {
    * (`compiler.rs:459`).
    */
   readonly hasGraph: boolean;
+  /**
+   * `true` when the live YAML does not parse at all. Not an issue, because
+   * `GraphAdmissionIssue.rule` is a closed union of transcribed compiler
+   * rules and `serde_yaml` refuses before any of them runs — see
+   * `lib/livePipelineGraphAdmission.ts`.
+   */
+  readonly parseFailed: boolean;
 }
 
 /**
  * The live document's admission state.
  *
  * Prefers `FlowEditorContext` (a node panel must judge the document that
- * produced it) and falls back to the yaml store for callers mounted outside
- * the canvas — the save gate in the configuration panel is one. In the
- * editor the two are the same object; the store read is what makes the gate
- * work at all, since `<FlowEditorContext.Provider>` lives inside
- * `FlowWrapper`, a lazily-loaded sibling of the panel.
+ * produced it). Callers mounted OUTSIDE the canvas — the save gate in the
+ * configuration panel is the one that matters, since
+ * `<FlowEditorContext.Provider>` lives inside `FlowWrapper`, a lazily-loaded
+ * sibling of the panel — judge the live `yamlCode` instead, via
+ * `lib/livePipelineGraphAdmission.ts`.
+ *
+ * That fallback used to read `yamlJsonObject`, the canvas's last good parse.
+ * In the Flow tab the two agree; in the Yaml tab they do not, because
+ * `EditorPanel`'s `onChangeCode` writes only `yamlCode` and re-parses only
+ * when the user clicks back to Flow. The save path (`usePipelineGraphDraft`)
+ * has always stored `yamlCode`, so the gate was vetoing a document the save
+ * would not write — read `livePipelineGraphAdmission.ts`'s header for the
+ * window that opened.
  */
 export function useGraphAdmission(): GraphAdmission {
   const contextDocument = useContext(FlowEditorContext)?.yamlJsonObject;
-  const storeDocument = usePipelineYamlStore((state) => state.yamlJsonObject);
-  const document = (contextDocument ?? storeDocument) as YamlPipelineDocument;
-  return { issues: admissionIssuesFor(document), hasGraph: holdsDocument(document) };
+  const live = useLivePipelineGraphAdmission();
+  if (contextDocument === undefined) {
+    return { issues: live.issues, hasGraph: live.hasGraph, parseFailed: live.parseFailed };
+  }
+  const document: YamlPipelineDocument = contextDocument;
+  return { issues: admissionIssuesFor(document), hasGraph: holdsDocument(document), parseFailed: false };
 }
 
 /** The admission issues one node's panel should show, in compiler order. */

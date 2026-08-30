@@ -8,7 +8,7 @@ import { useFormContext } from 'react-hook-form';
 
 import type { ApplicationCreationInput } from '@/entities/application-form';
 import { AgentVersionControls } from '@/features/agents';
-import { usePipelineGraphDraft } from '@/features/pipelines';
+import { useLivePipelineGraphAdmission, usePipelineGraphDraft } from '@/features/pipelines';
 import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import type { ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
 
@@ -61,6 +61,19 @@ export function EditPipelineVersionBar({
 }: EditPipelineVersionBarProps): ReactNode {
   const { control } = useFormContext<ApplicationCreationInput>();
   const readGraphDraft = usePipelineGraphDraft();
+  /*
+   * Read HERE rather than on the page: this component is small and re-renders
+   * cheaply, whereas subscribing `EditPipeline` to `yamlCode` would re-render
+   * the whole editor tree on every keystroke — the same reason
+   * `usePipelineGraphDraft` hands back a reader instead of a value.
+   *
+   * `formState.isValid` is deliberately NOT the signal used here. The save
+   * gate publishes its veto as an RHF `root.*` error, and that error can be
+   * absent while the graph is still inadmissible: `ConfigurationTab` unmounts
+   * the gate whenever the detail refetch errors, and a resolver pass drops
+   * `root.*` errors wholesale. The live document is the durable answer.
+   */
+  const { isAdmissible } = useLivePipelineGraphAdmission();
 
   const controls = usePipelineVersionControls({
     projectId,
@@ -73,6 +86,7 @@ export function EditPipelineVersionBar({
     readGraphDraft,
     isReadOnly,
     isFetching,
+    isGraphAdmissible: isAdmissible,
   });
 
   if (!controls.showVersionControls) return null;
@@ -95,7 +109,9 @@ export function EditPipelineVersionBar({
         onSelectVersion={controls.handleSelectVersion}
         versionBody={controls.versionBody}
         canSaveNewVersion={controls.canSaveNewVersion}
+        saveNewVersionDisabled={controls.isSaveNewVersionBlocked}
         versionDelete={controls.versionDelete}
+        /* The delete refusal's own channel — see `usePipelineVersionControls`. */
         onNewVersionSaved={controls.handleNewVersionSaved}
         onNewVersionError={controls.reportVersionError}
       />

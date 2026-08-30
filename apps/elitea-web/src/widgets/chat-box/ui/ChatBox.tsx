@@ -48,7 +48,7 @@ import { ChatBoxDeleteModal } from './ChatBoxDeleteModal';
 import { ChatEmptyGreeting } from './ChatEmptyGreeting';
 import { chatColumnSx, chatShellSx } from './ChatBox.layout';
 import { useChatBoxData } from './hooks/useChatBoxData';
-import { useChatBoxState } from './hooks/useChatBoxState';
+import { useChatBoxState, type ConversationStarter } from './hooks/useChatBoxState';
 import { useChatBoxHandlers } from './hooks/useChatBoxHandlers';
 import { useChatBoxParticipant } from './hooks/useChatBoxParticipant';
 import { useChatBoxModelSelection } from './hooks/useChatBoxModelSelection';
@@ -83,7 +83,7 @@ export interface ChatBoxProps {
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly participant?: { readonly active?: unknown; readonly onChange?: (participant: unknown) => void };
   readonly setChatHistory?: React.Dispatch<React.SetStateAction<readonly unknown[]>>;
-  readonly conversationStarters?: readonly { id: string; text: string }[];
+  readonly conversationStarters?: readonly ConversationStarter[];
   readonly isAgentsPage?: boolean;
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly llm?: { readonly settings?: Readonly<Record<string, unknown>>; readonly onSetSettings?: (settings: Readonly<Record<string, unknown>>) => void };

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
@@ -44,6 +44,24 @@ export interface EditPipelineFormState {
   readonly llmSettings: EditPipelineLlmSettingsState;
   /** "Are there unsaved edits?" across both halves of this page's form state — RHF's `formState.isDirty` (name/description) or a changed model. The flow editor's own YAML dirtiness is the page's third half. */
   readonly isDirty: boolean;
+  /**
+   * `true` when the last Save click was refused because the live graph is one
+   * the native runtime would not accept.
+   *
+   * The graph veto is published by `features/pipelines`' `GraphAdmissionGate`
+   * as an RHF `root.*` error, which disables the Save button — and that was
+   * its ONLY enforcement. `form.handleSubmit` deletes every `root.*` error
+   * before deciding whether to submit (react-hook-form 7.83:
+   * `_formState.errors = errors` from the resolver, then
+   * `unset(_formState.errors, 'root')`, `dist/index.esm.mjs:2989/3002`), so
+   * the submit path itself had no admission check at all. That is reachable,
+   * not theoretical: `useRefetchPipelineAfterSave` now fires a detail refetch
+   * after every save, and a failed one puts `ConfigurationTab` into its error
+   * branch, which unmounts the gate — while `EditPipeline` keeps the Save bar
+   * mounted with `canSave = isValid && !isSaving`, now true. One click would
+   * have PUT the inadmissible document.
+   */
+  readonly admissionRefused: boolean;
 }
 
 /**
@@ -80,10 +98,21 @@ export function useEditPipelineForm(
   // answered 200 and every graph edit was gone on the next reload.
   const readGraphDraft = usePipelineGraphDraft();
   const llmSettings = useEditPipelineLlmSettings(activeVersion);
+  const [admissionRefused, setAdmissionRefused] = useState(false);
 
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {
       if (activeVersion === undefined) return;
+      // The save path's OWN admission check — see `admissionRefused` above for
+      // why the disabled button is not enough. Judged on the exact string
+      // about to be stored (`PipelineGraphDraft.admission`), not on the
+      // canvas's last good parse.
+      const graph = readGraphDraft();
+      if (graph !== undefined && !graph.admission.isAdmissible) {
+        setAdmissionRefused(true);
+        return;
+      }
+      setAdmissionRefused(false);
       const conversationStarters = (values.version_details?.conversation_starters ?? []).filter(
         (entry): entry is string => typeof entry === 'string',
       );
@@ -91,7 +120,7 @@ export function useEditPipelineForm(
       // stored blob when it is `undefined`, so a version nobody re-pointed
       // keeps whatever model it already named — including none at all, which
       // is what leaves the catalogue-default fallback in charge.
-      const saved = await save(toVersionDraft(activeVersion, conversationStarters, readGraphDraft(), llmSettings.value));
+      const saved = await save(toVersionDraft(activeVersion, conversationStarters, graph, llmSettings.value));
       /*
        * #133 — the page now arms the app-wide unsaved-changes guard off
        * `formState.isDirty`, so a successful save must clear that dirtiness
@@ -117,5 +146,6 @@ export function useEditPipelineForm(
     saveError,
     llmSettings,
     isDirty: form.formState.isDirty || llmSettings.isDirty,
+    admissionRefused,
   };
 }

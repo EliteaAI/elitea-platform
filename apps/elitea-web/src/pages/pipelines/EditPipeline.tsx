@@ -30,6 +30,7 @@ import { useEditPipelineForm } from './lib/useEditPipelineForm';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditPipelineActions } from './ui/EditPipelineActions';
+import { EditPipelineAlerts } from './ui/EditPipelineAlerts';
 import { EditPipelineNotFound } from './ui/EditPipelineNotFound';
 import { EditPipelineSaveBar } from './ui/EditPipelineSaveBar';
 import { EditPipelineVersionBar } from './ui/EditPipelineVersionBar';
@@ -203,7 +204,7 @@ export function EditPipeline(): ReactNode {
   // so a save could only ever have written an empty graph back.
   usePipelineVersionSync({ isCreateMode: false, versionDetails: activeVersion, versionId: activeVersion?.id });
 
-  const { form, handleSave, isSaving, saveError, llmSettings, isDirty } = useEditPipelineForm(
+  const { form, handleSave, isSaving, saveError, llmSettings, isDirty, admissionRefused } = useEditPipelineForm(
     detail,
     activeVersion,
     projectId,
@@ -359,22 +360,11 @@ export function EditPipeline(): ReactNode {
           )}
         </Box>
         <Box sx={contentSx}>
-          {isError && (
-            <Typography
-              role="alert"
-              variant="bodyMedium"
-            >
-              {t('pages.pipelines.editPipeline.error', 'Failed to load this pipeline.')}
-            </Typography>
-          )}
-          {saveError !== undefined && (
-            <Typography
-              role="alert"
-              variant="bodyMedium"
-            >
-              {t('pages.pipelines.editPipeline.saveError', 'Failed to save your changes.')}
-            </Typography>
-          )}
+          <EditPipelineAlerts
+            isError={isError}
+            admissionRefused={admissionRefused}
+            saveError={saveError}
+          />
           <PipelineConfigurationTabBoundary>
             <ConfigurationTab
               isFetching={isEditorLoading}
