@@ -27,11 +27,15 @@
  *     injected from the feature layer (the linter integration depends on the
  *     editor's view instance, which the feature layer owns).
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 
 import { Box, Typography } from '@mui/material';
 
 import { useCanvasDetailSocket, useCanvasEditSocket, useCanvasErrorSocket, useCanvasSyncSocket } from '@/entities/canvas/api/canvasSocket';
+import type { CodeMirrorEditorHandle } from '@/shared/ui/CodeMirrorEditor';
+import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
+
+import { getCanvasCodeExtensions } from './canvasCodeExtensions';
 
 import { extraCodeFromBlock } from './Canvas';
 import { CanvasEditHeader } from './CanvasEditHeader';
@@ -105,14 +109,39 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
   ) {
     const [code, setCode] = useState(selectedCodeBlockInfo?.codeBlock ?? '');
     const [readOnly, setReadOnly] = useState(viewOnly);
-    const [canUndo, _setCanUndo] = useState(false);
-    const [canRedo, _setCanRedo] = useState(false);
+    const [canUndo, setCanUndo] = useState(false);
+    const [canRedo, setCanRedo] = useState(false);
+    /** The CodeMirror host's imperative handle — undo/redo/copy and remote sync all go through it. */
+    const editorRef = useRef<CodeMirrorEditorHandle>(null);
+    /** Stable identity: the editor installs its depth listener keyed on this object. */
+    const historyCallbacks = useMemo(() => ({ onCanUndo: setCanUndo, onCanRedo: setCanRedo }), []);
     const [_tableId] = useState(`table-${Date.now()}`);
     const [hasSelectedRowsColumns] = useState({ hasSelectedRows: false, hasSelectedColumns: false });
     const [_editorError, setEditorError] = useState<unknown>(null);
     const [codeLanguage, setCodeLanguage] = useState(selectedCodeBlockInfo?.language ?? 'markdown');
 
-    const { sendChangeToRemote: _sendChangeToRemote } = useCanvasEditSocket();
+    const { sendChangeToRemote } = useCanvasEditSocket();
+
+    /**
+     * The baseline's `notifyChange`: keep local state, then broadcast.
+     *
+     * This lived commented out with a "currently unused" TODO because there
+     * was no CodeMirror host to call it. There is one now, so it is live —
+     * every keystroke updates `code` (what Save and Copy read) and, when the
+     * block is backed by a canvas, is pushed to the other editors.
+     */
+    const notifyChange = useCallback(
+      (newCode: string) => {
+        setCode((current) => {
+          if (current === newCode) return current;
+          if (selectedCodeBlockInfo?.canvasId) {
+            sendChangeToRemote(selectedCodeBlockInfo.canvasId, newCode);
+          }
+          return newCode;
+        });
+      },
+      [selectedCodeBlockInfo?.canvasId, sendChangeToRemote],
+    );
 
     // Canvas sync — when another editor pushes content, update local state
     const onCanvasSync = useCallback(
@@ -120,9 +149,13 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
         const extracted = extraCodeFromBlock(newContent as string);
         if (code !== extracted) {
           setCode(extracted);
-          // TODO: editorRef?.setCode(extracted)
+          // Push it into the live document too: `code` is passed as the
+          // editor's `value`, but the host owns the doc once mounted, so a
+          // state update alone would leave the visible text stale.
+          editorRef.current?.setCode(extracted);
           if (codeLanguage === 'markdownTable') {
-            // TODO: onImportTableData(parseMarkdownTable(extracted))
+            // TODO (deliberately left): the markdown-table editor is not
+            // ported, so there is no table view to re-import into.
           }
         }
       },
@@ -138,23 +171,20 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       },
     });
 
-    // Editor change — when other editors join/leave, update read-only state
-    // TODO: Wire up onCanvasEditorsChange to useCanvasPresenceSocket (currently unused)
-    // TODO: Also wire up _notifyChange to CodeMirror onChange (currently unused)
     /*
-    // Code change handler — mirrors the baseline's `notifyChange` (update local state + broadcast to remote)
-    const _notifyChange = useCallback(
-      (newCode: string) => {
-        if (code !== newCode) {
-          setCode(newCode);
-          if (selectedCodeBlockInfo?.canvasId) {
-            sendChangeToRemote(selectedCodeBlockInfo.canvasId, newCode);
-          }
-        }
-      },
-      [code, selectedCodeBlockInfo?.canvasId, sendChangeToRemote],
-    );
-
+     * TODO (deliberately LEFT, not half-wired): editor presence.
+     *
+     * `onCanvasEditorsChange` is the only thing that would ever set
+     * `readOnly` to true for a second concurrent editor. It is left dead
+     * because it CANNOT work here: there is no socket server at all —
+     * `internal/api/socketio` was deleted with #126 and was never mounted —
+     * so no presence event is ever delivered. Wiring the listener would
+     * produce a control that looks live and never fires.
+     *
+     * Consequence, stated plainly rather than implied: two people editing
+     * the same canvas is last-write-wins.
+     */
+    /*
     const _onCanvasEditorsChange = useCallback(
       (message: unknown) => {
         // Message shape: { editors: CanvasEditorPresence[], canvas_uuid?: string, message_group_uuid?: string }
@@ -286,7 +316,11 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
 
     const onCloseEditor = useCallback(
       () => {
-        onCloseCanvasEditor(canUndo, code, codeLanguage);
+        // The LIVE document, for the same reason Copy reads it: `code` only
+        // catches up after the editor's change debounce, so closing right
+        // after the last keystroke would hand the caller the previous
+        // revision to save.
+        onCloseCanvasEditor(canUndo, editorRef.current?.getCode() ?? code, codeLanguage);
       },
       [canUndo, code, codeLanguage, onCloseCanvasEditor],
     );
@@ -398,13 +432,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           title={title}
           actions={{
             onClose: onCloseEditor,
-            onUndo: () => { /* TODO: editorRef?.undo() */ },
+            onUndo: () => editorRef.current?.undo(),
             disableUndo: !canUndo,
-            onRedo: () => { /* TODO: editorRef?.redo() */ },
+            onRedo: () => editorRef.current?.redo(),
             disableRedo: !canRedo,
             onCopy: () => {
-              navigator.clipboard.writeText(code).catch(() => { /* non-fatal */ });
-              // TODO: toast
+              // Read the LIVE document, not the debounced `code` mirror: a
+              // copy fired within the change debounce would otherwise put the
+              // previous revision on the clipboard.
+              const current = editorRef.current?.getCode() ?? code;
+              navigator.clipboard.writeText(current).catch(() => { /* non-fatal */ });
             },
             onRegenerate,
             onDelete,
@@ -447,7 +484,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
                 boxSizing: 'border-box',
               }}
             >
-              {/* TODO: CodeMirrorEditor — baseline: Field.CodeMirrorEditor with extensions, _notifyChange, onCanUndo, onCanRedo, readOnly */}
+              <CodeMirrorEditor
+                ref={editorRef}
+                value={code}
+                onChange={notifyChange}
+                history={historyCallbacks}
+                readOnly={readOnly}
+                extensions={getCanvasCodeExtensions(codeLanguage)}
+                height="100%"
+                minHeight="240px"
+                aria-label={title}
+              />
             </Box>
             <Box
               sx={{
@@ -494,7 +541,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               boxSizing: 'border-box',
             }}
           >
-            {/* TODO: CodeMirrorEditor — baseline: Field.CodeMirrorEditor with value={code}, extensions, _notifyChange, onCanUndo, onCanRedo, readOnly */}
+            <CodeMirrorEditor
+              ref={editorRef}
+              value={code}
+              onChange={notifyChange}
+              history={historyCallbacks}
+              readOnly={readOnly}
+              extensions={getCanvasCodeExtensions(codeLanguage)}
+              height="100%"
+              minHeight="240px"
+              aria-label={title}
+            />
           </Box>
         )}
       </Box>

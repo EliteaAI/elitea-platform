@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 
 import { agentEditorHooks } from '@/features/agents';
 import { useEditPipeline, usePipelineCreation } from '@/features/pipelines';
@@ -16,7 +16,8 @@ import {
   toPipelineParticipantSnapshot,
   toToolkitParticipantSnapshot,
 } from '../lib/editorParticipantAdapters';
-import { useEditorMutex, type CanvasEditPayload, type EditorOpenInfo } from '../model/useEditorMutex';
+import { useEditorMutex, type EditorOpenInfo } from '../model/useEditorMutex';
+import { useCanvasEditing } from './useCanvasEditing';
 
 /**
  * The real wiring behind `ChatWithEditors.tsx` — split into this sibling
@@ -205,6 +206,8 @@ export interface ChatWithEditorsWiring {
   readonly toolkitCreation: ReturnType<typeof useToolkitEditing>['toolkitCreation'];
   /** The real generated create/save mutations for `<ToolkitEditor deps>` — see `useToolkitEditing`'s own comment. */
   readonly toolkitWriteDeps: ReturnType<typeof useToolkitEditing>['toolkitWriteDeps'];
+  /** The canvas editor's open/close state and the ref the mutex saves through — see `useCanvasEditing`. */
+  readonly canvas: ReturnType<typeof useCanvasEditing>;
   readonly mutex: ReturnType<typeof useEditorMutex>;
   readonly handleShowAgentEditor: (participant: Participant) => void;
   readonly handleShowPipelineEditor: (participant: Participant) => void;
@@ -215,23 +218,21 @@ export interface ChatWithEditorsWiring {
  * Composes every editor's hooks + `useEditorMutex` into one wiring object.
  * The actual mutual-exclusion logic lives entirely in `useEditorMutex`
  * itself (unmodified, imported from `../model/useEditorMutex`) — this hook
- * only supplies its five real open/close callback pairs (agent/pipeline/
- * toolkit) plus two DISCLOSED, INERT stubs for canvas/artifact.
+ * only supplies its real open/close callback pairs.
  *
- * **Canvas/artifact stubs — disclosed, not silently invented.** `useEditorMutex`
- * requires `onShowCanvasEditor`/`canvasEditorRef`/`onShowArtifactEditor`/
- * `onCloseArtifactEditor` as non-optional params (its own TypeScript
- * contract has no "editor not wired yet" escape hatch). `CanvasEditor.tsx`
- * (`src/features/chat-messages/ui/canvas/CanvasEditor.tsx`) exists but has
- * NO established composition point anywhere in this app yet, and no
- * `ArtifactEditor` component exists at all (confirmed by grep) — wiring
- * either for real is a genuinely separate, larger follow-up unit, per this
- * unit's own brief. The four values below satisfy the TypeScript contract
- * with visibly-inert behaviour: `onShowCanvasEditor`/`onShowArtifactEditor`/
- * `onCloseArtifactEditor` are no-ops, and `canvasEditorRef.current` is
- * always `null` (so `useEditorMutex`'s own `closeHandlers.isEditingCanvas
- * = () => canvasEditorRef.current?.save?.()` correctly no-ops too, rather
- * than throwing on a stale/wrong ref).
+ * **Canvas is now REAL.** It used to be an inert stub here —
+ * `onShowCanvasEditor` a no-op and `canvasEditorRef.current` permanently
+ * `null`, on the grounds that `CanvasEditor.tsx` had no composition point.
+ * It has one now (`useCanvasEditing` + the `<CanvasEditor>` in
+ * `ChatWithEditors.tsx`), which also un-breaks `useEditorMutex`'s
+ * `closeHandlers.isEditingCanvas = () => canvasEditorRef.current?.save?.()`
+ * — that branch is what saves an open canvas before another editor replaces
+ * it, and against a null ref it discarded the edits silently.
+ *
+ * **Artifact is still a DISCLOSED, INERT stub.** `useEditorMutex` requires
+ * `onShowArtifactEditor`/`onCloseArtifactEditor` as non-optional params, and
+ * no `ArtifactEditor` component exists in this app at all — there is nothing
+ * to mount. Both remain no-ops.
  */
 export function useChatWithEditors(): ChatWithEditorsWiring {
   const isEditingAgent = useEditorStateStore((s) => s.isEditingAgent);
@@ -242,8 +243,8 @@ export function useChatWithEditors(): ChatWithEditorsWiring {
   const { editPipeline, pipelineCreation } = usePipelineEditing(isEditingPipeline);
   const { editToolkit, toolkitCreation, toolkitWriteDeps } = useToolkitEditing(isEditingToolkit);
 
-  const canvasEditorRef = useRef<{ readonly save?: () => void } | null>(null);
-  const onShowCanvasEditor = useCallback((_info: CanvasEditPayload) => {}, []);
+  const canvas = useCanvasEditing();
+  const { canvasEditorRef, onShowCanvasEditor } = canvas;
   const onShowArtifactEditor = useCallback((_info: EditorOpenInfo) => {}, []);
   const onCloseArtifactEditor = useCallback(() => {}, []);
 
@@ -332,6 +333,7 @@ export function useChatWithEditors(): ChatWithEditorsWiring {
     editToolkit,
     toolkitCreation,
     toolkitWriteDeps,
+    canvas,
     mutex,
     handleShowAgentEditor,
     handleShowPipelineEditor,

@@ -97,6 +97,10 @@ export const SIMPLE_CREATE_ROUTE_SEGMENTS: readonly string[] = [
   'settings/notifications',
   CREATE_ROUTES.onboarding,
   CREATE_ROUTES.agentsHub,
+  // Same rule as `agentsHub`, for the same reason: the catalogue is a
+  // browse surface, and its path contains no entity segment that
+  // `ROUTE_TO_ENTITY_KIND` should be allowed to match.
+  CREATE_ROUTES.eliteaCatalog,
   CREATE_ROUTES.helpCenter,
 ];
 

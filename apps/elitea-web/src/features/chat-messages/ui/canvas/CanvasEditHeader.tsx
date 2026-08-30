@@ -163,7 +163,7 @@ export function CanvasEditHeader({
         }}
       >
         {onClose && (
-          <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClose}>
+          <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClose} data-testid="canvas-edit-close">
             ✕
           </IconButtonAny>
         )}
@@ -200,6 +200,7 @@ export function CanvasEditHeader({
                 color="tertiary"
                 size="small"
                 onClick={onUndo}
+                data-testid="canvas-edit-undo"
                 disabled={disableUndo || disabledAll}
               >
                 ↩
@@ -217,6 +218,7 @@ export function CanvasEditHeader({
                 color="tertiary"
                 size="small"
                 onClick={onRedo}
+                data-testid="canvas-edit-redo"
                 disabled={disableRedo || disabledAll}
               >
                 ↪
@@ -229,7 +231,7 @@ export function CanvasEditHeader({
         {onCopy && (
           <Tooltip title="Copy" placement="top">
             <span>
-              <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onCopy}>
+              <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onCopy} data-testid="canvas-edit-copy">
                 📋
               </IconButtonAny>
             </span>

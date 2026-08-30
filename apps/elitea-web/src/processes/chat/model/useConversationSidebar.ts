@@ -33,34 +33,9 @@ import {
 } from '@/features/chat-conversation-list';
 import type { SocialAuthorProfile } from '@/shared/api/generated/model';
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
-import { getConfig } from '@/shared/config';
 import { useSelectedProject } from '@/widgets/app-shell';
 
-/**
- * The SPA's mount point, for the absolute share link `ConversationItem` copies
- * to the clipboard. Without it, `ConversationItem` fell back to `basename: ''`
- * and Share copied `https://host/{projectId}/chat/{id}?...` — a hard 404 for the
- * recipient in every deployment where `vite_base_uri` is not `/`, because only
- * `/app/**` is served by the SPA. Dev hid it: `import.meta.env.DEV` resolves the
- * basename to `''` there.
- *
- * Resolved locally against `shared/config` rather than imported from
- * `app/providers/basename.ts`: `.dependency-cruiser.cjs`'s
- * `no-upward-from-processes` forbids `processes/` -> `app/`. Four other slices
- * carry the same 3-line copy for the same reason (`features/agents/lib/
- * basename.ts`, `features/notifications/lib/routes.ts`, `features/mcps/lib/
- * oauthFlow.ts`, `routes/$projectId.$.tsx`).
- *
- * The trailing slash is trimmed: `vite_base_uri` is `/app/` and
- * `ConversationItem` already adds a leading `/`, so keeping it produces
- * `https://host/app//5/chat/...`, whose doubled slash survives the router's
- * basepath strip.
- */
-function chatBasename(): string {
-  if (import.meta.env.DEV) return '';
-  const result = getConfig();
-  return result.status === 'ok' ? result.config.vite_base_uri.replace(/\/$/, '') : '';
-}
+import { chatBasename, draftFolderId } from './conversationSidebar.helpers';
 
 /** What the component needs beyond the `Conversations` prop bundle itself. */
 export interface UseConversationSidebarResult {
@@ -68,16 +43,6 @@ export interface UseConversationSidebarResult {
   /** Transient error text for the local snackbar — this app has no global toast host. */
   readonly errorMessage: string | undefined;
   readonly onDismissError: () => void;
-}
-
-/**
- * A locally-unique id for the not-yet-persisted draft folder the "Create
- * folder" button pushes into `folders`. `crypto.randomUUID` is the baseline's
- * `uuidv4()` (`NewChat.jsx:1231`) without the dependency; it is available in
- * every browser this app supports and in jsdom under Node 20+.
- */
-function draftFolderId(): string {
-  return `draft-${crypto.randomUUID()}`;
 }
 
 export function useConversationSidebar(): UseConversationSidebarResult {
@@ -150,7 +115,11 @@ export function useConversationSidebar(): UseConversationSidebarResult {
   const onSelectConversation = useCallback(
     (conversation: Conversation) => {
       setActiveConversation(conversation);
-      void navigate({ to: '/chat/$conversationId', params: { conversationId: conversation.id } });
+      // `playback: '0'` is stated, not omitted: a plain click on a row while
+      // a playback is open must LEAVE playback, and the flag's default is
+      // stripped from the emitted URL by `__root`'s `stripSearchParams`, so
+      // stating it costs nothing in the address bar.
+      void navigate({ to: '/chat/$conversationId', params: { conversationId: conversation.id }, search: { playback: '0' } });
     },
     [navigate],
   );
@@ -308,12 +277,29 @@ export function useConversationSidebar(): UseConversationSidebarResult {
     [projectId, toastError],
   );
 
-  /*
-   * DISCLOSED GAP — `onPlaybackConversation` has no route in this app yet (the
-   * baseline's playback surface, `features/chat-messages`' `PlaybackChatBox`,
-   * is not mounted by any route either), so it selects the conversation and
-   * stops there rather than pretending to start a playback.
+  /**
+   * The sidebar's per-row Play button.
+   *
+   * The gap this closes: it used to be `onSelectConversation`, on the
+   * grounds that `PlaybackChatBox` "is not mounted by any route either" —
+   * so the Play button and a plain click did the same thing, silently. Both
+   * halves are now real: `processes/chat/ui/ChatPlayback.tsx` mounts the
+   * box, and `?playback=1` on the conversation's own URL is what selects it
+   * (see that file for why the signal travels through the URL).
+   *
+   * Selection still happens, because the row must highlight either way.
    */
+  const onPlaybackConversation = useCallback(
+    (conversation: Conversation) => {
+      setActiveConversation(conversation);
+      void navigate({
+        to: '/chat/$conversationId',
+        params: { conversationId: conversation.id },
+        search: { playback: '1' },
+      });
+    },
+    [navigate],
+  );
 
   /**
    * `ConversationItem` calls `onEdit` with the ALREADY-updated conversation for
@@ -362,7 +348,7 @@ export function useConversationSidebar(): UseConversationSidebarResult {
     collapsed,
     onCollapsed,
     onEditConversation,
-    onPlaybackConversation: onSelectConversation,
+    onPlaybackConversation,
     onDeleteConversation: deleteConversation,
     // `usePinConversation` returns a Promise-valued handler; the prop is `(c,
     // shouldPin) => void`. Wrapped so the floating promise is explicitly discarded

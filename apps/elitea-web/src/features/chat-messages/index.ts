@@ -110,3 +110,22 @@ export { ToolModal } from './ui/ToolModal';
 export type { ToolModalProps } from './ui/ToolModal';
 export { UserMessage } from './ui/chat-box/UserMessage';
 export type { UserMessageProps } from './ui/chat-box/UserMessage';
+
+// ---------------------------------------------------------------------------
+// Playback
+// ---------------------------------------------------------------------------
+/*
+ * This header has listed "Playback: PlaybackChatBox, PlaybackToolBar" since
+ * the slice was written, and the barrel exported neither — so the component
+ * was unreachable from outside the slice no matter what any consumer tried.
+ * `processes/chat/ui/ChatPlayback.tsx` is the mount that needs them.
+ */
+export { PlaybackChatBox } from './ui/playback/PlaybackChatBox';
+export type { PlaybackChatBoxHandle, PlaybackChatBoxProps, PlaybackChatMessage } from './ui/playback/PlaybackChatBox';
+
+// ---------------------------------------------------------------------------
+// Canvas
+// ---------------------------------------------------------------------------
+/* Same gap as Playback above: listed in the header, exported by nobody. */
+export { CanvasEditor } from './ui/canvas/CanvasEditor';
+export type { CanvasEditorHandle, CanvasEditorProps } from './ui/canvas/CanvasEditor';

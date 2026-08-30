@@ -1,24 +1,21 @@
-import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode, Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 
-import { history, historyKeymap } from '@codemirror/commands';
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
-import { type Diagnostic, forEachDiagnostic, lintGutter, setDiagnosticsEffect } from '@codemirror/lint';
+import { history, historyKeymap, redo, redoDepth, undo, undoDepth } from '@codemirror/commands';
+import { syntaxHighlighting } from '@codemirror/language';
+import { lintGutter } from '@codemirror/lint';
 import { search, searchKeymap } from '@codemirror/search';
-import { EditorState, type Extension } from '@codemirror/state';
+import { type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
-import { tags } from '@lezer/highlight';
 import { useTheme } from '@mui/material/styles';
-import CodeMirror, { basicSetup } from '@uiw/react-codemirror';
+import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 
-/** One CodeMirror 6 `Diagnostic`, narrowed to the plain-data fields `onSyntaxError` reports (no `renderMessage`/`actions` callbacks). */
-export interface CodeMirrorSyntaxError {
-  from: number;
-  to: number;
-  severity: Diagnostic['severity'];
-  message: string;
-  source: string | undefined;
-}
+import { buildEditorTheme, buildHighlightStyle } from './codeMirrorTheme';
+import type { CodeMirrorSyntaxError } from './codeMirrorExtensions';
+import { buildSyntaxErrorListener, createMaxLengthExtension } from './codeMirrorExtensions';
+
+export type { CodeMirrorSyntaxError } from './codeMirrorExtensions';
+
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface CodeMirrorEditorProps {
@@ -44,25 +41,53 @@ export interface CodeMirrorEditorProps {
   /** Diagnostics from any `linter()` extension in `extensions`, re-reported on every doc/viewport update. */
   onSyntaxError?: (errors: CodeMirrorSyntaxError[]) => void;
   'aria-label'?: string;
+  /**
+   * Undo/redo availability reporting, for a host that renders its OWN
+   * history buttons outside this component (`features/chat-messages`'
+   * `CanvasEditor`, through `CanvasEditHeader`). It cannot otherwise know
+   * when to enable them — the history lives inside CodeMirror's state, and
+   * `onChange` says nothing about depth.
+   *
+   * Grouped into one object rather than two sibling props for the §3.5
+   * 12-prop component budget, the same grouping `ChatMessageList`'s
+   * `messageActions`/`tts`/`continuation` use.
+   */
+  history?: CodeMirrorHistoryCallbacks;
+  /** Imperative handle — see {@link CodeMirrorEditorHandle}. */
+  ref?: Ref<CodeMirrorEditorHandle>;
+}
+
+/** Undo/redo availability callbacks — see {@link CodeMirrorEditorProps.history}. */
+export interface CodeMirrorHistoryCallbacks {
+  onCanUndo?: (canUndo: boolean) => void;
+  onCanRedo?: (canRedo: boolean) => void;
+}
+
+/**
+ * The imperative surface a host with its own toolbar needs.
+ *
+ * This was trimmed from the original port ("No imperative ref API") because
+ * the two callers it shipped with — `ResizableCodeMirrorEditor` and
+ * `CommonStringField` — attach no ref. That reasoning does not extend to
+ * `CanvasEditor`, whose entire header row (undo, redo, copy, and the
+ * remote-sync `setCode`) is driven through exactly these six members in the
+ * baseline (`CanvasEditor.jsx:239-246,601-609`). Restored, additively: both
+ * existing callers keep working unchanged, since every member is opt-in.
+ */
+export interface CodeMirrorEditorHandle {
+  /** The current document text — read straight from CodeMirror's state, not the debounced mirror. */
+  getCode: () => string;
+  /** Replace the whole document (remote sync, quick-fix). Does NOT fire `onChange` — the caller already knows. */
+  setCode: (next: string) => void;
+  undo: () => void;
+  redo: () => void;
+  /** `@uiw/react-codemirror`'s own ref object, for anything not covered above. */
+  readonly editor: HTMLDivElement | null;
+  readonly view: ReactCodeMirrorRef['view'];
+  readonly state: ReactCodeMirrorRef['state'];
 }
 
 const CHANGE_DEBOUNCE_MS = 30;
-
-/** `EditorState.transactionFilter` truncating any edit that would push the doc past `maxLength`, preserving the cursor. Ported verbatim from baseline `CodeMirrorEditor.jsx`'s `createMaxLengthExtension`. */
-function createMaxLengthExtension(maxLength: number): Extension {
-  if (maxLength <= 0) return [];
-  return EditorState.transactionFilter.of((tr) => {
-    if (!tr.docChanged) return tr;
-    if (tr.newDoc.length <= maxLength) return tr;
-    const truncated = tr.newDoc.sliceString(0, maxLength);
-    const selection = tr.selection ?? tr.startState.selection;
-    const cursor = Math.min(selection.main.head, truncated.length);
-    return tr.startState.update({
-      changes: { from: 0, to: tr.startState.doc.length, insert: truncated },
-      selection: { anchor: cursor },
-    });
-  });
-}
 
 /**
  * A CodeMirror 6 text editor. Ported from
@@ -109,11 +134,16 @@ function createMaxLengthExtension(maxLength: number): Extension {
  * Scope trims versus the baseline (none of this unit's 9 in-scope call
  * sites — `ResizableCodeMirrorEditor`, `CommonStringField` — use any of
  * these):
- *  - No imperative ref API (`getCode`/`setCode`/`undo`/`redo`/`editor`/
- *    `view`/`state`) — the baseline exposed one via `forwardRef` +
- *    `useImperativeHandle`, but neither in-scope caller ever attaches a
- *    ref to it.
- *  - No `onCanUndo`/`onCanRedo`/`onKeyDown`/`autoHeight`/`maxHeight`/
+ *  - RESTORED (was trimmed): the imperative ref API (`getCode`/`setCode`/
+ *    `undo`/`redo`/`editor`/`view`/`state`) and `onCanUndo`/`onCanRedo`.
+ *    The trim was justified by "neither in-scope caller ever attaches a
+ *    ref" — true of `ResizableCodeMirrorEditor` and `CommonStringField`,
+ *    and false of `features/chat-messages`' `CanvasEditor`, whose whole
+ *    header row (undo/redo enablement, copy, remote-sync `setCode`) is
+ *    driven through exactly these six members in the baseline
+ *    (`CanvasEditor.jsx:239-246,601-609`). Both additions are opt-in, so
+ *    the two ref-less callers are unchanged.
+ *  - No `onKeyDown`/`autoHeight`/`maxHeight`/
  *    `width`/`minWidth`/`maxWidth`/`variant` props — unused by every
  *    in-scope caller; `variant` is fixed to `'bodyMedium'` (the baseline's
  *    own default, and the only value any in-scope caller ever needs).
@@ -155,9 +185,20 @@ export function CodeMirrorEditor({
   minHeight = 'calc(100vh - 220px)',
   onSyntaxError,
   'aria-label': ariaLabel,
+  history: historyCallbacks,
+  ref,
 }: CodeMirrorEditorProps): ReactNode {
   const theme = useTheme();
   const [code, setCode] = useState(value);
+  /*
+   * `ref` is taken as an ordinary prop rather than through `forwardRef`.
+   * React 19 (this app pins 19.2.8) passes `ref` to function components
+   * directly, and keeping this a plain function component is what leaves the
+   * two existing callers — `ResizableCodeMirrorEditor` and
+   * `CommonStringField`, neither of which attaches a ref — byte-for-byte
+   * unaffected by this addition.
+   */
+  const cmRef = useRef<ReactCodeMirrorRef>(null);
   const lastNotifiedValueRef = useRef(value);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -191,115 +232,69 @@ export function CodeMirrorEditor({
     onBlur?.(code);
   }, [code, onBlur]);
 
-  const editorTheme = useMemo(() => {
-    const typography = theme.typography.bodyMedium;
-    // `TypographyVariants['bodyMedium']` is a plain `CSSProperties`, so every
-    // member is optional (`string | number | undefined`); CM6's `StyleSpec`
-    // rejects `undefined` outright (only `string | number | StyleSpec |
-    // null`). Falling back to the base `theme.typography.*` scale (which
-    // MUI types as always-defined) resolves every member to a concrete
-    // `string`/`number` for the type checker, not just at runtime.
-    // `theme.typography.fontFamily` is itself typed `CSSProperties['fontFamily']`
-    // (MUI's `createTypography.d.ts`), i.e. `string | undefined` too — a
-    // real theme always sets it, but the type checker doesn't know that, so
-    // the fallback chain needs a literal at the end to land on `string`.
-    const fontFamily: string = typography.fontFamily ?? theme.typography.fontFamily ?? 'inherit';
-    const fontSize: string | number = typography.fontSize ?? theme.typography.fontSize;
-    const lineHeight: string | number = typography.lineHeight ?? theme.typography.body1.lineHeight ?? 1.5;
-    return EditorView.theme({
-      '&': {
-        backgroundColor: theme.vars.palette.background.codeMirrorEditor,
+  useImperativeHandle(
+    ref,
+    () => ({
+      // Read from CodeMirror's own state, not the `code` mirror above: that
+      // mirror is only written on change, so it is stale for anything
+      // `setCode` or an external transaction put in the document.
+      getCode: () => cmRef.current?.view?.state.doc.toString() ?? code,
+      setCode: (next: string) => {
+        const view = cmRef.current?.view;
+        if (!view) return;
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+        // Keep the controlled mirror in step. `lastNotifiedValueRef` is moved
+        // with it so the `value`-prop sync effect does not immediately undo
+        // this write when the parent re-renders with its old `value`.
+        setCode(next);
+        lastNotifiedValueRef.current = next;
       },
-      '.cm-content': {
-        fontFamily,
-        fontSize,
-        lineHeight,
-        // Base colour for any character `highlightStyle` below doesn't tag
-        // (whitespace, unmatched punctuation) — without this, `theme="none"`
-        // (see the `<CodeMirror>` prop below) leaves it at the browser
-        // default instead of a token paired with this same background.
-        color: theme.vars.palette.text.primary,
-        caretColor: theme.vars.palette.text.primary,
+      undo: () => {
+        const view = cmRef.current?.view;
+        if (view) undo(view);
       },
-      '.cm-gutters': {
-        backgroundColor: theme.vars.palette.background.tabPanel,
-        color: theme.vars.palette.text.secondary,
-        border: 'none',
+      redo: () => {
+        const view = cmRef.current?.view;
+        if (view) redo(view);
       },
-      '.cm-activeLine, .cm-activeLineGutter': {
-        backgroundColor: theme.vars.palette.background.tabPanel,
+      get editor() {
+        return cmRef.current?.editor ?? null;
       },
-      '.cm-editor': {
-        borderRadius: theme.vars.shape.radiusSm,
+      get view() {
+        return cmRef.current?.view;
       },
-      '&.cm-focused': {
-        outline: 'none',
+      get state() {
+        return cmRef.current?.state;
       },
-    });
-  }, [theme]);
-
-  // Neither `<CodeMirror theme="light">` (CM6's own bundled light base — it
-  // only sets background/selection/cursor colours, no syntax colours) nor
-  // `basicSetup`'s `defaultHighlightStyle` fallback (from `@codemirror/
-  // language`, pulled in automatically since no other highlight style is
-  // registered) supply an accessible token palette: `defaultHighlightStyle`'s
-  // string colour (`#a9b7c1`) is tuned for a dark editor background and
-  // measures 2.05:1 against this app's light `background.codeMirrorEditor` —
-  // Storybook's a11y addon (`a11y.test: 'error'`) failed the `WithJsonLinter`
-  // story on exactly this (`color-contrast`, WCAG requires 4.5:1 for 14px
-  // text). Two brand tokens already vetted elsewhere in this codebase for AA
-  // text contrast (`text.primary`/`text.secondary`, same pair `HeadingChip`/
-  // `CharacterCounter` use) replace it — flatter than a full syntax palette,
-  // but every token here is a CSS-variable reference (R-T7), so it repaints
-  // correctly for both colour schemes with no JS mode branch (R-T2).
-  const highlightStyle = useMemo(
-    () =>
-      HighlightStyle.define([
-        { tag: [tags.propertyName, tags.keyword, tags.atom, tags.bool, tags.null], color: theme.vars.palette.text.primary, fontWeight: 600 },
-        { tag: [tags.string, tags.number], color: theme.vars.palette.text.primary },
-        { tag: [tags.comment], color: theme.vars.palette.text.secondary, fontStyle: 'italic' },
-        { tag: [tags.punctuation, tags.bracket, tags.separator], color: theme.vars.palette.text.secondary },
-      ]),
-    [theme],
+    }),
+    [code],
   );
 
-  const syntaxErrorListener = useMemo<Extension[]>(() => {
-    if (!onSyntaxError) return [];
+  /*
+   * Undo/redo availability, for a host rendering its own history buttons.
+   *
+   * `undoDepth`/`redoDepth` are the only honest source: a plain "has the doc
+   * changed" flag says nothing about redo, and goes wrong the moment the user
+   * undoes back to the original text. The listener is installed only when a
+   * consumer asked for it, so the default path adds no extension.
+   */
+  const historyDepthListener = useMemo<Extension[]>(() => {
+    const onCanUndo = historyCallbacks?.onCanUndo;
+    const onCanRedo = historyCallbacks?.onCanRedo;
+    if (!onCanUndo && !onCanRedo) return [];
     return [
       EditorView.updateListener.of((update) => {
-        // A `linter()` extension (§ doc comment above) runs on its own
-        // idle-delay timer (`LintConfig.delay`, 750ms default) and reports
-        // its result via a `setDiagnosticsEffect` transaction that has
-        // `docChanged: false` — it is not itself an edit. Guarding on
-        // `docChanged` alone (baseline's condition, once its own read bug is
-        // fixed) means this listener fires immediately after every
-        // keystroke, before the linter has run, sees no diagnostics yet, and
-        // reports `[]` — then never fires again once the real diagnostics
-        // land, because that update doesn't change the doc. Confirmed with a
-        // throwaway spike test against this exact linter/version before
-        // writing this fix: without it, `onSyntaxError` is called with `[]`
-        // once per keystroke and never again with the actual error.
-        // `viewportChanged` (baseline's other guard branch) is unrelated to
-        // diagnostics — scrolling does not change lint results — and is
-        // dropped rather than ported.
-        const diagnosticsChanged = update.transactions.some((tr) =>
-          tr.effects.some((effect) => effect.is(setDiagnosticsEffect)),
-        );
-        if (!update.docChanged && !diagnosticsChanged) return;
-        const errors: CodeMirrorSyntaxError[] = [];
-        forEachDiagnostic(update.state, (diagnostic) => {
-          errors.push({
-            from: diagnostic.from,
-            to: diagnostic.to,
-            severity: diagnostic.severity,
-            message: diagnostic.message,
-            source: diagnostic.source,
-          });
-        });
-        onSyntaxError(errors);
+        if (!update.docChanged && update.transactions.length === 0) return;
+        onCanUndo?.(undoDepth(update.state) > 0);
+        onCanRedo?.(redoDepth(update.state) > 0);
       }),
     ];
-  }, [onSyntaxError]);
+  }, [historyCallbacks]);
+
+  const editorTheme = useMemo(() => buildEditorTheme(theme), [theme]);
+  const highlightStyle = useMemo(() => buildHighlightStyle(theme), [theme]);
+
+  const syntaxErrorListener = useMemo<Extension[]>(() => buildSyntaxErrorListener(onSyntaxError), [onSyntaxError]);
 
   const consumerExtensions = useMemo(() => extensionsProp ?? [], [extensionsProp]);
 
@@ -317,6 +312,7 @@ export function CodeMirrorEditor({
 
   return (
     <CodeMirror
+      ref={cmRef}
       value={code}
       onChange={handleChange}
       onBlur={handleBlur}
@@ -363,6 +359,7 @@ export function CodeMirrorEditor({
         EditorView.lineWrapping,
         ...ariaLabelExtension,
         ...syntaxErrorListener,
+        ...historyDepthListener,
         ...consumerExtensions,
         createMaxLengthExtension(maxLength),
       ]}

@@ -149,8 +149,21 @@ export const paramSchemas = {
   viewMode: z.enum(['owner', 'public']).catch('owner').prefault('owner'),
   history_run_id: text(),
 
-  // ── agents-hub (PARAM-021) ───────────────────────────────────────────────
+  // ── agents-hub / elitea-catalog (PARAM-021) ──────────────────────────────
   agentId: text(),
+  /**
+   * Which `/elitea-catalog` tab is showing. Not in P1's manifest: the
+   * baseline grew this key after the manifest was extracted, when
+   * `/agents-hub` became a redirect into the new two-tab catalogue
+   * (`EliteaCatalog.jsx`'s `searchParams.get('tab')`).
+   *
+   * Declared as free text rather than `z.enum(['agents','skills'])` so an
+   * unknown value round-trips to the page, which applies the baseline's own
+   * "anything not `skills` means `agents`" rule
+   * (`pages/elitea-catalog`'s `catalogTabFromSearch`). An enum with
+   * `.catch()` would silently rewrite the URL instead.
+   */
+  tab: text(),
 
   // ── apps (PARAM-022/023) ─────────────────────────────────────────────────
   view: z.enum(['grid', 'list']).catch('grid').prefault('grid'),
@@ -169,6 +182,16 @@ export const paramSchemas = {
   message_id: text(),
   name: text(),
   shared_chat: flag(),
+  /**
+   * Replay the open conversation instead of continuing it.
+   *
+   * Not in P1's manifest: the baseline drives playback off a Redux flag on
+   * the selected conversation, which this app has no equivalent of. The URL
+   * is used instead so the surface has a real mount point — a playback view
+   * reachable only from in-memory state is a view no link, reload or test
+   * can reach.
+   */
+  playback: flag(),
 
   // ── credentials (PARAM-037..046) ─────────────────────────────────────────
   forceCustom: flag(),
