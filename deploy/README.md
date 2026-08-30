@@ -189,6 +189,39 @@ file whose capability set matches `docker-compose.standalone-full.yml`.
 
 No flag stays off in **both** files any more.
 
+### `values-auth-minimal.yaml` — the cheapest install that can seed itself
+
+`values-standalone.yaml` turns the whole capability set on, the runtime plane
+included, and that plane costs a second Secret of certificates and signing keys,
+a worker, and a dispatch bus with consumer groups.
+
+The last step of a fresh install that still needed hand-written SQL is smaller
+than that: seeding an LLM credential and the model catalogue. It needs
+`ELITEA_CONFIGURATIONS_ENABLED` and nothing else — that flag composes the
+configuration write path, and that path decides `status_ok` in the request
+(#457), which is what makes a saved credential visible to the gateway.
+
+`deploy/helm/elitea/values-auth-minimal.yaml` is that shape:
+`fileConfig.authConfig` + `runtimeRedis`, **no runtime plane**, and
+`ELITEA_CONFIGURATIONS_ENABLED` + `ELITEA_AI_PROJECT_ID` on top.
+`templates/guards.yaml` ties the worker to the runtime plane and to
+`runtimeRedis`; it does not tie `runtimeRedis` to the runtime plane, so this
+combination renders. The TLS Redis is not optional even so — production Form
+authentication keeps its session store there and
+`internal/authcomposition/config.go` accepts a `rediss://` URL only.
+
+Two things it does **not** change:
+
+- No default. `values.yaml` still ships every capability flag `"false"`; an
+  install that does not pass this file is exactly what it was.
+- Not the mutation flag. It is deliberately absent, which leaves `"false"` in
+  force — read the section below for why that flag is a separate cutover.
+
+`deploy/scripts/standalone-stack.sh seed-llm` writes its rows through that
+route now (`deploy/scripts/seed-llm-api.py`), not with `INSERT`. Two database
+calls survive, both named in `SEED_LLM_SQL_EXCEPTIONS` in that script, and the
+subcommand checks its own command trace against that list before it exits.
+
 Two used to. Each answered a body that only one of the two shipped clients
 could read, so the flag could not be turned on without breaking the other. Both
 were fixed the same way — ONE body carrying BOTH key sets, projected from the
