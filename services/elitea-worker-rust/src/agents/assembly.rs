@@ -337,8 +337,8 @@ impl OrdinaryNoToolProfile {
     }
 
     #[must_use]
-    pub(crate) const fn context_management(&self) -> ContextManagementPlan {
-        self.context_management
+    pub(crate) fn context_management(&self) -> ContextManagementPlan {
+        self.context_management.clone()
     }
 
     #[must_use]
