@@ -184,7 +184,7 @@ documentation mismatch, not a missing feature.
 |---|---|---|---|
 | E1 | **Chat canvas editor is a shell.** CodeMirror host, Mermaid output, markdown-table editor, undo/redo, quick-fix, presence socket and CSV import are all `TODO` placeholders | `features/chat-messages/ui/canvas/CanvasEditor.tsx` (18 TODOs), `Canvas.tsx` (4), `CanvasEditHeader.tsx` | L |
 | E2 | **Playback message list** not rendered | `features/chat-messages/ui/playback/PlaybackChatBox.tsx:307` | M |
-| E3 | **Long-term memory settings** = "Coming soon" placard | `features/settings/ui/profile/ProfileLongTermMemory.tsx:27` | M (needs a backend too) |
+| E3 | **Long-term memory settings** = "Coming soon" placard. NOT an unknown: the baseline ships this at `/settings/memory` (`MemoryLongTermMemory`, `MemorySummarization`, `MemoryContextManagement`) — see [elitea-ui-pin-refresh-decisions.md](elitea-ui-pin-refresh-decisions.md) | `features/settings/ui/profile/ProfileLongTermMemory.tsx:27` | M |
 | E4 | **Custom skill icons** = "coming soon" tooltip | `features/skills/ui/SkillForm.tsx:86` | S |
 | E5 | **Per-word TTS highlight sync** dropped | `features/chat-messages/ui/chat-box/ApplicationAnswer.tsx:18` | S |
 | E6 | **Agent set-default-version** — router answers 405; the UI shape was not ported | `features/agents/model/useSetDefaultVersion.ts:26` | S (backend first) |
