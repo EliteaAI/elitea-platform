@@ -194,8 +194,19 @@ adminTest('J34b: the sections with no backend say so instead of showing a form',
   // admin NAV RAIL carries its own "Service Descriptors" and "LLM Governance"
   // entries, so an unscoped `getByRole('button', {name: /LLM Governance/})`
   // matches two elements and Playwright's strict mode refuses it.
+  //
+  // Each name carries its OWN expected phrase. One shared regex was wrong here:
+  // `/gateway|page of their own/` matched LLM Governance (whose reason names
+  // /admin/gateway/governance) and silently could not match Service
+  // Descriptors, whose reason is about the pylon provider hub and its ADR-0012
+  // successor. A single alternation over two genuinely different reasons is an
+  // assertion that passes for the wrong section.
   const sections = page.getByRole('navigation', { name: 'Configuration sections' });
-  for (const section of ['Service Descriptors', 'LLM Governance']) {
+  const stillUnavailable: ReadonlyArray<readonly [string, RegExp]> = [
+    ['Service Descriptors', /provider hub|ADR-0012|no descriptor store/],
+    ['LLM Governance', /gateway/],
+  ];
+  for (const [section, reason] of stillUnavailable) {
     await sections.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -203,11 +214,9 @@ adminTest('J34b: the sections with no backend say so instead of showing a form',
     // cannot configure that" from "that is configured to its defaults". A form
     // over defaults would say the second when the truth is the first.
     //
-    // No "Pylon" alternative any more: both remaining names here point at a
-    // dedicated surface (the gateway's own governance page, Service
-    // Descriptors' own page), not at a Pylon plugin runtime — that branch of
-    // this regex has no section left to match.
-    await expect(notice).toContainText(/gateway|page of their own/);
+    // No "Pylon" alternative any more: neither remaining name is a Pylon
+    // plugin runtime, so that branch has no section left to match.
+    await expect(notice).toContainText(reason);
     await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
   }
 
