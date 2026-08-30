@@ -158,6 +158,7 @@ var eliteaCoreProjectScopedRoutes = []eliteaCoreProjectScopedRoute{
 	{http.MethodPut, "/api/v2/elitea_core/canvas/prompt_lib/7/1", "/api/v2/elitea_core/canvas/prompt_lib/8/1", "models.chat.canvas.update"},
 	{http.MethodPost, "/api/v2/elitea_core/attachments/prompt_lib/7/1", "/api/v2/elitea_core/attachments/prompt_lib/8/1", "models.chat.attachments.create"},
 	{http.MethodDelete, "/api/v2/elitea_core/attachments/prompt_lib/7/1", "/api/v2/elitea_core/attachments/prompt_lib/8/1", "models.chat.attachments.delete"},
+	{http.MethodGet, "/api/v2/elitea_core/context_strategy/prompt_lib/7/1", "/api/v2/elitea_core/context_strategy/prompt_lib/8/1", "models.chat.conversation.details"},
 	{http.MethodPut, "/api/v2/elitea_core/context_strategy/prompt_lib/7/1", "/api/v2/elitea_core/context_strategy/prompt_lib/8/1", "models.chat.conversation.edit"},
 	// Toolkits (the FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS block, ON by default).
 	{http.MethodGet, "/api/v2/elitea_core/tools/prompt_lib/7", "/api/v2/elitea_core/tools/prompt_lib/8", "models.applications.tools.list"},

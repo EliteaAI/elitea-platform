@@ -4749,6 +4749,56 @@ components:
         NOTE(W2): internal/api/v2/eliteacore/handler.go:167-188.
 
     # ---- Social ---------------------------------------------------------
+    MemoryContextManagement:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        max_context_tokens:
+          type: integer
+          minimum: 1000
+        preserve_recent_messages:
+          type: integer
+          minimum: 1
+          maximum: 99
+        enable_context_editing: { type: boolean }
+      description: >
+        The user's default context-management settings, stored in
+        centry.social_users.default_context_management (jsonb) and edited by
+        Settings > Memory. Every property is optional: absent means "the user
+        has no opinion", which resolves to the platform default, and is a
+        different answer from an explicit false or zero. Ranges are enforced on
+        write (internal/domain/contextsettings); an out-of-range value is
+        refused with {"error", "field"}. `enable_context_editing` is not in
+        pylon's ContextManagementModel but IS read out of the same dict by
+        set_context_strategy, and the Memory page has always sent it.
+
+    MemorySummarization:
+      type: object
+      properties:
+        enable_summarization: { type: boolean }
+        summary_instructions: { type: string }
+        summary_model_name: { type: string }
+        summary_model_project_id: { type: integer }
+        summary_trigger_ratio:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1
+        min_messages_for_summary:
+          type: integer
+          minimum: 1
+        target_summary_tokens:
+          type: integer
+          minimum: 100
+      description: >
+        The user's default summarization settings, stored in
+        centry.social_users.default_summarization (jsonb) and edited by
+        Settings > Memory. pylon's SummarizationModel, field for field. Three
+        of these flatten into a conversation's
+        `context_strategy.summary_llm_settings` when one is resolved:
+        summary_model_name -> model_name, summary_model_project_id ->
+        model_project_id, target_summary_tokens -> max_tokens.
+
     SocialAuthorProfile:
       type: object
       required: [id, name, email, avatar, description, personal_project_id]
@@ -4775,6 +4825,10 @@ components:
             `any` zero value omitted via `omitempty`, handler.go:48). Channel-B
             fixture recommended (M1).
           description: Arbitrary user-defined personalization payload.
+        default_context_management:
+          $ref: '#/components/schemas/MemoryContextManagement'
+        default_summarization:
+          $ref: '#/components/schemas/MemorySummarization'
       description: >
         NOTE(W2): AuthorResponse struct (internal/api/v2/social/handler.go:41-49),
         served by GetAuthor (:51-123). All string fields except
@@ -4798,13 +4852,23 @@ components:
             (internal/api/v2/social/handler.go:159, jsonVal helper at
             :442-448).
           description: Arbitrary user-defined personalization payload.
+        default_context_management:
+          $ref: '#/components/schemas/MemoryContextManagement'
+        default_summarization:
+          $ref: '#/components/schemas/MemorySummarization'
       description: >
         NOTE(W2): decoded into map[string]any
-        (internal/api/v2/social/handler.go:137-141); only
-        name/description/avatar/personalization are read (strVal/jsonVal
-        helpers, :156-159, 435-448) — every property is optional, and any
-        other body key is silently ignored. A missing name/description/avatar
-        upserts as an empty string.
+        (internal/api/v2/social/handler.go, UpdateAuthor); every property is
+        optional, and any key not listed here is silently ignored. A missing
+        name/description/avatar upserts as an empty string, and a missing
+        personalization stores JSON null — but a missing
+        default_context_management or default_summarization KEEPS whatever is
+        stored, because Settings > AI Personality and Settings > Memory are two
+        pages saving one record and the personality page sends no context
+        settings at all. Either block may also arrive nested inside
+        personalization, which is where apps/elitea-web put them while this
+        endpoint still dropped every other top-level key; the top-level
+        placement wins, and a nested one is rewritten into the columns.
 
     CurrentAvatarResponse:
       type: object

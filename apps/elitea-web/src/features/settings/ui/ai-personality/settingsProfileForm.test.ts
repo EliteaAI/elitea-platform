@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildAuthorUpdate,
+  deserializeMemoryBlocks,
   deserializeSettingsProfile,
   serializeSettingsProfile,
 } from './settingsProfileForm';
@@ -95,7 +96,18 @@ describe('deserializeSettingsProfile', () => {
     expect(payload.personality_instructions).toEqual(instructions);
   });
 
-  it('nests the memory settings under personalization keys the handler actually reads', () => {
+  it('carries only the personality fields — the memory blocks travel at the top level', () => {
+    const values = { ...serializeSettingsProfile(undefined), context_enabled: true, max_context_tokens: 1000 };
+
+    const payload = deserializeSettingsProfile(values);
+
+    expect('default_context_management' in payload).toBe(false);
+    expect('default_summarization' in payload).toBe(false);
+  });
+});
+
+describe('deserializeMemoryBlocks', () => {
+  it('builds both blocks in the shape the two jsonb columns hold', () => {
     const values = {
       ...serializeSettingsProfile(undefined),
       context_enabled: true,
@@ -106,7 +118,7 @@ describe('deserializeSettingsProfile', () => {
       summary_llm_settings: { instructions: 'i', model_name: 'm', model_project_id: '2', max_tokens: 256 },
     };
 
-    expect(deserializeSettingsProfile(values)).toMatchObject({
+    expect(deserializeMemoryBlocks(values)).toEqual({
       default_context_management: {
         enabled: true,
         max_context_tokens: 1000,
@@ -122,9 +134,73 @@ describe('deserializeSettingsProfile', () => {
       },
     });
   });
+
+  // A numeric input the user has emptied is `''` — not a number, and not a
+  // value. Sending it would be refused by the server's type check; omitting it
+  // says what the empty box means: this default is not set.
+  it('omits a cleared numeric field instead of sending an empty string', () => {
+    const values = {
+      ...serializeSettingsProfile(undefined),
+      max_context_tokens: '' as const,
+      preserve_recent_messages: '' as const,
+      summary_llm_settings: { instructions: '', model_name: '', model_project_id: null, max_tokens: '' as const },
+    };
+
+    const blocks = deserializeMemoryBlocks(values);
+
+    expect('max_context_tokens' in blocks.default_context_management).toBe(false);
+    expect('preserve_recent_messages' in blocks.default_context_management).toBe(false);
+    expect('target_summary_tokens' in blocks.default_summarization).toBe(false);
+    // The booleans are still answers and still travel.
+    expect('enabled' in blocks.default_context_management).toBe(true);
+  });
 });
 
 describe('buildAuthorUpdate', () => {
+  it('sends both memory blocks at the top level', () => {
+    const payload = buildAuthorUpdate(undefined, {
+      ...serializeSettingsProfile(undefined),
+      max_context_tokens: 4242,
+    });
+
+    expect(payload.default_context_management).toMatchObject({ max_context_tokens: 4242 });
+    expect(payload.default_summarization).toBeDefined();
+  });
+
+  // A profile last written by the older client carries the blocks inside
+  // `personalization`. They are read from there, moved to the top level, and
+  // NOT written back into the blob — two homes for one setting is how the two
+  // copies come to disagree.
+  it('lifts a legacy nested block out of personalization and does not leave a copy behind', () => {
+    const author = {
+      personalization: {
+        persona: 'generic',
+        default_context_management: { max_context_tokens: 17_000 },
+        default_summarization: { enable_summarization: false },
+      },
+    };
+    const values = serializeSettingsProfile(author);
+
+    expect(values.max_context_tokens).toBe(17_000);
+    expect(values.enable_summarization).toBe(false);
+
+    const payload = buildAuthorUpdate(author, values);
+
+    expect(payload.default_context_management).toMatchObject({ max_context_tokens: 17_000 });
+    expect('default_context_management' in payload.personalization).toBe(false);
+    expect('default_summarization' in payload.personalization).toBe(false);
+  });
+
+  // The top-level column wins over a stale nested copy of the same setting.
+  it('prefers the top-level block over the personalization-nested one', () => {
+    const values = serializeSettingsProfile({
+      default_context_management: { max_context_tokens: 30_000 },
+      personalization: { default_context_management: { max_context_tokens: 17_000 } },
+    });
+
+    expect(values.max_context_tokens).toBe(30_000);
+  });
+
   it('keeps personalization keys neither page edits, and the profile fields the upsert would blank', () => {
     const author = {
       name: 'Ada',

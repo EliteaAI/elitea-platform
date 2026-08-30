@@ -178,11 +178,23 @@ func TestConversationReadsAcceptTheConversationUUID(t *testing.T) {
 		t.Errorf("list message groups by UUID returned %d groups, want 2", len(groups))
 	}
 
-	analytics, err := repo.GetContextAnalytics(ctx, "1", conversationUUID)
+	// GetContextState replaced GetContextAnalytics, and the count moved with
+	// it: `MessageGroupsTotal` is the COUNT(*) this assertion always meant,
+	// while `message_groups_in_context` now means what its name says — how
+	// many groups the runtime kept in the assembled context — and is reported
+	// as unavailable until that runtime records it.
+	state, err := repo.GetContextState(ctx, "1", conversationUUID)
 	if err != nil {
-		t.Fatalf("context analytics by UUID: %v", err)
+		t.Fatalf("context state by UUID: %v", err)
 	}
-	if got := analytics["message_groups_in_context"]; got != 2 {
-		t.Errorf("context analytics counted %v message groups, want 2", got)
+	if state.MessageGroupsTotal != 2 {
+		t.Errorf("context state counted %d message groups, want 2", state.MessageGroupsTotal)
+	}
+	// A conversation nobody has configured stores neither document.
+	if state.Strategy != nil {
+		t.Errorf("unconfigured conversation carries a stored strategy: %s", state.Strategy)
+	}
+	if state.Analytics != nil {
+		t.Errorf("conversation with no runtime record carries analytics: %s", state.Analytics)
 	}
 }

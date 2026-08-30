@@ -40,31 +40,30 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { MemoryContextManagement } from "./memoryContextManagement.zod";
-import { MemorySummarization } from "./memorySummarization.zod";
 
-export const SocialAuthorProfile = zod
+export const memoryContextManagementMaxContextTokensMin = 1000;
+
+export const memoryContextManagementPreserveRecentMessagesMax = 99;
+
+export const MemoryContextManagement = zod
   .object({
-    id: zod
-      .string()
-      .describe(
-        'NOTE(W2): scanned from su.user_id (social\/handler.go:88) but unconditionally overwritten with intToStr(0) at :114, then replaced with the auth-context user.ID at :118-120 whenever it reads \"0\" or \"\" — which it always does. Bug-for-bug: this field is ALWAYS auth.User.ID, never the DB row\'s su.user_id.\n',
-      ),
-    name: zod.string(),
-    email: zod.string(),
-    avatar: zod.string(),
-    description: zod.string(),
-    personal_project_id: zod.string(),
-    personalization: zod
-      .unknown()
-      .nullish()
-      .describe("Arbitrary user-defined personalization payload."),
-    default_context_management: MemoryContextManagement.optional(),
-    default_summarization: MemorySummarization.optional(),
+    enabled: zod.boolean().optional(),
+    max_context_tokens: zod
+      .int()
+      .min(memoryContextManagementMaxContextTokensMin)
+      .optional(),
+    preserve_recent_messages: zod
+      .int()
+      .min(1)
+      .max(memoryContextManagementPreserveRecentMessagesMax)
+      .optional(),
+    enable_context_editing: zod.boolean().optional(),
   })
   .describe(
-    'NOTE(W2): AuthorResponse struct (internal\/api\/v2\/social\/handler.go:41-49), served by GetAuthor (:51-123). All string fields except personalization are present with a `\"\"` fallback on both the \"row found\" and \"no row \/ query error\" paths (:98-121) — the query error path is a swallowed fallback, always 200, never surfaced as an error.\n',
+    'The user\'s default context-management settings, stored in centry.social_users.default_context_management (jsonb) and edited by Settings > Memory. Every property is optional: absent means \"the user has no opinion\", which resolves to the platform default, and is a different answer from an explicit false or zero. Ranges are enforced on write (internal\/domain\/contextsettings); an out-of-range value is refused with {\"error\", \"field\"}. `enable_context_editing` is not in pylon\'s ContextManagementModel but IS read out of the same dict by set_context_strategy, and the Memory page has always sent it.\n',
   );
 
-export type SocialAuthorProfile = zod.input<typeof SocialAuthorProfile>;
-export type SocialAuthorProfileOutput = zod.output<typeof SocialAuthorProfile>;
+export type MemoryContextManagement = zod.input<typeof MemoryContextManagement>;
+export type MemoryContextManagementOutput = zod.output<
+  typeof MemoryContextManagement
+>;

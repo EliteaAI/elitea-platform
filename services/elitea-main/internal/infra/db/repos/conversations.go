@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/contextsettings"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -911,97 +912,62 @@ func (r *ConversationsRepo) DeleteAttachments(ctx context.Context, projectID, co
 	return nil
 }
 
-func (r *ConversationsRepo) GetContextAnalytics(ctx context.Context, projectID, conversationID string) (map[string]any, error) {
+// GetContextState reads the two `meta` documents the context routes work
+// with, plus the transcript size, in one query.
+//
+// It replaces GetContextAnalytics, which assembled the whole status document
+// inside the repository AND invented the number at its centre:
+//
+//	currentTokens := msgCount * 500
+//
+// Every conversation therefore reported a token usage that was a function of
+// its message count and of nothing else. Token counting belongs to the runtime
+// that assembles a turn with the model's own tokenizer; this service does not
+// run it. The repository now returns what the database actually holds and lets
+// contextsettings.BuildStatus report the absence — see
+// contextsettings.AnalyticsUnavailableReason.
+func (r *ConversationsRepo) GetContextState(ctx context.Context, projectID, conversationID string) (contextsettings.ConversationState, error) {
 	s := schema(projectID)
 	id, err := r.resolveConversationID(ctx, projectID, conversationID)
 	if err != nil {
-		return nil, err
+		return contextsettings.ConversationState{}, err
 	}
 
-	// Get message count and conversation meta (contains context_strategy + context_analytics)
 	q := fmt.Sprintf(`
-		SELECT COALESCE(c.meta, '{}')::text,
+		SELECT COALESCE(c.meta, '{}'::jsonb) -> 'context_strategy',
+			COALESCE(c.meta, '{}'::jsonb) -> 'context_analytics',
 			(SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
 		FROM %s.chat_conversations c WHERE c.id = $1`, s, s)
 
-	var metaRaw string
-	var msgCount int
-	if err := r.pool.QueryRow(ctx, q, id).Scan(&metaRaw, &msgCount); err != nil {
-		return r.defaultContextStatus(), nil
-	}
-
-	var meta map[string]any
-	if err := json.Unmarshal([]byte(metaRaw), &meta); err != nil {
-		return r.defaultContextStatus(), nil
-	}
-
-	// Extract context_strategy
-	strategy, _ := meta["context_strategy"].(map[string]any)
-	strategyName := "default"
-	maxContextTokens := 128000
-	if strategy != nil {
-		if name, ok := strategy["name"].(string); ok && name != "" {
-			strategyName = name
+	var state contextsettings.ConversationState
+	if err := r.pool.QueryRow(ctx, q, id).Scan(&state.Strategy, &state.Analytics, &state.MessageGroupsTotal); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return contextsettings.ConversationState{}, apierr.NotFound("conversation not found")
 		}
-		if mct, ok := strategy["max_context_tokens"].(float64); ok && mct > 0 {
-			maxContextTokens = int(mct)
-		}
+		return contextsettings.ConversationState{}, fmt.Errorf("conversations: get context state: %w", err)
 	}
-
-	// Extract context_analytics
-	analytics, _ := meta["context_analytics"].(map[string]any)
-	currentTokens := msgCount * 500
-	messagesInContext := msgCount
-	summariesGenerated := 0
-	if analytics != nil {
-		if ct, ok := analytics["current_context_tokens"].(float64); ok {
-			currentTokens = int(ct)
-		}
-		if mic, ok := analytics["messages_in_context"].(float64); ok {
-			messagesInContext = int(mic)
-		}
-		if sg, ok := analytics["summaries_generated"].(float64); ok {
-			summariesGenerated = int(sg)
-		}
-	}
-
-	utilization := float64(0)
-	if maxContextTokens > 0 {
-		utilization = float64(currentTokens) / float64(maxContextTokens) * 100
-	}
-
-	return map[string]any{
-		"current_tokens":            currentTokens,
-		"max_tokens":                maxContextTokens,
-		"message_groups_in_context": messagesInContext,
-		"strategy_name":             strategyName,
-		"utilization":               utilization,
-		"context_analytics": map[string]any{
-			"summaries_generated": summariesGenerated,
-		},
-	}, nil
+	return state, nil
 }
 
-func (r *ConversationsRepo) defaultContextStatus() map[string]any {
-	return map[string]any{
-		"current_tokens":            0,
-		"max_tokens":                128000,
-		"message_groups_in_context": 0,
-		"strategy_name":             "default",
-		"utilization":               float64(0),
-		"context_analytics": map[string]any{
-			"summaries_generated": 0,
-		},
-	}
-}
-
-func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error {
+// UpdateContextStrategy replaces `meta.context_strategy` with one RESOLVED
+// strategy document.
+//
+// It takes the typed value rather than the request body on purpose. The route
+// used to write the raw body straight into the column, so a partial form —
+// which is the only kind the UI sends — silently dropped every key it did not
+// mention (apps/elitea-web's context-budget widget carries a comment warning
+// its future editor about exactly that). Merging happens once, in the handler,
+// against the resolved strategy; what reaches the column is always complete.
+func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, strategy contextsettings.Strategy) error {
 	s := schema(projectID)
 	id, err := r.resolveConversationID(ctx, projectID, conversationID)
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(body)
+	data, err := json.Marshal(strategy)
+	if err != nil {
+		return fmt.Errorf("conversations: encode context strategy: %w", err)
+	}
 	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{context_strategy}', $1::jsonb) WHERE id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: update context strategy: %w", err)
