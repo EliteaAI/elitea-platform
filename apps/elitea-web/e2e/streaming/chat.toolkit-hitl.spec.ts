@@ -48,9 +48,36 @@
  * failure too; every other spec in this project shares the stack and a leaked
  * entry would turn their tool calls into pauses nothing answers.
  *
- * WORKER: the native Rust runtime (`STANDALONE_WORKER=rust`). The whole
- * approve/deny contract above is that runtime's; the SDK worker's sensitive
- * middleware is a different implementation and was not measured here.
+ * ── WHY THIS RUNS ON BOTH WORKERS, AND THE ONE FIELD THAT DOES NOT ─────────
+ *
+ * This file used to skip the python leg with `native-runtime sensitive-tool
+ * contract; the SDK worker guards differently`. That was asserted from the
+ * header's own last line ("was not measured here"), not measured — and when it
+ * finally was, it turned out to be almost entirely wrong. The Rust
+ * `direct_hitl.rs` is a PORT of `elitea_sdk/runtime/middleware/
+ * sensitive_tool_guard.py`, down to the constant: both spell
+ * `BLOCKED_TOOL_RESULT_TYPE = 'sensitive_tool_blocked'`, both emit the same
+ * six-key blocked payload, both carry the denial comment into `denial_reason`,
+ * and both offer `['approve', 'reject', 'block_with_comment']`. elitea-main
+ * feeds the SAME policy to both — `Policy.Runtime()`'s five fields reach the
+ * SDK through `sdk_adapter._apply_toolkit_guardrails` → the SDK's own
+ * `configure_sensitive_tools` — and its interrupt projection is opaque, so an
+ * SDK-shaped pause populates `metadata.hitl_interrupt` like any other.
+ *
+ * What actually kept the python leg red was the freeze, the same defect
+ * `chat.toolkit.spec.ts` names: a model pinned with no `temperature` key was a
+ * bare `builtins.KeyError` inside the SDK. With that fixed, every assertion
+ * below passes on a python-worker stack except ONE — `tool_call_id` — which is
+ * genuinely absent there and is handled where it is asserted rather than by
+ * giving up the whole leg. See step 4.
+ *
+ * ONE DIFFERENCE THIS JOURNEY DELIBERATELY DOES NOT EXERCISE: the approved
+ * EFFECTFUL replay. The native runtime refuses it (`UnsupportedCapability`,
+ * above); the SDK has no read-only predicate at all and would execute it for
+ * real (`sensitive_tool_guard.py` branches on `action == 'reject'` and nothing
+ * else). Both legs here approve only the READ-ONLY operation, so the two
+ * runtimes agree on every path this file drives — but a spec that ever adds an
+ * approved-effectful leg has to make it native-only.
  */
 import { expect, test } from '@playwright/test';
 
@@ -86,6 +113,14 @@ const MOCK_MODEL = process.env['E2E_MOCK_MODEL'] ?? 'vllm/E2E-MOCK-MODEL';
 /** The structured result a denied call is replaced by (`BLOCKED_TOOL_RESULT_TYPE`). */
 const BLOCKED_RESULT_TYPE = 'sensitive_tool_blocked';
 
+/**
+ * Which runtime is answering the turns — `scripts/chat-stream-e2e.sh` is the
+ * one place that knows, and it exports this. Read for exactly one assertion
+ * (step 4's `tool_call_id`); everything else in this file is the same contract
+ * on both legs. Local default is the native-runtime dev stack, as elsewhere.
+ */
+const IS_NATIVE_RUNTIME = (process.env['E2E_WORKER'] ?? 'rust') === 'rust';
+
 test.afterEach(async () => {
   // Restored here rather than at the end of the test body: this hook runs
   // after a FAILURE too, and a failure is exactly when the policy would
@@ -96,10 +131,9 @@ test.afterEach(async () => {
 test('a sensitive tool call pauses, a rejection blocks the effect, and a read-only approval runs', async ({
   page,
 }) => {
-  test.skip(
-    (process.env['E2E_WORKER'] ?? 'rust') !== 'rust',
-    'native-runtime sensitive-tool contract; the SDK worker guards differently',
-  );
+  // No worker skip: see the header. Both runtimes implement the same
+  // sensitive-tool contract — one is a port of the other — and the single
+  // field they disagree about is handled at step 4.
   // Two paused turns, two human decisions and four model round trips, on top
   // of two form flows.
   test.setTimeout(540_000);
@@ -232,8 +266,28 @@ test('a sensitive tool call pauses, a rejection blocks the effect, and a read-on
     MOCK_TOOL_EFFECTFUL_OPERATION,
   );
   expect(interrupt.toolkit_type, 'the pause must name the toolkit type the policy is keyed by').toBe('openapi');
+  // THE ONE LEG-SHAPED ASSERTION IN THIS FILE, and the reason lives here
+  // rather than in a skip that would have cost the other ~40.
+  //
+  // The native runtime stamps the LangChain call id onto the pause
+  // (`direct_hitl.rs` → `events.rs`'s `hitl_interrupts[].tool_call_id`), so
+  // the decision can be bound to the exact invocation it was taken for. The
+  // SDK cannot: `sensitive_tool_guard.py` wraps the tool FUNCTION and never
+  // sees a call id, so its interrupt payload has no such key at all — measured
+  // on a python-worker stack, where this read returns `''` while every other
+  // identity field below is populated. (Its only `tool_call_id` writer is the
+  // parallel Application fan-out, whose `parallel_sensitive_tools` guardrail
+  // the worker refuses outright.)
+  //
+  // Asserted on the native leg ALONE rather than dropped, because there it is
+  // a real contract and a regression that stopped emitting it would otherwise
+  // be invisible. What binds the decision on BOTH legs is `interrupt_id`, and
+  // that is asserted unconditionally on the next line and used again at
+  // step 5 against `resolved_hitl_interrupt_ids`.
   const blockedCallId = interrupt.tool_call_id ?? '';
-  expect(blockedCallId, 'the pause must carry the call id the decision is recorded against').not.toBe('');
+  if (IS_NATIVE_RUNTIME) {
+    expect(blockedCallId, 'the pause must carry the call id the decision is recorded against').not.toBe('');
+  }
   const blockedInterruptId = interrupt.interrupt_id ?? '';
   expect(blockedInterruptId, 'the pause must carry an interrupt id').not.toBe('');
 

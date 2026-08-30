@@ -1980,6 +1980,21 @@ CREATE TABLE p_1.entity_tool_mapping (
     entity_version_id INTEGER NOT NULL, entity_type VARCHAR NOT NULL,
     selected_tools JSONB
 );
+-- The version's AUTHORED variables. This is the store the shared
+-- application_version_details_json projection reads its variables key from, so
+-- a seed without it makes every query that carries that projection fail with
+-- 42P01 rather than answer a wrong list. Same shape as
+-- internal/infra/db/migrations/001_initial.sql, which is where the real tenant
+-- schema gets it.
+CREATE TABLE p_1.application_variables (
+    id SERIAL PRIMARY KEY,
+    application_version_id INTEGER NOT NULL REFERENCES p_1.application_versions(id) ON DELETE CASCADE,
+    name VARCHAR NOT NULL,
+    value VARCHAR,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP,
+    CONSTRAINT _application_version_variable_name_uc UNIQUE (application_version_id, name)
+);
 -- skills / skill_versions are created by newMigratedPostgresIntegrationPool,
 -- which every caller of this seed runs first (#249 put them there so the
 -- tenant migration history has something to alter). Re-creating them here

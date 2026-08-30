@@ -52,11 +52,12 @@
  * and runs against the full standalone stack via `scripts/chat-stream-e2e.sh`,
  * serially (`--workers=1`).
  *
- * WORKER: the native Rust runtime (`STANDALONE_WORKER=rust`). `ask_user` is a
- * capability of THAT runtime — the Python worker has no equivalent internal
- * tool — so on a python-worker stack the agent never pauses and this spec
- * fails on its pause card. That is the correct outcome for a spec about a
- * runtime feature; the runtime it needs is stated here rather than guessed.
+ * WORKER: the native Rust runtime (`STANDALONE_WORKER=rust`) — but NOT for the
+ * reason this header used to give. See the skip below, which carries the
+ * measurement. The sentence that stood here — "the Python worker has no
+ * equivalent internal tool … the agent never pauses" — is FALSE on both
+ * halves, and it was believed for a year of commits because the thing that
+ * actually failed looked exactly like it.
   *
  * A RACE THIS SPEC USED TO LOSE: the stored assistant row is readable while
  * the continuation is still streaming, and the first draft polled only for
@@ -114,15 +115,61 @@ const MOCK_MODEL = process.env['E2E_MOCK_MODEL'] ?? 'vllm/E2E-MOCK-MODEL';
 const ASK_USER_TOOL = 'ask_user';
 
 test('an ask_user pause renders answerable controls, and the answer finishes the run', async ({ page }) => {
-  // The mock scripts the NATIVE runtime's ask_user tool-call shape and the
-  // resume rides agent.continue.hitl.v1 as that runtime consumes it —
-  // measured: the SDK worker does not pause on this script (no HITL card).
-  // A python-leg ask_user journey needs the SDK worker's own pause shape.
+  // ── WHY THE PYTHON LEG IS SKIPPED, MEASURED RATHER THAN ASSERTED ────────
+  //
+  // The old reason — "the SDK worker does not pause on this script (no HITL
+  // card)" — was measured while a DIFFERENT defect was killing the turn: this
+  // spec pins `MOCK_MODEL` on the version with no `temperature` key, the SDK
+  // read `data['llm_settings']['temperature']` with a subscript, and every
+  // python-leg turn died as a bare `builtins.KeyError` in an empty `is_error`
+  // row. No pause, no card, and a sentence about `ask_user` that the evidence
+  // never supported. `resolveCurrentAgentModel` normalizes the absent key now
+  // (services/elitea-main/internal/application/agentexecution/tools.go), so
+  // the leg could finally be measured for what it is.
+  //
+  // RE-MEASURED against a python-worker standalone stack, and the SDK worker
+  // DOES pause. `ask_user` is not native-only: it is
+  // `elitea_sdk/runtime/tools/ask_user.py`'s `AskUserTool`, registered by
+  // `runtime/toolkits/tools.py` from the same `meta.internal_tools` name, and
+  // the worker forwards that name untouched (its `_PRECONDITIONS` holds
+  // `pyodide` alone). Everything through step 6 passed on that stack: the card
+  // rendered, `Staging` was offered, the submit armed, the resume left on
+  // `agent.continue.hitl.v1` with `hitl_resume: true` and `hitl_action:
+  // 'answer'`, and the route answered 200.
+  //
+  // TWO divergences stop it, and both are the SDK's, not this app's:
+  //
+  //  1. THE ANSWER IS REFUSED BY THE WORKER. `_require_in_process_hitl_resume`
+  //     (services/elitea-worker-python/src/elitea_worker/agents/sdk_adapter.py)
+  //     admits `{approve, reject, edit, block_with_comment}` for a decision
+  //     carrying no `guardrail_type` — and elitea-main omits that field
+  //     (`continue.go`'s `omitempty`), so `answer` matches nothing. Observed in
+  //     the worker log as `{"code":"UNSUPPORTED_CAPABILITY","safe_message":"The
+  //     HITL action is not supported."}`; the SDK's own resume handler
+  //     (`langraph_agent.py`, `guardrail_type == 'clarifying_question'`) is
+  //     never reached. The run never finishes and the conversation is left
+  //     holding a stale interrupt ("[HITL] Stale HITL interrupt detected for
+  //     tool 'ask_user'"). That is a real product defect on that leg — an
+  //     agent with `ask_user` enabled can be asked a question it can never be
+  //     answered — and this spec is the thing that would prove the fix.
+  //  2. THE QUESTION ID IS NOT THE MODEL'S. `_normalize_questions` re-keys the
+  //     questions `q1`, `q2`… and discards the `id` the model sent, so the
+  //     structured resume body arrives as `{q1: 'Staging'}` where the native
+  //     runtime sends `{environment: 'Staging'}` — and step 6's assertion is
+  //     about the model's own key, which is the half that binds an answer to
+  //     the question that was asked.
+  //
+  // So this stays a native-leg journey until (1) lands. Deleting the skip then
+  // needs (2) answered too: either the SDK preserves the id, or this spec's
+  // resume-body assertion is made leg-aware the way `chat.toolkit-hitl.spec.ts`
+  // handles `tool_call_id`.
+  //
   // E2E_WORKER comes from chat-stream-e2e.sh; local default = the native
   // runtime dev stack.
   test.skip(
     (process.env['E2E_WORKER'] ?? 'rust') !== 'rust',
-    'native-runtime ask_user shape; the SDK worker pauses differently',
+    'the SDK worker pauses on ask_user but refuses the `answer` resume ' +
+      '(sdk_adapter._require_in_process_hitl_resume) and re-keys the question id to `q1`',
   );
   // Two model round trips with a human decision between them: create, save,
   // chat, admission, the pause, the resume and a second dispatch. Every wait

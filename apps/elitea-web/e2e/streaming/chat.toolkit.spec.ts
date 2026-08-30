@@ -59,11 +59,40 @@
  *    and the note at step 7, which states exactly what the native runtime's
  *    `https_only()` client can and cannot do here.
  *
- * WORKER: the native Rust runtime (`STANDALONE_WORKER=rust`). Every step below
- * was measured against it and none against the SDK worker, whose OpenAPI
- * toolkit accepts a different configuration shape (`http://` base URLs and
- * remote specification URLs, both of which the native runtime refuses). A leg
- * for that worker is a separate journey, not a wider skip here.
+ * ── WHY THIS RUNS ON BOTH WORKERS, AND WHAT USED TO STOP IT ────────────────
+ *
+ * This file used to skip the python leg with `native-runtime openapi toolkit
+ * shape; the SDK worker admits a different configuration`. That reason was
+ * ASSERTED, never measured — the sentence it came from is about the SDK
+ * accepting `http://` base URLs and remote specification URLs, which is TRUE
+ * (`elitea_sdk/tools/openapi/api_wrapper.py` `_is_absolute_url` admits both
+ * schemes where the native worker's `parse_https_base` refuses everything but
+ * `https`) and IRRELEVANT here: this journey never authors either shape. It
+ * pastes the document the mock serves, at the `https://llm-mock:8090/tool`
+ * address the mock advertises, which BOTH workers admit.
+ *
+ * What actually kept it red on the python leg was the freeze, not the toolkit:
+ * a version pinned to a model with no `temperature` key reached the SDK
+ * worker, `elitea-sdk` read `data['llm_settings']['temperature']` with a
+ * SUBSCRIPT, and the turn died as a bare `builtins.KeyError` in an empty
+ * `is_error` row — the same failure for every spec on this page that pins
+ * `MOCK_MODEL`. `resolveCurrentAgentModel` now normalizes the family when the
+ * key is ABSENT and not only when it conflicts
+ * (`services/elitea-main/internal/application/agentexecution/tools.go`, pinned
+ * by `TestCurrentApplicationToolSnapshotAlwaysCarriesATemperature`).
+ *
+ * MEASURED, unmodified, against a python-worker standalone stack: green. The
+ * whole contract holds on both runtimes — the form's specification, the
+ * picker's mapping, the `{}` credential (`or {}` in the SDK's `get_toolkit` is
+ * what the freeze was taught to write), the `operationId`-named functions in
+ * the model request, the dispatch, and the tool-action row. So there is one
+ * assertion here and it is the same on both legs.
+ *
+ * The one thing that stays leg-shaped is `MockToolSpec.reachable`, and it is
+ * derived from the address the mock advertises rather than from the worker —
+ * see step 7. On the default stack that address is `https://`, which neither
+ * worker can complete (the mock serves plain HTTP behind it), so both legs
+ * assert the same empty tool journal.
  */
 import { expect, test } from '@playwright/test';
 
@@ -103,10 +132,9 @@ const MOCK_MODEL = process.env['E2E_MOCK_MODEL'] ?? 'vllm/E2E-MOCK-MODEL';
 test('an openapi toolkit authored in the form is offered to the model and its call is dispatched', async ({
   page,
 }) => {
-  test.skip(
-    (process.env['E2E_WORKER'] ?? 'rust') !== 'rust',
-    'native-runtime openapi toolkit shape; the SDK worker admits a different configuration',
-  );
+  // No worker skip: see the header. This journey is green on BOTH legs, and
+  // the branch it used to carry named a configuration difference this file
+  // never authors.
   // Two model round trips with a tool dispatch between them, on top of two
   // form flows. Every wait below is bounded well under this, so a real hang
   // fails on its own step rather than on the clock.

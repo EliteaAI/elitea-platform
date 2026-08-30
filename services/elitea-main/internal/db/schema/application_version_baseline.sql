@@ -25,3 +25,19 @@ CREATE TABLE application_versions (
     UNIQUE (application_id, name),
     UNIQUE (shared_owner_id, shared_id)
 );
+
+-- The version's authored variables. This is the AUTHORITATIVE store for them:
+-- pylon has no other (`ApplicationVersion.variables` is a relationship to
+-- `ApplicationVariable`), the version-detail GET, `GetVersionExpanded` and the
+-- export all read it, and `application_version_details_json` in
+-- internal/db/queries/agent_chat.sql reads it to serve a worker. `meta ->
+-- 'variables'` is only a mirror; see that projection's comment for the rule.
+CREATE TABLE application_variables (
+    id serial PRIMARY KEY,
+    application_version_id integer NOT NULL REFERENCES application_versions(id) ON DELETE CASCADE,
+    name varchar NOT NULL,
+    value varchar,
+    created_at timestamp NOT NULL DEFAULT now(),
+    updated_at timestamp,
+    UNIQUE (application_version_id, name)
+);

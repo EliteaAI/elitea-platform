@@ -1759,28 +1759,72 @@ SELECT conversation.id AS conversation_id,
            -- Containerfile` + "`" + `), so a third patch would have to be landed in
            -- another repository first.
            --
-           -- ` + "`" + `application_versions` + "`" + ` has no variables COLUMN: the authored rows
-           -- live in ` + "`" + `meta` + "`" + ` under ` + "`" + `variables` + "`" + `, folded in by
-           -- ` + "`" + `internal/api/v2/applications/handler.go:511-512` + "`" + ` (create) and
-           -- ` + "`" + `:915-933` + "`" + ` (update), and read back out under the ` + "`" + `variables` + "`" + ` key
-           -- by that same handler's ` + "`" + `versionDetailsResponse` + "`" + ` (:547, :568). The
-           -- runtime now reads exactly where the HTTP API reads, so the edit
-           -- page and the model cannot disagree about what an agent declares.
+           -- WHICH STORE. A version's variables have TWO of them, and this key
+           -- used to read the wrong one. ` + "`" + `p_<id>.application_variables` + "`" + ` is the
+           -- authoritative one:
            --
-           -- Type-gated rather than COALESCEd. Only an ARRAY is projected, so
-           -- a ` + "`" + `meta.variables` + "`" + ` written as an OBJECT still projects ` + "`" + `[]` + "`" + ` here
-           -- and is left to the two decoders that accept that spelling -- the
-           -- SDK's own dict branch and the native runtime's
-           -- ` + "`" + `variables::capture_variables` + "`" + ` -- both of which reach it through
-           -- the ` + "`" + `meta` + "`" + ` key this projection already carries. A ` + "`" + `meta` + "`" + ` that is
-           -- SQL NULL, jsonb ` + "`" + `null` + "`" + ` or any non-object yields NULL from ` + "`" + `->` + "`" + `,
-           -- whose ` + "`" + `jsonb_typeof` + "`" + ` is NULL and therefore not ` + "`" + `'array'` + "`" + `, so it
-           -- takes the same empty branch instead of erroring.
-           'variables', CASE
-               WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
-               THEN application_version.meta::jsonb -> 'variables'
-               ELSE '[]'::jsonb
-           END
+           --   * it is the ONLY store the legacy product has -- pylon's
+           --     ` + "`" + `ApplicationVersion.variables` + "`" + ` is a relationship to
+           --     ` + "`" + `ApplicationVariable` + "`" + `, and ` + "`" + `update_version` + "`" + ` dumps its payload
+           --     with ` + "`" + `exclude={'tags', 'variables', 'tools'}` + "`" + `, so a variable
+           --     can never reach ` + "`" + `meta` + "`" + ` there
+           --     (legacy/plugins/elitea_core/utils/application_utils.py,
+           --     utils/create_utils.py);
+           --   * every other reader in this repository already reads it -- the
+           --     version-detail GET the agent editor reloads through
+           --     (` + "`" + `fetchVersionDetails` + "`" + `), the runtime-facing
+           --     ` + "`" + `GetVersionExpanded` + "`" + ` (` + "`" + `versionVariables` + "`" + `), and the export
+           --     (` + "`" + `exportedVersionVariables` + "`" + `), which is what puts the
+           --     ` + "`" + `variables` + "`" + ` array into a portable document at all;
+           --   * so it is the store a FORKED agent has and the ` + "`" + `meta` + "`" + ` mirror
+           --     does not: the fork copies ` + "`" + `meta` + "`" + ` verbatim out of the export,
+           --     and an export of a legacy agent -- or of any agent this
+           --     platform imported -- carries no ` + "`" + `meta.variables` + "`" + ` to copy.
+           --     Reading the mirror alone gave every such agent an empty list.
+           --
+           -- ` + "`" + `meta -> 'variables'` + "`" + ` is a MIRROR, folded in by
+           -- ` + "`" + `internal/api/v2/applications/handler.go` + "`" + ` (` + "`" + `versionFromBody` + "`" + `) so
+           -- that endpoint's own 201 echo can report what it saved, and read
+           -- as a fallback by both worker-side decoders. It is kept here as
+           -- the second COALESCE branch, and ONLY as that: it is what an agent
+           -- imported before ` + "`" + `ExportImportPost` + "`" + ` learned to write the rows has,
+           -- and dropping it would take those agents' variables away a second
+           -- time. Rows win whenever a version has any.
+           --
+           -- The fallback is type-gated rather than COALESCEd. Only an ARRAY is
+           -- projected, so a ` + "`" + `meta.variables` + "`" + ` written as an OBJECT still
+           -- projects ` + "`" + `[]` + "`" + ` here and is left to the two decoders that accept
+           -- that spelling -- the SDK's own dict branch and the native
+           -- runtime's ` + "`" + `variables::capture_variables` + "`" + ` -- both of which reach it
+           -- through the ` + "`" + `meta` + "`" + ` key this projection already carries. A ` + "`" + `meta` + "`" + `
+           -- that is SQL NULL, jsonb ` + "`" + `null` + "`" + ` or any non-object yields NULL from
+           -- ` + "`" + `->` + "`" + `, whose ` + "`" + `jsonb_typeof` + "`" + ` is NULL and therefore not ` + "`" + `'array'` + "`" + `, so
+           -- it takes the same empty branch instead of erroring.
+           --
+           -- ` + "`" + `{name, value}` + "`" + ` and not the ` + "`" + `{id, name, value}` + "`" + ` that
+           -- ` + "`" + `GetVersionExpanded` + "`" + ` emits: it is the shape the fallback branch
+           -- carries, and one key set for both branches is what stops a worker
+           -- seeing two different documents for the same agent. ` + "`" + `value` + "`" + ` is
+           -- COALESCEd to '' because the column is nullable and both decoders
+           -- type it as a string.
+           'variables', COALESCE(
+               (
+                   SELECT jsonb_agg(
+                       jsonb_build_object(
+                           'name', authored_variable.name,
+                           'value', COALESCE(authored_variable.value, '')
+                       )
+                       ORDER BY authored_variable.id
+                   )
+                   FROM application_variables AS authored_variable
+                   WHERE authored_variable.application_version_id = application_version.id
+               ),
+               CASE
+                   WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
+                   THEN application_version.meta::jsonb -> 'variables'
+                   ELSE '[]'::jsonb
+               END
+           )
        )::text AS application_version_details_json
        -- END shared application_version_details_json projection
 FROM chat_conversations AS conversation
@@ -2334,28 +2378,72 @@ SELECT application_version.id AS application_version_id,
            -- Containerfile` + "`" + `), so a third patch would have to be landed in
            -- another repository first.
            --
-           -- ` + "`" + `application_versions` + "`" + ` has no variables COLUMN: the authored rows
-           -- live in ` + "`" + `meta` + "`" + ` under ` + "`" + `variables` + "`" + `, folded in by
-           -- ` + "`" + `internal/api/v2/applications/handler.go:511-512` + "`" + ` (create) and
-           -- ` + "`" + `:915-933` + "`" + ` (update), and read back out under the ` + "`" + `variables` + "`" + ` key
-           -- by that same handler's ` + "`" + `versionDetailsResponse` + "`" + ` (:547, :568). The
-           -- runtime now reads exactly where the HTTP API reads, so the edit
-           -- page and the model cannot disagree about what an agent declares.
+           -- WHICH STORE. A version's variables have TWO of them, and this key
+           -- used to read the wrong one. ` + "`" + `p_<id>.application_variables` + "`" + ` is the
+           -- authoritative one:
            --
-           -- Type-gated rather than COALESCEd. Only an ARRAY is projected, so
-           -- a ` + "`" + `meta.variables` + "`" + ` written as an OBJECT still projects ` + "`" + `[]` + "`" + ` here
-           -- and is left to the two decoders that accept that spelling -- the
-           -- SDK's own dict branch and the native runtime's
-           -- ` + "`" + `variables::capture_variables` + "`" + ` -- both of which reach it through
-           -- the ` + "`" + `meta` + "`" + ` key this projection already carries. A ` + "`" + `meta` + "`" + ` that is
-           -- SQL NULL, jsonb ` + "`" + `null` + "`" + ` or any non-object yields NULL from ` + "`" + `->` + "`" + `,
-           -- whose ` + "`" + `jsonb_typeof` + "`" + ` is NULL and therefore not ` + "`" + `'array'` + "`" + `, so it
-           -- takes the same empty branch instead of erroring.
-           'variables', CASE
-               WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
-               THEN application_version.meta::jsonb -> 'variables'
-               ELSE '[]'::jsonb
-           END
+           --   * it is the ONLY store the legacy product has -- pylon's
+           --     ` + "`" + `ApplicationVersion.variables` + "`" + ` is a relationship to
+           --     ` + "`" + `ApplicationVariable` + "`" + `, and ` + "`" + `update_version` + "`" + ` dumps its payload
+           --     with ` + "`" + `exclude={'tags', 'variables', 'tools'}` + "`" + `, so a variable
+           --     can never reach ` + "`" + `meta` + "`" + ` there
+           --     (legacy/plugins/elitea_core/utils/application_utils.py,
+           --     utils/create_utils.py);
+           --   * every other reader in this repository already reads it -- the
+           --     version-detail GET the agent editor reloads through
+           --     (` + "`" + `fetchVersionDetails` + "`" + `), the runtime-facing
+           --     ` + "`" + `GetVersionExpanded` + "`" + ` (` + "`" + `versionVariables` + "`" + `), and the export
+           --     (` + "`" + `exportedVersionVariables` + "`" + `), which is what puts the
+           --     ` + "`" + `variables` + "`" + ` array into a portable document at all;
+           --   * so it is the store a FORKED agent has and the ` + "`" + `meta` + "`" + ` mirror
+           --     does not: the fork copies ` + "`" + `meta` + "`" + ` verbatim out of the export,
+           --     and an export of a legacy agent -- or of any agent this
+           --     platform imported -- carries no ` + "`" + `meta.variables` + "`" + ` to copy.
+           --     Reading the mirror alone gave every such agent an empty list.
+           --
+           -- ` + "`" + `meta -> 'variables'` + "`" + ` is a MIRROR, folded in by
+           -- ` + "`" + `internal/api/v2/applications/handler.go` + "`" + ` (` + "`" + `versionFromBody` + "`" + `) so
+           -- that endpoint's own 201 echo can report what it saved, and read
+           -- as a fallback by both worker-side decoders. It is kept here as
+           -- the second COALESCE branch, and ONLY as that: it is what an agent
+           -- imported before ` + "`" + `ExportImportPost` + "`" + ` learned to write the rows has,
+           -- and dropping it would take those agents' variables away a second
+           -- time. Rows win whenever a version has any.
+           --
+           -- The fallback is type-gated rather than COALESCEd. Only an ARRAY is
+           -- projected, so a ` + "`" + `meta.variables` + "`" + ` written as an OBJECT still
+           -- projects ` + "`" + `[]` + "`" + ` here and is left to the two decoders that accept
+           -- that spelling -- the SDK's own dict branch and the native
+           -- runtime's ` + "`" + `variables::capture_variables` + "`" + ` -- both of which reach it
+           -- through the ` + "`" + `meta` + "`" + ` key this projection already carries. A ` + "`" + `meta` + "`" + `
+           -- that is SQL NULL, jsonb ` + "`" + `null` + "`" + ` or any non-object yields NULL from
+           -- ` + "`" + `->` + "`" + `, whose ` + "`" + `jsonb_typeof` + "`" + ` is NULL and therefore not ` + "`" + `'array'` + "`" + `, so
+           -- it takes the same empty branch instead of erroring.
+           --
+           -- ` + "`" + `{name, value}` + "`" + ` and not the ` + "`" + `{id, name, value}` + "`" + ` that
+           -- ` + "`" + `GetVersionExpanded` + "`" + ` emits: it is the shape the fallback branch
+           -- carries, and one key set for both branches is what stops a worker
+           -- seeing two different documents for the same agent. ` + "`" + `value` + "`" + ` is
+           -- COALESCEd to '' because the column is nullable and both decoders
+           -- type it as a string.
+           'variables', COALESCE(
+               (
+                   SELECT jsonb_agg(
+                       jsonb_build_object(
+                           'name', authored_variable.name,
+                           'value', COALESCE(authored_variable.value, '')
+                       )
+                       ORDER BY authored_variable.id
+                   )
+                   FROM application_variables AS authored_variable
+                   WHERE authored_variable.application_version_id = application_version.id
+               ),
+               CASE
+                   WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
+                   THEN application_version.meta::jsonb -> 'variables'
+                   ELSE '[]'::jsonb
+               END
+           )
        )::text AS application_version_details_json
        -- END shared application_version_details_json projection
 FROM application_versions AS application_version

@@ -2488,6 +2488,50 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				agentVersionImportUUIDToVerID[vImportUUID] = vID
 			}
 
+			// The version's authored variables. This path read the key not at
+			// all, and the loss was total and silent: the export writes the
+			// array from `p_<id>.application_variables`
+			// (export_import.go, exportedVersionVariables), and every reader of
+			// an agent reads that same table back — the version-detail GET the
+			// editor reloads through, `GetVersionExpanded`, and the next
+			// export. An import therefore answered 201 with an agent whose
+			// declared variables were gone from the screen, gone from the API,
+			// gone from the runtime, and gone from any document made of it
+			// afterwards, so the round trip could not survive a second trip.
+			//
+			// `meta` is not the store and cannot stand in for it: it is carried
+			// verbatim from the file above, so it holds a variable only when
+			// the source project was this platform (`versionFromBody` mirrors
+			// the list into it for the write echo) and never when the source
+			// was pylon, whose `update_version` dumps with
+			// `exclude={'tags', 'variables', 'tools'}`.
+			//
+			// Reported, not best-effort. A variable is a value the agent needs
+			// to run, so a lost one is the same 201-with-a-broken-agent the
+			// fork path's identical insert was changed away from, and the
+			// caller reads both through the same wizard channel.
+			if vars, ok := v["variables"].([]any); ok {
+				for _, varRaw := range vars {
+					varMap, _ := varRaw.(map[string]any)
+					if varMap == nil {
+						continue
+					}
+					varName, _ := varMap["name"].(string)
+					varValue, _ := varMap["value"].(string)
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+						INSERT INTO %s.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
+						vID, varName, varValue); err != nil {
+						slog.ErrorContext(ctx, "import: application variable insert failed",
+							"schema", s, "version_id", vID, "variable", varName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": ae.entityIdx,
+							"name":  name,
+							"msg":   "Import function has been failed: unable to import variable " + varName + ": " + err.Error(),
+						})
+					}
+				}
+			}
+
 			// Collect tool refs for later resolution
 			var toolRefs []map[string]any
 			if tools, ok := v["tools"].([]any); ok {
@@ -2795,7 +2839,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 //     member of. Only this function rewrites it to the destination;
 //   - carried no `meta.parent_entity_id`, so nothing recorded where it came
 //     from and the read path reported `is_forked: false` on a fork;
-//   - lost every version variable and every tag, which the import never reads.
+//   - lost every tag, which the import still does not read. It no longer
+//     loses the version's variables: the import writes
+//     `application_variables` too, because that table is where every
+//     reader of an agent looks and an import that skipped it dropped the
+//     variables out of the round trip entirely.
 //
 // The registration is the repair. This function keeps the errors channel and
 // the status rule the import uses, because the same wizard reads both.

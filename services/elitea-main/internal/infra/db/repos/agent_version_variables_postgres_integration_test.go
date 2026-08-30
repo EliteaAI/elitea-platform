@@ -23,10 +23,17 @@ import (
 // platform stores an ARRAY, so with the key hardcoded empty an authored
 // `{{topic}}` reached the model unsubstituted no matter what the user saved.
 //
-// The value has no column: `internal/api/v2/applications/handler.go` folds it
-// into `application_versions.meta` on create and update, and reads it back out
-// under the `variables` key in `versionDetailsResponse`. This test therefore
-// seeds `meta`, exactly as the HTTP write does, and reads the projection.
+// WHICH STORE the key reads is the second thing pinned here, and it is not
+// `meta`. A version's variables live in `p_<id>.application_variables`, the
+// only store pylon has and the one every other reader in this repository
+// already reads — the version-detail GET the editor reloads through, the
+// runtime-facing `GetVersionExpanded`, and the export. `meta -> 'variables'`
+// is a mirror the interactive write folds in for its own 201 echo, and a FORK
+// does not carry it: the fork copies `meta` verbatim out of an export, and an
+// export of a legacy or imported agent has no such key. Reading the mirror
+// alone therefore served every forked agent an empty list while its rows sat
+// in the table. The projection reads the rows and falls back to the mirror, so
+// this test seeds each store separately and pins which one wins.
 //
 // Both queries are asserted, not just the turn: the two copies of the block
 // are byte-identical by construction
@@ -142,6 +149,78 @@ UPDATE application_versions
 		}
 		if got := decodeCurrentVersionVariables(t, "meta "+meta, empty.ApplicationVersionDetailsJson); len(got) != 0 {
 			t.Errorf("meta %s projected %v, want an empty list", meta, got)
+		}
+	}
+
+	// THE ROWS. With `meta` left carrying an object spelling this projection
+	// deliberately ignores — the state the loop above left behind — the stored
+	// rows alone must fill the key. This is the shape a FORK produces and the
+	// shape every legacy agent has, and it used to project nothing at all.
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO application_variables (application_version_id, name, value) VALUES
+    (41, 'topic', 'release notes'),
+    (41, 'blank', NULL);`); err != nil {
+		t.Fatal(err)
+	}
+	fromRows, err := queries.ResolveCurrentApplicationVersionDetails(
+		t.Context(),
+		sqlcgen.ResolveCurrentApplicationVersionDetailsParams{
+			ApplicationVersionID: 41,
+			ApplicationID:        31,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// `id` is NOT projected, and `value` is '' and not null: one key set for
+	// both COALESCE branches, and the string type both decoders declare. The
+	// blank row is projected rather than filtered for the reason the first case
+	// states — that judgement belongs to the two decoders, not to SQL.
+	assertCurrentVersionVariables(t, "rows", fromRows.ApplicationVersionDetailsJson, []map[string]any{
+		{"name": "topic", "value": "release notes"},
+		{"name": "blank", "value": ""},
+	})
+
+	// PRECEDENCE. With rows present, a `meta` mirror that disagrees does not
+	// win. The rows are the authored store; the mirror is a fallback for the
+	// agents that have no rows, and a fallback that could override the store
+	// would let a stale copy of a list decide what the model is told.
+	if _, err := tx.Exec(t.Context(), `
+UPDATE application_versions
+   SET meta = '{"variables": [{"name": "topic", "value": "a stale mirror"}]}'::jsonb
+ WHERE id = 41;`); err != nil {
+		t.Fatal(err)
+	}
+	contested, err := queries.ResolveCurrentApplicationVersionDetails(
+		t.Context(),
+		sqlcgen.ResolveCurrentApplicationVersionDetailsParams{
+			ApplicationVersionID: 41,
+			ApplicationID:        31,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCurrentVersionVariables(t, "rows over a disagreeing meta", contested.ApplicationVersionDetailsJson, []map[string]any{
+		{"name": "topic", "value": "release notes"},
+		{"name": "blank", "value": ""},
+	})
+}
+
+func assertCurrentVersionVariables(t *testing.T, name, document string, want []map[string]any) {
+	t.Helper()
+	got := decodeCurrentVersionVariables(t, name, document)
+	if len(got) != len(want) {
+		t.Fatalf("%s projected %d variables, want %d: %s", name, len(got), len(want), document)
+	}
+	for index, row := range want {
+		if len(got[index]) != len(row) {
+			t.Errorf("%s variables[%d] = %v, want exactly the keys %v", name, index, got[index], row)
+		}
+		for key, value := range row {
+			if got[index][key] != value {
+				t.Errorf("%s variables[%d][%q] = %v, want %v", name, index, key, got[index][key], value)
+			}
 		}
 	}
 }
