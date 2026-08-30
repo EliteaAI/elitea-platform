@@ -232,19 +232,73 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, defaults)
 }
 
-func (h *Handler) ProjectInfo(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	ctx := r.Context()
-
-	var name string
-	err := h.pool.QueryRow(ctx, `SELECT name FROM centry.project WHERE id = $1`, projectID).Scan(&name)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"name": "", "icon_meta": nil})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "icon_meta": nil})
+// ProjectInfo REFUSES. It is reachable only when ELITEA_PROJECT_INFO_ENABLED
+// is off, which is the default.
+//
+// # WHY THERE IS NOTHING TO SERVE HERE
+//
+// It used to answer 200 with `{"name": …, "icon_meta": null}`, and every part
+// of that was a claim it had not measured:
+//
+//   - `icon_meta` was the literal nil on BOTH branches. The project's icon
+//     lives in the tenant `configuration` row (type='project_icon',
+//     elitea_title='project_icon_{N}'), which this handler never read. A
+//     project with an icon selected was told, with a 200, that it had none.
+//   - `teammates_count` was omitted entirely, and the web client turns the
+//     absent key into a rendered 0 via `?? 0`
+//     (apps/elitea-web/src/features/settings/ui/project-context/ProjectParamsHeader.tsx).
+//     Every project displayed "Teammates: 0" — a counted figure the server had
+//     never counted.
+//   - a failed query took the SAME 200, with an empty name. A dropped
+//     connection, a missing table and a project that genuinely has no name all
+//     arrived at the browser indistinguishable from each other, and from
+//     success.
+//
+// The real handler is internal/api/v2/projectinfo, which counts distinct
+// project members and reads the icon row.
+//
+// When ELITEA_PROJECT_INFO_ENABLED is on, cmd/elitea-main composes
+// projectinfo.CurrentProjectInfoRoute and internal/api/production_router.go
+// registers it at this exact path. chi resolves that explicitly registered
+// path ahead of the nested r.Route registration this handler sits behind, so
+// the real route wins and this function is never reached there.
+//
+// 501 with a machine-readable `code`, not 500, for the reason
+// internal/api/v2/analytics/handler.go:64-78 sets out: an absent producer is
+// the server's final answer, and it will be the final answer to the next
+// identical request too. apps/elitea-web/src/app/providers/queryClient.ts
+// classifies 501 as final (`isFinalClientAnswer`) and does not retry it, so
+// this refusal costs one request per screen rather than two.
+func (h *Handler) ProjectInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": "project info is not available on this deployment",
+		"code":  "project_info_not_available",
+		"detail": "teammates_count and icon_meta are served by the reviewed " +
+			"project-info route, which this deployment has not enabled " +
+			"(ELITEA_PROJECT_INFO_ENABLED)",
+	})
 }
 
+// UpdateProjectInfo writes what the caller sent. It used to read only
+// body["name"] and answer `{"ok":true}` — while the web client's only caller
+// of this route PUTs `{icon_meta}` and nothing else
+// (apps/elitea-web/src/entities/project/api/projectContextApi.ts,
+// updateProjectInfo). Selecting a project icon therefore returned success,
+// invalidated the query, refetched, and rendered no icon, forever, with two
+// 200s in the network tab.
+//
+// The icon is now written to the row projectinfo READS BACK — the same tenant
+// `configuration` row, matched on all three of project_id, type and
+// elitea_title (internal/api/v2/projectinfo/handler.go:113-124). The `data`
+// shape is the one the create-time normalizer produces for this type
+// (internal/application/configurations/local_configurations_normalizer.go:212),
+// i.e. `{"icon_meta": {"name": …, "url": …}}` with either field nullable, or
+// `{"icon_meta": null}` to clear it. Nothing here invents a URL.
+//
+// A write that fails is reported as a failure. The previous version discarded
+// every Exec error and still answered `{"ok":true}`, which is the same defect
+// in the other direction: the caller was told its edit had been saved when the
+// database had refused it.
 func (h *Handler) UpdateProjectInfo(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
@@ -252,10 +306,151 @@ func (h *Handler) UpdateProjectInfo(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore EOF/empty-body errors
 
-	if name, ok := body["name"].(string); ok && name != "" {
-		_, _ = h.pool.Exec(ctx, `UPDATE centry.project SET name = $1 WHERE id = $2`, name, projectID)
+	name, renaming := body["name"].(string)
+	renaming = renaming && name != ""
+
+	// An absent key means "leave the icon alone". An explicit null means "clear
+	// it" — the two are different requests and must not collapse, which is why
+	// this tests presence rather than nil-ness.
+	rawIcon, iconRequested := body["icon_meta"]
+
+	// The caller's own mistake is answered before any server-side precondition,
+	// so a malformed body gets 400 rather than being blamed on the database.
+	var iconMeta map[string]any
+	if iconRequested {
+		var err error
+		if iconMeta, err = normalizeProjectIconMeta(rawIcon); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "icon_meta must be null or an object with string name/url",
+				"code":  "invalid_icon_meta",
+			})
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	// The pool is only a precondition for a request that actually asks for a
+	// write. A PUT with neither field is a no-op, and answering it 500 would
+	// invent a failure the same way the old code invented a success.
+	if (renaming || iconRequested) && h.pool == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": projectInfoWriteFailed,
+			"code":  "project_info_write_failed",
+		})
+		return
+	}
+
+	response := map[string]any{"ok": true}
+
+	if renaming {
+		if _, err := h.pool.Exec(
+			ctx,
+			`UPDATE centry.project SET name = $1 WHERE id = $2`,
+			name, projectID,
+		); err != nil {
+			slog.ErrorContext(ctx, "update project info: rename failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": projectInfoWriteFailed,
+				"code":  "project_info_write_failed",
+			})
+			return
+		}
+		response["name"] = name
+	}
+
+	if !iconRequested {
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	if err := h.writeProjectIcon(ctx, w, projectID, iconMeta); err != nil {
+		return // writeProjectIcon has already answered.
+	}
+	response["icon_meta"] = iconMeta
+	writeJSON(w, http.StatusOK, response)
+}
+
+const projectInfoWriteFailed = "failed to save project info"
+
+// normalizeProjectIconMeta mirrors normalizeCurrentLocalProjectIcon in
+// internal/application/configurations — the create-time normalizer for
+// type='project_icon' — rather than importing it, because that function is
+// unexported and takes/returns the whole configuration `data` object. Keeping
+// the shape here identical to that one is what makes a row written by this
+// route indistinguishable from a row written through the configurations API.
+//
+// A nil return means an explicit null: clear the icon.
+func normalizeProjectIconMeta(raw any) (map[string]any, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	icon, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("icon_meta must be an object or null")
+	}
+	normalized := make(map[string]any, 2)
+	for _, field := range [...]string{"name", "url"} {
+		value, present := icon[field]
+		if !present || value == nil {
+			normalized[field] = nil
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("icon_meta.%s must be a string", field)
+		}
+		normalized[field] = text
+	}
+	return normalized, nil
+}
+
+// writeProjectIcon upserts the one tenant configuration row
+// internal/api/v2/projectinfo reads. It answers the request itself on failure
+// and returns a non-nil error to tell the caller it has done so.
+//
+// project_id, type and elitea_title are all set because the read matches on
+// all three; a row missing any of them reads back as "no icon" and the write
+// would be invisible again. `section` is 'project_settings' — the section the
+// configurations catalogue records for this type
+// (internal/application/configurations/current_available_snapshot.json).
+//
+// ON CONFLICT targets elitea_title alone: that is the column's own UNIQUE
+// constraint (internal/infra/db/migrations/001_initial.sql). A partial
+// conflict target (`... WHERE type = 'project_icon'`) needs a matching partial
+// unique index, which this table does not have.
+func (h *Handler) writeProjectIcon(
+	ctx context.Context,
+	w http.ResponseWriter,
+	projectID string,
+	iconMeta map[string]any,
+) error {
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return errors.New("invalid project id")
+	}
+	numericProjectID, err := strconv.ParseInt(projectID, 10, 64)
+	if err != nil || numericProjectID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project id"})
+		return errors.New("invalid project id")
+	}
+
+	// json.Marshal of a map[string]any built above cannot fail.
+	data, _ := json.Marshal(map[string]any{"icon_meta": iconMeta})
+	title := fmt.Sprintf("project_icon_%d", numericProjectID)
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s.configuration
+			(project_id, label, elitea_title, type, section, data, status_ok, created_at)
+		VALUES ($1, 'Project Icon', $2, 'project_icon', 'project_settings', $3, true, NOW())
+		ON CONFLICT (elitea_title) DO UPDATE
+			SET data = EXCLUDED.data, updated_at = NOW()`, schema)
+	if _, err := h.pool.Exec(ctx, query, numericProjectID, title, data); err != nil {
+		slog.ErrorContext(ctx, "update project info: icon write failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": projectInfoWriteFailed,
+			"code":  "project_info_write_failed",
+		})
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) ProjectContext(w http.ResponseWriter, r *http.Request) {
@@ -3578,30 +3773,175 @@ func (h *Handler) UpdateNotification(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) ListProjectIcons(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+// projectIconKeyPrefix separates project icons from the application icons
+// UploadIcon writes, inside the one `icons` bucket both share.
+//
+// A shared bucket, not a bucket of their own, because the ONLY route that
+// serves stored icons back to a browser is
+// `GET /icons/{projectID}/{filename}` (DownloadIcon, mounted unauthenticated
+// at router.go:806 — a browser <img src> carries no Authorization header), and
+// that route reads `iconBucket`. An icon written anywhere else would be stored
+// and then unreachable, which is the exact failure S20b was written to fix.
+// The `{filename}` parameter is one path segment, so the separation cannot be
+// a key directory either — it is a filename prefix.
+const projectIconKeyPrefix = "pi_"
+
+// iconStorageUnavailable answers the one condition all three project-icon
+// routes share: no object store is composed, so there is nowhere to put a
+// file, nothing to list and nothing to delete.
+//
+// 501 rather than 500 for the analytics reason
+// (internal/api/v2/analytics/handler.go:64-78): a store that was never
+// configured is a property of the deployment, identical for every retry.
+func iconStorageUnavailable(w http.ResponseWriter) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": "project icon storage is not available on this deployment",
+		"code":  "icon_storage_not_configured",
+		"detail": "uploaded project icons need an object store " +
+			"(STORAGE_BACKEND / STORAGE_CONTAINER)",
+	})
 }
 
+// ListProjectIcons returns the icons this project has actually uploaded.
+//
+// It used to return a hardcoded empty page, so the icon picker's "uploaded"
+// grid was permanently empty however many icons had been uploaded — and the
+// grid gave no sign that it had never looked.
+//
+// The response key is `rows`, not the `items` the stub used: `rows`/`total` is
+// the shape the caller unwraps
+// (apps/elitea-web/src/entities/project/api/projectContextApi.ts,
+// fetchProjectIcons via unwrapListPage) and the shape pylon's project_icon
+// listing answers.
+func (h *Handler) ListProjectIcons(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+
+	if h.store == nil {
+		iconStorageUnavailable(w)
+		return
+	}
+
+	bucket, err := storage.NewBucketRef(projectID, iconBucket)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project"})
+		return
+	}
+
+	page, err := h.store.List(r.Context(), storage.ListQuery{
+		Bucket:    bucket,
+		KeyPrefix: projectIconKeyPrefix,
+	})
+	if err != nil {
+		slog.ErrorContext(r.Context(), "list project icons", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to list project icons",
+			"code":  "icon_list_failed",
+		})
+		return
+	}
+
+	rows := make([]map[string]any, 0, len(page.Objects))
+	for _, object := range page.Objects {
+		rows = append(rows, map[string]any{
+			"name": object.Key,
+			"url":  fmt.Sprintf("/icons/%s/%s", projectID, object.Key),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "total": len(rows)})
+}
+
+// CreateProjectIcon stores the uploaded file.
+//
+// It used to parse the multipart form, DISCARD it, and answer 200 with a
+// fabricated `/app/project_icon/{projectID}/{name}` URL that nothing served
+// and nothing had ever written to — the upload reported success, the picker
+// then listed nothing, and no error appeared anywhere.
+//
+// The stored name is generated rather than taken from the upload, exactly as
+// UploadIcon does: the name becomes a path segment of a public,
+// unauthenticated URL and the key of a stored object, and the extension
+// allowlist in safeIconExtension is what keeps DownloadIcon from serving
+// attacker-chosen content types from the app's own origin (see the comment on
+// allowedIconExtensions).
 func (h *Handler) CreateProjectIcon(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 
-	_ = r.ParseMultipartForm(512 * 1024) // ignore parse errors; FormValue still returns ""
-	name := r.FormValue("name")
-	if name == "" {
-		_, header, err := r.FormFile("file")
-		if err == nil && header != nil {
-			name = header.Filename
-		}
+	_ = r.ParseMultipartForm(512 * 1024) // ignore parse errors; FormFile reports them
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "a file part is required",
+			"code":  "missing_file",
+		})
+		return
 	}
-	if name == "" {
-		name = generateID()
+	defer func() { _ = file.Close() }()
+
+	if h.store == nil {
+		iconStorageUnavailable(w)
+		return
 	}
 
-	url := fmt.Sprintf("/app/project_icon/%s/%s", projectID, name)
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "url": url})
+	name := projectIconKeyPrefix + generateID() + safeIconExtension(header.Filename)
+	ref, err := storage.NewObjectRef(projectID, iconBucket, name)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project"})
+		return
+	}
+
+	contentType := mime.TypeByExtension(safeIconExtension(header.Filename))
+	if _, err := h.store.Put(r.Context(), ref, file, storage.PutOptions{
+		ContentType:   contentType,
+		ContentLength: -1,
+	}); err != nil {
+		slog.ErrorContext(r.Context(), "create project icon", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to save project icon",
+			"code":  "icon_write_failed",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name,
+		"url":  fmt.Sprintf("/icons/%s/%s", projectID, name),
+	})
 }
 
-func (h *Handler) DeleteProjectIcon(w http.ResponseWriter, _ *http.Request) {
+// DeleteProjectIcon removes the stored object.
+//
+// It used to answer 204 and do nothing at all, so a deleted icon reappeared on
+// the next listing.
+//
+// A 204 for an object that was already absent is deliberate — Delete is
+// documented idempotent — but a store that could not be reached is reported,
+// because "gone" and "we could not tell" are different answers.
+func (h *Handler) DeleteProjectIcon(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	name := chi.URLParam(r, "name")
+
+	if h.store == nil {
+		iconStorageUnavailable(w)
+		return
+	}
+	if !validIconPathSegment(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid icon name"})
+		return
+	}
+
+	ref, err := storage.NewObjectRef(projectID, iconBucket, name)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project"})
+		return
+	}
+	if err := h.store.Delete(r.Context(), ref); err != nil {
+		slog.ErrorContext(r.Context(), "delete project icon", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to delete project icon",
+			"code":  "icon_delete_failed",
+		})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

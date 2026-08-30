@@ -23,6 +23,9 @@ import { useSecretPermissions } from './lib/secrets/useSecretPermissions';
 
 import { ProjectContextBody, ProjectContextToasts } from './ui/project-context/ProjectContextBody';
 import { projectContextStyles } from './ui/project-context/ProjectContext.styles';
+// Type-only, so it costs no export slot (same as `PromptConfig` above). The
+// page that persists an icon needs the shape the dialog emits.
+export type { SelectedProjectIcon } from './ui/project-context/ProjectIconDialog';
 
 import { useDefaultModel } from './lib/profile/useDefaultModel';
 import { ProfileFormContent } from './ui/profile/ProfileFormContent';

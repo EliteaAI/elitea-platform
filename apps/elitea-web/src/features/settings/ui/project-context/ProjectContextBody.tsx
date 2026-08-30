@@ -18,6 +18,7 @@ import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 import { t } from '@/shared/i18n';
 import { projectContextStyles } from './ProjectContext.styles';
 import { ProjectParamsHeader } from './ProjectParamsHeader';
+import type { SelectedProjectIcon } from './ProjectIconDialog';
 import { EnableToggleCard } from './EnableToggleCard';
 import { EditorSection } from './EditorSection';
 
@@ -61,7 +62,7 @@ interface EditorActions {
 }
 
 interface SaveActions {
-  handleIconChange: (iconName: string | null) => Promise<void>;
+  handleIconChange: (icon: SelectedProjectIcon | null) => Promise<void>;
   handleSave: () => Promise<void>;
   handleDiscard: () => void;
 }
@@ -117,7 +118,7 @@ export function ProjectContextBody({
             projectId={project.projectId}
             projectName={project.projectName}
             canEdit={editorState.canEdit}
-            onIconChange={(iconName: string | null) => void saveActions.handleIconChange(iconName)}
+            onIconChange={(icon: SelectedProjectIcon | null) => void saveActions.handleIconChange(icon)}
           />
 
           {pageState.showReadOnlyBanner && (

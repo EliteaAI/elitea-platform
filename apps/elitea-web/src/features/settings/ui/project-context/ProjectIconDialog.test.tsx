@@ -17,7 +17,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
 import { HttpResponse, http } from 'msw';
-import { describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 import { configureGeneratedClient } from '@/shared/api/generated/mutator';
@@ -71,5 +72,53 @@ describe('ProjectIconDialog icon fallback', () => {
       expect(screen.queryByAltText('wrench')).toBeNull();
     });
     expect(screen.getByText('W')).toBeTruthy();
+  });
+});
+
+/**
+ * The selection callback used to hand the parent the icon's NAME and nothing
+ * else, and the parent PUT that name as the whole `icon_meta`. The header
+ * renders `icon_meta.url`, so the stored row was unusable the moment it became
+ * storable — a second silent no-op waiting behind the first.
+ *
+ * This test fails against the name-only callback: it asserts the url is there.
+ */
+describe('ProjectIconDialog selection payload', () => {
+  it('reports the selected icon url alongside its name', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/default_icons/prompt_lib/1`, () => HttpResponse.json([])),
+      http.get(`${BASE}/elitea_core/project_icon/prompt_lib/1`, () =>
+        HttpResponse.json({
+          rows: [{ name: 'pi_abc.png', url: '/icons/1/pi_abc.png' }],
+          total: 1,
+        }),
+      ),
+    );
+
+    const onIconSelect = vi.fn();
+    configureGeneratedClient({ baseUrl: BASE });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
+        <CssBaseline />
+        <QueryClientProvider client={queryClient}>
+          <ProjectIconDialog
+            open
+            onClose={() => {}}
+            onIconSelect={onIconSelect}
+            projectId="1"
+            projectName="Demo"
+            selectedIcon={null}
+          />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+
+    await userEvent.click(await screen.findByAltText('pi_abc.png'));
+
+    expect(onIconSelect).toHaveBeenCalledWith({
+      name: 'pi_abc.png',
+      url: '/icons/1/pi_abc.png',
+    });
   });
 });

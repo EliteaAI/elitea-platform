@@ -25,7 +25,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { BannerMessage } from '@/shared/ui/BannerMessage';
-import { projectContextFeature } from '@/features/settings';
+import { projectContextFeature, type SelectedProjectIcon } from '@/features/settings';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 import { t } from '@/shared/i18n';
 import {
@@ -218,9 +218,14 @@ export function ProjectContext({
     fileInputRef.current?.click();
   }, []);
 
-  const handleIconChange = useCallback(async (iconName: string | null) => {
+  // The `url` travels with the `name`. Sending the name alone stored an
+  // icon_meta the header could not draw — it renders `icon_meta.url` and has no
+  // way to resolve a name into an image (see SelectedProjectIcon).
+  const handleIconChange = useCallback(async (icon: SelectedProjectIcon | null) => {
     try {
-      await updateProjectInfoMutation.mutateAsync(iconName ? { name: iconName } : null);
+      await updateProjectInfoMutation.mutateAsync(
+        icon ? { name: icon.name, url: icon.url ?? null } : null,
+      );
     } catch {
       // Icon persistence error — not fatal, but worth noting
       console.error(t('entities.projectContext.content.iconSaveFailed', 'Failed to save icon'));

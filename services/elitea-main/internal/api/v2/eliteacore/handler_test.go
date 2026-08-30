@@ -474,44 +474,30 @@ func TestUpdateNotification(t *testing.T) {
 }
 
 // ---- Project Icons ----------------------------------------------------------
+//
+// The three tests that used to live here asserted the stubs: an empty `items`
+// page, a fabricated `{name,url}` for an upload that was discarded, and a 204
+// from a delete that deleted nothing. All three passed BECAUSE the handlers
+// did nothing, so they would have gone on passing forever. They are replaced
+// by project_info_honest_refusal_test.go, which asserts the refusal when no
+// store is composed and the round trip (upload → download → list → delete)
+// when one is.
 
-func TestListProjectIcons(t *testing.T) {
-	h := newHandler()
+// TestCreateProjectIconRejectsARequestWithNoFile keeps the one input case that
+// is the caller's mistake rather than the deployment's absence. The previous
+// handler answered 200 here, with a URL built from a generated id, for a
+// request that carried no file at all.
+func TestCreateProjectIconRejectsARequestWithNoFile(t *testing.T) {
 	w := httptest.NewRecorder()
-	h.ListProjectIcons(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	newHandler().CreateProjectIcon(
+		w,
+		newRequest(http.MethodPost, "/", map[string]string{"projectID": "7"}, nil),
+	)
 
-	assertStatus(t, w, http.StatusOK)
-	body := decodeObj(t, w)
-	if _, ok := body["items"]; !ok {
-		t.Error("response must contain 'items' key")
+	assertStatus(t, w, http.StatusBadRequest)
+	if code, _ := decodeObj(t, w)["code"].(string); code != "missing_file" {
+		t.Errorf("code = %q, want missing_file", code)
 	}
-	if total, _ := body["total"].(float64); total != 0 {
-		t.Errorf("total should be 0, got %v", body["total"])
-	}
-}
-
-func TestCreateProjectIcon(t *testing.T) {
-	h := newHandler()
-	w := httptest.NewRecorder()
-	h.CreateProjectIcon(w, httptest.NewRequest(http.MethodPost, "/", nil))
-
-	// Handler returns 200 with {name, url} (no "ok" field).
-	assertStatus(t, w, http.StatusOK)
-	body := decodeObj(t, w)
-	if _, hasURL := body["url"]; !hasURL {
-		t.Error("response must contain 'url' key")
-	}
-	if _, hasName := body["name"]; !hasName {
-		t.Error("response must contain 'name' key")
-	}
-}
-
-func TestDeleteProjectIcon(t *testing.T) {
-	h := newHandler()
-	w := httptest.NewRecorder()
-	h.DeleteProjectIcon(w, httptest.NewRequest(http.MethodDelete, "/", nil))
-
-	assertStatus(t, w, http.StatusNoContent)
 }
 
 // ---- MCP Proxies ------------------------------------------------------------
