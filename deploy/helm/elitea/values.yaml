@@ -26,14 +26,24 @@
 #                       platform_origin.
 #
 # THE ARTIFACT BUCKET MUST EXIST BEFORE THE FIRST SYNC, and this one bites
-# early: elitea-main probes the object store at boot and REFUSES to start
-# without it —
+# early, but NOT the way it looks at first read. The readiness probe
+# (objectStoreReadinessProbe, cmd/elitea-main/main.go) tolerates a missing
+# bucket — mapS3Error maps NoSuchBucket/NotFound the same way HeadObject on a
+# genuinely-missing object does, so the probe PASSES. What actually fails is
+# the very next boot step, configureObjectStoreRetentionLifecycle, whose
+# PutBucketLifecycleConfiguration call has no such tolerance. And it is the
+# elitea-main DEPLOYMENT that fails, not the migration Job: /elitea-migrate is
+# a different binary that never touches object storage, so the migration Job
+# and the Helm release both report success — only the Deployment starts
+# crash-looping, AFTER the install already looked green.
 #
-#   object store readiness probe: storage/s3: stat object: ... HeadObject ...
-#
-# so the migration Job fails and the release aborts. The compose stack creates
-# it (`rustfs-bucket-init`); on a managed object store it is a console or
-# terraform step. Create the bucket named by `main.env.STORAGE_CONTAINER`.
+# The compose stack creates the bucket (`rustfs-bucket-init`); this chart can
+# do the same for a self-hosted S3-compatible endpoint via `objectInit`
+# (off by default — see that block for why). On a managed object store,
+# creating it remains a console/terraform/IaC step outside this chart: the
+# scoped credential a pod is handed there routinely lacks CreateBucket rights,
+# even when it can read/write objects. Whichever way it is created, it must be
+# named by `main.env.STORAGE_CONTAINER` before the first sync.
 #
 # NOT REQUIRED, and deleted: pylon-indexer. Index ingest is served by the Go
 # runtime plane through the agent worker, on the same command stream and
@@ -115,6 +125,19 @@ redis:
 dbInit:
   enabled: true
 
+  # Set true ONLY when the agent-state database named by `agentStateDatabase`
+  # below (and the `vector` extension) were already created by something
+  # outside this chart, and you are turning `enabled` off to avoid redoing it.
+  # This is the guard's escape hatch (templates/guards.yaml): worker.enabled
+  # with dbInit.enabled=false and this still false is refused at render time,
+  # because that combination installs cleanly and fails later, per-execution,
+  # with "The durable agent checkpoint store is unavailable" — no different
+  # from the database never having been created. There is no way for the chart
+  # to check the database itself at render time, so this is a statement, not a
+  # probe: it exists to make the operator say the words instead of the chart
+  # silently assuming them.
+  externallyManaged: false
+
   # Needs CREATE DATABASE and CREATE EXTENSION, which the application role
   # usually lacks — hence its own secret rather than reusing `postgresql`.
   # Point it at the operator's superuser DSN for the PLATFORM database; the
@@ -152,6 +175,65 @@ dbInit:
     limits:
       cpu: "1"
       memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+
+# ── Artifact bucket preparation ─────────────────────────────────────────────
+#
+# Mirrors compose's `rustfs-bucket-init`: creates the bucket named by
+# `main.env.STORAGE_CONTAINER` if it does not already exist, before elitea-main
+# starts. See the header comment above for why an install can look green and
+# then crash-loop on this — the readiness probe tolerates a missing bucket,
+# configureObjectStoreRetentionLifecycle does not.
+#
+# DEFAULT IS OFF, DELIBERATELY. This chart cannot know, for an arbitrary S3,
+# Azure or GCS account, whether the credential it has been handed can create a
+# bucket/container — CreateBucket (S3) and its equivalents are commonly
+# withheld even from credentials that can freely Get/Put/List objects, because
+# bucket creation is an account-level, sometimes billing-relevant action that
+# platform teams keep out of application-scoped IAM. A default-on Job would
+# therefore either (a) silently do nothing useful on most managed clouds
+# because it lacks the rights, discovered only when it fails — the same
+# install-green-fail-later shape this fix exists to remove — or worse,
+# (b) succeed unexpectedly, having used more ambient privilege than the
+# operator intended to grant this release. A self-hosted S3-compatible
+# endpoint the operator administers directly (RustFS, MinIO — the standalone
+# stack's own topology) is exactly the case where turning this on is safe and
+# useful, so it is opt-in per install rather than assumed.
+#
+# Backend support: S3-compatible only (the same `mc` tool compose uses).
+# Azure/GCS container creation is not implemented here; enabling this with
+# main.env.STORAGE_BACKEND set to "azure" or "gcs" fails the Job on purpose
+# rather than silently skipping, so a mis-set flag is caught at install time.
+objectInit:
+  enabled: false
+
+  image:
+    repository: docker.io/minio/mc
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # Credentials for the `mc alias set` used to create the bucket. Static keys
+  # only — `mc` does not perform the ambient workload-identity credential
+  # chains internal/infra/storage/s3 falls back to, so a cluster running S3
+  # via workload identity (no S3_ACCESS_KEY/S3_SECRET_KEY Secret) cannot use
+  # this Job and must pre-create the bucket out-of-band instead.
+  credentials:
+    secretName: elitea-main-storage-secrets
+    accessKeyKey: s3-access-key
+    secretKeyKey: s3-secret-key
+
+  imagePullSecrets: []
+  backoffLimit: 3
+  runAsUser: 1000
+  runAsGroup: 1000
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: "1"
+      memory: 128Mi
   nodeSelector: {}
   tolerations: []
 
@@ -2005,6 +2087,29 @@ worker:
         cpu: 500m
         memory: 256Mi
 
+    # Renews the row on a schedule, because nothing else does. The pre-install
+    # hook above only ever runs at install/upgrade time — a cluster that never
+    # gets a `helm upgrade` for `ttl` (default 90 days) goes dark with exactly
+    # the signature of never having been provisioned, and that failure looks
+    # identical to the outage this whole Job exists to prevent.
+    renew:
+      enabled: true
+
+      # Roughly ttl/3 (default ttl is 2160h = 90 days, so every ~10 days here),
+      # not exactly a third: Kubernetes CronJob schedules are calendar cron, not
+      # a duration offset from install time, so a day-of-month step value is the
+      # closest expression of "every N days" and this errs toward MORE frequent
+      # than a bare ttl/3 would need — cheap insurance against a single missed
+      # run (image pull failure, node pressure) actually costing an expiry.
+      # If you change `ttl`, re-derive this alongside it; the two are not
+      # linked automatically.
+      schedule: "0 3 */10 * *"
+
+      concurrencyPolicy: Forbid
+      startingDeadlineSeconds: 3600
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+
   runtime:
     # These two are half of the authorization tuple; runtimeSession above reads
     # the third out of the certificate and writes all three as one row. Changing
@@ -2128,8 +2233,9 @@ runtimeRedis:
     pullPolicy: IfNotPresent
 
   # Server certificate, CA and the ACL file all arrive in ONE Secret, minted by
-  # scripts/mint-elitea-secrets.sh. Keys: runtime-ca.crt, redis-server.crt,
-  # redis-server.key, redis-users.acl, redis-bootstrap-password.
+  # deploy/scripts/gen-runtime-certs.sh (the only material-minting script this
+  # repo ships). Keys: runtime-ca.crt, redis-server.crt, redis-server.key,
+  # redis-users.acl, redis-bootstrap-password.
   #
   # Unlike elitea-main's material, redis enforces no permission bits of its own,
   # so a plain Secret volume is enough — no copy-into-emptyDir init container.
@@ -2138,9 +2244,12 @@ runtimeRedis:
   tlsPort: 6380
 
   service:
-    # The name is load-bearing: it is the host in every rediss:// URL AND the
-    # only SAN on redis-server.crt. Renaming it silently breaks the TLS
-    # handshake with a message that reads like a trust problem.
+    # The name is load-bearing: it is the host in every rediss:// URL, and
+    # deploy/scripts/gen-runtime-certs.sh bakes it in as a SAN on
+    # redis-server.crt alongside the compose service name `runtime-redis` (so
+    # the same material serves both stacks). Renaming it away from what the
+    # script issues silently breaks the TLS handshake with a message that
+    # reads like a trust problem.
     name: elitea-runtime-redis
 
   # XGROUP CREATE ... MKSTREAM for the dispatch streams, run as a Helm hook on
