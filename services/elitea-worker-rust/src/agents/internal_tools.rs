@@ -1,0 +1,489 @@
+//! Bounded first-class internal tools owned by the native agent runtime.
+//!
+//! Internal tools are selected by application/conversation configuration but
+//! are not configured external toolkit snapshots. `ask_user` is intentionally
+//! implemented as an ordinary ADK tool plus native confirmation: the durable
+//! confirmation event parks the exact model call, and resume substitutes the
+//! user's answer under that same function-call ID.
+
+use std::sync::Arc;
+
+use adk_rust::tool::BasicToolset;
+use adk_rust::{AdkError, Tool, ToolContext, Toolset};
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+
+pub(crate) const ASK_USER_TOOL_NAME: &str = "ask_user";
+pub(crate) const ASK_USER_TOOLSET_NAME: &str = "ask_user";
+pub(crate) const ASK_USER_GUARDRAIL_TYPE: &str = "clarifying_question";
+pub(crate) const ASK_USER_ANSWER_ACTION: &str = "answer";
+pub(crate) const ASK_USER_METADATA_KEY: &str = "elitea.ask_user.v1";
+
+const MAX_QUESTIONS: usize = 4;
+const MAX_OPTIONS: usize = 8;
+const MAX_QUESTION_BYTES: usize = 2_000;
+const MAX_HEADER_BYTES: usize = 128;
+const MAX_OPTION_LABEL_BYTES: usize = 256;
+const MAX_OPTION_DESCRIPTION_BYTES: usize = 1_000;
+const MAX_QUESTION_ID_BYTES: usize = 64;
+const MAX_ENCODED_REQUEST_BYTES: usize = 16 * 1_024;
+const MAX_ANSWER_BYTES: usize = 16 * 1_024;
+
+const ASK_USER_DESCRIPTION: &str = "Ask the user a clarifying question when information is missing or the requested choice is ambiguous instead of guessing. Present 1-4 questions, each with a short header and selectable options; the user can choose an option or provide another answer when allowed. Use this only for genuine decision points, not to request permission to run another tool.";
+
+/// Strict, frozen set of runtime-owned internal tool capabilities.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct InternalToolCatalog {
+    ask_user: bool,
+}
+
+impl InternalToolCatalog {
+    #[must_use]
+    pub(crate) const fn empty() -> Self {
+        Self { ask_user: false }
+    }
+
+    pub(crate) fn from_values(values: Option<&Value>) -> Result<Self, InternalToolError> {
+        let Some(values) = values else {
+            return Ok(Self::default());
+        };
+        let values = values.as_array().ok_or(InternalToolError::InvalidInput)?;
+        let mut catalog = Self::default();
+        for value in values {
+            match value.as_str() {
+                Some(ASK_USER_TOOL_NAME) if !catalog.ask_user => catalog.ask_user = true,
+                Some(_) => return Err(InternalToolError::UnsupportedCapability),
+                None => return Err(InternalToolError::InvalidInput),
+            }
+        }
+        Ok(catalog)
+    }
+
+    pub(crate) fn from_names(values: &[String]) -> Result<Self, InternalToolError> {
+        Self::from_values(Some(&Value::Array(
+            values.iter().cloned().map(Value::String).collect(),
+        )))
+    }
+
+    pub(crate) const fn merge(self, other: Self) -> Self {
+        Self {
+            ask_user: self.ask_user || other.ask_user,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn ask_user_enabled(self) -> bool {
+        self.ask_user
+    }
+
+    #[must_use]
+    pub(crate) const fn is_empty(self) -> bool {
+        !self.ask_user
+    }
+
+    pub(crate) fn toolsets(self) -> Vec<Arc<dyn Toolset>> {
+        if !self.ask_user {
+            return Vec::new();
+        }
+        vec![Arc::new(BasicToolset::new(
+            ASK_USER_TOOLSET_NAME,
+            vec![Arc::new(AskUserTool) as Arc<dyn Tool>],
+        ))]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InternalToolError {
+    InvalidInput,
+    UnsupportedCapability,
+    ResourceExhausted,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AskUserRequest {
+    questions: Vec<AskUserQuestion>,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AskUserQuestion {
+    id: String,
+    question: String,
+    header: String,
+    options: Vec<AskUserOption>,
+    #[serde(rename = "multiSelect")]
+    multi_select: bool,
+    allow_other: bool,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AskUserOption {
+    label: String,
+    description: String,
+}
+
+impl AskUserRequest {
+    pub(crate) fn from_arguments(arguments: &Value) -> Result<Self, InternalToolError> {
+        let object = arguments
+            .as_object()
+            .ok_or(InternalToolError::InvalidInput)?;
+        if object.keys().any(|key| key != "questions") {
+            return Err(InternalToolError::InvalidInput);
+        }
+        let raw_questions = object
+            .get("questions")
+            .and_then(Value::as_array)
+            .ok_or(InternalToolError::InvalidInput)?;
+        if raw_questions.is_empty() || raw_questions.len() > MAX_QUESTIONS {
+            return Err(InternalToolError::ResourceExhausted);
+        }
+        let mut questions = Vec::with_capacity(raw_questions.len());
+        for (index, raw) in raw_questions.iter().enumerate() {
+            questions.push(AskUserQuestion::normalize(raw, index)?);
+        }
+        let request = Self { questions };
+        if serde_json::to_vec(&request)
+            .map_err(|_| InternalToolError::InvalidInput)?
+            .len()
+            > MAX_ENCODED_REQUEST_BYTES
+        {
+            return Err(InternalToolError::ResourceExhausted);
+        }
+        Ok(request)
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        self.questions
+            .first()
+            .map_or("Please answer to continue.", |question| {
+                question.question.as_str()
+            })
+    }
+
+    pub(crate) fn questions_value(&self) -> Value {
+        serde_json::to_value(&self.questions).unwrap_or_else(|_| Value::Array(Vec::new()))
+    }
+
+    pub(crate) fn arguments_value(&self) -> Value {
+        json!({"questions": self.questions_value()})
+    }
+
+    pub(crate) fn matches_arguments(&self, arguments: &Value) -> bool {
+        Self::from_arguments(arguments).is_ok_and(|candidate| candidate == *self)
+    }
+
+    pub(crate) fn format_answer(&self, encoded: &str) -> Result<Value, InternalToolError> {
+        if encoded.is_empty() || encoded.len() > MAX_ANSWER_BYTES || encoded.contains('\0') {
+            return Err(InternalToolError::InvalidInput);
+        }
+        let decoded = serde_json::from_str::<Value>(encoded)
+            .unwrap_or_else(|_| Value::String(encoded.to_owned()));
+        let output = match decoded {
+            Value::String(text) => {
+                let text = text.trim();
+                if text.is_empty() {
+                    "User did not provide an answer.".to_owned()
+                } else {
+                    format!("User answered: {text}")
+                }
+            }
+            Value::Object(answers) => self.format_answer_map(&answers)?,
+            _ => return Err(InternalToolError::InvalidInput),
+        };
+        Ok(Value::String(output))
+    }
+
+    fn format_answer_map(&self, answers: &Map<String, Value>) -> Result<String, InternalToolError> {
+        if answers.len() > MAX_QUESTIONS
+            || answers
+                .keys()
+                .any(|key| !self.questions.iter().any(|question| question.id == *key))
+        {
+            return Err(InternalToolError::InvalidInput);
+        }
+        let mut lines = Vec::new();
+        for question in &self.questions {
+            let Some(value) = answers.get(&question.id) else {
+                continue;
+            };
+            let rendered = match value {
+                Value::String(value) => value.trim().to_owned(),
+                Value::Array(values) if question.multi_select && values.len() <= MAX_OPTIONS => {
+                    let values = values
+                        .iter()
+                        .map(Value::as_str)
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or(InternalToolError::InvalidInput)?;
+                    values
+                        .into_iter()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+                _ => return Err(InternalToolError::InvalidInput),
+            };
+            if !rendered.is_empty() {
+                let label = if question.question.is_empty() {
+                    if question.header.is_empty() {
+                        &question.id
+                    } else {
+                        &question.header
+                    }
+                } else {
+                    &question.question
+                };
+                lines.push(format!("- {label}: {rendered}"));
+            }
+        }
+        if lines.is_empty() {
+            Ok("User did not provide an answer.".to_owned())
+        } else {
+            Ok(format!("User answered:\n{}", lines.join("\n")))
+        }
+    }
+}
+
+impl AskUserQuestion {
+    fn normalize(raw: &Value, index: usize) -> Result<Self, InternalToolError> {
+        let object = raw.as_object().ok_or(InternalToolError::InvalidInput)?;
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "id" | "question"
+                    | "header"
+                    | "options"
+                    | "multi_select"
+                    | "multiSelect"
+                    | "allow_other"
+            )
+        }) {
+            return Err(InternalToolError::InvalidInput);
+        }
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map_or_else(|| format!("q{}", index + 1), ToOwned::to_owned);
+        let question = optional_text(object.get("question"), MAX_QUESTION_BYTES)?;
+        let header = optional_text(object.get("header"), MAX_HEADER_BYTES)?;
+        if question.is_empty() && header.is_empty() {
+            return Err(InternalToolError::InvalidInput);
+        }
+        if id.is_empty() || id.len() > MAX_QUESTION_ID_BYTES || id.chars().any(char::is_control) {
+            return Err(InternalToolError::InvalidInput);
+        }
+        let raw_options = match object.get("options") {
+            None | Some(Value::Null) => &[][..],
+            Some(Value::Array(values)) if values.len() <= MAX_OPTIONS => values.as_slice(),
+            Some(Value::Array(_)) => return Err(InternalToolError::ResourceExhausted),
+            Some(_) => return Err(InternalToolError::InvalidInput),
+        };
+        let options = raw_options
+            .iter()
+            .map(AskUserOption::normalize)
+            .collect::<Result<Vec<_>, _>>()?;
+        let multi_select = bool_field(object, "multi_select")?
+            .or(bool_field(object, "multiSelect")?)
+            .unwrap_or(false);
+        let allow_other = bool_field(object, "allow_other")?.unwrap_or(true);
+        Ok(Self {
+            id,
+            question,
+            header,
+            options,
+            multi_select,
+            allow_other,
+        })
+    }
+}
+
+impl AskUserOption {
+    fn normalize(raw: &Value) -> Result<Self, InternalToolError> {
+        match raw {
+            Value::String(label) => Ok(Self {
+                label: required_text(label, MAX_OPTION_LABEL_BYTES)?,
+                description: String::new(),
+            }),
+            Value::Object(object)
+                if object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "label" | "description")) =>
+            {
+                let label = object
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .ok_or(InternalToolError::InvalidInput)?;
+                Ok(Self {
+                    label: required_text(label, MAX_OPTION_LABEL_BYTES)?,
+                    description: optional_text(
+                        object.get("description"),
+                        MAX_OPTION_DESCRIPTION_BYTES,
+                    )?,
+                })
+            }
+            _ => Err(InternalToolError::InvalidInput),
+        }
+    }
+}
+
+fn optional_text(value: Option<&Value>, maximum: usize) -> Result<String, InternalToolError> {
+    match value {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(value)) => bounded_text(value, maximum).map(ToOwned::to_owned),
+        Some(_) => Err(InternalToolError::InvalidInput),
+    }
+}
+
+fn required_text(value: &str, maximum: usize) -> Result<String, InternalToolError> {
+    if value.trim().is_empty() {
+        return Err(InternalToolError::InvalidInput);
+    }
+    bounded_text(value, maximum).map(ToOwned::to_owned)
+}
+
+fn bounded_text(value: &str, maximum: usize) -> Result<&str, InternalToolError> {
+    if value.len() > maximum {
+        return Err(InternalToolError::ResourceExhausted);
+    }
+    if value.contains('\0')
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(InternalToolError::InvalidInput);
+    }
+    Ok(value)
+}
+
+fn bool_field(object: &Map<String, Value>, key: &str) -> Result<Option<bool>, InternalToolError> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(InternalToolError::InvalidInput),
+    }
+}
+
+pub(crate) fn encode_ask_user_request(request: &AskUserRequest) -> Option<String> {
+    let encoded = serde_json::to_string(request).ok()?;
+    (encoded.len() <= MAX_ENCODED_REQUEST_BYTES).then_some(encoded)
+}
+
+pub(crate) fn decode_ask_user_request(value: &str) -> Option<AskUserRequest> {
+    if value.is_empty() || value.len() > MAX_ENCODED_REQUEST_BYTES {
+        return None;
+    }
+    let request = serde_json::from_str::<AskUserRequest>(value).ok()?;
+    AskUserRequest::from_arguments(&request.arguments_value()).ok()
+}
+
+struct AskUserTool;
+
+#[async_trait]
+impl Tool for AskUserTool {
+    fn name(&self) -> &str {
+        ASK_USER_TOOL_NAME
+    }
+
+    fn description(&self) -> &str {
+        ASK_USER_DESCRIPTION
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        false
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_QUESTIONS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "minLength": 1, "maxLength": MAX_QUESTION_BYTES},
+                            "header": {"type": "string", "maxLength": MAX_HEADER_BYTES},
+                            "options": {
+                                "type": "array",
+                                "maxItems": MAX_OPTIONS,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string", "minLength": 1, "maxLength": MAX_OPTION_LABEL_BYTES},
+                                        "description": {"type": "string", "maxLength": MAX_OPTION_DESCRIPTION_BYTES}
+                                    },
+                                    "required": ["label"],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "multi_select": {"type": "boolean"},
+                            "allow_other": {"type": "boolean"}
+                        },
+                        "required": ["question"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["questions"],
+            "additionalProperties": false
+        }))
+    }
+
+    fn response_schema(&self) -> Option<Value> {
+        Some(json!({"type": "string"}))
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        _arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        Err(AdkError::agent(
+            "ask_user must be resumed through its durable clarification decision",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_and_formats_structured_answer_in_question_order() {
+        let request = AskUserRequest::from_arguments(&json!({
+            "questions": [
+                {"question": "Target?", "header": "Target", "options": [{"label": "A"}]},
+                {"id": "mode", "question": "Mode?", "multi_select": true, "options": ["Fast", "Safe"]}
+            ]
+        }))
+        .expect("request");
+        assert_eq!(
+            request
+                .format_answer(r#"{"mode":["Safe","Fast"],"q1":"A"}"#)
+                .expect("answer"),
+            Value::String("User answered:\n- Target?: A\n- Mode?: Safe, Fast".to_owned())
+        );
+    }
+
+    #[test]
+    fn only_ask_user_is_admitted_as_an_internal_tool() {
+        assert!(
+            InternalToolCatalog::from_names(&[ASK_USER_TOOL_NAME.to_owned()])
+                .expect("catalog")
+                .ask_user_enabled()
+        );
+        assert_eq!(
+            InternalToolCatalog::from_names(&["data_analysis".to_owned()]),
+            Err(InternalToolError::UnsupportedCapability)
+        );
+    }
+}

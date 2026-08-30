@@ -78,6 +78,7 @@ export function ChatWithEditors(): ReactNode {
     mutex,
     handleShowAgentEditor,
     handleShowPipelineEditor,
+    handleShowToolkitEditor,
   } = useChatWithEditors();
 
   // "+ Create -> Chat" writes `?create=1` and had no reader, so the click did
@@ -123,6 +124,7 @@ export function ChatWithEditors(): ReactNode {
             editorCallbacks={{
               onShowAgentEditor: handleShowAgentEditor,
               onShowPipelineEditor: handleShowPipelineEditor,
+              onShowToolkitEditor: handleShowToolkitEditor,
               onCloseAgentEditor: editAgent.onCloseAgentEditor,
               onClosePipelineEditor: editPipeline.onClosePipelineEditor,
             }}

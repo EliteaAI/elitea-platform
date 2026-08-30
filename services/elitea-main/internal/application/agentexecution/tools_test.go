@@ -189,6 +189,76 @@ func TestCurrentApplicationToolSnapshotFreezesSavedMCPReferenceWithoutSpecialCas
 	}
 }
 
+func TestCurrentApplicationToolSnapshotOmitsOnlySchemaUnavailableToolkit(t *testing.T) {
+	settings := &currentAgentSettingsResolverStub{err: configurationapp.ErrCurrentToolkitSchemaNotFound}
+	names := &currentAgentNameResolverStub{}
+	service, err := NewCurrentApplicationToolSnapshotService(
+		settings,
+		names,
+		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{
+    "id":11,
+    "type":"wikis_Wikis",
+    "name":"configurations",
+    "settings":{"selected_tools":[]}
+  }]
+}`),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := decodeCurrentApplicationVersion(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, ok := version["tools"].([]any)
+	if !ok || len(tools) != 0 || len(settings.requests) != 1 || len(names.requests) != 0 {
+		t.Fatalf("tools=%#v settings=%+v names=%+v", version["tools"], settings.requests, names.requests)
+	}
+}
+
+func TestCurrentApplicationToolSnapshotDoesNotHideToolkitDependencyFailure(t *testing.T) {
+	settings := &currentAgentSettingsResolverStub{err: configurationapp.ErrCurrentToolkitSettingsDependency}
+	service, err := NewCurrentApplicationToolSnapshotService(
+		settings,
+		&currentAgentNameResolverStub{},
+		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{"id":19,"type":"github","settings":{}}]
+}`),
+		},
+	)
+	if !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationReference(t *testing.T) {
 	settings := &currentAgentSettingsResolverStub{}
 	names := &currentAgentNameResolverStub{}
@@ -504,22 +574,23 @@ func TestCurrentApplicationToolSnapshotValidatesConstruction(t *testing.T) {
 	}
 }
 
-func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing.T) {
+func TestCurrentApplicationToolSnapshotPreservesProviderAutoMaxTokens(t *testing.T) {
 	tests := []struct {
 		name              string
+		compatible        bool
 		supportsReasoning bool
 		wantMaxTokens     int64
 	}{
-		{name: "ordinary model", wantMaxTokens: currentAgentDefaultMaxTokens},
-		{name: "reasoning model", supportsReasoning: true, wantMaxTokens: currentAgentReasoningDefaultMaxTokens},
+		{name: "OpenAI-compatible model", compatible: true, wantMaxTokens: -1},
+		{name: "native Anthropic model", supportsReasoning: true, wantMaxTokens: 32_000},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			compatible := true
+			maxOutputTokens := 32_000
 			models := &currentAgentModelCatalogStub{response: configurationapp.CurrentModelCatalogResponse{
 				Items: []configurationapp.CurrentModelCatalogItem{{
-					Name: "model", ProjectID: 7, OpenAICompatible: &compatible,
-					SupportsReasoning: &test.supportsReasoning,
+					Name: "model", ProjectID: 7, OpenAICompatible: &test.compatible,
+					SupportsReasoning: &test.supportsReasoning, MaxOutputTokens: &maxOutputTokens,
 				}},
 			}}
 			service, err := NewCurrentApplicationToolSnapshotService(
@@ -543,7 +614,7 @@ func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing
 				t.Fatal(err)
 			}
 			settings := version["llm_settings"].(map[string]any)
-			maxTokens, valid := positiveCurrentAgentJSONInteger(settings["max_tokens"])
+			maxTokens, valid := currentAgentJSONInteger(settings["max_tokens"])
 			if !valid || maxTokens != test.wantMaxTokens {
 				t.Fatalf("max_tokens=%v, want %d", settings["max_tokens"], test.wantMaxTokens)
 			}

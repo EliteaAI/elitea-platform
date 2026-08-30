@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS elitea_runtime.schema_migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (target_kind, target_id, version),
     CONSTRAINT schema_migrations_target_kind
-        CHECK (target_kind IN ('shared', 'tenant')),
+        CHECK (target_kind IN ('shared', 'tenant', 'agentstate')),
     CONSTRAINT schema_migrations_checksum_length
         CHECK (octet_length(checksum) = 32)
 )`

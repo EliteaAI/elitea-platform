@@ -18,12 +18,10 @@ describe('ToolInitialValues', () => {
     });
   });
 
-  it('seeds "openapi" (the shared open_api/openapi wire value) with authentication.type "none"', () => {
+  it('seeds "openapi" with the current inline-spec settings shape', () => {
     // `ToolTypes.open_api.value === ToolTypes.openapi.value === 'openapi'`
-    // (both baseline aliases resolve to the same wire type), so the map
-    // key computed from `ToolTypes.open_api.value` is `'openapi'`, not
-    // `'open_api'` — matches the baseline's `consts.js` exactly.
-    expect(ToolInitialValues.openapi?.settings.authentication).toEqual({ type: 'none', settings: {} });
+    // Both aliases resolve to the same wire type.
+    expect(ToolInitialValues.openapi?.settings).toEqual({ spec: '', selected_tools: [] });
     expect(ToolInitialValues.open_api).toBeUndefined();
   });
 

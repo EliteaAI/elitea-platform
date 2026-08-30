@@ -155,6 +155,24 @@ dbInit:
   nodeSelector: {}
   tolerations: []
 
+# Apply the native ADK history to the separate agent-state database.
+# Keep this credential separate from the main database credential.
+agentStateMigrations:
+  enabled: false
+  serviceAccountName: ""
+  databaseSecret:
+    name: ""
+    key: "AGENTSTATE_DATABASE_URL"
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
 
 main:
   # The API. Everything else is optional next to it.

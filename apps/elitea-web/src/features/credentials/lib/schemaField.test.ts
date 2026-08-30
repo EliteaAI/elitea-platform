@@ -81,6 +81,11 @@ describe('classifySchemaField', () => {
     expect(classifySchemaField('region', { type: 'string', enum: ['us', 'eu'] })).toBe('enum');
   });
 
+  it('classifies nullable primitive and enum branches', () => {
+    expect(classifySchemaField('enabled', { anyOf: [{ type: 'boolean' }, { type: 'null' }] })).toBe('boolean');
+    expect(classifySchemaField('auth_type', { anyOf: [{ type: 'string', enum: ['Bearer'] }, { type: 'null' }] })).toBe('enum');
+  });
+
   it('falls back to string', () => {
     expect(classifySchemaField('base_url', { type: 'string' })).toBe('string');
     expect(classifySchemaField('base_url', undefined)).toBe('string');

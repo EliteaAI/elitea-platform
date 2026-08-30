@@ -14,6 +14,7 @@ import {
   readToolkitParticipantSnapshot,
   toAgentParticipantSnapshot,
   toPipelineParticipantSnapshot,
+  toToolkitParticipantSnapshot,
 } from '../lib/editorParticipantAdapters';
 import { useEditorMutex, type CanvasEditPayload, type EditorOpenInfo } from '../model/useEditorMutex';
 
@@ -125,22 +126,11 @@ function usePipelineEditing(isEditingPipeline: boolean) {
 }
 
 /**
- * **DISCLOSED GAP — toolkit editing is fully, correctly WIRED but has no
- * reachable OPEN trigger in the live app yet.** Unlike agent/pipeline,
- * `features/chat-input`'s `NewChatInputAgentEditorProps`
- * (`NewChatInput.types.ts`) has no `onShowToolkitEditor` field at all —
- * confirmed by reading that file in full — so nothing under `ChatBox`/
- * `NewChatInput` can ever call `mutex.onEditToolkit(...)`. The likely real
- * trigger is `PlusChatButton` (`widgets/chat/ui/chat-button/
- * PlusChatButton.tsx`, per `features/agents/model/agentEditorHooks.ts`'s
- * own doc comment citing its baseline call to
- * `useAvailableInternalTools`/`useIsMcpVisible`) — a DIFFERENT widget, not
- * in this unit's touch-scope (`src/widgets/chat-box/ui/ChatBox.tsx` only).
- * Everything below is real and ready for that future wiring: `useEditToolkit`/
- * `useToolkitCreation`/`useEditorMutex`'s toolkit callbacks/`<ToolkitEditor>`
- * (`ChatWithEditors.tsx`) all function correctly the moment a caller invokes
- * `mutex.onEditToolkit`/`mutex.onCreateToolkit` — this hook does not need to
- * change; only a new trigger call site does.
+ * Toolkit editing is opened from the conversation participant rail. The page
+ * normalizes the wire participant and calls `handleShowToolkitEditor`, which
+ * enters the same editor mutex used by agent and pipeline editors. MCP
+ * participants use this path too because they are toolkit participants with
+ * `meta.mcp` set.
  */
 function useToolkitEditing(isEditingToolkit: boolean) {
   const setToolkitEditingBlockNav = useCallback((blocked: boolean) => {
@@ -206,6 +196,7 @@ export interface ChatWithEditorsWiring {
   readonly mutex: ReturnType<typeof useEditorMutex>;
   readonly handleShowAgentEditor: (participant: Participant) => void;
   readonly handleShowPipelineEditor: (participant: Participant) => void;
+  readonly handleShowToolkitEditor: (participant: Participant) => void;
 }
 
 /**
@@ -300,6 +291,12 @@ export function useChatWithEditors(): ChatWithEditorsWiring {
     },
     [mutex],
   );
+  const handleShowToolkitEditor = useCallback(
+    (participant: Participant) => {
+      mutex.onEditToolkit({ ...toToolkitParticipantSnapshot(participant) });
+    },
+    [mutex],
+  );
 
   // See `ChatWithEditorsWiring.agentForEditor`'s own doc comment for why
   // this re-decode (rather than passing `editAgent.editingAgent` straight
@@ -325,5 +322,6 @@ export function useChatWithEditors(): ChatWithEditorsWiring {
     mutex,
     handleShowAgentEditor,
     handleShowPipelineEditor,
+    handleShowToolkitEditor,
   };
 }

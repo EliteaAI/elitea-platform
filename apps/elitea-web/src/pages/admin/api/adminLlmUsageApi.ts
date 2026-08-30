@@ -57,7 +57,6 @@ export interface LlmUsageTotals {
   readonly models: number;
   readonly projects: number;
 }
-
 /** One UTC day of the series. Bucketed in UTC because billing periods are. */
 export interface LlmUsageDay {
   readonly day: string;
@@ -220,4 +219,3 @@ export function useAdminLlmUsage(usageWindow: UsageWindow): UseQueryResult<LlmUs
     },
   });
 }
-

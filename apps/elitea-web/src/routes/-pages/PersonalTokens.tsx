@@ -147,7 +147,7 @@ export function PersonalTokensPage() {
    * `features/` and may not import `widgets/` (R-L1), which is why the map is
    * built here and passed down.
    */
-  const { projects } = useProjectOptions(selectPublicProjectId());
+  const { projects } = useProjectOptions(selectPublicProjectId(), personalProjectId);
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [String(project.id), project.name])),
     [projects],

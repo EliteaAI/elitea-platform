@@ -43,7 +43,7 @@ function toEntityProject(project: GeneratedProject): Project {
   };
 }
 
-export function useProjectOptions(publicProjectId: string): ProjectOptionsResult {
+export function useProjectOptions(publicProjectId: string, personalProjectId?: string): ProjectOptionsResult {
   const numericPublicProjectId = Number(publicProjectId);
   const query = useListProjects(numericPublicProjectId, undefined, {
     query: { enabled: Number.isFinite(numericPublicProjectId) },
@@ -56,8 +56,8 @@ export function useProjectOptions(publicProjectId: string): ProjectOptionsResult
     // unwrap contract); react-query's `data` typing doesn't reflect that.
     const list = query.data?.data as GeneratedProject[] | undefined;
     if (!list) return [];
-    return orderedProjectOptions(list.map(toEntityProject), publicProjectId);
-  }, [query.data, publicProjectId]);
+    return orderedProjectOptions(list.map(toEntityProject), publicProjectId, personalProjectId);
+  }, [query.data, publicProjectId, personalProjectId]);
 
   return { projects, isLoading: query.isLoading };
 }

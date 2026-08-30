@@ -55,7 +55,9 @@ def is_mock_model(model: str) -> bool:
 
 # `pipeline_finish` ends a healthy turn; `execution_failed`/`error` end a broken
 # one and must not be mistaken for completion.
-TERMINAL_EVENT_TYPES = frozenset({"pipeline_finish", "execution_failed", "error"})
+TERMINAL_EVENT_TYPES = frozenset(
+    {"pipeline_finish", "execution.failed", "execution_failed", "error"}
+)
 
 
 class Skip(Exception):
@@ -214,12 +216,16 @@ def read_stream(client: Client, events_url: str, deadline_seconds: int,
     types: list[str] = []
     content: list[str] = []
     deadline = time.monotonic() + deadline_seconds
+    wire_event_type = ""
     try:
         for raw in response:
             if time.monotonic() > deadline:
                 raise Fail(f"no terminal event within {deadline_seconds}s; saw {types or 'nothing'}")
             line = raw.decode(errors="replace").rstrip("\n")
             # ": heartbeat" and ": connected" are SSE comments, not events.
+            if line.startswith("event:"):
+                wire_event_type = line.split(":", 1)[1].strip()
+                continue
             if not line.startswith("data:"):
                 continue
             try:
@@ -228,7 +234,14 @@ def read_stream(client: Client, events_url: str, deadline_seconds: int,
                 continue
             if not isinstance(event, dict):
                 continue
-            event_type = str(event.get("type") or "")
+            # `execution.node_event` carries the chat semantic type in
+            # `data.type`. Durable terminal failures instead use the SSE event
+            # name `execution.failed` and carry only
+            # `{code,safe_message,retryable}` in data. Reading `data.type`
+            # alone makes a failed turn look non-terminal and waits until the
+            # client deadline even though Main already committed the failure.
+            event_type = str(event.get("type") or wire_event_type)
+            wire_event_type = ""
             types.append(event_type)
             if captured is not None:
                 captured.append(event)
@@ -291,7 +304,7 @@ def main() -> int:
         if args.capture and captured is not None:
             args.capture.write_text(json.dumps({"prompt": prompt, "frames": captured}, indent=2))
             print(f"  · captured {len(captured)} frames → {args.capture}")
-        if any(t in ("execution_failed", "error") for t in types):
+        if any(t in ("execution.failed", "execution_failed", "error") for t in types):
             raise Fail(f"execution failed; events: {types}")
         if "agent_llm_chunk" not in types:
             raise Fail(f"no streamed token chunk; events: {types}")

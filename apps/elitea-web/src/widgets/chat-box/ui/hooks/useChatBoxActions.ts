@@ -30,6 +30,7 @@ export interface UseChatBoxActionsParams {
   readonly messages: readonly ChatMessage[];
   readonly isAgentsPage: boolean | undefined;
   readonly readAloudStop: () => void;
+  readonly onConversationCreated?: ((conversation: { readonly id?: string | number; readonly uuid?: string }) => void) | undefined;
 }
 
 export interface UseChatBoxActionsResult {
@@ -54,6 +55,7 @@ export function useChatBoxActions({
   messages,
   isAgentsPage,
   readAloudStop,
+  onConversationCreated,
 }: UseChatBoxActionsParams): UseChatBoxActionsResult {
   const handleSend = useCallback(
     (question: string) => {
@@ -68,9 +70,11 @@ export function useChatBoxActions({
       chatInputRef.current?.reset?.();
       const pendingAttachments = data.attachments.state.attachments;
       data.attachments.state.onClearAttachments();
-      void handlers.sendQuestion({ question, attachments: pendingAttachments, isSendingToUser, userIds });
+      void handlers.sendQuestion({ question, attachments: pendingAttachments, isSendingToUser, userIds }).then((result) => {
+        if (result.success && result.createdConversation) onConversationCreated?.(result.createdConversation);
+      });
     },
-    [data.hasPendingHitlInterrupt, data.attachments.state, handlers, state, chatInputRef],
+    [data.hasPendingHitlInterrupt, data.attachments.state, handlers, state, chatInputRef, onConversationCreated],
   );
 
   const handleSendStarter = useCallback(
@@ -131,7 +135,7 @@ export function useChatBoxActions({
   );
 
   const handleContinueTokenLimit = useCallback(
-    (messageId: string) => { handlers.continueTokenLimit(messageId); },
+    (messageId: string) => { void handlers.continueTokenLimit(messageId); },
     [handlers],
   );
 

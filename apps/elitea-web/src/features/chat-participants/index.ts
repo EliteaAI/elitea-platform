@@ -12,7 +12,7 @@
 export { ChatParticipantType } from './model/constants';
 
 // ── lib helpers ──
-export { isParticipantOKForChat } from './lib/helpers';
+export { canParticipantBeActiveInChat, isParticipantOKForChat, transformParticipant } from './lib/helpers';
 
 // ── lib hooks ──
 export { useParticipantName } from './lib/hooks/useParticipantName';

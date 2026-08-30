@@ -19,6 +19,9 @@
 **/.mypy_cache
 **/.ruff_cache
 
+# ── Rust build output ────────────────────────────────────────────────────────
+**/target
+
 # ── elitea-ui test/story artefacts (not needed at build time) ─────────────────
 /apps/elitea-ui/tests
 **/storybook-static

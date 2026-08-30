@@ -15,13 +15,8 @@
  * disclosed data gap (`projectId` has no fully-wired source until unit
  * S1/AppShell or R2/router-context lands).
  *
- * DISCLOSED GAP: `ChatBoxProps` has no "a new conversation was just
- * created" callback (its internal `useChatBoxHandlers` creates the
- * conversation but never surfaces the new id back to the caller), so this
- * page cannot navigate `/chat` -> `/chat/:newId` after the first message
- * of a brand-new chat the way the old app's `changeUrlByConversation` did.
- * Fixing that requires extending `ChatBoxProps` itself (a C6 contract
- * change) — flagged, not silently worked around here.
+ * A successful first send promotes the created conversation into the route.
+ * This preserves one conversation UUID for later turns and durable history.
  *
  * `editorCallbacks` (unit A2/A4/C6-editor-composition follow-up): an
  * OPTIONAL prop bundle — same "group related props into one slot" §3.5
@@ -34,19 +29,20 @@
  * doc comment for who actually supplies real (non-no-op) callbacks here.
  */
 import type { ComponentProps } from 'react';
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 
 import Box from '@mui/material/Box';
 
 import { conversationNavigation, useChatSessionStore } from '@/entities/conversation';
-import type { Participant } from '@/entities/participant';
-import { ParticipantsWrapper, useLocalActiveParticipant } from '@/features/chat-participants';
+import { useDeleteParticipantMutation, type Participant } from '@/entities/participant';
+import { canParticipantBeActiveInChat, ParticipantsWrapper, useLocalActiveParticipant } from '@/features/chat-participants';
 import type { ChatBoxProps } from '@/widgets/chat-box';
-import { ChatBox } from '@/widgets/chat-box';
+import { ChatBox, toParticipant } from '@/widgets/chat-box';
 import { ContextBudget } from '@/widgets/context-budget';
 
 import { useChatPageData } from './useChatPageData';
+import { useChatModelSettings } from './useChatModelSettings';
 
 /**
  * Baseline `rightPanelWidth` (`NewChat.jsx:187`). `ParticipantsWrapper`'s own
@@ -109,15 +105,19 @@ function conversationIdOf(activeConversation: unknown): string | undefined {
   return (activeConversation as { readonly id?: string } | undefined)?.id;
 }
 
-function findParticipantById(participants: readonly unknown[] | undefined, id: string | undefined): unknown {
+export function findActiveParticipantById(participants: readonly unknown[] | undefined, id: string | undefined): unknown {
   if (!id) return undefined;
-  return participants?.find((p) => (p as { readonly id?: string } | null)?.id === id);
+  return participants?.find((raw) => {
+    const participant = raw as { readonly id?: string; readonly entity_name?: string } | null;
+    return participant?.id === id && canParticipantBeActiveInChat(participant);
+  });
 }
 
 /** @public The agent/pipeline editor open/close callbacks `ChatPage` forwards to `ChatBox` — see this module's own doc comment. */
 export interface ChatEditorCallbacks {
   readonly onShowAgentEditor?: (participant: Participant) => void;
   readonly onShowPipelineEditor?: (participant: Participant) => void;
+  readonly onShowToolkitEditor?: (participant: Participant) => void;
   readonly onCloseAgentEditor?: () => void;
   readonly onClosePipelineEditor?: () => void;
 }
@@ -135,15 +135,26 @@ export interface ChatPageProps {
 }
 
 const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
+  const navigate = useNavigate();
   const { conversationId: routeConversationId } = useParams({ strict: false }) as { conversationId?: string };
   const { conversationId, messageId } = useDeepLinkedConversationId(routeConversationId);
   const { projectId, user, activeConversation, isLoadingConversation } = useChatPageData({ conversationId });
-  const { getLocalActiveParticipant, setLocalActiveParticipant } = useLocalActiveParticipant();
+  const llm = useChatModelSettings({ activeConversation, projectId, userId: user?.id });
+  const { getLocalActiveParticipant, setLocalActiveParticipant, clearLocalActiveParticipant } = useLocalActiveParticipant();
+  const { mutate: deleteParticipant } = useDeleteParticipantMutation();
   useMessageIdToView(messageId, conversationIdOf(activeConversation));
 
   const [activeParticipant, setActiveParticipant] = useState<unknown>(undefined);
   // Baseline default: collapsed (`NewChat.jsx:166`).
   const [participantsCollapsed, setParticipantsCollapsed] = useState(true);
+
+  const handleConversationCreated = useCallback(
+    (created: { readonly id?: string | number }) => {
+      if (created.id === undefined) return;
+      void navigate({ to: '/chat/$conversationId', params: { conversationId: String(created.id) } });
+    },
+    [navigate],
+  );
 
   // Restore the conversation's last-active participant once its real
   // participant list has loaded (baseline: `ChatWrapper.jsx`'s own
@@ -153,8 +164,8 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
     // `useLocalActiveParticipant` is `@ts-nocheck` (see that file) — its
     // exports are untyped (`any`) from this call site's perspective.
     const local = getLocalActiveParticipant(conversationId) as { readonly participantId?: string };
-    const found = findParticipantById(activeConversation.participants, local.participantId);
-    if (found) setActiveParticipant(found);
+    const found = findActiveParticipantById(activeConversation.participants, local.participantId);
+    setActiveParticipant(found);
     // Only re-run when the conversation identity or its participant list changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, activeConversation?.participants]);
@@ -165,13 +176,53 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
     if (conversationId && id) setLocalActiveParticipant(conversationId, id);
   };
 
+  const handleDeleteParticipant = useCallback(
+    (participant: Record<string, unknown>) => {
+      const participantId = participant.id;
+      const hasParticipantId = typeof participantId === 'string' || typeof participantId === 'number';
+      if (projectId === undefined || conversationId === undefined || !hasParticipantId) return;
+
+      deleteParticipant(
+        { projectId, conversationId, id: String(participantId) },
+        {
+          onSuccess: () => {
+            if ((activeParticipant as { readonly id?: unknown } | undefined)?.id !== participantId) return;
+            setActiveParticipant(undefined);
+            clearLocalActiveParticipant(conversationId);
+          },
+        },
+      );
+    },
+    [activeParticipant, clearLocalActiveParticipant, conversationId, deleteParticipant, projectId],
+  );
+
+  const handleEditParticipant = useCallback(
+    (participant: Record<string, unknown>) => {
+      const normalized = toParticipant(participant);
+      if (!normalized) return;
+      const editorType = normalized.entitySettings?.agentType === 'pipeline' ? 'pipeline' : normalized.entityName;
+      const handlers = {
+        application: editorCallbacks?.onShowAgentEditor,
+        pipeline: editorCallbacks?.onShowPipelineEditor,
+        toolkit: editorCallbacks?.onShowToolkitEditor,
+      };
+      handlers[editorType as keyof typeof handlers]?.(normalized);
+    },
+    [editorCallbacks],
+  );
+
   return (
     <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
       <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
         <ChatBox
-          conversation={{ ...(activeConversation ? { active: activeConversation } : {}), isLoading: isLoadingConversation }}
+          conversation={{
+            ...(activeConversation ? { active: activeConversation } : {}),
+            isLoading: isLoadingConversation,
+            onCreated: handleConversationCreated,
+          }}
           {...(projectId !== undefined ? { projectId } : {})}
           {...(user ? { user } : {})}
+          llm={{ settings: llm.settings, onSetSettings: llm.onSetSettings }}
           participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
           {...(editorCallbacks || entitySubmenus
             ? {
@@ -214,6 +265,8 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
           : {})}
         {...(activeParticipant ? { activeParticipant: activeParticipant as Record<string, unknown> } : {})}
         onSelectParticipant={handleChangeParticipant}
+        onDeleteParticipant={handleDeleteParticipant}
+        onEditParticipant={handleEditParticipant}
         /*
          * The context-budget panel. `ParticipantsWrapper` has always accepted
          * this slot (and gates the `conversationId` it hands over on the

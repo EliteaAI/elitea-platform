@@ -72,7 +72,6 @@ const cellValueSx = (theme: Theme) => ({
 export interface HealthTableProps {
   readonly health: AnalyticsHealthData;
 }
-
 /** The failure breakdown, by the gateway's own classification. */
 export function ErrorCodeTable({ health }: HealthTableProps): ReactNode {
   const theme = useTheme();
@@ -201,4 +200,3 @@ export function ModelHealthTable({ health }: HealthTableProps): ReactNode {
     </Box>
   );
 }
-

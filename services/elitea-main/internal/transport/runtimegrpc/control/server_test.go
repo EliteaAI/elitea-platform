@@ -51,6 +51,7 @@ type claimControllerStub struct {
 	desiredState      runtimedomain.DesiredState
 	claimRequest      *executionapp.ClaimRequest
 	claimErr          error
+	leaseObservedAt   time.Time
 	beginDisposition  executionapp.BeginExecutionDisposition
 	beginSequence     *[]executionapp.BeginExecutionDisposition
 	beginErr          error
@@ -120,7 +121,11 @@ func (s claimControllerStub) Claim(_ context.Context, request executionapp.Claim
 	if disposition == "" {
 		disposition = executionapp.ClaimAccepted
 	}
-	return executionapp.ClaimDecision{Lease: s.lease, Disposition: disposition, RetirementReason: s.retirementReason, SettlementRecovery: s.recovery, ClaimHandoffWatermark: s.watermark}, nil
+	leaseObservedAt := s.leaseObservedAt
+	if leaseObservedAt.IsZero() && disposition == executionapp.ClaimAccepted {
+		leaseObservedAt = s.lease.ExpiresAt.Add(-time.Minute)
+	}
+	return executionapp.ClaimDecision{Lease: s.lease, LeaseObservedAt: leaseObservedAt, Disposition: disposition, RetirementReason: s.retirementReason, SettlementRecovery: s.recovery, ClaimHandoffWatermark: s.watermark}, nil
 }
 
 func (s claimControllerStub) Abort(_ context.Context, fence runtimedomain.Fence, disposition executionapp.ClaimAbortDisposition) error {
@@ -209,6 +214,10 @@ func TestClaimCommandAuthenticatesThenVerifiesThenClaimsBeforeResolvingInput(t *
 	if response.GetReceipt().GetClaimId() != lease.ClaimID {
 		t.Fatalf("claim receipt lost durable claim ID: %v", response.GetReceipt())
 	}
+	wantClaimStartedAt := lease.ExpiresAt.Add(-time.Minute).UTC().UnixMicro()
+	if response.GetReceipt().GetClaimStartedAtUnixMicros() != wantClaimStartedAt {
+		t.Fatalf("claim receipt lost database-authored claim ordering: got %d want %d", response.GetReceipt().GetClaimStartedAtUnixMicros(), wantClaimStartedAt)
+	}
 	canonicalEnvelope, err := proto.MarshalOptions{Deterministic: true}.Marshal(request.GetSignedCommand())
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +231,42 @@ func TestClaimCommandAuthenticatesThenVerifiesThenClaimsBeforeResolvingInput(t *
 	}
 	if got := response.GetReceipt().GetFence().GetFenceToken(); string(got) != string(lease.Fence.Token[:]) {
 		t.Fatal("claim response lost unpredictable fence token")
+	}
+}
+
+func TestClaimCommandRejectsMalformedClaimOrderingBeforeResolvingInput(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		leaseObservedAt func(runtimedomain.ActiveLease) time.Time
+	}{
+		{name: "non-positive", leaseObservedAt: func(runtimedomain.ActiveLease) time.Time { return time.Unix(0, 0).UTC() }},
+		{name: "not-before-expiry", leaseObservedAt: func(lease runtimedomain.ActiveLease) time.Time { return lease.ExpiresAt }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := []string{}
+			lease := validLease()
+			server, err := NewServer(
+				testControlServerConfig(),
+				workloadAuthorizerStub{calls: &calls},
+				verifierSpy{calls: &calls, verifier: newTestVerifier(t)},
+				claimControllerStub{calls: &calls, lease: lease, leaseObservedAt: test.leaseObservedAt(lease)},
+				inputResolverStub{calls: &calls, manifest: validManifest()},
+				&settlementControllerStub{calls: &calls},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := server.ClaimCommand(context.Background(), claimRequestForManifest(t, validManifest()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.GetReceipt() != nil || response.GetRejection().GetCode() != runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL {
+				t.Fatalf("malformed claim ordering was accepted: %v", response)
+			}
+			if want := []string{"authorize-peer", "verify-command", "claim"}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("malformed claim ordering reached business input: got %v want %v", calls, want)
+			}
+		})
 	}
 }
 
@@ -333,7 +378,7 @@ func TestRecoverRunningClaimNeverResolvesBusinessInputs(t *testing.T) {
 	if response.GetRejection() != nil || receipt.GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK || receipt.GetDesiredState() != runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_CANCELLED {
 		t.Fatalf("unexpected running recovery receipt: %v", response)
 	}
-	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil {
+	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil || receipt.GetClaimStartedAtUnixMicros() != 0 {
 		t.Fatalf("running recovery leaked business material: %v", receipt)
 	}
 	if !reflect.DeepEqual(calls, []string{"authorize-peer", "verify-command", "claim"}) {
@@ -368,7 +413,7 @@ func TestRecoverAmbiguousInvocationClaimNeverResolvesBusinessInputs(t *testing.T
 	if response.GetRejection() != nil || receipt.GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK || receipt.GetDesiredState() != runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_RUNNING {
 		t.Fatalf("unexpected ambiguous invocation receipt: %v", response)
 	}
-	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil {
+	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil || receipt.GetClaimStartedAtUnixMicros() != 0 {
 		t.Fatalf("ambiguous invocation recovery leaked business material: %v", receipt)
 	}
 	if !reflect.DeepEqual(calls, []string{"authorize-peer", "verify-command", "claim"}) {

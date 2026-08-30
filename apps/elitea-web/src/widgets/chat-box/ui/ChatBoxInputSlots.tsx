@@ -115,6 +115,7 @@ export function buildChatBoxInputSlots({ attachments, internalTools, model, refs
     ...optField('selectedModel', model.selectedModel),
     ...optField('onSelectModel', model.onSelectModel),
     models: [...model.models],
+    showStepsLimit: true,
   };
   // `ChatInternalToolsConfigButton` and `PlusChatButton` take the same data in
   // two different shapes — a `{key,label,enabled}` list plus

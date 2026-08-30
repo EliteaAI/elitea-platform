@@ -983,8 +983,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	shared, _ := body["shared"].(bool)
 
 	q := fmt.Sprintf(`
-		INSERT INTO %s.configuration (project_id, label, elitea_title, type, section, data, meta, shared, source, author_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'user', $9)
+		INSERT INTO %s.configuration (project_id, label, elitea_title, type, section, data, meta, shared, status_ok, source, author_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, 'user', $9)
 		RETURNING id, uuid::text, created_at
 	`, schema)
 
@@ -1050,7 +1050,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		apierr.WriteStatus(w, http.StatusInternalServerError, "invalid configuration metadata")
 		return
 	}
-	// The INSERT above stores the column default, false. A provider row that
+	// The INSERT above stores the pending status explicitly. A provider row that
 	// resolves must reach status_ok = true here, in this request, because the
 	// LLM gateway admits only status_ok = true and no other component in a
 	// shipped stack writes the column (#457).

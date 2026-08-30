@@ -23,7 +23,7 @@ func TestCurrentAdhocStartBuildsCurrentMainChatInputAndTurn(t *testing.T) {
 		Instructions:        "Project chat instructions\n\nUser defaults",
 		Tools:               toolJSON,
 		ChatHistory:         json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"earlier"}],"additional_kwargs":{}}]`),
-		ConversationMeta:    json.RawMessage(`{"persona":"qa","steps_limit":12}`),
+		ConversationMeta:    json.RawMessage(`{"persona":"qa","steps_limit":12,"internal_tools":["internal_mcp","ask_user"]}`),
 	}}
 	admittedAt := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
@@ -63,7 +63,8 @@ func TestCurrentAdhocStartBuildsCurrentMainChatInputAndTurn(t *testing.T) {
 		input.GetExecutionGeneration() != request.QuestionID ||
 		input.GetPersona() != "qa" || input.GetStepsLimit() != 12 ||
 		!bytes.Equal(input.GetUserInput(), []byte(`"follow up"`)) ||
-		!bytes.Equal(input.GetChatHistory(), resolver.adhocTarget.ChatHistory) {
+		!bytes.Equal(input.GetChatHistory(), resolver.adhocTarget.ChatHistory) ||
+		!bytes.Equal(input.GetInternalTools(), []byte(`["ask_user"]`)) {
 		t.Fatalf("ad-hoc input identity drifted: %+v", input)
 	}
 	var llm map[string]any
@@ -125,7 +126,7 @@ func TestCurrentAdhocStartAcceptsCurrentDefaultMaxTokensSentinel(t *testing.T) {
 		ExecutionID: "execution-adhoc", CommandID: "command-adhoc", Created: true,
 	}}
 	freezer := &currentApplicationVersionFreezerStub{result: json.RawMessage(`{
-  "llm_settings":{"model_name":"requested","model_project_id":9,"max_tokens":4000,"openai_compatible":true},
+  "llm_settings":{"model_name":"requested","model_project_id":9,"max_tokens":-1,"openai_compatible":true},
   "tools":[]
 }`)}
 	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{}, freezer, admissions)
@@ -140,7 +141,7 @@ func TestCurrentAdhocStartAcceptsCurrentDefaultMaxTokensSentinel(t *testing.T) {
 		t.Fatalf("StartCurrentAdhoc() error = %v", err)
 	}
 	if len(freezer.calls) != 1 || !bytes.Contains(freezer.calls[0].VersionDetails, []byte(`"max_tokens":-1`)) ||
-		len(admissions.requests) != 1 || !bytes.Contains(admissions.requests[0].Input.GetLlm(), []byte(`"max_tokens":4000`)) {
+		len(admissions.requests) != 1 || !bytes.Contains(admissions.requests[0].Input.GetLlm(), []byte(`"max_tokens":-1`)) {
 		t.Fatalf("freezer=%s runtime=%s", freezer.calls[0].VersionDetails, admissions.requests[0].Input.GetLlm())
 	}
 }

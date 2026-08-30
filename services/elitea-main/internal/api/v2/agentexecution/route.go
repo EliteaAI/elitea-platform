@@ -28,6 +28,7 @@ const (
 	CurrentContinuationPath                  = "/api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}"
 	CurrentContinuationContract              = "agent.continue.hitl.v1"
 	CurrentAuthorizationContinuationContract = "agent.continue.authorization.v1"
+	CurrentOutputLimitContinuationContract   = "agent.continue.output-limit.v1"
 	CurrentApplicationStartMode              = auth.PermissionModeDefault
 	CurrentApplicationStartPermission        = "models.chat.messages.create"
 	CurrentRegenerationPermission            = "models.chat.conversations.regenerate"
@@ -385,7 +386,9 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 	projectID, ok := positiveCanonicalID(chi.URLParam(request, "projectID"))
 	conversationID := chi.URLParam(request, "conversationID")
 	contract := request.URL.Query().Get("execution_contract")
-	if !ok || (contract != CurrentContinuationContract && contract != CurrentAuthorizationContinuationContract) {
+	if !ok || (contract != CurrentContinuationContract &&
+		contract != CurrentAuthorizationContinuationContract &&
+		contract != CurrentOutputLimitContinuationContract) {
 		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
 		return
 	}
@@ -432,6 +435,16 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 		ThreadID: body.ThreadID,
 	}
 	switch contract {
+	case CurrentOutputLimitContinuationContract:
+		if body.ThreadID != "" || body.HITLResume || body.HITLAction != "" ||
+			!absentJSON(body.HITLValue) || !absentJSON(body.HITLDecisions) ||
+			!absentJSON(body.MCPTokens) || !absentJSON(body.IgnoredMCPServers) ||
+			!absentJSON(body.UserDeclinedMCPServers) || body.UserInput != "" ||
+			body.AuthorizationRequestID != "" || body.AuthorizationAction != "" {
+			writeUnsupported(writer)
+			return
+		}
+		continuation.Kind = agentexecutionapp.CurrentContinuationOutputLimit
 	case CurrentContinuationContract:
 		decisions, decisionsValid := currentHITLDecisions(body.HITLDecisions)
 		if !body.HITLResume || !decisionsValid || !emptyJSONObject(body.MCPTokens) ||
@@ -441,7 +454,7 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 			return
 		}
 		if len(decisions) == 0 {
-			value, valid := currentHITLStringValue(body.HITLValue)
+			value, valid := currentHITLValue(body.HITLAction, body.HITLValue)
 			if !currentRootHITLAction(body.HITLAction) || !valid {
 				writeUnsupported(writer)
 				return
@@ -457,17 +470,24 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 		}
 		continuation.Kind = agentexecutionapp.CurrentContinuationHITL
 	case CurrentAuthorizationContinuationContract:
-		if body.HITLResume || body.HITLAction != "" || !absentJSON(body.HITLValue) ||
-			!emptyJSONArray(body.HITLDecisions) || !currentJSONObject(body.MCPTokens) ||
+		decisions, decisionsValid := currentAuthorizationDecisions(body.HITLDecisions)
+		if body.HITLAction != "" || !absentJSON(body.HITLValue) || !decisionsValid ||
+			!currentJSONObject(body.MCPTokens) ||
 			!currentJSONArray(body.IgnoredMCPServers) || !currentJSONArray(body.UserDeclinedMCPServers) ||
-			body.AuthorizationRequestID == "" ||
-			(body.AuthorizationAction != "authorize" && body.AuthorizationAction != "skip") {
+			(len(decisions) == 0 && (body.HITLResume || body.AuthorizationRequestID == "" ||
+				(body.AuthorizationAction != "authorize" && body.AuthorizationAction != "skip"))) ||
+			(len(decisions) != 0 && (!body.HITLResume || body.AuthorizationRequestID != "" ||
+				body.AuthorizationAction != "")) {
 			writeUnsupported(writer)
 			return
 		}
 		continuation.Kind = agentexecutionapp.CurrentContinuationAuthorization
-		continuation.AuthorizationID = body.AuthorizationRequestID
-		continuation.Action = body.AuthorizationAction
+		if len(decisions) == 0 {
+			continuation.AuthorizationID = body.AuthorizationRequestID
+			continuation.Action = body.AuthorizationAction
+		} else {
+			continuation.HITLDecisions = decisions
+		}
 		continuation.MCPTokens = bytes.Clone(body.MCPTokens)
 		continuation.IgnoredMCPServers = bytes.Clone(body.IgnoredMCPServers)
 		continuation.DeclinedMCPServers = bytes.Clone(body.UserDeclinedMCPServers)
@@ -516,6 +536,12 @@ func writeStartError(writer http.ResponseWriter, err error) {
 			"message":   "This toolkit authorization request was already resolved. Refresh the conversation before retrying.",
 			"retryable": false,
 		})
+	case errors.Is(err, agentexecutionapp.ErrCurrentAgentOutputLimitAlreadyResolved):
+		writeJSON(writer, http.StatusConflict, map[string]any{
+			"error":     "agent_output_limit_already_resolved",
+			"message":   "This output continuation was already started. Refresh the conversation before retrying.",
+			"retryable": false,
+		})
 	case errors.Is(err, executionapp.ErrIdempotencyConflict):
 		writeError(writer, http.StatusConflict, "Agent execution request conflicts with an existing turn")
 	case errors.As(err, &capacity):
@@ -558,7 +584,7 @@ func currentJSONArray(raw json.RawMessage) bool {
 
 func currentRootHITLAction(action string) bool {
 	switch action {
-	case "approve", "reject", "edit", "block_with_comment":
+	case "approve", "reject", "edit", "block_with_comment", "answer":
 		return true
 	default:
 		return false
@@ -574,6 +600,26 @@ func currentHITLStringValue(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func currentHITLValue(action string, raw json.RawMessage) (string, bool) {
+	if action != "answer" {
+		return currentHITLStringValue(raw)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if !json.Valid(trimmed) || len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) ||
+		(trimmed[0] != '{' && trimmed[0] != '"') {
+		return "", false
+	}
+	var decoded any
+	if json.Unmarshal(trimmed, &decoded) != nil {
+		return "", false
+	}
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		return "", false
+	}
+	return string(canonical), true
 }
 
 func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLDecision, bool) {
@@ -601,7 +647,42 @@ func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLD
 		if value, exists := object["tool_call_id"]; exists && json.Unmarshal(value, &decision.ToolCallID) != nil {
 			return nil, false
 		}
-		if value, exists := object["value"]; exists && json.Unmarshal(value, &decision.Value) != nil {
+		if value, exists := object["value"]; exists {
+			var valid bool
+			decision.Value, valid = currentHITLValue(decision.Action, value)
+			if !valid {
+				return nil, false
+			}
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, true
+}
+
+func currentAuthorizationDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLDecision, bool) {
+	if emptyJSONArray(raw) {
+		return nil, true
+	}
+	var objects []map[string]json.RawMessage
+	if json.Unmarshal(raw, &objects) != nil || len(objects) == 0 || len(objects) > 16 {
+		return nil, false
+	}
+	decisions := make([]agentexecutionapp.CurrentHITLDecision, 0, len(objects))
+	for _, object := range objects {
+		for key := range object {
+			switch key {
+			case "interrupt_id", "tool_call_id", "guardrail_type", "action":
+			default:
+				return nil, false
+			}
+		}
+		var decision agentexecutionapp.CurrentHITLDecision
+		if json.Unmarshal(object["interrupt_id"], &decision.InterruptID) != nil ||
+			json.Unmarshal(object["guardrail_type"], &decision.GuardrailType) != nil ||
+			json.Unmarshal(object["action"], &decision.Action) != nil {
+			return nil, false
+		}
+		if value, exists := object["tool_call_id"]; exists && json.Unmarshal(value, &decision.ToolCallID) != nil {
 			return nil, false
 		}
 		decisions = append(decisions, decision)

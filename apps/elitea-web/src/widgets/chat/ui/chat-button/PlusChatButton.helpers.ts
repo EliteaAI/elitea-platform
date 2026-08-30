@@ -13,10 +13,15 @@ import { ToolIcon } from '@/shared/ui/icons/tool-icon';
 import { ValueIcon } from '@/shared/ui/icons/value-icon';
 
 export interface PlusChatButtonEntitySubmenus {
+  readonly agents?: readonly unknown[];
   readonly pipelines?: readonly unknown[];
   readonly toolkits?: readonly unknown[];
   readonly mcps?: readonly unknown[];
   readonly onSelectParticipant?: (participant: unknown) => void;
+  readonly getParticipantMenuState?: (participant: unknown) => {
+    readonly checked?: boolean;
+    readonly pending?: boolean;
+  };
   /**
    * Fired the first time the menu is opened, so the composition root can
    * defer its four participant queries until someone actually looks. Carried
@@ -76,17 +81,27 @@ interface SubmenuItem {
   label: string;
   onClick?: () => void;
   checked?: boolean;
+  pending?: boolean;
 }
 
 /** `agents`/`pipelines`/`toolkits`/`mcps` share the same "id/name -> selectable row" shape. */
-function toEntityItems(list: readonly unknown[], kind: string, onSelect: (participant: unknown) => void): SubmenuItem[] {
+function toEntityItems(
+  list: readonly unknown[],
+  kind: string,
+  onSelect: (participant: unknown) => void,
+  getState: PlusChatButtonEntitySubmenus['getParticipantMenuState'],
+  showToggle = false,
+): SubmenuItem[] {
   return list.map((entity, i) => {
     const item = entity as { id?: string | number; name?: string };
     const fallbackLabel = `${kind.charAt(0).toUpperCase()}${kind.slice(1)} ${i + 1}`;
+    const state = getState?.(entity);
     return {
       key: `${kind}-${item.id ?? i}`,
       label: item.name ?? fallbackLabel,
       onClick: () => onSelect(entity),
+      ...(showToggle ? { checked: state?.checked ?? false } : {}),
+      ...(state?.pending === true ? { pending: true } : {}),
     };
   });
 }
@@ -100,17 +115,18 @@ function buildSubmenuItems(input: {
   readonly enabledToolNames: readonly string[];
   readonly onInternalToolsConfigChange?: ((config: { key: string; value: boolean }) => void) | undefined;
   readonly onSelect: (participant: unknown) => void;
+  readonly onToggle: (participant: unknown) => void;
 }): SubmenuItem[] {
-  const { activeSubmenu, participants, entities, availableTools, enabledToolNames, onInternalToolsConfigChange, onSelect } = input;
+  const { activeSubmenu, participants, entities, availableTools, enabledToolNames, onInternalToolsConfigChange, onSelect, onToggle } = input;
   switch (activeSubmenu) {
     case 'agents':
-      return toEntityItems(participants, 'agent', onSelect);
+      return toEntityItems(entities.agents ?? participants, 'agent', onSelect, entities.getParticipantMenuState);
     case 'pipelines':
-      return toEntityItems(entities.pipelines ?? [], 'pipeline', onSelect);
+      return toEntityItems(entities.pipelines ?? [], 'pipeline', onSelect, entities.getParticipantMenuState);
     case 'toolkits':
-      return toEntityItems(entities.toolkits ?? [], 'toolkit', onSelect);
+      return toEntityItems(entities.toolkits ?? [], 'toolkit', onToggle, entities.getParticipantMenuState, true);
     case 'mcps':
-      return toEntityItems(entities.mcps ?? [], 'mcp', onSelect);
+      return toEntityItems(entities.mcps ?? [], 'mcp', onToggle, entities.getParticipantMenuState, true);
     case 'tools':
       return availableTools.map((tool) => {
         const isEnabled = enabledToolNames.includes(tool.name);
@@ -171,6 +187,7 @@ export function resolveActiveSubmenuView(
     readonly enabledToolNames: readonly string[] | undefined;
     readonly onInternalToolsConfigChange?: ((config: { key: string; value: boolean }) => void) | undefined;
     readonly onSelect: (participant: unknown) => void;
+    readonly onToggle: (participant: unknown) => void;
     readonly onCreate: Readonly<Partial<Record<'agents' | 'pipelines' | 'toolkits' | 'mcps', () => void>>>;
   },
 ): ActiveSubmenuView {
@@ -183,6 +200,7 @@ export function resolveActiveSubmenuView(
     enabledToolNames: params.enabledToolNames ?? [],
     onInternalToolsConfigChange: params.onInternalToolsConfigChange,
     onSelect: params.onSelect,
+    onToggle: params.onToggle,
   });
   return { items, createConfig: resolveSubmenuCreateConfig(activeSubmenu, params.onCreate) };
 }

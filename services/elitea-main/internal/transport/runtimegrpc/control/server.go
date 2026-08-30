@@ -152,6 +152,11 @@ func (s *Server) ClaimCommand(ctx context.Context, request *runtimev1.ClaimComma
 	if disposition != executionapp.ClaimAccepted {
 		return &runtimev1.ClaimCommandResponseV1{Receipt: receipt}, nil
 	}
+	claimStartedAtUnixMicros := decision.LeaseObservedAt.UTC().UnixMicro()
+	if decision.LeaseObservedAt.IsZero() || claimStartedAtUnixMicros <= 0 || claimStartedAtUnixMicros >= lease.ExpiresAt.UTC().UnixMicro() {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The claim creation time is unavailable.", false), nil
+	}
+	receipt.ClaimStartedAtUnixMicros = claimStartedAtUnixMicros
 
 	manifest, err := s.inputs.ResolveClaimInput(ctx, lease.Fence, command.GetInputBundleRef())
 	if err != nil {

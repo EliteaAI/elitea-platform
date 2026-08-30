@@ -11,6 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteCurrentAgentProvisionalText = `-- name: DeleteCurrentAgentProvisionalText :exec
+DELETE FROM chat_message_items
+WHERE message_group_id = $1::bigint
+  AND item_type = 'text_message'
+  AND meta ->> 'runtime_stream_execution_id' = $2::text
+  AND meta ->> 'runtime_stream_generation' = $3::bigint::text
+  AND meta -> 'runtime_stream_provisional' = 'true'::jsonb
+`
+
+type DeleteCurrentAgentProvisionalTextParams struct {
+	MessageGroupID int64  `db:"message_group_id" json:"message_group_id"`
+	ExecutionID    string `db:"execution_id" json:"execution_id"`
+	Generation     int64  `db:"generation" json:"generation"`
+}
+
+func (q *Queries) DeleteCurrentAgentProvisionalText(ctx context.Context, arg DeleteCurrentAgentProvisionalTextParams) error {
+	_, err := q.db.Exec(ctx, deleteCurrentAgentProvisionalText, arg.MessageGroupID, arg.ExecutionID, arg.Generation)
+	return err
+}
+
 const finalizeCurrentAgentAuthorizationPause = `-- name: FinalizeCurrentAgentAuthorizationPause :execrows
 UPDATE chat_message_group
 SET is_streaming = FALSE,
@@ -49,23 +69,37 @@ func (q *Queries) FinalizeCurrentAgentAuthorizationPause(ctx context.Context, ar
 const finalizeCurrentAgentFullMessage = `-- name: FinalizeCurrentAgentFullMessage :execrows
 UPDATE chat_message_group
 SET is_streaming = FALSE,
-    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts' - 'authorization_requests')
+    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts' - 'authorization_requests' - 'output_limit_reached')
         || jsonb_build_object(
             'thread_id', $1::text,
             'references', $2::jsonb,
             'is_error', FALSE,
             'error', '',
             'invoked_skills', $3::jsonb
-        ),
+        )
+        || CASE
+            WHEN $4::boolean
+            THEN jsonb_build_object(
+                'output_limit_reached', TRUE,
+                'output_limit_sequence',
+                CASE
+                    WHEN COALESCE(meta ->> 'output_limit_sequence', '') ~ '^[0-9]+$'
+                    THEN (meta ->> 'output_limit_sequence')::bigint + 1
+                    ELSE 1
+                END
+            )
+            ELSE '{}'::jsonb
+        END,
     updated_at = clock_timestamp()
-WHERE id = $4::bigint
+WHERE id = $5::bigint
 `
 
 type FinalizeCurrentAgentFullMessageParams struct {
-	ThreadID       string `db:"thread_id" json:"thread_id"`
-	ReferencesJson []byte `db:"references_json" json:"references_json"`
-	InvokedSkills  []byte `db:"invoked_skills" json:"invoked_skills"`
-	MessageGroupID int64  `db:"message_group_id" json:"message_group_id"`
+	ThreadID           string `db:"thread_id" json:"thread_id"`
+	ReferencesJson     []byte `db:"references_json" json:"references_json"`
+	InvokedSkills      []byte `db:"invoked_skills" json:"invoked_skills"`
+	OutputLimitReached bool   `db:"output_limit_reached" json:"output_limit_reached"`
+	MessageGroupID     int64  `db:"message_group_id" json:"message_group_id"`
 }
 
 func (q *Queries) FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error) {
@@ -73,6 +107,7 @@ func (q *Queries) FinalizeCurrentAgentFullMessage(ctx context.Context, arg Final
 		arg.ThreadID,
 		arg.ReferencesJson,
 		arg.InvokedSkills,
+		arg.OutputLimitReached,
 		arg.MessageGroupID,
 	)
 	if err != nil {
@@ -162,7 +197,7 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS internal_tool(value)
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' <> 'internal_mcp'
+             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -216,7 +251,10 @@ WITH resolved AS MATERIALIZED (
                     IS DISTINCT FROM ($4::integer)::text
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
-                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
+                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
+                    '[]'::jsonb,
+                    '["ask_user"]'::jsonb
+                )
             )
       )
       AND NOT EXISTS (
@@ -489,11 +527,23 @@ WITH resolved AS MATERIALIZED (
      AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
     WHERE conversation.uuid = $5::uuid
       AND (target_participant.entity_meta ->> 'project_id')::integer = $6::integer
-      AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) IN (
-          '[]'::jsonb,
-          '["internal_mcp"]'::jsonb
+      AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+              CASE
+                  WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                  THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
+                  ELSE '[]'::jsonb
+              END
+          ) AS internal_tool(value)
+          WHERE jsonb_typeof(internal_tool.value) <> 'string'
+             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
       )
-      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
+          '[]'::jsonb,
+          '["ask_user"]'::jsonb
+      )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
           ''
@@ -830,7 +880,7 @@ const resolveCurrentAdhocTurn = `-- name: ResolveCurrentAdhocTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
        target_participant.id AS target_participant_id,
-       COALESCE(author_mapping.entity_settings -> 'llm_settings', '{}'::jsonb)::text AS llm_settings_json,
+       COALESCE(target_mapping.entity_settings -> 'llm_settings', '{}'::jsonb)::text AS llm_settings_json,
        (CASE
            WHEN COALESCE(conversation.meta ->> 'default_instructions', '') = ''
            THEN COALESCE(conversation.instructions, '')
@@ -924,7 +974,10 @@ LEFT JOIN LATERAL (
           AND application_participant.entity_meta ->> 'project_id'
               = ($3::integer)::text
           AND COALESCE(application_participant.meta ->> 'name', '') <> ''
-          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) IN (
+              '[]'::jsonb,
+              '["ask_user"]'::jsonb
+          )
     ) AS current_tool
 ) AS current_tools ON TRUE
 LEFT JOIN LATERAL (
@@ -1029,6 +1082,45 @@ LEFT JOIN LATERAL (
               ),
               statement_timestamp()
           )
+          -- Keep failed or abandoned executions from leaving an orphan user
+          -- instruction in the rebuilt ad-hoc session. See the application
+          -- projection above for the paired-turn invariant.
+          AND (
+              (
+                  author.entity_name <> 'user'
+                  AND NOT message_group.is_streaming
+                  AND COALESCE(message_group.meta ->> 'is_error', 'false') = 'false'
+              )
+              OR (
+                  author.entity_name = 'user'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM chat_message_group AS completed_reply
+                      JOIN chat_participants AS completed_reply_author
+                        ON completed_reply_author.id = completed_reply.author_participant_id
+                       AND completed_reply_author.entity_name <> 'user'
+                      JOIN chat_message_items AS completed_reply_item
+                        ON completed_reply_item.message_group_id = completed_reply.id
+                       AND completed_reply_item.item_type = 'text_message'
+                      JOIN chat_messages_text AS completed_reply_text
+                        ON completed_reply_text.id = completed_reply_item.id
+                       AND COALESCE(completed_reply_text.content, '') <> ''
+                      WHERE completed_reply.conversation_id = conversation.id
+                        AND completed_reply.reply_to_id = message_group.id
+                        AND NOT completed_reply.is_streaming
+                        AND COALESCE(completed_reply.meta ->> 'is_error', 'false') = 'false'
+                        AND completed_reply.created_at < COALESCE(
+                            (
+                                SELECT current_question.created_at
+                                FROM chat_message_group AS current_question
+                                WHERE current_question.conversation_id = conversation.id
+                                  AND current_question.uuid = $4::uuid
+                            ),
+                            statement_timestamp()
+                        )
+                  )
+              )
+          )
         GROUP BY message_group.id, message_group.created_at, author.entity_name
     ) AS history_group
     WHERE jsonb_array_length(history_group.content) > 0
@@ -1045,7 +1137,7 @@ WHERE conversation.uuid = $5::uuid
           END
       ) AS internal_tool(value)
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' <> 'internal_mcp'
+         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -1099,7 +1191,10 @@ WHERE conversation.uuid = $5::uuid
                 IS DISTINCT FROM ($3::integer)::text
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
-            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
+            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
+                '[]'::jsonb,
+                '["ask_user"]'::jsonb
+            )
         )
   )
   AND NOT EXISTS (
@@ -1344,6 +1439,7 @@ SELECT conversation.id AS conversation_id,
        (target_mapping.entity_settings ->> 'version_id')::integer AS application_version_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
        COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
+       COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)::text AS internal_tools_json,
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -1589,17 +1685,72 @@ LEFT JOIN LATERAL (
               ),
               statement_timestamp()
           )
+          -- A failed response has no usable assistant content, but its user
+          -- request used to survive this projection. A later regeneration
+          -- then rebuilt the session with an unanswered prior instruction and
+          -- the model resumed that instruction instead of the selected turn.
+          -- Keep history as completed pairs: assistant groups must be final
+          -- successes, and a user group must have at least one such reply with
+          -- content that this projection can carry.
+          AND (
+              (
+                  author.entity_name <> 'user'
+                  AND NOT message_group.is_streaming
+                  AND COALESCE(message_group.meta ->> 'is_error', 'false') = 'false'
+              )
+              OR (
+                  author.entity_name = 'user'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM chat_message_group AS completed_reply
+                      JOIN chat_participants AS completed_reply_author
+                        ON completed_reply_author.id = completed_reply.author_participant_id
+                       AND completed_reply_author.entity_name <> 'user'
+                      JOIN chat_message_items AS completed_reply_item
+                        ON completed_reply_item.message_group_id = completed_reply.id
+                       AND completed_reply_item.item_type = 'text_message'
+                      JOIN chat_messages_text AS completed_reply_text
+                        ON completed_reply_text.id = completed_reply_item.id
+                       AND COALESCE(completed_reply_text.content, '') <> ''
+                      WHERE completed_reply.conversation_id = conversation.id
+                        AND completed_reply.reply_to_id = message_group.id
+                        AND NOT completed_reply.is_streaming
+                        AND COALESCE(completed_reply.meta ->> 'is_error', 'false') = 'false'
+                        AND completed_reply.created_at < COALESCE(
+                            (
+                                SELECT current_question.created_at
+                                FROM chat_message_group AS current_question
+                                WHERE current_question.conversation_id = conversation.id
+                                  AND current_question.uuid = $3::uuid
+                            ),
+                            statement_timestamp()
+                        )
+                  )
+              )
+          )
         GROUP BY message_group.id, message_group.created_at, author.entity_name
     ) AS history_group
     WHERE jsonb_array_length(history_group.content) > 0
 ) AS current_history ON TRUE
 WHERE conversation.uuid = $4::uuid
   AND (target_participant.entity_meta ->> 'project_id')::integer = $5::integer
-  AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) IN (
-      '[]'::jsonb,
-      '["internal_mcp"]'::jsonb
+  AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+          CASE
+              WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+              THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
+              ELSE '[]'::jsonb
+          END
+      ) AS internal_tool(value)
+      WHERE jsonb_typeof(internal_tool.value) <> 'string'
+         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
   )
-  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
+      '[]'::jsonb,
+      '["ask_user"]'::jsonb
+  )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
       ''
@@ -1705,6 +1856,7 @@ type ResolveCurrentApplicationTurnRow struct {
 	ApplicationVersionID          int32  `db:"application_version_id" json:"application_version_id"`
 	ApplicationVariablesJson      string `db:"application_variables_json" json:"application_variables_json"`
 	ChatHistoryJson               string `db:"chat_history_json" json:"chat_history_json"`
+	InternalToolsJson             string `db:"internal_tools_json" json:"internal_tools_json"`
 	ApplicationVersionDetailsJson string `db:"application_version_details_json" json:"application_version_details_json"`
 }
 
@@ -1767,6 +1919,7 @@ func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg Resolve
 		&i.ApplicationVersionID,
 		&i.ApplicationVariablesJson,
 		&i.ChatHistoryJson,
+		&i.InternalToolsJson,
 		&i.ApplicationVersionDetailsJson,
 	)
 	return i, err
@@ -1826,10 +1979,21 @@ WHERE conversation.uuid = $2::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-  AND EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      WHERE request.value ->> 'tool_run_id' = $5::text
+  AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+  AND (
+      $5::text = ''
+      OR (
+          jsonb_array_length(response.meta -> 'authorization_requests') = 1
+          AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+              WHERE COALESCE(
+                  NULLIF(request.value ->> 'interrupt_id', ''),
+                  NULLIF(request.value ->> 'tool_run_id', ''),
+                  request.value ->> 'tool_call_id'
+              ) = $5::text
+          )
+      )
   )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
@@ -1994,6 +2158,121 @@ func (q *Queries) ResolveCurrentContinuation(ctx context.Context, arg ResolveCur
 	return i, err
 }
 
+const resolveCurrentOutputLimitContinuation = `-- name: ResolveCurrentOutputLimitContinuation :one
+SELECT conversation.uuid AS conversation_uuid,
+       question.uuid AS question_id,
+       response.author_participant_id AS target_participant_id,
+       CASE response_author.entity_name
+           WHEN 'application' THEN 'application'
+           WHEN 'dummy' THEN 'adhoc'
+       END::text AS continuation_kind,
+       question_text.content::text AS user_input,
+       COALESCE(response_text.content, '')::text AS truncated_content,
+       COALESCE(response.meta ->> 'thread_id', '')::text AS thread_id,
+       COALESCE(response.meta ->> 'execution_generation', '')::text AS execution_generation,
+       CASE
+           WHEN COALESCE(response.meta ->> 'output_limit_sequence', '') ~ '^[1-9][0-9]*$'
+               THEN (response.meta ->> 'output_limit_sequence')::bigint
+           ELSE 0::bigint
+       END AS output_limit_sequence
+FROM chat_message_group AS response
+JOIN chat_conversations AS conversation
+  ON conversation.id = response.conversation_id
+JOIN chat_message_group AS question
+  ON question.id = response.reply_to_id
+ AND question.conversation_id = conversation.id
+JOIN chat_participants AS question_author
+  ON question_author.id = question.author_participant_id
+ AND question_author.entity_name = 'user'
+JOIN chat_participants AS response_author
+  ON response_author.id = response.author_participant_id
+ AND response_author.entity_name IN ('application', 'dummy')
+JOIN chat_participant_mapping AS actor_mapping
+  ON actor_mapping.conversation_id = conversation.id
+JOIN chat_participants AS actor_participant
+  ON actor_participant.id = actor_mapping.participant_id
+ AND actor_participant.entity_name = 'user'
+ AND (actor_participant.entity_meta ->> 'id')::bigint = $1::bigint
+LEFT JOIN LATERAL (
+    SELECT text_item.content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = question.id
+      AND item.item_type = 'text_message'
+    ORDER BY item.order_index DESC, item.id DESC
+    LIMIT 1
+) AS question_text ON TRUE
+JOIN LATERAL (
+    SELECT string_agg(text_item.content, '' ORDER BY item.order_index, item.id) AS content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = response.id
+      AND item.item_type = 'text_message'
+) AS response_text ON TRUE
+WHERE conversation.uuid = $2::uuid
+  AND response.uuid = $3::uuid
+  AND NOT response.is_streaming
+  AND response.meta -> 'output_limit_reached' = 'true'::jsonb
+  AND COALESCE(response.meta ->> 'output_limit_sequence', '') ~ '^[1-9][0-9]*$'
+  AND COALESCE(response.meta ->> 'thread_id', '') <> ''
+  AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
+  AND NOT (response.meta ? 'hitl_interrupt')
+  AND NOT (response.meta ? 'hitl_interrupts')
+  AND NOT (response.meta ? 'authorization_requests')
+  AND (
+      conversation.author_id = $1::bigint
+      OR (question_author.entity_meta ->> 'id')::bigint = $1::bigint
+  )
+  AND (
+      response_author.entity_name = 'dummy'
+      OR (
+          response_author.entity_name = 'application'
+          AND (response_author.entity_meta ->> 'project_id')::integer = $4::integer
+      )
+  )
+`
+
+type ResolveCurrentOutputLimitContinuationParams struct {
+	ActorUserID       int64       `db:"actor_user_id" json:"actor_user_id"`
+	ConversationUuid  pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	ProjectID         int32       `db:"project_id" json:"project_id"`
+}
+
+type ResolveCurrentOutputLimitContinuationRow struct {
+	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
+	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	ContinuationKind    string      `db:"continuation_kind" json:"continuation_kind"`
+	UserInput           string      `db:"user_input" json:"user_input"`
+	TruncatedContent    string      `db:"truncated_content" json:"truncated_content"`
+	ThreadID            string      `db:"thread_id" json:"thread_id"`
+	ExecutionGeneration string      `db:"execution_generation" json:"execution_generation"`
+	OutputLimitSequence int64       `db:"output_limit_sequence" json:"output_limit_sequence"`
+}
+
+func (q *Queries) ResolveCurrentOutputLimitContinuation(ctx context.Context, arg ResolveCurrentOutputLimitContinuationParams) (ResolveCurrentOutputLimitContinuationRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentOutputLimitContinuation,
+		arg.ActorUserID,
+		arg.ConversationUuid,
+		arg.ResponseMessageID,
+		arg.ProjectID,
+	)
+	var i ResolveCurrentOutputLimitContinuationRow
+	err := row.Scan(
+		&i.ConversationUuid,
+		&i.QuestionID,
+		&i.TargetParticipantID,
+		&i.ContinuationKind,
+		&i.UserInput,
+		&i.TruncatedContent,
+		&i.ThreadID,
+		&i.ExecutionGeneration,
+		&i.OutputLimitSequence,
+	)
+	return i, err
+}
+
 const resolveCurrentRegeneration = `-- name: ResolveCurrentRegeneration :one
 SELECT conversation.uuid AS conversation_uuid,
        question.uuid AS question_id,
@@ -2101,7 +2380,7 @@ func (q *Queries) ResolveCurrentRegeneration(ctx context.Context, arg ResolveCur
 
 const resumeCurrentAgentAuthorization = `-- name: ResumeCurrentAgentAuthorization :one
 WITH resolved AS MATERIALIZED (
-    SELECT response.id, response.uuid
+    SELECT response.id, response.uuid, submitted.value AS decisions
     FROM chat_message_group AS response
     JOIN chat_conversations AS conversation
       ON conversation.id = response.conversation_id
@@ -2122,34 +2401,79 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = $3::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
-    WHERE conversation.uuid = $4::uuid
-      AND response.uuid = $5::uuid
-      AND question.uuid = $6::uuid
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof($4::jsonb) = 'array'
+                THEN $4::jsonb
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS submitted
+    WHERE conversation.uuid = $5::uuid
+      AND response.uuid = $6::uuid
+      AND question.uuid = $7::uuid
       AND NOT response.is_streaming
-      AND response.meta ->> 'execution_generation' = $7::text
-      AND response.meta ->> 'thread_id' = $8::text
+      AND response.meta ->> 'execution_generation' = $8::text
+      AND response.meta ->> 'thread_id' = $9::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-      AND EXISTS (
+      AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND (
+          SELECT count(DISTINCT COALESCE(
+              NULLIF(request.value ->> 'interrupt_id', ''),
+              NULLIF(request.value ->> 'tool_run_id', ''),
+              request.value ->> 'tool_call_id'
+          ))
+          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+      ) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND (
+          SELECT count(DISTINCT decision.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+      ) = jsonb_array_length(submitted.value)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+          WHERE jsonb_typeof(decision.value) <> 'object'
+             OR COALESCE(decision.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(decision.value ->> 'guardrail_type', '') <> 'mcp_auth'
+             OR COALESCE(decision.value ->> 'action', '') NOT IN ('authorize', 'skip')
+             OR COALESCE(decision.value ->> 'value', '') <> ''
+      )
+      AND NOT EXISTS (
           SELECT 1
           FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-          WHERE request.value ->> 'tool_run_id' = $9::text
+          WHERE jsonb_typeof(request.value) <> 'object'
+             OR COALESCE(
+                 NULLIF(request.value ->> 'interrupt_id', ''),
+                 NULLIF(request.value ->> 'tool_run_id', ''),
+                 request.value ->> 'tool_call_id'
+             ) = ''
+             OR NOT EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(submitted.value) AS decision(value)
+                 WHERE decision.value ->> 'interrupt_id' = COALESCE(
+                     NULLIF(request.value ->> 'interrupt_id', ''),
+                     NULLIF(request.value ->> 'tool_run_id', ''),
+                     request.value ->> 'tool_call_id'
+                 )
+                   AND COALESCE(decision.value ->> 'tool_call_id', '') =
+                       COALESCE(request.value ->> 'tool_call_id', '')
+             )
       )
-      AND $10::text IN ('authorize', 'skip')
       AND (
-          conversation.author_id = $11::bigint
-          OR (question_author.entity_meta ->> 'id')::bigint = $11::bigint
+          conversation.author_id = $10::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $10::bigint
       )
       AND (
           (
-              $12::text = 'adhoc'
+              $11::text = 'adhoc'
               AND response_author.entity_name = 'dummy'
               AND $3::integer = 0
               AND $2::integer = 0
           )
           OR (
-              $12::text = 'application'
+              $11::text = 'application'
               AND response_author.entity_name = 'application'
-              AND (response_author.entity_meta ->> 'project_id')::integer = $13::integer
+              AND (response_author.entity_meta ->> 'project_id')::integer = $12::integer
               AND application_version.id IS NOT NULL
           )
       )
@@ -2160,10 +2484,16 @@ WITH resolved AS MATERIALIZED (
             || jsonb_build_object(
                 'resolved_authorization_request_ids',
                 COALESCE(response.meta -> 'resolved_authorization_request_ids', '[]'::jsonb)
-                    || jsonb_build_array($9::text)
+                    || COALESCE(
+                        (
+                            SELECT jsonb_agg(decision.value ->> 'interrupt_id')
+                            FROM jsonb_array_elements(resolved.decisions) AS decision(value)
+                        ),
+                        '[]'::jsonb
+                    )
             ),
         is_streaming = TRUE,
-        task_id = $14::text,
+        task_id = $13::text,
         updated_at = clock_timestamp()
     FROM resolved
     WHERE response.id = resolved.id
@@ -2175,20 +2505,19 @@ FROM updated
 `
 
 type ResumeCurrentAgentAuthorizationParams struct {
-	TargetParticipantID    int32       `db:"target_participant_id" json:"target_participant_id"`
-	ApplicationVersionID   int32       `db:"application_version_id" json:"application_version_id"`
-	ApplicationID          int32       `db:"application_id" json:"application_id"`
-	ConversationUuid       pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
-	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
-	QuestionID             pgtype.UUID `db:"question_id" json:"question_id"`
-	ExecutionGeneration    string      `db:"execution_generation" json:"execution_generation"`
-	ThreadID               string      `db:"thread_id" json:"thread_id"`
-	AuthorizationRequestID string      `db:"authorization_request_id" json:"authorization_request_id"`
-	AuthorizationAction    string      `db:"authorization_action" json:"authorization_action"`
-	ActorUserID            int64       `db:"actor_user_id" json:"actor_user_id"`
-	ContinuationKind       string      `db:"continuation_kind" json:"continuation_kind"`
-	ProjectID              int32       `db:"project_id" json:"project_id"`
-	ExecutionID            string      `db:"execution_id" json:"execution_id"`
+	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
+	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	HitlDecisions        []byte      `db:"hitl_decisions" json:"hitl_decisions"`
+	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
+	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
+	ThreadID             string      `db:"thread_id" json:"thread_id"`
+	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
+	ContinuationKind     string      `db:"continuation_kind" json:"continuation_kind"`
+	ProjectID            int32       `db:"project_id" json:"project_id"`
+	ExecutionID          string      `db:"execution_id" json:"execution_id"`
 }
 
 type ResumeCurrentAgentAuthorizationRow struct {
@@ -2201,13 +2530,12 @@ func (q *Queries) ResumeCurrentAgentAuthorization(ctx context.Context, arg Resum
 		arg.TargetParticipantID,
 		arg.ApplicationVersionID,
 		arg.ApplicationID,
+		arg.HitlDecisions,
 		arg.ConversationUuid,
 		arg.ResponseMessageID,
 		arg.QuestionID,
 		arg.ExecutionGeneration,
 		arg.ThreadID,
-		arg.AuthorizationRequestID,
-		arg.AuthorizationAction,
 		arg.ActorUserID,
 		arg.ContinuationKind,
 		arg.ProjectID,
@@ -2383,6 +2711,116 @@ func (q *Queries) ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentA
 		arg.ExecutionID,
 	)
 	var i ResumeCurrentAgentHITLRow
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
+	return i, err
+}
+
+const resumeCurrentAgentOutputLimit = `-- name: ResumeCurrentAgentOutputLimit :one
+WITH resolved AS MATERIALIZED (
+    SELECT response.id, response.uuid
+    FROM chat_message_group AS response
+    JOIN chat_conversations AS conversation
+      ON conversation.id = response.conversation_id
+    JOIN chat_message_group AS question
+      ON question.id = response.reply_to_id
+     AND question.conversation_id = conversation.id
+    JOIN chat_participants AS question_author
+      ON question_author.id = question.author_participant_id
+     AND question_author.entity_name = 'user'
+    JOIN chat_participants AS response_author
+      ON response_author.id = response.author_participant_id
+     AND response_author.id = $1::integer
+    LEFT JOIN chat_participant_mapping AS application_mapping
+      ON application_mapping.conversation_id = conversation.id
+     AND application_mapping.participant_id = response_author.id
+    LEFT JOIN application_versions AS application_version
+      ON application_version.id = $2::integer
+     AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
+     AND application_version.application_id = $3::integer
+     AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    WHERE conversation.uuid = $4::uuid
+      AND response.uuid = $5::uuid
+      AND question.uuid = $6::uuid
+      AND NOT response.is_streaming
+      AND response.meta -> 'output_limit_reached' = 'true'::jsonb
+      AND response.meta ->> 'output_limit_sequence' = $7::bigint::text
+      AND response.meta ->> 'execution_generation' = $8::text
+      AND response.meta ->> 'thread_id' = $9::text
+      AND NOT (response.meta ? 'hitl_interrupt')
+      AND NOT (response.meta ? 'hitl_interrupts')
+      AND NOT (response.meta ? 'authorization_requests')
+      AND (
+          conversation.author_id = $10::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $10::bigint
+      )
+      AND (
+          (
+              $11::text = 'adhoc'
+              AND response_author.entity_name = 'dummy'
+              AND $3::integer = 0
+              AND $2::integer = 0
+          )
+          OR (
+              $11::text = 'application'
+              AND response_author.entity_name = 'application'
+              AND (response_author.entity_meta ->> 'project_id')::integer = $12::integer
+              AND application_version.id IS NOT NULL
+          )
+      )
+    FOR UPDATE OF response
+), updated AS (
+    UPDATE chat_message_group AS response
+    SET meta = response.meta - 'output_limit_reached',
+        is_streaming = TRUE,
+        task_id = $13::text,
+        updated_at = clock_timestamp()
+    FROM resolved
+    WHERE response.id = resolved.id
+    RETURNING response.id, response.uuid
+)
+SELECT updated.id AS response_message_group_id,
+       updated.uuid AS response_message_id
+FROM updated
+`
+
+type ResumeCurrentAgentOutputLimitParams struct {
+	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
+	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
+	OutputLimitSequence  int64       `db:"output_limit_sequence" json:"output_limit_sequence"`
+	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
+	ThreadID             string      `db:"thread_id" json:"thread_id"`
+	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
+	ContinuationKind     string      `db:"continuation_kind" json:"continuation_kind"`
+	ProjectID            int32       `db:"project_id" json:"project_id"`
+	ExecutionID          string      `db:"execution_id" json:"execution_id"`
+}
+
+type ResumeCurrentAgentOutputLimitRow struct {
+	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
+	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+}
+
+func (q *Queries) ResumeCurrentAgentOutputLimit(ctx context.Context, arg ResumeCurrentAgentOutputLimitParams) (ResumeCurrentAgentOutputLimitRow, error) {
+	row := q.db.QueryRow(ctx, resumeCurrentAgentOutputLimit,
+		arg.TargetParticipantID,
+		arg.ApplicationVersionID,
+		arg.ApplicationID,
+		arg.ConversationUuid,
+		arg.ResponseMessageID,
+		arg.QuestionID,
+		arg.OutputLimitSequence,
+		arg.ExecutionGeneration,
+		arg.ThreadID,
+		arg.ActorUserID,
+		arg.ContinuationKind,
+		arg.ProjectID,
+		arg.ExecutionID,
+	)
+	var i ResumeCurrentAgentOutputLimitRow
 	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
 	return i, err
 }

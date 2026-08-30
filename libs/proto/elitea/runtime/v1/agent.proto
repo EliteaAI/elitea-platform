@@ -87,7 +87,14 @@ message AgentExecutionInputV1 {
   // Guardrail identifiers only — never credentials. The tool and toolkit names
   // here are the same public identifiers the toolkit catalogue already serves.
   bytes toolkit_guardrails = 38;
-  reserved 39 to 63;
+  // Visible assistant text from a root response that ended on the provider's
+  // output-token limit. It is present only when `should_continue` means an
+  // output continuation, never for HITL, delegated authorization, Printer, or
+  // graph-checkpoint resume. Keeping this visible-only value explicit prevents
+  // hidden reasoning from leaking into the continuation prompt and gives every
+  // language the same unambiguous continuation discriminator.
+  bytes truncated_content = 39;
+  reserved 40 to 63;
 }
 
 enum AgentExecutionTerminalStateV1 {

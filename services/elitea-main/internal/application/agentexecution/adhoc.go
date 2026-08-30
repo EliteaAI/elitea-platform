@@ -309,6 +309,10 @@ func currentAdhocInput(
 	if err != nil {
 		return nil, err
 	}
+	internalTools, err := currentAdhocRuntimeInternalTools(target.ConversationMeta)
+	if err != nil {
+		return nil, err
+	}
 	threadID := request.ConversationUUID
 	conversationID := request.ConversationUUID
 	executionGeneration := request.QuestionID
@@ -316,7 +320,7 @@ func currentAdhocInput(
 		SchemaRevision: "elitea.runtime.agent-execution-input.v1",
 		Llm:            llm, ChatHistory: bytes.Clone(target.ChatHistory), UserInput: userInput,
 		ThreadId: &threadID, Tools: toolsJSON, Application: application,
-		InternalTools: []byte(`[]`), McpTokens: []byte(`{}`),
+		InternalTools: internalTools, McpTokens: []byte(`{}`),
 		IgnoredMcpServers: []byte(`[]`), UserDeclinedMcpServers: []byte(`[]`),
 		HitlDecisions: []byte(`[]`), ExecutionGeneration: &executionGeneration,
 		Meta: []byte(`{}`), ConversationId: &conversationID, Persona: persona,
@@ -332,6 +336,19 @@ func currentAdhocInput(
 		input.StepsLimit = stepsLimit
 	}
 	return input, nil
+}
+
+func currentAdhocRuntimeInternalTools(meta json.RawMessage) ([]byte, error) {
+	var decoded struct {
+		InternalTools json.RawMessage `json:"internal_tools"`
+	}
+	if !validJSONObject(meta) || json.Unmarshal(meta, &decoded) != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	if len(decoded.InternalTools) == 0 {
+		return []byte(`[]`), nil
+	}
+	return currentRuntimeInternalTools(decoded.InternalTools)
 }
 
 func currentAdhocRuntimeLLM(settings map[string]any) ([]byte, error) {

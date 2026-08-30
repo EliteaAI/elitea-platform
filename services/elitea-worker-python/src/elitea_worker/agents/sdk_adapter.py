@@ -791,7 +791,13 @@ def _require_in_process_hitl_resume(payload: AgentExecutionPayload) -> None:
         )
 
     seen_interrupts: set[str] = set()
-    allowed_keys = {"interrupt_id", "tool_call_id", "action", "value"}
+    allowed_keys = {
+        "interrupt_id",
+        "tool_call_id",
+        "guardrail_type",
+        "action",
+        "value",
+    }
     for decision in payload.hitl_decisions:
         if not isinstance(decision, dict) or set(decision) - allowed_keys:
             raise UnsupportedCapability("The HITL decision is malformed.")
@@ -808,15 +814,30 @@ def _require_in_process_hitl_resume(payload: AgentExecutionPayload) -> None:
         tool_call_id = decision.get("tool_call_id")
         if tool_call_id is not None and not isinstance(tool_call_id, str):
             raise UnsupportedCapability("The HITL tool-call identity is malformed.")
+        guardrail_type = decision.get("guardrail_type")
+        if guardrail_type not in {None, "mcp_auth"}:
+            raise UnsupportedCapability("The HITL guardrail type is not supported.")
         action = decision.get("action")
-        if action not in {"approve", "reject", "edit", "block_with_comment"}:
+        allowed_actions = (
+            {"authorize", "skip"}
+            if guardrail_type == "mcp_auth"
+            else {"approve", "reject", "edit", "block_with_comment"}
+        )
+        if action not in allowed_actions:
             raise UnsupportedCapability("The HITL action is not supported.")
         value = decision.get("value", "")
         if not isinstance(value, str):
             raise UnsupportedCapability("The HITL decision value is malformed.")
-        if action in {"edit", "block_with_comment"} and not value:
+        if (
+            guardrail_type != "mcp_auth"
+            and action in {"edit", "block_with_comment"}
+            and not value
+        ):
             raise UnsupportedCapability("The HITL decision value is required.")
-        if action not in {"edit", "block_with_comment"} and value:
+        if (
+            guardrail_type == "mcp_auth"
+            or action not in {"edit", "block_with_comment"}
+        ) and value:
             raise UnsupportedCapability("The HITL decision value is not allowed.")
 
 

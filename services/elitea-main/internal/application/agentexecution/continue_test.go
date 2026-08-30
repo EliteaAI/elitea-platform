@@ -34,6 +34,107 @@ func TestCurrentContinuationDatabaseIDBoundsCurrentIntegerSchema(t *testing.T) {
 	}
 }
 
+func TestCurrentApplicationOutputContinuationReusesExactSessionAndVisiblePartial(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		continuationTarget: CurrentContinuationTarget{
+			ContinuationKind:    CurrentContinuationOutputLimit,
+			Kind:                CurrentRegenerationApplication,
+			TargetParticipantID: 21,
+			QuestionID:          "ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			UserInput:           "Explain durable workers",
+			ThreadID:            "thread-current-output-1",
+			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+			TruncatedContent:    "A durable worker stores progress before it acknowledges work.",
+			OutputLimitSequence: 2,
+		},
+		target: CurrentApplicationTarget{
+			ApplicationID: 31, ApplicationVersionID: 41,
+			Variables: json.RawMessage(`[]`),
+			VersionDetails: json.RawMessage(`{
+  "id":41,"application_id":31,"agent_type":"agent","instructions":"Be precise",
+  "llm_settings":{"model_name":"test","model_project_id":7,"openai_compatible":false},
+  "meta":{},"tools":[]
+}`),
+			ChatHistory: json.RawMessage(`[]`),
+		},
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-output-continue", CommandID: "command-output-continue", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		Kind:              CurrentContinuationOutputLimit,
+	}
+
+	outcome, err := service.ContinueCurrentAgent(context.Background(), request)
+	if err != nil || len(admissions.requests) != 1 {
+		t.Fatalf("ContinueCurrentAgent() error=%v admissions=%d", err, len(admissions.requests))
+	}
+	admission := admissions.requests[0]
+	turn := admission.CurrentContinueTurn
+	if outcome.ResponseMessageID != request.ResponseMessageID ||
+		admission.CapabilityID != executiondomain.AgentApplicationCapability ||
+		admission.SIOEvent != "chat_continue_predict" || turn == nil ||
+		turn.ContinuationKind != CurrentContinuationOutputLimit ||
+		turn.OutputLimitSequence != 2 || turn.ThreadID != "thread-current-output-1" ||
+		turn.ExecutionGeneration != resolver.continuationTarget.ExecutionGeneration ||
+		turn.InterruptID != "" || turn.Action != "" || len(turn.HITLDecisions) != 0 {
+		t.Fatalf("outcome=%+v admission=%+v turn=%+v", outcome, admission, turn)
+	}
+	input := admission.Input
+	if !input.ShouldContinue || input.HitlResume || input.HitlAction != nil || input.HitlValue != nil ||
+		string(input.HitlDecisions) != `[]` || input.GetThreadId() != "thread-current-output-1" ||
+		input.GetExecutionGeneration() != resolver.continuationTarget.ExecutionGeneration ||
+		string(input.TruncatedContent) != `"A durable worker stores progress before it acknowledges work."` {
+		t.Fatalf("input=%+v truncated_content=%s", input, input.TruncatedContent)
+	}
+	if admission.IdempotencyKey != "continue-output/30e0913e-10d4-43db-b8d0-c7b79480935a/2" {
+		t.Fatalf("idempotency_key=%q", admission.IdempotencyKey)
+	}
+	if err := validateAuthoritativeInput(input); err != nil {
+		t.Fatalf("output continuation must pass authoritative validation: %v", err)
+	}
+}
+
+func TestCurrentOutputContinuationSupportsZeroVisibleContentAndRejectsMixedResume(t *testing.T) {
+	target := CurrentContinuationTarget{
+		ContinuationKind: CurrentContinuationOutputLimit,
+		Kind:             CurrentRegenerationAdhoc, TargetParticipantID: 21,
+		QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e", UserInput: "Think first",
+		ThreadID: "thread-output-empty", ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+		TruncatedContent: "", OutputLimitSequence: 1,
+	}
+	if err := target.Validate(); err != nil {
+		t.Fatalf("zero-visible output continuation must be valid: %v", err)
+	}
+	request := CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		Kind:              CurrentContinuationOutputLimit,
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("minimal output continuation request must be valid: %v", err)
+	}
+	request.ThreadID = "browser-selected-thread"
+	if err := request.Validate(); err != ErrInvalidCurrentAgentStart {
+		t.Fatalf("mixed output continuation error=%v", err)
+	}
+	target.HITLInterrupts = []CurrentHITLInterrupt{{InterruptID: "interrupt-1", AvailableActions: []string{"approve"}}}
+	if err := target.Validate(); err != ErrUnsupportedCurrentAgentStart {
+		t.Fatalf("mixed output target error=%v", err)
+	}
+}
+
 func TestCurrentApplicationContinuationReusesCheckpointAndResponse(t *testing.T) {
 	resolver := &currentApplicationResolverStub{
 		continuationTarget: CurrentContinuationTarget{
@@ -169,6 +270,67 @@ func TestCurrentApplicationContinuationCarriesBlockWithCommentToOneExactDecision
 	}
 }
 
+func TestCurrentApplicationContinuationCarriesClarifyingAnswerToOneExactDecision(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		continuationTarget: CurrentContinuationTarget{
+			Kind: CurrentRegenerationApplication, TargetParticipantID: 21,
+			QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			UserInput:  "prepare the release", ThreadID: "thread-current-1",
+			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+			InterruptID:         "interrupt-clarifying-1",
+			AvailableActions:    []string{"answer"},
+			HITLInterrupts: []CurrentHITLInterrupt{{
+				InterruptID: "interrupt-clarifying-1", AvailableActions: []string{"answer"},
+			}},
+		},
+		target: CurrentApplicationTarget{
+			ApplicationID: 31, ApplicationVersionID: 41,
+			Variables: json.RawMessage(`[]`),
+			VersionDetails: json.RawMessage(`{
+  "id":41,"application_id":31,"agent_type":"agent","instructions":"Clarify first",
+  "llm_settings":{"model_name":"test","model_project_id":7,"openai_compatible":false},
+  "meta":{},"tools":[]
+}`),
+			ChatHistory: json.RawMessage(`[]`),
+		},
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-answer", CommandID: "command-answer", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := `{"q1":"Production","q2":["API","UI"]}`
+	_, err = service.ContinueCurrentAgent(context.Background(), CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		ThreadID:          "thread-current-1",
+		Action:            "answer", Value: answer,
+	})
+	if err != nil || len(admissions.requests) != 1 {
+		t.Fatalf("ContinueCurrentAgent() error=%v admissions=%d", err, len(admissions.requests))
+	}
+	admission := admissions.requests[0]
+	if admission.CurrentContinueTurn == nil ||
+		admission.CurrentContinueTurn.InterruptID != resolver.continuationTarget.InterruptID ||
+		admission.CurrentContinueTurn.Action != "answer" ||
+		admission.Input.GetHitlAction() != "answer" ||
+		admission.Input.GetHitlValue() != answer {
+		t.Fatalf("admission=%+v input=%+v", admission.CurrentContinueTurn, admission.Input)
+	}
+	var decisions []map[string]string
+	if err := json.Unmarshal(admission.Input.HitlDecisions, &decisions); err != nil || len(decisions) != 1 ||
+		decisions[0]["interrupt_id"] != resolver.continuationTarget.InterruptID ||
+		decisions[0]["action"] != "answer" || decisions[0]["value"] != answer {
+		t.Fatalf("decisions=%s error=%v", admission.Input.HitlDecisions, err)
+	}
+}
+
 func TestCurrentApplicationContinuationCarriesOneAtomicDecisionPerPendingInterrupt(t *testing.T) {
 	interrupts := []CurrentHITLInterrupt{
 		{InterruptID: "interrupt-delete-1", AvailableActions: []string{"approve", "reject"}},
@@ -286,7 +448,12 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 			UserInput:  "list SharePoint sites", ThreadID: "thread-current-1",
 			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
 			InterruptID:         "tool-run-sharepoint-1",
+			ToolCallID:          "call-sharepoint-search-1",
 			AvailableActions:    []string{"authorize", "skip"},
+			AuthorizationRequests: []CurrentAuthorizationRequest{{
+				InterruptID: "tool-run-sharepoint-1", ToolCallID: "call-sharepoint-search-1",
+				AvailableActions: []string{"authorize", "skip"},
+			}},
 		},
 		target: CurrentApplicationTarget{
 			ApplicationID: 31, ApplicationVersionID: 41,
@@ -336,15 +503,93 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 		t.Fatalf("admission=%+v turn=%+v", admission, turn)
 	}
 	input := admission.Input
-	if !input.ShouldContinue || input.HitlResume || input.HitlAction != nil ||
-		input.HitlValue != nil || !jsonEqual(input.HitlDecisions, json.RawMessage(`[]`)) ||
+	if !input.ShouldContinue || !input.HitlResume || input.GetHitlAction() != "authorize" ||
+		input.HitlValue == nil || input.GetHitlValue() != "" ||
 		!jsonEqual(input.McpTokens, tokens) ||
 		!jsonEqual(input.IgnoredMcpServers, ignored) ||
 		!jsonEqual(input.UserDeclinedMcpServers, declined) {
 		t.Fatalf("input=%+v", input)
 	}
+	var decisions []CurrentHITLDecision
+	if json.Unmarshal(input.HitlDecisions, &decisions) != nil || len(decisions) != 1 ||
+		decisions[0].InterruptID != request.AuthorizationID ||
+		decisions[0].ToolCallID != "call-sharepoint-search-1" ||
+		decisions[0].GuardrailType != "mcp_auth" || decisions[0].Action != "authorize" {
+		t.Fatalf("normalized authorization decisions=%s", input.HitlDecisions)
+	}
 	if err := validateAuthoritativeInput(input); err != nil {
 		t.Fatalf("authorization continuation must pass authoritative admission validation: %v", err)
+	}
+}
+
+func TestCurrentApplicationAuthorizationContinuationCarriesExactCompleteDecisionSet(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		continuationTarget: CurrentContinuationTarget{
+			ContinuationKind: CurrentContinuationAuthorization,
+			Kind:             CurrentRegenerationApplication, TargetParticipantID: 21,
+			QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			UserInput:  "resolve records", ThreadID: "thread-current-1",
+			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+			AuthorizationRequests: []CurrentAuthorizationRequest{
+				{InterruptID: "auth-2", ToolCallID: "call-2", AvailableActions: []string{"authorize", "skip"}},
+				{InterruptID: "auth-1", ToolCallID: "call-1", AvailableActions: []string{"authorize", "skip"}},
+			},
+		},
+		target: CurrentApplicationTarget{
+			ApplicationID: 31, ApplicationVersionID: 41,
+			Variables: json.RawMessage(`[]`),
+			VersionDetails: json.RawMessage(`{
+  "id":41,"application_id":31,"agent_type":"agent","instructions":"Be careful",
+  "llm_settings":{"model_name":"test","model_project_id":7,"openai_compatible":false},
+  "meta":{},"tools":[]
+}`),
+			ChatHistory: json.RawMessage(`[]`),
+		},
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-parallel-authorization", CommandID: "command-parallel-authorization", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		Kind:              CurrentContinuationAuthorization,
+		HITLDecisions: []CurrentHITLDecision{
+			{InterruptID: "auth-2", GuardrailType: "mcp_auth", Action: "skip"},
+			{InterruptID: "auth-1", GuardrailType: "mcp_auth", Action: "authorize"},
+		},
+		MCPTokens:         json.RawMessage(`{"https://records.example.test":{"access_token":"runtime-secret"}}`),
+		IgnoredMCPServers: json.RawMessage(`[]`), DeclinedMCPServers: json.RawMessage(`[]`),
+	}
+
+	_, err = service.ContinueCurrentAgent(context.Background(), request)
+	if err != nil || len(admissions.requests) != 1 {
+		t.Fatalf("ContinueCurrentAgent() error=%v admissions=%d", err, len(admissions.requests))
+	}
+	admission := admissions.requests[0]
+	turn := admission.CurrentContinueTurn
+	if turn == nil || turn.InterruptID != "" || turn.Action != "" ||
+		turn.ContinuationKind != CurrentContinuationAuthorization {
+		t.Fatalf("turn=%+v", turn)
+	}
+	if admission.Input.HitlAction != nil || admission.Input.HitlValue != nil {
+		t.Fatalf("plural authorization must not mint a scalar alias: %+v", admission.Input)
+	}
+	var decisions []CurrentHITLDecision
+	if json.Unmarshal(admission.Input.HitlDecisions, &decisions) != nil || len(decisions) != 2 ||
+		decisions[0].InterruptID != "auth-1" || decisions[0].ToolCallID != "call-1" ||
+		decisions[1].InterruptID != "auth-2" || decisions[1].ToolCallID != "call-2" {
+		t.Fatalf("normalized authorization decisions=%s", admission.Input.HitlDecisions)
+	}
+	if err := turn.Validate(); err != nil {
+		t.Fatalf("plural authorization turn must remain authoritative: %v", err)
 	}
 }
 
@@ -355,6 +600,9 @@ func TestCurrentAuthorizationContinuationRejectsDifferentInvocation(t *testing.T
 		QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e", UserInput: "authorize toolkit",
 		ThreadID: "thread-current-1", ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
 		InterruptID: "tool-run-current", AvailableActions: []string{"authorize", "skip"},
+		AuthorizationRequests: []CurrentAuthorizationRequest{{
+			InterruptID: "tool-run-current", AvailableActions: []string{"authorize", "skip"},
+		}},
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(

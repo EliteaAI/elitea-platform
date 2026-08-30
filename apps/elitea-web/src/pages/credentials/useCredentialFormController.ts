@@ -273,6 +273,8 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   // correctly flags a dependency that "changes every render" as a real bug,
   // not a style nit — `save` would never actually stay referentially stable).
   const schemaProperties = useMemo(() => dataSchema?.properties ?? {}, [dataSchema]);
+  const schemaSections = useMemo(() => dataSchema?.metadata?.sections ?? {}, [dataSchema]);
+  const schemaRequiredFields = useMemo(() => dataSchema?.required ?? [], [dataSchema]);
 
   useFormSeeding(mode, detail.data, dataSchema, { setName, setEliteaTitle, setShared, setData });
 
@@ -360,6 +362,8 @@ export function useCredentialFormController(props: CredentialFormControllerProps
     effectiveType,
     typeDescriptor,
     schemaProperties,
+    schemaSections,
+    schemaRequiredFields,
     name,
     setName,
     shared,

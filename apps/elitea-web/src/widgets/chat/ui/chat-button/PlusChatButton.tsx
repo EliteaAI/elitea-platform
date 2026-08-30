@@ -160,6 +160,13 @@ export const PlusChatButton = memo(
       [entitySubmenus, closeMenu],
     );
 
+    const handleToggleParticipant = useCallback(
+      (participant: unknown) => {
+        entitySubmenus?.onSelectParticipant?.(participant);
+      },
+      [entitySubmenus],
+    );
+
     const { items: submenuItems, createConfig } = resolveActiveSubmenuView(activeSubmenu, {
       participants,
       entities: entitySubmenus,
@@ -167,6 +174,7 @@ export const PlusChatButton = memo(
       enabledToolNames: internal_tools,
       onInternalToolsConfigChange,
       onSelect: handleSelectParticipant,
+      onToggle: handleToggleParticipant,
       onCreate: {
         agents: handleCreateAgent,
         pipelines: handleCreatePipeline,

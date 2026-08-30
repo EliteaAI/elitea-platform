@@ -632,13 +632,13 @@ func buildKey(provider schemas.ModelProvider, c credential, apiKey, requestModel
 			AuthCredentials: plainSecret(c.vertexCredentialsRef),
 		}
 	case schemas.VLLM:
-		// bifrost requires vllm_key_config.url; the credential's api_base IS
-		// the vLLM server URL. ModelName stays empty = no key-level model
-		// filter (the whole instance's model set is reachable).
+		// Bifrost appends /v1 to this URL. The stored api_base follows the
+		// OpenAI client contract and can already end in /v1, so remove that
+		// one suffix before handing the URL to Bifrost.
 		if c.apiBase == "" {
 			return schemas.Key{}, missingCredentialFields("api_base")
 		}
-		key.VLLMKeyConfig = &schemas.VLLMKeyConfig{URL: plainSecret(c.apiBase)}
+		key.VLLMKeyConfig = &schemas.VLLMKeyConfig{URL: plainSecret(bifrostVLLMBaseURL(c.apiBase))}
 		// An OpenAI-compatible upstream that also serves the Anthropic
 		// dialect (/v1/messages) is selected per credential. bifrost's vllm
 		// provider reads this to build Anthropic-shaped requests instead of
@@ -654,6 +654,16 @@ func buildKey(provider schemas.ModelProvider, c credential, apiKey, requestModel
 // See buildKey for why schemas.NewSecretVar must not be used on these values.
 func plainSecret(value string) schemas.SecretVar {
 	return schemas.SecretVar{Val: value, SecretType: schemas.SecretTypePlainText}
+}
+
+// bifrostVLLMBaseURL converts an OpenAI client base URL to the root URL that
+// Bifrost's vLLM provider expects. Bifrost adds /v1 for every operation.
+func bifrostVLLMBaseURL(apiBase string) string {
+	base := strings.TrimRight(strings.TrimSpace(apiBase), "/")
+	if strings.HasSuffix(strings.ToLower(base), "/v1") {
+		return base[:len(base)-len("/v1")]
+	}
+	return base
 }
 
 // missingCredentialFields builds the ErrIncompleteCredential error. It names the

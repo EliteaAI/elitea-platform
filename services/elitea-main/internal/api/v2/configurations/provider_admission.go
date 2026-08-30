@@ -16,9 +16,9 @@ import (
 // reviewed mutation route needs ELITEA_CONFIGURATIONS_MUTATION_ENABLED, and no
 // deployment file turns that on, so nothing else answers
 // POST /api/v2/configurations/configurations/{projectID} in a shipped install.
-// The INSERT here never named status_ok, the column default is false, and the
-// LLM gateway admits only status_ok = true — so a credential a user saved was
-// stored correctly and stayed invisible to the only LLM data plane.
+// The write starts status_ok at false, and the LLM gateway admits only
+// status_ok = true. A saved credential therefore stays invisible until the
+// admission decision accepts it.
 //
 // The remedy is not to store true. It is to make this route reach the same
 // answer the configuration lifecycle reaches: expand the row's declared
@@ -32,7 +32,7 @@ type ProviderAdmission interface {
 }
 
 // WithProviderAdmission wires the status_ok decision (#457). nil leaves every
-// written row at the column default, which is the behaviour before this
+// written row at the pending false value, which is the behaviour before this
 // option existed. It is nil only where the Configurations runtime itself is
 // absent, because that runtime owns the vault and the expander the decision
 // reads.

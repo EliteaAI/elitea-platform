@@ -167,6 +167,57 @@ func TestNodeEventsRepositoryDoesNotInterpretNestedAgentToolEventAsIndexActivity
 	}
 }
 
+type recordingCurrentAgentTextProjector struct {
+	calls     int
+	projectID int64
+	frame     outputapp.NodeEventFrame
+}
+
+func (p *recordingCurrentAgentTextProjector) projectAgentTextDelta(
+	_ context.Context,
+	_ sqlExecutor,
+	projectID int64,
+	frame outputapp.NodeEventFrame,
+) error {
+	p.calls++
+	p.projectID = projectID
+	p.frame = frame
+	return nil
+}
+
+func TestNodeEventsRepositoryProjectsAgentTextInTheReplayTransaction(t *testing.T) {
+	frame := testNodeEventFrame()
+	frame.BrowserData = []byte(`{
+		"type":"agent_llm_chunk",
+		"stream_id":"conversation-1",
+		"message_id":"message-1",
+		"execution_generation":"generation-1",
+		"sio_event":"chat_predict",
+		"content":"durable partial"
+	}`)
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{err: pgx.ErrNoRows},
+		{values: []any{"claim-node-1"}},
+		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", executiondomain.AgentAdhocCapability, false, false}},
+	}}
+	repository, err := newNodeEventsRepository(&scriptedStore{scriptedExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	textProjector := &recordingCurrentAgentTextProjector{}
+	repository.agentText = textProjector
+
+	outcome, err := repository.ProjectNodeEvent(context.Background(), frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Inserted || textProjector.calls != 1 || textProjector.projectID != 42 ||
+		string(textProjector.frame.BrowserData) != string(frame.BrowserData) {
+		t.Fatalf("agent text projection = %+v projector=%+v", outcome, textProjector)
+	}
+}
+
 func TestNodeEventsRepositoryReplaysIdenticalEventAndRejectsDifferentBytes(t *testing.T) {
 	frame := testNodeEventFrame()
 	digest := runtimedomain.SHA256(frame.BrowserData)

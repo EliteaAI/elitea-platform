@@ -347,6 +347,10 @@ type ClaimReceiptV1 struct {
 	ClaimId                  string                           `protobuf:"bytes,9,opt,name=claim_id,json=claimId,proto3" json:"claim_id,omitempty"`
 	SettlementRecovery       *SettlementRecoveryV1            `protobuf:"bytes,10,opt,name=settlement_recovery,json=settlementRecovery,proto3" json:"settlement_recovery,omitempty"`
 	Retirement               *RuntimeErrorV1                  `protobuf:"bytes,11,opt,name=retirement,proto3" json:"retirement,omitempty"`
+	// Database-authored creation instant for a fresh accepted claim. This is
+	// carried only by ACCEPTED receipts so a separate execution-state database
+	// can order stale-writer takeover without reading Main's business tables.
+	ClaimStartedAtUnixMicros int64 `protobuf:"varint,12,opt,name=claim_started_at_unix_micros,json=claimStartedAtUnixMicros,proto3" json:"claim_started_at_unix_micros,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -456,6 +460,13 @@ func (x *ClaimReceiptV1) GetRetirement() *RuntimeErrorV1 {
 		return x.Retirement
 	}
 	return nil
+}
+
+func (x *ClaimReceiptV1) GetClaimStartedAtUnixMicros() int64 {
+	if x != nil {
+		return x.ClaimStartedAtUnixMicros
+	}
+	return 0
 }
 
 type ClaimCommandResponseV1 struct {
@@ -1099,7 +1110,7 @@ const file_elitea_runtime_v1_control_proto_rawDesc = "" +
 	"\x0fproposal_digest\x18\x02 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x0eproposalDigest\x12'\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\x122\n" +
 	"\x15settlement_receipt_id\x18\x04 \x01(\tR\x13settlementReceiptId\x12?\n" +
-	"\aoutcome\x18\x05 \x01(\x0e2%.elitea.runtime.v1.ExecutionOutcomeV1R\aoutcomeJ\x04\b\x06\x10\x10\"\x8b\x06\n" +
+	"\aoutcome\x18\x05 \x01(\x0e2%.elitea.runtime.v1.ExecutionOutcomeV1R\aoutcomeJ\x04\b\x06\x10\x10\"\xcb\x06\n" +
 	"\x0eClaimReceiptV1\x12G\n" +
 	"\vdisposition\x18\x01 \x01(\x0e2%.elitea.runtime.v1.ClaimDispositionV1R\vdisposition\x12B\n" +
 	"\bidentity\x18\x02 \x01(\v2&.elitea.runtime.v1.ExecutionIdentityV1R\bidentity\x129\n" +
@@ -1114,7 +1125,8 @@ const file_elitea_runtime_v1_control_proto_rawDesc = "" +
 	" \x01(\v2'.elitea.runtime.v1.SettlementRecoveryV1R\x12settlementRecovery\x12A\n" +
 	"\n" +
 	"retirement\x18\v \x01(\v2!.elitea.runtime.v1.RuntimeErrorV1R\n" +
-	"retirementJ\x04\b\f\x10\x10\"\x9c\x01\n" +
+	"retirement\x12>\n" +
+	"\x1cclaim_started_at_unix_micros\x18\f \x01(\x03R\x18claimStartedAtUnixMicrosJ\x04\b\r\x10\x10\"\x9c\x01\n" +
 	"\x16ClaimCommandResponseV1\x12;\n" +
 	"\areceipt\x18\x01 \x01(\v2!.elitea.runtime.v1.ClaimReceiptV1R\areceipt\x12?\n" +
 	"\trejection\x18\x02 \x01(\v2!.elitea.runtime.v1.RuntimeErrorV1R\trejectionJ\x04\b\x03\x10\x10\"\x9e\x01\n" +

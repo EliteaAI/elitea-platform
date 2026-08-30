@@ -59,6 +59,53 @@ function currentAuthorOf(data: unknown): SocialAuthorProfile | undefined {
   return (data as { readonly data?: SocialAuthorProfile } | undefined)?.data;
 }
 
+/**
+ * Adapts Main's current flat message rows to the message-group shape used by
+ * the ported chat renderer.
+ *
+ * Main returns `uid`, `role` and `metadata`. The baseline converter expects
+ * `uuid`, reply linkage and `meta`. Keeping this adapter at the API composition
+ * boundary avoids teaching every message component both wire formats.
+ */
+type CurrentMessageRow = Partial<MessageGroupWire> & {
+  readonly uid?: unknown;
+  readonly role?: unknown;
+  readonly metadata?: unknown;
+};
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+function adaptCurrentMessageRow(value: unknown, index: number, previousUserId: string | number | undefined): MessageGroupWire {
+  const row = value as CurrentMessageRow;
+  const id = row.id ?? String(index);
+  const uuid = nonEmptyString(row.uuid) ?? nonEmptyString(row.uid) ?? String(id);
+  const role = nonEmptyString(row.role);
+  const needsReplyLink = role === 'assistant' && previousUserId !== undefined && row.reply_to_id === undefined;
+  return {
+    ...row,
+    id,
+    uuid,
+    content: typeof row.content === 'string' ? row.content : '',
+    created_at: typeof row.created_at === 'string' ? row.created_at : new Date(0).toISOString(),
+    ...(role !== undefined ? { role } : {}),
+    ...(row.meta === undefined && row.metadata !== undefined
+      ? { meta: row.metadata as MessageGroupWire['meta'] }
+      : {}),
+    ...(needsReplyLink ? { reply_to_id: previousUserId, question_id: previousUserId } : {}),
+  } as MessageGroupWire;
+}
+
+function adaptCurrentMessageRows(rows: readonly unknown[]): MessageGroupWire[] {
+  let previousUserId: string | number | undefined;
+  return rows.map((value, index) => {
+    const adapted = adaptCurrentMessageRow(value, index, previousUserId);
+    if ((adapted as { readonly role?: string }).role === 'user') previousUserId = adapted.id;
+    return adapted;
+  });
+}
+
 /** Maps the REST conversation-details + message-list queries into `ChatBox`'s `activeConversation` prop shape. */
 function useActiveConversation(projectId: string | undefined, conversationId: string | undefined): { readonly activeConversation: NonNullable<ChatBoxProps['conversation']>['active']; readonly isLoading: boolean } {
   const enabled = projectId !== undefined && conversationId !== undefined;
@@ -85,13 +132,14 @@ function useActiveConversation(projectId: string | undefined, conversationId: st
      * (`shared/api/unwrap.ts`, R-A6) instead of being re-derived here — see
      * issue #132 for why per-call-site unwrapping kept producing this bug.
      */
-    const rows = unwrapList<unknown>(messageListQuery.data, 'conversation.messageList');
+    const rows = adaptCurrentMessageRows(unwrapList<unknown>(messageListQuery.data, 'conversation.messageList'));
     return {
       id: detailsQuery.data.id,
       ...(detailsQuery.data.uuid !== undefined ? { uuid: detailsQuery.data.uuid } : {}),
       name: detailsQuery.data.name,
       participants: detailsQuery.data.participants ? [...detailsQuery.data.participants] : [],
-      message_groups: rows as unknown as MessageGroupWire[],
+      message_groups: rows,
+      ...(detailsQuery.data.meta !== undefined ? { meta: detailsQuery.data.meta } : {}),
     };
   }, [conversationId, detailsQuery.data, messageListQuery.data]);
 

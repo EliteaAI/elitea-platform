@@ -84,6 +84,7 @@ type Querier interface {
 	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
 	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
 	DeleteAttachmentChunks(ctx context.Context, arg DeleteAttachmentChunksParams) (int64, error)
+	DeleteCurrentAgentProvisionalText(ctx context.Context, arg DeleteCurrentAgentProvisionalTextParams) error
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
 	// The exact inverse of the statement above, and only that row. The four
@@ -453,6 +454,7 @@ type Querier interface {
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
+	ResolveCurrentOutputLimitContinuation(ctx context.Context, arg ResolveCurrentOutputLimitContinuationParams) (ResolveCurrentOutputLimitContinuationRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role
 	// assignment; the system-user email fallback is considered only when that
@@ -464,6 +466,7 @@ type Querier interface {
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
 	ResumeCurrentAgentAuthorization(ctx context.Context, arg ResumeCurrentAgentAuthorizationParams) (ResumeCurrentAgentAuthorizationRow, error)
 	ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentAgentHITLParams) (ResumeCurrentAgentHITLRow, error)
+	ResumeCurrentAgentOutputLimit(ctx context.Context, arg ResumeCurrentAgentOutputLimitParams) (ResumeCurrentAgentOutputLimitRow, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	SetArtifactBucketPinned(ctx context.Context, arg SetArtifactBucketPinnedParams) (EliteaStorageBucket, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are

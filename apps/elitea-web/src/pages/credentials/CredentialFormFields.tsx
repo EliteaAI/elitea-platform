@@ -22,17 +22,23 @@ export interface CredentialSchemaFieldProps {
   readonly property: ConfigSchemaNode | undefined;
   readonly value: unknown;
   readonly error: string | undefined;
+  readonly required: boolean;
   readonly onChange: (fieldKey: string, value: unknown) => void;
 }
 
 interface CommonMeta {
   readonly label: string;
   readonly description?: string;
+  readonly isRequired: boolean;
 }
 
-function metaFor(fieldKey: string, property: ConfigSchemaNode | undefined): CommonMeta {
+function metaFor(fieldKey: string, property: ConfigSchemaNode | undefined, required: boolean): CommonMeta {
   const label = property?.title ?? fieldKey;
-  return { label, ...(property?.description !== undefined ? { description: property.description } : {}) };
+  return {
+    label,
+    isRequired: required,
+    ...(property?.description !== undefined ? { description: property.description } : {}),
+  };
 }
 
 /**
@@ -46,12 +52,13 @@ function metaFor(fieldKey: string, property: ConfigSchemaNode | undefined): Comm
  * queries, and this mounts on the secret branch alone.
  */
 function CredentialSecretField({ field, label }: { readonly field: CredentialSchemaFieldProps; readonly label: string }): ReactNode {
-  const { fieldKey, value, error, onChange } = field;
+  const { fieldKey, value, error, required, onChange } = field;
   const secrets = useSecretFieldOptions();
   return (
     <SecretManagementInput
       name={fieldKey}
       label={label}
+      required={required}
       value={typeof value === 'string' ? value : ''}
       onChange={(next) => {
         onChange(fieldKey, next);
@@ -88,9 +95,19 @@ function renderNumberField({ fieldKey, property, value, onChange }: CredentialSc
   );
 }
 
+function schemaNodesOf(value: unknown): readonly ConfigSchemaNode[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is ConfigSchemaNode => typeof entry === 'object' && entry !== null);
+}
+
 function enumOptionsOf(property: ConfigSchemaNode | undefined): readonly string[] | undefined {
-  if (!Array.isArray(property?.enum)) return undefined;
-  return property.enum.filter((entry): entry is string => typeof entry === 'string');
+  const candidates = [property, ...schemaNodesOf(property?.['anyOf']), ...schemaNodesOf(property?.['oneOf'])];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const values = candidate.enum;
+    if (Array.isArray(values)) return values.filter((entry): entry is string => typeof entry === 'string');
+  }
+  return undefined;
 }
 
 function renderStringField({ fieldKey, property, value, error, onChange }: CredentialSchemaFieldProps, meta: CommonMeta): ReactNode {
@@ -109,7 +126,7 @@ function renderStringField({ fieldKey, property, value, error, onChange }: Crede
 /** Dispatches to the right widget for one schema property, by `classifySchemaField`'s kind. */
 export function CredentialSchemaField(props: CredentialSchemaFieldProps): ReactNode {
   const kind = classifySchemaField(props.fieldKey, props.property);
-  const meta = metaFor(props.fieldKey, props.property);
+  const meta = metaFor(props.fieldKey, props.property, props.required);
   if (kind === 'secret')
     return (
       <CredentialSecretField

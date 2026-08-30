@@ -166,15 +166,7 @@ describe('AppShell', () => {
     expect(window.localStorage.getItem('el.project.name')).toBe('Private');
   });
 
-  // Issue #161 regression. This widget and `widgets/sidebar`'s
-  // `ProjectSwitcher` both persist `el.project.name` for the same id;
-  // `ProjectSwitcher` has always written the project's real `name`, while
-  // this one wrote the literal 'Private' regardless. Whichever wrote first
-  // decided what every reader of that key displayed — most visibly the
-  // Analytics header's "Project: {name}" — so the label depended on stored
-  // state and mount order rather than on the project. Both paths must now
-  // resolve the same name from the same list.
-  it("auto-selects the personal project under its REAL name when the project list contains it", async () => {
+  it("renders the caller's personal project under the user-facing Private name", async () => {
     server.use(authorHandler('2'));
     await renderWithNavigation(
       <AppShell>
@@ -182,12 +174,25 @@ describe('AppShell', () => {
       </AppShell>,
     );
     await waitFor(() => {
-      expect(useSelectedProjectStore.getState().project).toEqual({ id: '2', name: 'Acme' });
+      expect(useSelectedProjectStore.getState().project).toEqual({ id: '2', name: 'Private' });
     });
-    expect(window.localStorage.getItem('el.project.name')).toBe('Acme');
-    // The name the switcher would have written for that same id, so the two
-    // writers cannot disagree.
-    expect(await screen.findByRole('button', { name: /Project:\s*Acme/ })).toBeInTheDocument();
+    expect(window.localStorage.getItem('el.project.name')).toBe('Private');
+    expect(await screen.findByRole('button', { name: /Project:\s*Private/ })).toBeInTheDocument();
+  });
+
+  it('replaces a persisted internal project name with the user-facing name', async () => {
+    server.use(authorHandler('2'));
+    window.localStorage.setItem('el.project.id', '2');
+    window.localStorage.setItem('el.project.name', 'project_user_3');
+    await renderWithNavigation(
+      <AppShell>
+        <div>page content</div>
+      </AppShell>,
+    );
+    await waitFor(() => {
+      expect(useSelectedProjectStore.getState().project).toEqual({ id: '2', name: 'Private' });
+    });
+    expect(window.localStorage.getItem('el.project.name')).toBe('Private');
   });
 
   it('does not auto-select any project until the personal-project signal (GET /social/author) resolves', async () => {

@@ -74,18 +74,21 @@ func TestForeignPrivateModelIsNotListed(t *testing.T) {
 	if !strings.Contains(models[1], "shared = true") {
 		t.Error("the public scope MUST carry the shared predicate")
 	}
-	// Issue #451 reads the credentials of the SAME two scopes, under the same
-	// predicate rule. A credential read that lost the predicate would hand a
-	// caller the provider and the key of an unpublished credential.
+	// Issue #451 reads the caller scope and the public shared scope. Published
+	// models also get a distinct owner-metadata lookup without the predicate;
+	// only those model rows may turn its result into a scoped capability.
 	creds := db.credentialStatements()
-	if len(creds) != 2 {
-		t.Fatalf("got %d credential queries, want 2 (own + public)", len(creds))
+	if len(creds) != 3 {
+		t.Fatalf("got %d credential queries, want 3 (own + public shared + model owner)", len(creds))
 	}
 	if strings.Contains(creds[0], "shared = true") {
 		t.Error("the caller's OWN credential scope must not be filtered to shared rows")
 	}
 	if !strings.Contains(creds[1], "shared = true") {
 		t.Error("the public credential scope MUST carry the shared predicate")
+	}
+	if strings.Contains(creds[2], "shared = true") {
+		t.Error("the published model's owner lookup must retain unshared owner credentials")
 	}
 }
 

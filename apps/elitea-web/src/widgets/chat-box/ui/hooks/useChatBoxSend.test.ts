@@ -22,11 +22,13 @@ import { describe, expect, it } from 'vitest';
 
 import { conversationApi } from '@/entities/conversation';
 
-import { buildStartBody, resolveStartContract, resolveTargetParticipant } from './useChatBoxSend';
+import { buildRegenerateBody, buildStartBody, resolveStartContract, resolveTargetParticipant } from './useChatBoxSend.helpers';
 
 const agent = { id: 42, entity_name: 'application' };
 const pipeline = { id: 43, entity_name: 'pipeline' };
 const model = { id: 7, entity_name: 'llm' };
+const dummy = { id: 2, entity_name: 'dummy' };
+const toolkit = { id: 25, entity_name: 'toolkit' };
 
 describe('resolveStartContract', () => {
   it('sends an agent turn under the application contract', () => {
@@ -41,8 +43,8 @@ describe('resolveStartContract', () => {
 });
 
 describe('resolveTargetParticipant', () => {
-  it('prefers the explicit selection', () => {
-    expect(resolveTargetParticipant(model, [agent])).toBe(model);
+  it('prefers an addressable explicit selection', () => {
+    expect(resolveTargetParticipant(agent, [dummy])).toBe(agent);
   });
 
   it('addresses the conversation’s only agent when nothing is selected', () => {
@@ -52,13 +54,18 @@ describe('resolveTargetParticipant', () => {
   it('stays unresolved when the conversation holds more than one agent', () => {
     expect(resolveTargetParticipant(undefined, [agent, pipeline])).toBeUndefined();
   });
+
+  it('routes a stale toolkit or model selection through the ad-hoc model participant', () => {
+    expect(resolveTargetParticipant(toolkit, [dummy, toolkit])).toBe(dummy);
+    expect(resolveTargetParticipant(model, [dummy, model])).toBe(dummy);
+  });
 });
 
 const commonBody = {
   conversationUuid: 'conv-uuid-1',
   projectId: '1',
   payload: { question: 'hi', question_id: 'q-1' },
-  llmSettings: { temperature: 0.7 },
+  llmSettings: { temperature: 0.7, steps_limit: 25 },
   modelName: 'gpt-4o',
 };
 
@@ -84,9 +91,72 @@ describe('buildStartBody', () => {
     expect(body?.['llm_settings']).toEqual({ temperature: 0.7, model_name: 'gpt-4o', stream: true });
   });
 
+  it('keeps the agent loop bound out of the provider settings', () => {
+    const body = buildStartBody({ ...commonBody, isApplicationTurn: false, participantId: undefined });
+    const modelSettings = body?.['llm_settings'] as Record<string, unknown> | undefined;
+    expect(modelSettings?.['steps_limit']).toBeUndefined();
+  });
+
   it('encodes project_id as a number, which the route decodes into int64', () => {
     const body = buildStartBody({ ...commonBody, isApplicationTurn: false, participantId: 7 });
     expect(body?.['project_id']).toBe(1);
     expect(body?.['participant_id']).toBe(7);
+  });
+});
+
+describe('buildRegenerateBody', () => {
+  const commonRegeneration = {
+    conversationUuid: '00000000-0000-4000-8000-000000000001',
+    projectId: '1',
+    responseMessageId: '00000000-0000-4000-8000-000000000002',
+    questionId: '00000000-0000-4000-8000-000000000003',
+    question: 'try again',
+    llmSettings: { temperature: 0.4 },
+    modelName: 'gpt-4o',
+  };
+
+  it('builds the current ad-hoc route body with a fresh generation', () => {
+    const body = buildRegenerateBody({
+      ...commonRegeneration,
+      isApplicationTurn: false,
+      participantId: undefined,
+    });
+
+    expect(body).toMatchObject({
+      project_id: 1,
+      participant_id: 0,
+      conversation_uuid: commonRegeneration.conversationUuid,
+      question_id: commonRegeneration.questionId,
+      message_id: commonRegeneration.responseMessageId,
+      stream_id: commonRegeneration.responseMessageId,
+      updated_items: [],
+      payload: {
+        user_input: 'try again',
+        attachments_info: [],
+        mcp_tokens: {},
+        llm_settings: { temperature: 0.4, model_name: 'gpt-4o', stream: true },
+      },
+    });
+    expect(body?.['regeneration_id']).toEqual(expect.any(String));
+  });
+
+  it('omits model settings for an application regeneration', () => {
+    const body = buildRegenerateBody({
+      ...commonRegeneration,
+      isApplicationTurn: true,
+      participantId: 42,
+    });
+
+    expect(body?.['participant_id']).toBe(42);
+    expect(Object.hasOwn((body?.['payload'] as object | undefined) ?? {}, 'llm_settings')).toBe(false);
+  });
+
+  it('does not claim current-route support for edited message items', () => {
+    expect(buildRegenerateBody({
+      ...commonRegeneration,
+      isApplicationTurn: false,
+      participantId: undefined,
+      updatedItems: [{ content: 'edited' }],
+    })).toBeUndefined();
   });
 });

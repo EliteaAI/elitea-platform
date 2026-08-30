@@ -12,12 +12,19 @@ import type { ChatBoxActiveConversation } from './ChatBox.helpers';
 export interface ChatBoxConversationProp {
   readonly active?: ChatBoxActiveConversation;
   readonly isLoading?: boolean;
+  /** Promote a newly persisted conversation into the page route and state. */
+  readonly onCreated?: ((conversation: { readonly id?: string | number; readonly uuid?: string }) => void) | undefined;
 }
 
 /** Flattens the `conversation` bundle back into the two values `ChatBox` reads (baseline: the separate `activeConversation`/`isLoadingConversation` props, bundled to stay under the §3.5 component-props budget once `ref` became a prop). */
 export function unwrapChatBoxConversation(conversation: ChatBoxConversationProp | undefined): {
   readonly activeConversation: ChatBoxActiveConversation | undefined;
   readonly isLoadingConversation: boolean | undefined;
+  readonly onConversationCreated: ChatBoxConversationProp['onCreated'];
 } {
-  return { activeConversation: conversation?.active, isLoadingConversation: conversation?.isLoading };
+  return {
+    activeConversation: conversation?.active,
+    isLoadingConversation: conversation?.isLoading,
+    onConversationCreated: conversation?.onCreated,
+  };
 }

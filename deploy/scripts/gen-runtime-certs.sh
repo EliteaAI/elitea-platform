@@ -26,8 +26,8 @@
 #     output-server.{crt,key}         elitea-main output gRPC    :9444
 #     content-server.{crt,key}        elitea-main content HTTPS  :9445
 #     platform-edge.{crt,key}         TLS front for the worker's platform_origin
-#     agent-worker-client.{crt,key}   presented by elitea-worker-python (#282)
-#     agent-checkpoint-connection     DSN for the worker's langgraph checkpointer
+#     agent-worker-client.{crt,key}   presented by the selected agent worker
+#     agent-checkpoint-connection     DSN for native agent session checkpoints
 #     command-signing-key.pem         Ed25519 PKCS#8, signs dispatch envelopes
 #     command-signing-keyring.json    its public half, keyed by ELITEA_RUNTIME_SIGNING_KEY_ID
 #     redis-{producer,worker,bootstrap,auth}-password
@@ -221,10 +221,9 @@ python3 -c 'import base64,os,sys;sys.stdout.write(base64.urlsafe_b64encode(os.ur
 # The worker spool key is exactly 32 RAW bytes (#282 config.py).
 openssl rand 32 > "$RUNTIME_DIR/worker-output-spool-key"
 
-# The worker's langgraph PostgresSaver connection. It is a separate DATABASE on
-# the same server, not a schema: the checkpointer calls setup() and creates its
-# own tables, so `agentstate` only has to exist (db-init creates it). Agent
-# capability pools require this file; other pools must not receive it.
+# The native worker session and checkpoint connection uses a separate database.
+# db-init creates it. elitea-agentstate-migrate applies its versioned history.
+# Agent capability pools require this file. Other pools must not receive it.
 printf 'postgresql://elitea:elitea@postgres:5432/agentstate?sslmode=disable' \
   > "$RUNTIME_DIR/agent-checkpoint-connection"
 

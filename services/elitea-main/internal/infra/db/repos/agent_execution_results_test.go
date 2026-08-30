@@ -21,6 +21,7 @@ type currentAgentTerminalWriterStub struct {
 	attachments    []sqlcgen.UpdateCurrentAgentAttachmentContentParams
 	attachmentRows int64
 	attachmentErr  error
+	deletedText    sqlcgen.DeleteCurrentAgentProvisionalTextParams
 }
 
 func (s *currentAgentTerminalWriterStub) LockCurrentAgentResponseForTerminal(
@@ -38,6 +39,14 @@ func (s *currentAgentTerminalWriterStub) InsertCurrentAgentTextContent(
 	context.Context,
 	sqlcgen.InsertCurrentAgentTextContentParams,
 ) error {
+	return nil
+}
+
+func (s *currentAgentTerminalWriterStub) DeleteCurrentAgentProvisionalText(
+	_ context.Context,
+	arg sqlcgen.DeleteCurrentAgentProvisionalTextParams,
+) error {
+	s.deletedText = arg
 	return nil
 }
 
@@ -113,6 +122,30 @@ func TestPersistCurrentAgentTerminalPreservesSkillsAcrossPauseReloadAndContinuat
 	wantFinal := `[{"skill_id":3,"name":"LOADED","icon_meta":{"name":"updated"}},{"skill_id":4,"name":"Final","icon_meta":null},{"skill_id":1,"name":"Existing","icon_meta":null}]`
 	if string(continuationWriter.full.InvokedSkills) != wantFinal {
 		t.Fatalf("continued invoked skills = %s", continuationWriter.full.InvokedSkills)
+	}
+}
+
+func TestPersistCurrentAgentTerminalReplacesOnlyItsProvisionalText(t *testing.T) {
+	writer := &currentAgentTerminalWriterStub{existingSkills: `[]`}
+	expected := outputapp.ExpectedAgentExecution{
+		ExecutionID: "execution-9",
+		Generation:  3,
+	}
+	err := persistCurrentAgentTerminal(t.Context(), writer, expected, currentAgentTerminal{
+		FullMessage: &currentAgentFullMessage{
+			Content:       "complete answer",
+			ThreadID:      "thread-1",
+			References:    json.RawMessage(`[]`),
+			InvokedSkills: json.RawMessage(`[]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.deletedText.MessageGroupID != 17 ||
+		writer.deletedText.ExecutionID != expected.ExecutionID ||
+		writer.deletedText.Generation != int64(expected.Generation) {
+		t.Fatalf("deleted provisional text binding = %+v", writer.deletedText)
 	}
 }
 
@@ -236,7 +269,9 @@ func TestDecodeCurrentAgentHITLPauseRejectsIncompleteNestedIdentity(t *testing.T
 func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t *testing.T) {
 	requests := []map[string]any{
 		{
-			"tool_run_id":  "tool-run-sharepoint-1",
+			"interrupt_id": "mcp_auth_sharepoint_1",
+			"tool_run_id":  "legacy-tool-run-sharepoint-1",
+			"tool_call_id": "call-sharepoint-search-1",
 			"server_url":   "https://sharepoint.example.test",
 			"tool_name":    "list_sites",
 			"toolkit_name": "SharePoint",
@@ -252,7 +287,8 @@ func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t
 	}
 	metadata, err := json.Marshal(map[string]any{
 		"thread_id":              "thread-parent-1",
-		"tool_run_id":            "tool-run-sharepoint-1",
+		"interrupt_id":           "mcp_auth_sharepoint_1",
+		"tool_run_id":            "legacy-tool-run-sharepoint-1",
 		"authorization_requests": requests,
 		"invoked_skills": []map[string]any{{
 			"skill_id": 41, "name": "SharePoint operations", "icon_meta": nil,
@@ -271,7 +307,8 @@ func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t
 	}
 	var persisted []map[string]any
 	if err := json.Unmarshal(pause.Requests, &persisted); err != nil || len(persisted) != 1 ||
-		persisted[0]["tool_run_id"] != "tool-run-sharepoint-1" {
+		persisted[0]["interrupt_id"] != "mcp_auth_sharepoint_1" ||
+		persisted[0]["tool_call_id"] != "call-sharepoint-search-1" {
 		t.Fatalf("persisted=%#v error=%v", persisted, err)
 	}
 	if string(pause.InvokedSkills) != `[{"skill_id":41,"name":"SharePoint operations","icon_meta":null}]` {

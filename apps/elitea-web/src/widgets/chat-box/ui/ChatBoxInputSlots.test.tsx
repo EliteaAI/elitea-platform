@@ -21,6 +21,7 @@ import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AttachmentButton, ChatInternalToolsConfigButton, PlusChatButton } from '@/widgets/chat';
+import { LLMModelSelector } from '@/widgets/llm-model-selector';
 
 import { buildChatBoxInputSlots } from './ChatBoxInputSlots';
 
@@ -60,6 +61,14 @@ describe("buildChatBoxInputSlots — the composer's left-hand control", () => {
 
     expect(typeOf(slots.attachmentButton)).toBe(AttachmentButton);
     expect(typeOf(slots.internalToolsConfig)).toBe(ChatInternalToolsConfigButton);
+  });
+
+  it('shows the execution-loop limit in regular chat model settings', () => {
+    const slots = buildSlots(false);
+    const selector = slots.modelSelector as ReactElement;
+
+    expect(typeOf(selector)).toBe(LLMModelSelector);
+    expect((selector.props as { showStepsLimit?: boolean }).showStepsLimit).toBe(true);
   });
 });
 

@@ -23,16 +23,18 @@
 import type { ReactNode } from 'react';
 
 import { Outlet, RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppProviders } from '@/app/providers/AppProviders';
 import { useChatSessionStore } from '@/entities/conversation';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { installTestEventSource } from '@/shared/api/sse/testing';
 import { server } from '@/test/setup';
 
-import ChatPage from './index';
+import ChatPage, { findActiveParticipantById } from './index';
 
 /*
  * The conversation-detail request is the observable proof that the page
@@ -47,19 +49,37 @@ const BASE = '/api/v2';
 const PROJECT = '77';
 const CONVERSATION = '5';
 
+describe('findActiveParticipantById', () => {
+  const participants = [
+    { id: '2', entity_name: 'dummy' },
+    { id: '25', entity_name: 'toolkit' },
+    { id: '26', entity_name: 'application' },
+  ];
+
+  it('restores an application participant', () => {
+    expect(findActiveParticipantById(participants, '26')).toEqual(participants[2]);
+  });
+
+  it('rejects a stored toolkit participant', () => {
+    expect(findActiveParticipantById(participants, '25')).toBeUndefined();
+  });
+});
+
 function handlers() {
   return [
     http.get(`${BASE}/social/author`, () => HttpResponse.json({ id: 'u1', name: 'Ada', avatar: '', personal_project_id: PROJECT })),
     http.get(`${BASE}/elitea_core/conversation/prompt_lib/${PROJECT}/${CONVERSATION}`, ({ request }) => {
       detailRequests.push(request.url);
-      return HttpResponse.json({ id: CONVERSATION, name: 'A conversation', participants: [] });
+      return HttpResponse.json({ id: CONVERSATION, uuid: 'conversation-uuid-5', name: 'A conversation', participants: [] });
     }),
     http.get(`${BASE}/elitea_core/messages/prompt_lib/${PROJECT}/${CONVERSATION}`, () =>
       HttpResponse.json({ items: [], total: 0, page: 0, page_size: 50, total_pages: 1 }),
     ),
     // `ChatBox` reads the model catalogue on mount; answered so the run is
     // not full of unhandled-request noise.
-    http.get(`${BASE}/configurations/models/${PROJECT}`, () => HttpResponse.json({ items: [] })),
+    http.get(`${BASE}/configurations/models/${PROJECT}`, () =>
+      HttpResponse.json({ items: [{ id: 'model-1', name: 'model-1', project_id: PROJECT, default: true }] }),
+    ),
   ];
 }
 
@@ -127,6 +147,56 @@ describe('ChatPage deep links', () => {
   });
 });
 
+describe('ChatPage new-conversation promotion', () => {
+  it('promotes the first persisted conversation into the route', async () => {
+    const eventSources = installTestEventSource();
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+    const conversationCreates: string[] = [];
+    const executionConversationIds: string[] = [];
+    let executionNumber = 0;
+    server.use(
+      http.post(`${BASE}/elitea_core/conversations/prompt_lib/${PROJECT}`, ({ request }) => {
+        conversationCreates.push(request.url);
+        return HttpResponse.json(
+          { id: CONVERSATION, uuid: 'conversation-uuid-5', project_id: PROJECT, name: 'First turn', participants: [] },
+          { status: 201 },
+        );
+      }),
+      http.post(`${BASE}/elitea_core/participants/prompt_lib/${PROJECT}/${CONVERSATION}`, () => HttpResponse.json([])),
+      http.get(`${BASE}/configurations/tts_voices/${PROJECT}`, () => HttpResponse.json({ items: [] })),
+      http.get(`${BASE}/elitea_core/context_analytics/prompt_lib/${PROJECT}/${CONVERSATION}`, () =>
+        HttpResponse.json({ current_tokens: 0, max_tokens: 0, message_groups_in_context: 0 }),
+      ),
+      http.post(`${BASE}/elitea_core/messages/prompt_lib/${PROJECT}/:conversationUuid`, ({ params }) => {
+        executionConversationIds.push(String(params.conversationUuid));
+        executionNumber += 1;
+        return HttpResponse.json({
+          execution_id: `execution-${executionNumber}`,
+          events_url: `${BASE}/executions/${PROJECT}/execution-${executionNumber}/events`,
+        });
+      }),
+    );
+
+    try {
+      const router = renderAt('/chat');
+      const user = userEvent.setup();
+      const input = await screen.findByPlaceholderText('Type a message...');
+
+      await user.type(input, 'First turn{Enter}');
+      await waitFor(() => expect(router.state.location.pathname).toBe(`/chat/${CONVERSATION}`), { timeout: 5000 });
+      await waitFor(() => expect(eventSources.getOpen()).toHaveLength(1));
+
+      expect(conversationCreates).toHaveLength(1);
+      expect(executionConversationIds).toEqual(['conversation-uuid-5']);
+    } finally {
+      if (originalScrollIntoView) Object.defineProperty(Element.prototype, 'scrollIntoView', originalScrollIntoView);
+      else Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+      eventSources.restore();
+    }
+  });
+});
+
 /**
  * `ParticipantsWrapper` has always accepted a `renderContextBudget` slot and
  * has always threaded a real `conversationId` into it; nothing supplied the
@@ -171,5 +241,55 @@ describe('ChatPage context budget slot', () => {
     await waitFor(() => expect(screen.queryByTestId('participants-container')).toBeTruthy(), { timeout: 5000 });
     expect(screen.queryByTestId('context-budget-panel')).toBeNull();
     expect(statusRequests).toHaveLength(0);
+  });
+});
+
+describe('ChatPage participant removal', () => {
+  it('removes an attached toolkit through the participant rail', async () => {
+    const deletedParticipants: string[] = [];
+    let toolkitAttached = true;
+    const toolkitParticipant = {
+      id: '25',
+      entity_name: 'toolkit',
+      entity_meta: { id: '20', name: 'rust_openapi_echo', project_id: PROJECT },
+      entity_settings: { toolkit_type: 'openapi' },
+    };
+
+    server.use(
+      http.get(`${BASE}/elitea_core/conversation/prompt_lib/${PROJECT}/${CONVERSATION}`, ({ request }) => {
+        detailRequests.push(request.url);
+        return HttpResponse.json({
+          id: CONVERSATION,
+          uuid: 'conversation-uuid-5',
+          name: 'A conversation',
+          participants: toolkitAttached ? [toolkitParticipant] : [],
+        });
+      }),
+      http.delete(
+        `${BASE}/elitea_core/participant/prompt_lib/${PROJECT}/${CONVERSATION}/:participantId`,
+        ({ params }) => {
+          deletedParticipants.push(String(params.participantId));
+          toolkitAttached = false;
+          return new HttpResponse(null, { status: 204 });
+        },
+      ),
+      http.get(`${BASE}/configurations/tts_voices/${PROJECT}`, () => HttpResponse.json({ items: [] })),
+      http.get(`${BASE}/elitea_core/context_analytics/prompt_lib/${PROJECT}/${CONVERSATION}`, () =>
+        HttpResponse.json({ current_tokens: 0, max_tokens: 0, message_groups_in_context: 0 }),
+      ),
+    );
+
+    renderAt(`/chat/${CONVERSATION}`);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'Expand participants' }));
+    const toolkitName = await screen.findByText('rust_openapi_echo');
+    await user.hover(toolkitName);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove toolkit' }));
+    await screen.findByText('Remove toolkit?');
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(deletedParticipants).toEqual(['25']), { timeout: 5000 });
+    await waitFor(() => expect(screen.queryByText('rust_openapi_echo')).toBeNull(), { timeout: 5000 });
   });
 });

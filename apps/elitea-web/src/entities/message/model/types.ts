@@ -100,6 +100,7 @@ export interface AssistantMessage extends MessageBase {
   readonly hitlInterrupt?: unknown;
   readonly hitlInterrupts?: readonly unknown[];
   readonly threadId?: string;
+  readonly requiresConfirmation?: { readonly message: string; readonly buttonText: string };
   readonly likes?: number;
 }
 

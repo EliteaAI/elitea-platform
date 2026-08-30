@@ -83,7 +83,6 @@ export function ProviderAlerts({
     </>
   );
 }
-
 export function ProviderTable({
   items,
   onEdit,
@@ -236,4 +235,3 @@ export function ConfirmDelete({
     </Alert>
   );
 }
-

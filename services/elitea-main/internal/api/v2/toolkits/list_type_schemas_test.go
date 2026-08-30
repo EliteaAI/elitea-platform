@@ -83,6 +83,51 @@ func TestToolkitTypeCatalogueServesAnEmptyArgumentSchemaMapForRuntimeDiscoveredT
 	}
 }
 
+// The current product UI renders OpenAPI from this exact settings contract.
+// A spec_url field falls through to a plain text box and removes the inline
+// schema editor, operation preview, and selected-operation state.
+func TestToolkitTypeCatalogueServesTheCurrentOpenAPISettingsContract(t *testing.T) {
+	t.Parallel()
+
+	body := getToolkitTypeCatalogue(t, pinnedCatalogueOptions(t)...)
+	typeSchema, ok := body["openapi"].(map[string]any)
+	if !ok {
+		t.Fatalf("catalogue has no openapi type; have %v", keysOf(body))
+	}
+	properties, ok := typeSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi has no properties object: %#v", typeSchema)
+	}
+
+	if _, present := properties["spec_url"]; present {
+		t.Error("openapi still serves the retired spec_url setting")
+	}
+	spec, ok := properties["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi has no spec property; have %v", keysOf(properties))
+	}
+	if spec["type"] != "string" || spec["ui_component"] != "openapi_spec" {
+		t.Errorf("openapi spec=%#v, want the inline OpenAPI editor contract", spec)
+	}
+	baseURL, ok := properties["base_url"].(map[string]any)
+	if !ok || baseURL["default"] != nil {
+		t.Errorf("openapi base_url=%#v, want an optional null-default override", properties["base_url"])
+	}
+	selectedTools := selectedToolsSchema(t, body, "openapi")
+	if selectedTools["type"] != "array" {
+		t.Errorf("openapi selected_tools type=%#v, want array", selectedTools["type"])
+	}
+	items, ok := selectedTools["items"].(map[string]any)
+	if !ok || items["type"] != "string" {
+		t.Errorf("openapi selected_tools items=%#v, want string items", selectedTools["items"])
+	}
+
+	required, ok := typeSchema["required"].([]any)
+	if !ok || !reflect.DeepEqual(required, []any{"openapi_configuration", "spec"}) {
+		t.Errorf("openapi required=%#v, want [openapi_configuration spec]", typeSchema["required"])
+	}
+}
+
 // Four catalogue types are not SDK toolkits at all — the SDK's database toolkit
 // is `sql`, and datasource/application/custom are elitea_core-native. Their
 // hand-written tool-name lists are the only source there is, and dropping them

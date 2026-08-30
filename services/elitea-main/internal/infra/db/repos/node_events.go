@@ -54,6 +54,7 @@ type NodeEventsRepository struct {
 	retention  replayRetentionPolicy
 	activity   currentIndexActivityProjector
 	agentTrace currentAgentTraceProjector
+	agentText  currentAgentTextProjector
 }
 
 func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) {
@@ -67,6 +68,7 @@ func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) 
 	}
 	repository.activity = &postgresCurrentIndexActivityProjector{}
 	repository.agentTrace = &postgresCurrentAgentTraceProjector{}
+	repository.agentText = postgresCurrentAgentTextProjector{}
 	return repository, nil
 }
 
@@ -86,6 +88,7 @@ func newNodeEventsRepositoryWithPolicy(store sharedStore, retention replayRetent
 		retention:  retention,
 		activity:   noopCurrentIndexActivityProjector{},
 		agentTrace: noopCurrentAgentTraceProjector{},
+		agentText:  noopCurrentAgentTextProjector{},
 	}, nil
 }
 
@@ -333,6 +336,17 @@ SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
 				frame,
 			); err != nil {
 				return err
+			}
+			if capabilityID == executiondomain.AgentApplicationCapability ||
+				capabilityID == executiondomain.AgentAdhocCapability {
+				if err := r.agentText.projectAgentTextDelta(
+					ctx,
+					tx,
+					projectionProjectID,
+					frame,
+				); err != nil {
+					return err
+				}
 			}
 			if capabilityID == executiondomain.IndexIngestCapability && persistTaskRestamp {
 				if err := persistCurrentIndexMetaTaskRestampIntent(

@@ -73,6 +73,47 @@ const OPENAI_TYPE = {
   has_test_connection: true,
 };
 
+const OPENAPI_TYPE = {
+  type: 'openapi',
+  section: 'credentials',
+  config_schema: {
+    title: 'OpenAPI',
+    properties: {
+      data: {
+        metadata: {
+          sections: {
+            auth: {
+              required: false,
+              subsections: [
+                { name: 'API Key', fields: ['api_key', 'auth_type', 'custom_header_name'] },
+                { name: 'OAuth (Delegated)', fields: ['client_id', 'client_secret', 'oauth_discovery_endpoint', 'scope'] },
+                { name: 'OAuth (Client Credentials)', fields: ['client_id', 'client_secret', 'token_url', 'scope', 'method'] },
+              ],
+            },
+          },
+        },
+        properties: {
+          api_key: { anyOf: [{ type: 'string', format: 'password' }, { type: 'null' }], default: null, title: 'Api Key' },
+          auth_type: { anyOf: [{ type: 'string', enum: ['Basic', 'Bearer', 'Custom'] }, { type: 'null' }], default: null, title: 'Auth Type' },
+          client_id: { anyOf: [{ type: 'string' }, { type: 'null' }], default: null, title: 'Client Id' },
+          client_secret: { anyOf: [{ type: 'string', format: 'password' }, { type: 'null' }], default: null, title: 'Client Secret' },
+          configuration_uuid: { type: 'string', hidden: true, title: 'Configuration Uuid' },
+          custom_header_name: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            default: null,
+            title: 'Custom Header Name',
+            visible_when: { field: 'auth_type', value: 'custom' },
+          },
+          method: { anyOf: [{ type: 'string', enum: ['default', 'Basic'] }, { type: 'null' }], default: null, title: 'Method' },
+          oauth_discovery_endpoint: { type: 'string', title: 'Oauth Discovery Endpoint' },
+          scope: { type: 'string', title: 'Scope' },
+          token_url: { type: 'string', title: 'Token Url' },
+        },
+      },
+    },
+  },
+};
+
 describe('CredentialForm — create flow', () => {
   /**
    * The chosen type is OWNED BY THE URL, not by this component: picking a
@@ -280,6 +321,44 @@ describe('CredentialForm — create flow', () => {
 
     await waitFor(() => expect(capturedBody).toBeDefined());
     expect((capturedBody as { data: Record<string, unknown> }).data['enabled']).toBe(true);
+  });
+
+  it('renders OpenAPI authentication modes without flattening their fields', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAPI_TYPE])));
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'create', credentialType: 'openapi' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('radio', { name: 'Anonymous' })).toBeChecked();
+    expect(screen.queryByLabelText('Api Key')).not.toBeInTheDocument();
+    expect(screen.queryByText('Configuration Uuid')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'API Key' }));
+    expect(screen.getByLabelText('Api Key')).not.toBeRequired();
+    expect(screen.queryByLabelText('Client Id')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Custom Header Name')).not.toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByLabelText('Auth Type'));
+    fireEvent.click(screen.getByRole('option', { name: 'Custom' }));
+    expect(screen.getByLabelText('Custom Header Name')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'OAuth (Delegated)' }));
+    expect(screen.queryByLabelText('Api Key')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Client Id')).not.toBeRequired();
+    expect(screen.getByLabelText('Oauth Discovery Endpoint')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Token Url')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Client Id'), { target: { value: 'client-1' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'OAuth (Client Credentials)' }));
+    expect(screen.getByLabelText('Client Id')).toHaveValue('client-1');
+    expect(screen.getByLabelText('Token Url')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Oauth Discovery Endpoint')).not.toBeInTheDocument();
   });
 
   it('ACT-041: the Test connection button dispatches POST /check_connection/{projectId}/{configType}', async () => {

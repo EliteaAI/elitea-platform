@@ -36,7 +36,6 @@ import {
   deriveChatBoxIds,
   deriveChatBoxInputState,
   flattenChatBoxProps,
-  optField,
   resolveConversationStarters,
 } from './ChatBox.helpers';
 import type { ChatBoxEditorCallbacks } from './ChatBox.helpers';
@@ -57,6 +56,7 @@ import { useChatBoxInternalTools } from './hooks/useChatBoxInternalTools';
 import { useChatBoxVersioning } from './hooks/useChatBoxVersioning';
 import { useChatBoxMentions } from './hooks/useChatBoxMentions';
 import { useChatBoxActions } from './hooks/useChatBoxActions';
+import { useAddEntityParticipant } from './hooks/useAddEntityParticipant';
 import { useSessionDeclinedMcpServersRef } from './hooks/useSessionDeclinedMcpServersRef';
 import { useChatBoxSend } from './hooks/useChatBoxSend';
 import { useStableRef } from './hooks/useStableRef';
@@ -121,7 +121,7 @@ const ChatBoxInner = memo(function ChatBox({
   const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
-  const { activeConversation, isLoadingConversation } = unwrapChatBoxConversation(conversation);
+  const { activeConversation, isLoadingConversation, onConversationCreated } = unwrapChatBoxConversation(conversation);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
 
@@ -180,12 +180,13 @@ const ChatBoxInner = memo(function ChatBox({
   const { mutateAsync: deleteMessageMutateAsync } = conversationApi.useDeleteMessage();
   const { mutateAsync: deleteAllMessagesMutateAsync } = conversationApi.useDeleteAllMessages();
   const { mutateAsync: stopChatTaskMutateAsync } = conversationApi.useStopTask();
+  const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant });
 
   // Everything one send needs: the SSE transport (issue #93) plus the
   // create-conversation-first and upload-attachments-first adapters.
   // `startStreamedExecution` reports whether the transport took the run, so
   // `sendQuestion` knows not to ALSO emit `chat_predict`.
-  const { startStreamedExecution, continueStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
+  const { startStreamedExecution, continueStreamedExecution, regenerateStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
     setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage, conversationUuid,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
@@ -217,7 +218,7 @@ const ChatBoxInner = memo(function ChatBox({
     projectId,
     socketId: socketClient.socket.id,
     sessionDeclinedMcpServersRef,
-    startStreamedExecution, continueStreamedExecution,
+    startStreamedExecution, continueStreamedExecution, regenerateStreamedExecution,
   });
 
   // Delete confirmation (single message / clear-all) — baseline:
@@ -291,7 +292,7 @@ const ChatBoxInner = memo(function ChatBox({
     handleContinueMcpExecution,
     handleContinueTokenLimit,
     handleClear,
-  } = useChatBoxActions({ chatInputRef, data, state, handlers, deleteAlert, messages, isAgentsPage, readAloudStop });
+  } = useChatBoxActions({ chatInputRef, data, state, handlers, deleteAlert, messages, isAgentsPage, readAloudStop, onConversationCreated });
 
   // Imperative handle (stable via refs, so identity never churns)
   const handleClearRef = useStableRef(handleClear);
@@ -379,11 +380,7 @@ const ChatBoxInner = memo(function ChatBox({
             model: { llmSettings, onSetLLMSettings, selectedModel: selectedLlmModel, onSelectModel: handleSelectModel, models: modelsList },
             refs: { attachmentButtonRef, voiceButtonRef, voiceInputRef: chatInputRef },
             isAgentsPage: !!isAgentsPage,
-            // `onSelectParticipant` is supplied HERE, not by the composition
-            // root: picking an entity from the "+" menu makes it the active
-            // participant, and that is the same `onChangeParticipant` the
-            // recommendation list already calls with the same row shape.
-            entitySubmenus: { ...entitySubmenus, ...optField('onSelectParticipant', onChangeParticipant) },
+            entitySubmenus: { ...entitySubmenus, onSelectParticipant: entityParticipantActions.onSelectParticipant, getParticipantMenuState: entityParticipantActions.getParticipantMenuState },
             participants: normalisedParticipants,
           })}
           refs={{ attachmentButtonRef, voiceButtonRef }}

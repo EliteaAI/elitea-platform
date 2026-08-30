@@ -281,11 +281,38 @@ var toolkitTypeSchemas = map[string]map[string]any{
 		},
 	},
 	"openapi": {
-		"type": "object",
+		"type":          "object",
+		"title":         "openapi",
+		"name_required": true,
+		"required":      []any{"openapi_configuration", "spec"},
+		"metadata": map[string]any{
+			"label":            "OpenAPI",
+			"icon_url":         "openapi.svg",
+			"categories":       []any{"integrations"},
+			"extra_categories": []any{"api", "openapi", "swagger"},
+		},
 		"properties": map[string]any{
-			"spec_url": map[string]any{"type": "string"},
+			"base_url": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string"},
+					map[string]any{"type": "null"},
+				},
+				"default":     nil,
+				"title":       "Base Url",
+				"description": "Optional base URL override. Use it when the specification has no absolute server URL.",
+			},
+			"spec": map[string]any{
+				"type":         "string",
+				"title":        "Spec",
+				"description":  "OpenAPI specification as a URL or raw JSON or YAML text.",
+				"ui_component": "openapi_spec",
+			},
 			"selected_tools": map[string]any{
-				"type":         "object",
+				"type":         "array",
+				"title":        "Selected Tools",
+				"description":  "Optional operation IDs to enable. An empty list enables all operations.",
+				"default":      []any{},
+				"items":        map[string]any{"type": "string"},
 				"args_schemas": map[string]any{},
 			},
 		},
@@ -1312,20 +1339,40 @@ func tenantOwnerID(projectID string) (int, error) {
 //     only coherent if the value is a property of the project, not of the
 //     user who happens to be forking.
 //
-// Note that legacy's elitea_tools table has no owner_id column at all (checked
-// against the running legacy database: id, created_at, updated_at, type, name,
-// description, settings, author_id, shared_owner_id, shared_id, meta). The
-// NOT NULL column is an invention of migrations/001_initial.sql. Because that
-// migration has already been applied everywhere, the fix is to populate the
-// column with the value its name means in this schema family rather than to
-// alter the shipped DDL.
-func createToolkitInsertSQL(schema string) string {
+// The current Pylon schema has no owner_id column. The standalone migration
+// adds it as NOT NULL. The write must therefore select the statement that
+// matches the tenant table that is actually deployed.
+func createToolkitInsertSQL(schema string, includeOwnerID bool) string {
+	if !includeOwnerID {
+		return fmt.Sprintf(`
+		INSERT INTO %s.elitea_tools (name, type, description, settings, meta, author_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, type, name, COALESCE(description,''),
+		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
+		       created_at, author_id`, schema)
+	}
 	return fmt.Sprintf(`
 		INSERT INTO %s.elitea_tools (name, type, description, settings, meta, owner_id, author_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
 		       created_at, author_id`, schema)
+}
+
+func (r *pgRepo) toolkitOwnerIDExists(ctx context.Context, schema string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = $1
+      AND table_name = 'elitea_tools'
+      AND column_name = 'owner_id'
+)`, schema).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("read toolkit table shape: %w", err)
+	}
+	return exists, nil
 }
 
 func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
@@ -1357,11 +1404,29 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 		return nil, err
 	}
 
-	q := createToolkitInsertSQL(s)
+	// toolkitOwnerIDExists binds the schema as a PARAMETER against
+	// information_schema, which stores the unquoted name — `s` carries the
+	// identifier quotes and would match nothing, leaving every write on the
+	// owner_id-less fallback.
+	schemaName, err := tenantschema.Name(projectID)
+	if err != nil {
+		return nil, err
+	}
+	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	q := createToolkitInsertSQL(s, includeOwnerID)
 	var id, retType, retName, retDesc string
 	var settingsRaw, metaRaw []byte
 	var createdAt, authorID any
-	err = r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), ownerID, authorIDStr).Scan(
+	var row pgx.Row
+	if includeOwnerID {
+		row = r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), ownerID, authorIDStr)
+	} else {
+		row = r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), authorIDStr)
+	}
+	err = row.Scan(
 		&id, &retType, &retName, &retDesc, &settingsRaw, &metaRaw,
 		&createdAt, &authorID)
 	if err != nil {

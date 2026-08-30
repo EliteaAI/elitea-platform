@@ -196,6 +196,55 @@ func TestEveryCredentialTypeGivesItsProvider(t *testing.T) {
 	}
 }
 
+// TestOpenAICompatibleCredentialBaseUsesVLLMProvider proves that the existing
+// open_ai credential can keep a tenant-specific api_base after the Bifrost
+// migration. The model flag selects the worker dialect; the credential base
+// selects the gateway provider that can carry that endpoint per key.
+func TestOpenAICompatibleCredentialBaseUsesVLLMProvider(t *testing.T) {
+	h, spy := newLinkHandler(t,
+		[]fakeModelRow{stagingShapedRow(
+			"Sonnet compatible", "eu.anthropic.claude-sonnet-4-6", "ai-creds",
+		)},
+		[]fakeCredentialRow{{
+			id: "c1", typ: "open_ai", title: "ai-creds",
+			apiBase: "https://proxy.example/llm/v1",
+		}})
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Sonnet compatible","messages":[{"role":"user","content":"hi"}]}`)
+
+	got, ok := spy.last()
+	if !ok {
+		t.Fatal("the router was never called")
+	}
+	if got.provider != "vllm" {
+		t.Fatalf("provider = %q, want %q", got.provider, "vllm")
+	}
+	if got.model != "eu.anthropic.claude-sonnet-4-6" {
+		t.Fatalf("model = %q, want Sonnet wire name", got.model)
+	}
+}
+
+func TestOfficialOpenAICredentialBaseKeepsOpenAIProvider(t *testing.T) {
+	h, spy := newLinkHandler(t,
+		[]fakeModelRow{stagingShapedRow("GPT", "gpt-5.4-mini", "ai-creds")},
+		[]fakeCredentialRow{{
+			id: "c1", typ: "open_ai", title: "ai-creds",
+			apiBase: "https://api.openai.com/v1",
+		}})
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"GPT","messages":[{"role":"user","content":"hi"}]}`)
+
+	got, ok := spy.last()
+	if !ok {
+		t.Fatal("the router was never called")
+	}
+	if got.provider != "openai" {
+		t.Fatalf("provider = %q, want %q", got.provider, "openai")
+	}
+}
+
 // TestCredentialTypesOfTheStagingDumpAreAllServed names the four types the
 // staging dump actually holds on a model link, so a change that dropped one of
 // them from the table would fail here rather than in production.
@@ -469,6 +518,81 @@ func TestUnpublishedCredentialOfThePublicProjectIsNotLinkable(t *testing.T) {
 	}
 }
 
+// TestPublishedModelPinsItsUnpublishedOwnerCredential is the restored Centry
+// shape: the model row is shared, its private:false link names a credential in
+// the same public project, and that credential is intentionally not shared.
+// The model is the capability; the credential must not become generally
+// linkable as a side effect.
+func TestPublishedModelPinsItsUnpublishedOwnerCredential(t *testing.T) {
+	const public = "1"
+	spy := &linkSpy{dispatchSpy: newDispatchSpy()}
+	db := &fakeModelDB{
+		bySchema: map[string][]fakeModelRow{
+			mapProjectID: {},
+			public: {{
+				title:  "Shared GPT",
+				data:   []byte(`{"name":"gpt-5.4-mini","ai_credentials":{"elitea_title":"ai_creds","private":false}}`),
+				shared: true,
+			}},
+		},
+		credsBySchema: map[string][]fakeCredentialRow{
+			mapProjectID: {},
+			public:       {{id: "pub-1", typ: "open_ai", title: "ai_creds", shared: false}},
+		},
+	}
+	resolver := NewModelResolver(ModelResolverConfig{DB: db, PublicProjectID: public})
+	h := NewHandler(spy, nil, nil, WithModelResolver(resolver)).route()
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Shared GPT","messages":[{"role":"user","content":"hi"}]}`)
+
+	if got, _ := spy.last(); got.provider != "openai" || got.model != "gpt-5.4-mini" {
+		t.Fatalf("dispatch = (%q, %q), want (openai, gpt-5.4-mini)", got.provider, got.model)
+	}
+	link, pinned := spy.pin()
+	if !pinned {
+		t.Fatal("published model did not pin its owner credential")
+	}
+	if link.ProjectID != public || link.ConfigID != "pub-1" || !link.ModelOwnerAccess {
+		t.Fatalf("pinned credential = %+v, want public owner capability", link)
+	}
+}
+
+// TestPublishedModelPrivateLinkUsesTheCallerScope preserves the other current
+// reference mode. private:true never grants model-owner access and may resolve
+// only the caller's personal credential (or a separately published fallback).
+func TestPublishedModelPrivateLinkUsesTheCallerScope(t *testing.T) {
+	const public = "1"
+	spy := &linkSpy{dispatchSpy: newDispatchSpy()}
+	db := &fakeModelDB{
+		bySchema: map[string][]fakeModelRow{
+			mapProjectID: {},
+			public: {{
+				title:  "Personal GPT",
+				data:   []byte(`{"name":"gpt-5.4-mini","ai_credentials":{"elitea_title":"personal_creds","private":true}}`),
+				shared: true,
+			}},
+		},
+		credsBySchema: map[string][]fakeCredentialRow{
+			mapProjectID: {{id: "own-1", typ: "open_ai", title: "personal_creds"}},
+			public:       {{id: "pub-1", typ: "amazon_bedrock", title: "personal_creds", shared: false}},
+		},
+	}
+	resolver := NewModelResolver(ModelResolverConfig{DB: db, PublicProjectID: public})
+	h := NewHandler(spy, nil, nil, WithModelResolver(resolver)).route()
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Personal GPT","messages":[{"role":"user","content":"hi"}]}`)
+
+	link, pinned := spy.pin()
+	if !pinned || link.ProjectID != mapProjectID || link.ConfigID != "own-1" {
+		t.Fatalf("pinned credential = %+v, want caller's personal credential", link)
+	}
+	if link.ModelOwnerAccess {
+		t.Fatal("private:true link received model-owner access")
+	}
+}
+
 // TestOwnCredentialWinsOverAPublishedOneOfTheSameTitle pins the precedence
 // between the two scopes. It is the same precedence the model list and the
 // credential list already keep.
@@ -503,9 +627,9 @@ func TestOwnCredentialWinsOverAPublishedOneOfTheSameTitle(t *testing.T) {
 // ── the credential read itself ────────────────────────────────────────────────
 
 // TestCredentialReadSelectsNoSecret proves the model resolver's new statement
-// cannot carry secret material. It reads three identifier columns and nothing
-// else; the secret stays in the account package, which resolves it per request
-// through the Fernet vault.
+// cannot carry secret material. It reads three identifier columns and the
+// non-secret api_base only; the key stays in the account package, which
+// resolves it per request through the Fernet vault.
 func TestCredentialReadSelectsNoSecret(t *testing.T) {
 	db := &fakeModelDB{rows: []fakeModelRow{{title: "gpt-4o"}}}
 	NewModelResolver(ModelResolverConfig{DB: db}).List(t.Context(), mapProjectID)
@@ -514,7 +638,11 @@ func TestCredentialReadSelectsNoSecret(t *testing.T) {
 	if len(creds) != 1 {
 		t.Fatalf("got %d credential statements, want 1", len(creds))
 	}
-	for _, forbidden := range []string{"data", "api_key", "api_token"} {
+	if strings.Count(creds[0], "c.data") != 1 ||
+		!strings.Contains(creds[0], "c.data->>'api_base'") {
+		t.Fatalf("the credential statement reads more than the allowed api_base:\n%s", creds[0])
+	}
+	for _, forbidden := range []string{"api_key", "api_token"} {
 		if strings.Contains(creds[0], forbidden) {
 			t.Fatalf("the credential statement names %q:\n%s", forbidden, creds[0])
 		}

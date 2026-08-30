@@ -1,6 +1,6 @@
-// Package migrate applies checksum-pinned shared and tenant migration
-// histories. It is intended for the dedicated migration command, never hidden
-// in ordinary service startup.
+// Package migrate applies checksum-pinned shared, tenant and agent-state
+// migration histories. It is intended for the dedicated migration command,
+// never hidden in ordinary service startup.
 package migrate
 
 import (
@@ -25,6 +25,12 @@ func New(pool *pgxpool.Pool, files fs.FS) *Runner {
 
 func (r *Runner) ApplyShared(ctx context.Context) error {
 	return r.apply(ctx, ScopeShared, "platform", "")
+}
+
+// ApplyAgentState applies the native agent state history to the separately
+// configured agentstate database. It never targets Main's business database.
+func (r *Runner) ApplyAgentState(ctx context.Context) error {
+	return r.apply(ctx, ScopeAgentState, "agentstate", "")
 }
 
 // ApplyTenant verifies an existing project and applies the tenant history to

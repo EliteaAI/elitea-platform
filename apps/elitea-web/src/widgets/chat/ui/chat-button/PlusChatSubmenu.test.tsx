@@ -58,6 +58,19 @@ describe('PlusChatSubmenu renders outside a Menu', () => {
     expect(screen.getByText('Create new')).toBeInTheDocument();
     expect(screen.getByText('Nothing available')).toBeInTheDocument();
   });
+
+  it('renders checked toggles and blocks pending rows', () => {
+    const onClick = vi.fn();
+    render(
+      <Harness>
+        <PlusChatSubmenu items={[{ key: 'tool', label: 'Toolkit', onClick, checked: true, pending: true }]} />
+      </Harness>,
+    );
+
+    expect(screen.getByRole('switch')).toBeChecked();
+    expect(screen.getByRole('menuitem', { name: 'Toolkit' })).toHaveAttribute('aria-disabled', 'true');
+    expect(onClick).not.toHaveBeenCalled();
+  });
 });
 
 describe('UsersParticipantDropdown footer renders outside a Menu', () => {

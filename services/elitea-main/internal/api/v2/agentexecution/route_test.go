@@ -240,6 +240,50 @@ func TestCurrentContinuationRoutePreservesCurrentPathRBACAndResponseIdentity(t *
 	}
 }
 
+func TestCurrentOutputLimitContinuationRouteCarriesOnlyResponseIdentity(t *testing.T) {
+	if CurrentOutputLimitContinuationContract != "agent.continue.output-limit.v1" {
+		t.Fatalf("output continuation contract drifted: %q", CurrentOutputLimitContinuationContract)
+	}
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-output-continue", CommandID: "command-output-continue",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentOutputContinuationRequest(validCurrentOutputContinuationBody()))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Kind != agentexecutionapp.CurrentContinuationOutputLimit ||
+		request.ProjectID != 7 || request.ActorUserID != 11 ||
+		request.ConversationUUID != "8bc66e50-46c4-4e2c-94ec-daec6c596ac0" ||
+		request.ResponseMessageID != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		request.ThreadID != "" || request.Action != "" || request.Value != "" ||
+		request.AuthorizationID != "" || len(request.HITLDecisions) != 0 {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentOutputLimitContinuationRouteRejectsBrowserSelectedRuntimeState(t *testing.T) {
+	for name, body := range map[string]string{
+		"thread": strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"thread_id":"thread-stale","message_id":`, 1),
+		"hitl":   strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"hitl_resume":true,"message_id":`, 1),
+		"tokens": strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"mcp_tokens":{},"message_id":`, 1),
+		"input":  strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"user_input":"continue","message_id":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			useCase := &currentStartUseCaseStub{}
+			route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, currentOutputContinuationRequest(body))
+			if response.Code != http.StatusUnprocessableEntity || useCase.continuationCalls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, useCase.continuationCalls, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
 	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
 		ExecutionID: "execution-comment", CommandID: "command-comment",
@@ -254,6 +298,25 @@ func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
 	request := useCase.continuationRequest
 	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
 		request.Action != "block_with_comment" || request.Value != "append data before retrying delete" {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentContinuationRouteCanonicalizesStructuredClarificationAnswer(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-answer", CommandID: "command-answer",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit"`, `"hitl_action":"answer"`, 1)
+	body = strings.Replace(body, `"hitl_value":"delete only merged branches"`, `"hitl_value":{"q2":["Safe","Fast"],"q1":"Staging"}`, 1)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentContinuationRequest(body))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Action != "answer" || request.Value != `{"q1":"Staging","q2":["Safe","Fast"]}` {
 		t.Fatalf("status=%d calls=%d request=%+v body=%s",
 			response.Code, useCase.continuationCalls, request, response.Body.String())
 	}
@@ -281,6 +344,36 @@ func TestCurrentAuthorizationContinuationRouteCarriesExactInvocationAndCredentia
 		!bytes.Equal(request.MCPTokens, []byte(`{"https://sharepoint.example.test":{"access_token":"runtime-secret"}}`)) ||
 		!bytes.Equal(request.IgnoredMCPServers, []byte(`[]`)) ||
 		!bytes.Equal(request.DeclinedMCPServers, []byte(`[]`)) {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentAuthorizationContinuationRouteAcceptsBoundedExactDecisionSet(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-parallel-authorization", CommandID: "command-parallel-authorization",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentAuthorizationContinuationBody(), `"hitl_resume":false`, `"hitl_resume":true`, 1)
+	body = strings.Replace(
+		body,
+		`"hitl_decisions":[]`,
+		`"hitl_decisions":[{"interrupt_id":"auth-2","tool_call_id":"call-2","guardrail_type":"mcp_auth","action":"skip"},{"interrupt_id":"auth-1","tool_call_id":"call-1","guardrail_type":"mcp_auth","action":"authorize"}]`,
+		1,
+	)
+	body = strings.Replace(body, `"authorization_request_id":"tool-run-sharepoint-1"`, `"authorization_request_id":""`, 1)
+	body = strings.Replace(body, `"authorization_action":"authorize"`, `"authorization_action":""`, 1)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentAuthorizationContinuationRequest(body))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Kind != agentexecutionapp.CurrentContinuationAuthorization ||
+		request.AuthorizationID != "" || request.Action != "" ||
+		len(request.HITLDecisions) != 2 ||
+		request.HITLDecisions[0].InterruptID != "auth-2" ||
+		request.HITLDecisions[1].GuardrailType != "mcp_auth" {
 		t.Fatalf("status=%d calls=%d request=%+v body=%s",
 			response.Code, useCase.continuationCalls, request, response.Body.String())
 	}
@@ -565,6 +658,27 @@ func currentAuthorizationContinuationRequest(body string) *http.Request {
 	request.Header.Set("X-Auth-ID", "11")
 	request.RemoteAddr = "10.0.0.8:43120"
 	return request
+}
+
+func currentOutputContinuationRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/continue_predict/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentOutputLimitContinuationContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
+func validCurrentOutputContinuationBody() string {
+	return `{
+  "project_id":7,
+  "conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+  "message_id":"30e0913e-10d4-43db-b8d0-c7b79480935a"
+}`
 }
 
 func validCurrentContinuationBody() string {
