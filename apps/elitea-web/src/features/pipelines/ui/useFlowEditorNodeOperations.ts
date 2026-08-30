@@ -11,6 +11,7 @@ import type { Viewport } from '@xyflow/react';
 import { FlowEditorConstants } from '../lib/flow-editor/constants';
 import * as FlowEditorHelpers from '../lib/flow-editor/helpers/flowEditor.helpers';
 import * as LayoutHelpers from '../lib/flow-editor/helpers/layout.helpers';
+import * as NewNodeRevealHelpers from '../lib/flow-editor/helpers/newNodeReveal.helpers';
 import * as ParsePipelineHelpers from '../lib/flow-editor/helpers/parsePipeline.helpers';
 import type { YamlPipelineDocument } from '../lib/flow-editor/helpers/pipelineFlow.types';
 import type { FlowEdge, FlowNode, SetFlowEdges, SetFlowNodes, SetYamlJsonObject, YamlPipelineDocumentRef } from '../lib/flow-editor/reactFlowTypes';
@@ -22,6 +23,7 @@ export interface UseFlowEditorNodeOperationsArgs {
   readonly setYamlJsonObject: SetYamlJsonObject;
   readonly yamlJsonObjectRef: YamlPipelineDocumentRef;
   readonly getViewport: () => Viewport;
+  readonly setCenter: (x: number, y: number, options?: { readonly zoom?: number; readonly duration?: number }) => unknown;
   readonly getZoom: () => number;
   readonly editorRef: { readonly current: HTMLElement | null };
   readonly editorWidth: number;
@@ -94,12 +96,22 @@ function useOnNodeCreateAtPosition(args: Pick<UseFlowEditorNodeOperationsArgs, '
   );
 }
 
-/** `FlowEditor.jsx:263-276` — picks a free canvas position centred in the current viewport (stacked below the existing cards when the centre is taken — see `calculatePositionForNewNode`), then delegates to `onNodeCreateAtPosition`. */
+/**
+ * `FlowEditor.jsx:263-276` — picks a free canvas position centred in the current viewport (stacked below the existing cards when the centre is taken — see `calculatePositionForNewNode`), then delegates to `onNodeCreateAtPosition`.
+ *
+ * The stacking rule fires on the very first add (an `End` node always sits
+ * at the viewport centre, so the new card is always pushed below it), which
+ * put most of the card under the fold with nothing bringing it back into
+ * view. `calculateRevealCenterForNewNode` decides whether the viewport has
+ * to move at all and returns a target that keeps the current zoom unless
+ * the card cannot fit at it — unlike `fitView`, which rescales the whole
+ * canvas to the whole graph on every add, needed or not.
+ */
 function useOnAddNode(
-  args: Pick<UseFlowEditorNodeOperationsArgs, 'flowNodes' | 'getViewport' | 'editorWidth' | 'editorHeight'>,
+  args: Pick<UseFlowEditorNodeOperationsArgs, 'flowNodes' | 'getViewport' | 'setCenter' | 'editorRef' | 'editorWidth' | 'editorHeight'>,
   onNodeCreateAtPosition: UseFlowEditorNodeOperationsResult['onNodeCreateAtPosition'],
 ): UseFlowEditorNodeOperationsResult['onAddNode'] {
-  const { flowNodes, getViewport, editorWidth, editorHeight } = args;
+  const { flowNodes, getViewport, setCenter, editorRef, editorWidth, editorHeight } = args;
 
   return useCallback(
     type => {
@@ -110,9 +122,25 @@ function useOnAddNode(
         flowNodes,
         type,
       );
-      return onNodeCreateAtPosition(type, { x: xPos, y: yPos });
+      const created = onNodeCreateAtPosition(type, { x: xPos, y: yPos });
+      // Deferred and re-measured rather than reusing `editorWidth`/
+      // `editorHeight` above: those are the pane's size DURING the add, and a
+      // node that opens the admission panel shrinks the pane immediately
+      // after it. `setCenter` is called without a duration, like every other
+      // reveal in this editor — `settle()` in the @visual suite freezes CSS
+      // transitions, not React Flow's own d3 one, so an animated pan would
+      // make every shot that adds a node a timing race.
+      setTimeout(() => {
+        const pane = editorRef.current;
+        const revealCenter = NewNodeRevealHelpers.calculateRevealCenterForNewNode({ x: xPos, y: yPos }, type, getViewport(), {
+          width: pane?.offsetWidth ?? editorWidth,
+          height: pane?.offsetHeight ?? editorHeight,
+        });
+        if (revealCenter) void setCenter(revealCenter.x, revealCenter.y, { zoom: revealCenter.zoom });
+      }, NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
+      return created;
     },
-    [getViewport, editorWidth, editorHeight, flowNodes, onNodeCreateAtPosition],
+    [getViewport, setCenter, editorRef, editorWidth, editorHeight, flowNodes, onNodeCreateAtPosition],
   );
 }
 

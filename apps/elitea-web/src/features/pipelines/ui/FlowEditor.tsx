@@ -170,7 +170,7 @@ const FlowEditorImpl = forwardRef<FlowEditorHandle, FlowEditorProps>(function Fl
 
   const yamlJsonObjectRef = useYamlJsonObjectRef(yamlJsonObject);
   const { editorRef, editorHeight, editorWidth } = useFlowEditorResizeObserver();
-  const { fitView, getViewport, getZoom } = useReactFlow();
+  const { fitView, getViewport, getZoom, setCenter } = useReactFlow();
   const fitViewVoid = useCallback(() => {
     void fitView();
   }, [fitView]);
@@ -220,6 +220,7 @@ const FlowEditorImpl = forwardRef<FlowEditorHandle, FlowEditorProps>(function Fl
     setYamlJsonObject,
     yamlJsonObjectRef,
     getViewport,
+    setCenter,
     getZoom,
     editorRef,
     editorWidth,
