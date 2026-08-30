@@ -28,7 +28,6 @@ import { useMemo } from 'react';
 import { load } from 'js-yaml';
 import { useRouterState } from '@tanstack/react-router';
 
-import { dumpYaml } from '../dumpYaml.helpers';
 import { usePipelineYamlStore } from '../../model/pipelineYamlStore';
 
 const PIPELINE_DETAIL_PATTERNS: readonly RegExp[] = [
@@ -56,15 +55,63 @@ export function computeIsPipelineYamlCodeDirty(
   const isEditingPipeline = isPipelineDetailPath(pathname) || isChatPath(pathname);
   if (!isEditingPipeline) return false;
 
-  let reDumpedYamlCode = '';
+  // Identical text is the cheap, common case.
+  if (yamlCode === initYamlCode) return false;
+
+  // COMPARE THE DOCUMENTS, NOT THE TEXT.
+  //
+  // This used to admit exactly two spellings — the raw baseline, and
+  // `dumpYaml(load(baseline))` — and call anything else an edit. The editor
+  // produces a THIRD: `EditorPanel`'s `setYamlJsonObject` re-dumps whenever
+  // the parsed document changes and overwrites `yamlCode` alone, leaving
+  // `initYamlCode` on the raw stored text. Whenever that dump differed from
+  // both spellings, a pipeline nobody had touched reported dirty — which
+  // armed the unsaved-changes guard, disabled the test-chat pane, and made
+  // the "Chat with pipeline" button's own navigation open a "You have unsaved
+  // changes" dialog instead of going anywhere. Intermittent, because it
+  // depended on whether that re-dump landed before the user acted.
+  //
+  // Semantics is what the question actually means, and it keeps the case the
+  // textual check was protecting: a legacy-node migration REWRITES the
+  // document, so it still reports dirty and stays saveable. Only formatting
+  // stops counting — which is correct, since the editor re-dumps on save
+  // regardless, so no formatting a user typed was ever going to survive.
+  let live: unknown;
+  let baseline: unknown;
   try {
-    const parsed = load(initYamlCode);
-    reDumpedYamlCode = parsed !== undefined ? dumpYaml(parsed) : '';
+    live = load(yamlCode || '');
   } catch {
-    // YAML parsing failed, reDumpedYamlCode stays ''.
+    // Text the parser refuses is an edit in progress, not a match.
+    return true;
+  }
+  try {
+    baseline = load(initYamlCode || '');
+  } catch {
+    // An unparseable BASELINE cannot be compared; fall back to the text.
+    return true;
   }
 
-  return yamlCode !== reDumpedYamlCode && yamlCode !== initYamlCode;
+  return stableStringify(live) !== stableStringify(baseline);
+}
+
+/**
+ * `JSON.stringify` with object keys sorted at every depth, so two documents
+ * that differ only in key ORDER compare equal. Array order is preserved —
+ * `nodes:` is a sequence and its order is meaningful.
+ *
+ * Needed because the editor rebuilds document objects by spreading rather
+ * than by editing in place, so a round trip can reorder keys without changing
+ * anything the runtime reads.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortDeep(value));
+}
+
+function sortDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDeep);
+  if (value === null || typeof value !== 'object') return value;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return Object.fromEntries(entries.map(([key, entry]) => [key, sortDeep(entry)]));
 }
 
 export function useIsPipelineYamlCodeDirty(): boolean {

@@ -123,7 +123,7 @@ describe('useLLMNodeModel', () => {
     });
   });
 
-  it('defaults inputMappings to system/task/chat_history and initialises the yaml node input_mapping', async () => {
+  it('defaults inputMappings to system/task/chat_history WITHOUT writing them to the document', async () => {
     const setYamlJsonObject = vi.fn();
     const contextValue: FlowEditorContextValue = {
       yamlJsonObject: { nodes: [{ id: 'Node1' }] },
@@ -136,7 +136,12 @@ describe('useLLMNodeModel', () => {
     await vi.waitFor(() => {
       expect(Object.keys(result.current.inputMappings)).toEqual(['system', 'task', 'chat_history']);
     });
-    expect(setYamlJsonObject).toHaveBeenCalled();
+    /*
+     * The defaults are a DISPLAY concern. Writing them back on mount replaced
+     * an authored `task` with an empty one and armed the unsaved-changes
+     * guard on a pipeline nobody had touched — see `useLLMInputMapping.ts`.
+     */
+    expect(setYamlJsonObject, 'rendering a node must not modify the document').not.toHaveBeenCalled();
   });
 
   it('handleSimpleLLMChange defaults a missing type to "fixed" and forwards the value', async () => {

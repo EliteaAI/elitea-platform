@@ -21,7 +21,7 @@
  * context — exactly like the baseline's own `useContext(FlowEditorContext)`
  * (`useLLMInputMapping.js:1,13`) — stays faithful with no redesign needed.
  */
-import { useCallback, useContext, useEffect, useMemo } from 'react';
+import { useCallback, useContext, useMemo } from 'react';
 
 import { batchUpdateYamlNode } from '../helpers/flowEditor.helpers';
 import { FlowEditorContext } from '../flowEditorContext';
@@ -74,18 +74,38 @@ export function useLLMInputMapping({ id }: UseLLMInputMappingArgs): UseLLMInputM
     return merged as LLMInputMapping;
   }, [yamlNode?.input_mapping]);
 
-  // Initialize YAML input_mapping if it doesn't exist (mirrors useFunctionInputMapping's own init effect).
-  useEffect(() => {
-    const defaultMapping = getDefaultLLMInputMapping();
-    const existingInputMapping = Object.keys(yamlNode?.input_mapping ?? {});
-    const requiredInputs = ['system', 'task', 'chat_history'];
-
-    if (!existingInputMapping.length || requiredInputs.some(input => !existingInputMapping.includes(input))) {
-      batchUpdateYamlNode(id, { input_mapping: defaultMapping }, yamlJsonObject, setYamlJsonObject);
-    }
-    // baseline's own deps array (useLLMInputMapping.js:52): `[id, yamlNode?.input_mapping, yamlJsonObject, setYamlJsonObject]`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, yamlNode?.input_mapping, yamlJsonObject, setYamlJsonObject]);
+  /*
+   * OPENING A DOCUMENT MUST NOT MODIFY IT — so there is no init effect here.
+   *
+   * There was one, and it wrote `input_mapping` on mount whenever any of the
+   * three keys was absent. Two bugs came out of that, both measured:
+   *
+   *  1. It wrote `defaultMapping` WHOLESALE, so a node storing only the key
+   *     its author set — `task: {type: variable, value: input}`, the shape the
+   *     runtime needs — had that replaced by an empty `fixed` entry just by
+   *     being looked at. Saving persisted the loss; running the graph then
+   *     failed at `stage="input_mapping"`.
+   *  2. Even merged, it still ADDED the two absent keys, so the document
+   *     differed from the stored one the moment the card mounted. That armed
+   *     the unsaved-changes guard on a pipeline nobody had touched: the
+   *     test-chat pane stayed shut and the "Chat with pipeline" button's own
+   *     navigation opened a "You have unsaved changes" dialog instead of
+   *     going anywhere.
+   *
+   * Both were intermittent, because React Flow only mounts the cards
+   * currently in view — measured at roughly 1 in 5 through
+   * `e2e/streaming/chat.pipeline.spec.ts`.
+   *
+   * Nothing needed the write. `inputMappings` above already merges the
+   * defaults in for DISPLAY, which is the only consumer (`LLMNode.parts.tsx`
+   * renders from it, not from the raw node), and `onChangeMapping` below
+   * writes the complete merged mapping the first time the user actually
+   * edits one. A partial mapping is also legal at runtime: the worker uses
+   * what it is given and only falls back to `messages` when the key is
+   * absent entirely.
+   *
+   * Deliberately NOT the baseline's behaviour (`useLLMInputMapping.js:44-52`).
+   */
 
   const onChangeMapping = useCallback(
     (key: string, value: LLMInputMappingEntry) => {
