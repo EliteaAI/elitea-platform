@@ -89,13 +89,13 @@ these are *known* gaps, not bugs.
 |---|---|---|
 | **MCP `tools/call` execution** | `v2/mcp/server.go:217`, `registry.go:71,188` | Listing is real; running is not. Needs the agent runtime (agents) and the Python worker's toolkit dispatch (toolkits). Returns `isError: true` naming what is missing, never an empty success |
 | **MCP SSE pair** (`GET /<pid>/sse` + `POST /<pid>/messages`) | `v2/mcp/handler.go:21` | Not ported. The modern streamable-HTTP transport is; this is the deprecated one |
-| **Analytics by agent / by tool** | `v2/analytics/handler.go` | Usage and users are answerable over the request log (`0099`); agents and tools have no dimension to group by |
-| **Billing dimensions** | `internal/governance` | Accumulators hold money per `(scope, scope_id, period)` only. No model, user, agent, token or call breakdown exists anywhere |
+| **Analytics by agent** | `repos/analytics.go:44-56` | Only the AGENT dimension is missing: a gateway request knows its model, not the agent that composed it, and nothing correlates the two. Tool is a weaker, different problem — nothing records a tool call outside a chat turn |
+| ~~Billing dimensions~~ | — | **WRONG, struck.** Migration `0084_budget_usage_dimensions.sql` added `gateway.llm_usage_events` carrying project, user, provider, model, prompt/completion/total tokens, api_requests and cost_usd, with two writers and three readers. Four of the five dimensions ship today |
 | **TTS voice list** | `v2/configurations/handler.go:1641,1657` | 501. The reference reads voices from the provider |
-| **Realtime / audio streaming** | `llm-gateway/internal/llmproxy/realtime.go:450`, `audio.go:187` | 501 on the realtime route; `stream_format` unsupported on speech |
+| ~~Realtime / audio streaming~~ | — | **WRONG, struck.** `realtime.go:448` answers 501 only when the dialer is nil; production wires it (`cmd/elitea-llm-gateway/main.go:404`), `/llm/v1/audio/speech` is registered (`internal/api/router.go:73`), and the `stream_format` refusal is a deliberate 400 on a unary route |
 | **SCIM filter grammar** | `internal/scimdirectory/filter.go:122` | Grouping and `and`/`or`/`not` not implemented; some PATCH paths answer 501 (`scim/users.go:350`, `groups.go:283`) |
-| **Conversation attachment cleanup** | `repos/conversations.go:1123` | pylon's `delete_attachment` is not ported — attachments outlive their conversation |
-| **Agent markdown export** | `apps/elitea-web/.../ExportApplicationButton.tsx:44` | The Go router has no markdown export operation |
+| **Conversation-DELETE leaves attachment bytes** | `repos/conversations.go:340-397` | Narrower than claimed: `delete_attachment` IS ported (`v2/conversations/handler.go:620-700`) and the `:1123` comment is stale. `ConversationsRepo.Delete` never calls the object store, and the retention sweeper eventually expires them — a timeliness gap, size S |
+| ~~Agent markdown export~~ | — | **WRONG, struck.** `v2/eliteacore/handler.go:3514` branches on `format=md` into `writeMarkdownExport`; `export_markdown.go` is 25 KB with tests. The stale artefact is the frontend doc comment |
 | **Config field suggestions** | `v2/admin/config_suggestions.go:64` | 501 whenever the deployment cannot enumerate the toolkit registry — i.e. always, on a Go-only stack |
 
 ### C2. Awaiting an architectural decision, not a port
@@ -187,7 +187,7 @@ documentation mismatch, not a missing feature.
 | E3 | **Long-term memory settings** = "Coming soon" placard. NOT an unknown: the baseline ships this at `/settings/memory` (`MemoryLongTermMemory`, `MemorySummarization`, `MemoryContextManagement`) — see [elitea-ui-pin-refresh-decisions.md](elitea-ui-pin-refresh-decisions.md) | `features/settings/ui/profile/ProfileLongTermMemory.tsx:27` | M |
 | E4 | **Custom skill icons** = "coming soon" tooltip | `features/skills/ui/SkillForm.tsx:86` | S |
 | E5 | **Per-word TTS highlight sync** dropped | `features/chat-messages/ui/chat-box/ApplicationAnswer.tsx:18` | S |
-| E6 | **Agent set-default-version** — router answers 405; the UI shape was not ported | `features/agents/model/useSetDefaultVersion.ts:26` | S (backend first) |
+| E6 | **Default version is invisible after setting it.** NOT a 405 gap: the route, handler (`applications/handler.go:1202`) and hook all exist; the 405 applies only to a legacy request shape deliberately not ported. The real gap is that `Get` emits no `meta.default_version_id` and `getVersions` omits `is_default` | `applications/handler.go:122-160` | S (frontend-led) |
 | E7 | **`/artifacts/edit-bucket`** route missing (referenced by the project switcher, never defined) | `src/routes/$projectId.$.tsx` | S |
 | E8 | **Support assistant**: attachments, screenshots and mermaid deliberately not ported | `v2/supportassistant/handler.go:51` | M, optional |
 
@@ -246,9 +246,10 @@ Sequenced by what unblocks the most. Sizes are rough and per-surface.
 
 | Step | Work | Size |
 |---|---|---|
-| 3.1 | **MCP `tools/call`.** Agents via the runtime plane; toolkits via the worker's dispatch. Highest external-integration value of anything in section C. | L |
-| 3.2 | **Analytics + billing dimensions.** Add the dimension columns the request log needs, then agent/tool/model breakdowns. Schema change first — the accumulators cannot be retrofitted. | L |
-| 3.3 | Conversation attachment cleanup; agent markdown export; set-default-version (E6's backend). | M |
+| 3.1a | **MCP `tools/call`, agents only**, via the runtime plane. Ships alone behind the existing nil-check degradation, and is the half an MCP client actually wants. Needs a target discriminator on the internal tool descriptor first (`catalog.go:32-36` carries name/description/schema and nothing else), and a decision on whether an MCP run creates a conversation. | M |
+| 3.2 | **Agent dimension only.** A `v2` signed-identity header carrying execution id (the canonical string is duplicated across two modules — bump the version or a rolling deploy fails every request), two nullable indexed columns, and a read-time join to `execution_jobs`. **Backfill is impossible**; follow the `usageDimensions.Available` precedent and omit the block rather than zero-fill it. | M |
+| 3.3 | Conversation-DELETE attachment bytes (S) + two stale-comment deletions (XS) + surfacing `is_default` (S). | S |
+| 3.1b | **MCP `tools/call`, toolkits.** A full vertical slice: new proto capability (narrowing two `reserved` ranges), a worker handler, and durable effect identity/idempotency/cancellation — running a toolkit tool writes Jira tickets and pushes commits, so the bounded sync bridge is explicitly not sufficient. Defer. | L |
 | 3.4 | SCIM filter grammar and the 501 PATCH paths. Only if an enterprise SCIM client needs it — scope on demand. | M |
 | 3.5 | TTS voices, realtime/audio. Scope on demand. | M |
 
@@ -275,6 +276,14 @@ Sequenced by what unblocks the most. Sizes are rough and per-surface.
 
 ## Two rules this repository keeps re-learning, and that this plan depends on
 
+0. **A disclosed-gap comment is a claim about a moment in time, and nothing
+   re-checks it.** Verifying Wave 3 against the code disproved **five** rows of
+   this document's own section C1/E — every one of them transcribed from a
+   `NOT PORTED` doc comment the code had since outgrown (billing dimensions,
+   markdown export, realtime/audio, attachment cleanup, set-default-version).
+   `v2/mcp/registry.go:71` and `repos/analytics.go:15-19` both say this about
+   themselves in as many words. Worth a CI check: fail when a `NOT PORTED`
+   comment sits in a file whose neighbouring symbol now exists.
 1. **Absence reads as correctness.** A missing writer, an unenumerated registry,
    an empty table — all answer "fine" to every check that does not assert
    presence. Every Wave-1 step needs a test that fails when the thing is absent,
