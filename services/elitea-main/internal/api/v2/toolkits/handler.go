@@ -1472,12 +1472,20 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 		return nil, err
 	}
 
-	// The probe compares information_schema.columns.table_schema, which holds
-	// the RAW schema name (p_1). `s` is the QUOTED identifier ("p_1") for SQL
-	// text, and feeding it here matches nothing, which silently locks the
-	// no-owner INSERT in — the exact #129 D1 shape, reintroduced by a merge.
-	// ownerID has already validated the project id as a positive integer.
-	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, fmt.Sprintf("p_%d", ownerID))
+	// toolkitOwnerIDExists binds the schema as a PARAMETER against
+	// information_schema, which stores the UNQUOTED name — `s` carries the
+	// identifier quotes and would match nothing, silently locking every write
+	// onto the owner_id-less fallback.
+	//
+	// Both branches fixed this independently and this keeps the canonical
+	// helper rather than a second `p_%d` spelling: a hand-built name is how
+	// the bug came back the first time, through a merge that fed the quoted
+	// `s` here (#129 D1).
+	schemaName, err := tenantschema.Name(projectID)
+	if err != nil {
+		return nil, err
+	}
+	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, schemaName)
 	if err != nil {
 		return nil, err
 	}
