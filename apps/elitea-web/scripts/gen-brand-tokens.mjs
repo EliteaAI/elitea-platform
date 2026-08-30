@@ -341,6 +341,18 @@ function applySymmetryFills(schemes) {
     if (fill.id in schemes[fill.scheme]) {
       throw new Error(`symmetry fill ${fill.id} is already present in the ${fill.scheme} scheme`);
     }
+    // A fill supplies the MISSING half of a token the baseline defines in the
+    // other scheme. If the other scheme has not got it either, the fill is
+    // stale — the baseline dropped the token, or the pin moved backwards — and
+    // applying it would invent a token no baseline has. Say so here rather
+    // than letting it surface later as "schemes still asymmetric", which names
+    // the symptom and not the stale table entry.
+    const other = fill.scheme === 'light' ? 'dark' : 'light';
+    if (!(fill.id in schemes[other])) {
+      throw new Error(
+        `stale symmetry fill ${fill.id}: absent from BOTH schemes in this baseline, so there is no asymmetry to fill`,
+      );
+    }
     schemes[fill.scheme][fill.id] = fill.value;
   }
 }

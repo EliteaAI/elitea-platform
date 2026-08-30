@@ -108,7 +108,42 @@ func ExtractBaseline(baseline string) (*Extraction, error) {
 			return nil, err
 		}
 	}
-	for _, m := range literalAttrRe.FindAllStringSubmatch(prot, -1) {
+	// 2a. NESTED settings children, e.g.
+	//
+	//	<Route path="project-context">
+	//	  <Route index element={<ProjectContext />} />
+	//	  <Route path="edit" element={<ProjectContextEdit />} />
+	//	</Route>
+	//
+	// This shape arrived with baseline 20b23c42. The scan below is flat, so
+	// without this pass the inner literal was attributed to the Settings
+	// element directly and produced "/settings/edit" — a route that does not
+	// exist — while the real "/settings/project-context/edit" was reported as
+	// declared-but-never-mounted. The nested block is consumed here and
+	// removed from the text the flat scan then reads.
+	//
+	// One level only, which is all the baseline has. A second level would be
+	// silently flattened again, so nestedSettingsRe deliberately matches the
+	// non-self-closing opening tag and its own closing tag, and a deeper tree
+	// would fail the route diff rather than pass quietly.
+	flatProt := prot
+	for _, m := range nestedSettingsRe.FindAllStringSubmatch(prot, -1) {
+		parent, block := m[1], m[2]
+		mounted["/settings/"+parent] = true
+		for _, c := range literalAttrRe.FindAllStringSubmatch(block, -1) {
+			lit := c[1]
+			if lit == "" {
+				lit = c[2]
+			}
+			if lit == "" || lit == ":version" || lit == "*" || strings.HasPrefix(lit, "/") {
+				continue
+			}
+			mounted["/settings/"+parent+"/"+lit] = true
+		}
+		flatProt = strings.Replace(flatProt, m[0], "", 1)
+	}
+
+	for _, m := range literalAttrRe.FindAllStringSubmatch(flatProt, -1) {
 		lit := m[1]
 		if lit == "" {
 			lit = m[2]
@@ -127,7 +162,13 @@ func ExtractBaseline(baseline string) (*Extraction, error) {
 	if strings.Contains(prot, "<IndexRoute />") {
 		mounted["/"] = true
 	}
-	if strings.Contains(prot, `<Navigate`) && strings.Contains(prot, `to="model-configuration"`) {
+	// The Settings index redirect. Its TARGET is baseline-dependent — it was
+	// `model-configuration` and is `project-general` at 20b23c42 — so match the
+	// shape (an index route whose element is a <Navigate> to a bare relative
+	// literal) rather than the destination. Hardcoding the destination meant a
+	// baseline that merely renamed the landing tab reported the whole settings
+	// index as unmounted.
+	if settingsIndexNavigateRe.MatchString(prot) {
 		mounted["/settings (index)"] = true
 	}
 	// version-append rule (ProtectedRoutes.jsx: path.endsWith('/:agentId') || path.endsWith('/:skillId'))
@@ -165,6 +206,15 @@ func ExtractBaseline(baseline string) (*Extraction, error) {
 	}
 	return &Extraction{Mounted: mounted, DeclaredOnly: declaredOnly}, nil
 }
+
+// nestedSettingsRe matches a non-self-closing <Route path="literal"> element
+// and captures its body up to the matching </Route>. See the 2a pass.
+var nestedSettingsRe = regexp.MustCompile(`(?s)<Route\s+path="([a-z][a-z0-9-]*)"\s*>(.*?)</Route>`)
+
+// settingsIndexNavigateRe matches an index route whose element is a <Navigate>
+// to a bare relative literal — the Settings landing redirect, whatever tab it
+// currently points at.
+var settingsIndexNavigateRe = regexp.MustCompile(`(?s)<Route\s+index\s+element=\{\s*<Navigate\s+to="[a-z][a-z0-9-]*"`)
 
 var titleMountedRe = regexp.MustCompile("^Route `([^`]+)`")
 var titleAnomalyRe = regexp.MustCompile("^Route anomaly `([^`]+)`")

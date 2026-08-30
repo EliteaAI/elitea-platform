@@ -11,7 +11,12 @@
  *
  * `darkPalette.js` / `lightPalette.js` are plain ESM data modules: a run of
  * `const` colour declarations followed by one object literal and a default
- * export. `lightPalette.js` additionally imports `white` from `darkPalette`.
+ * export. `lightPalette.js` HISTORICALLY imported `white` from `darkPalette`,
+ * and stopped at baseline 20b23c42, where it declares its own. So `injected`
+ * is a best-effort supply, not an override: a name the module body already
+ * declares is skipped, because emitting both produced
+ * `SyntaxError: Identifier 'white' has already been declared` and broke the
+ * generator against every baseline newer than that commit.
  * Node cannot import them directly (extensionless relative specifier, and
  * the baseline is outside this package), so the text is de-moduled and run
  * through `new Function`:
@@ -40,7 +45,11 @@ export function evalPaletteModule(source, injected = {}) {
     .replace(/export\s+const\s+/g, 'const ')
     .replace(/export\s+default\s+[A-Za-z_$][\w$]*\s*;/, '');
 
+  const selfDeclared = new Set(
+    [...body.matchAll(/(?:^|\n)\s*const\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]),
+  );
   const preamble = Object.entries(injected)
+    .filter(([name]) => !selfDeclared.has(name))
     .map(([name, value]) => `const ${name} = ${JSON.stringify(value)};`)
     .join('\n');
   const epilogue = `return { palette: ${defaultExport[1]}, consts: { ${exportedNames.join(', ')} } };`;
