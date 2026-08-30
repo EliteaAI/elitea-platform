@@ -4,7 +4,7 @@
  * into their own hook purely to keep `FlowEditor.tsx` itself under the
  * §3.5 400-line file-length budget.
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import type { Viewport } from '@xyflow/react';
 
@@ -113,6 +113,18 @@ function useOnAddNode(
 ): UseFlowEditorNodeOperationsResult['onAddNode'] {
   const { flowNodes, getViewport, setCenter, editorRef, editorWidth, editorHeight } = args;
 
+  // The pending reveal, so an unmounting editor can cancel it. Without this
+  // the timer below still fires after the `ReactFlowProvider` has gone —
+  // adding a node and navigating away inside the delay left `setCenter`
+  // writing to a disposed store.
+  const revealTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (revealTimer.current !== undefined) clearTimeout(revealTimer.current);
+    },
+    [],
+  );
+
   return useCallback(
     type => {
       const viewPort = getViewport();
@@ -130,7 +142,9 @@ function useOnAddNode(
       // reveal in this editor — `settle()` in the @visual suite freezes CSS
       // transitions, not React Flow's own d3 one, so an animated pan would
       // make every shot that adds a node a timing race.
-      setTimeout(() => {
+      if (revealTimer.current !== undefined) clearTimeout(revealTimer.current);
+      revealTimer.current = setTimeout(() => {
+        revealTimer.current = undefined;
         const pane = editorRef.current;
         const revealCenter = NewNodeRevealHelpers.calculateRevealCenterForNewNode({ x: xPos, y: yPos }, type, getViewport(), {
           width: pane?.offsetWidth ?? editorWidth,

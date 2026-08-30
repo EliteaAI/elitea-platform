@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PipelineNodeTypes } from '../lib/flow-editor/constants/flowEditor.constants';
 import * as NewNodeRevealHelpers from '../lib/flow-editor/helpers/newNodeReveal.helpers';
@@ -9,6 +9,16 @@ import { useFlowEditorNodeOperations } from './useFlowEditorNodeOperations';
 function makeNode(id: string, type: string, x = 0, y = 0): FlowNode {
   return { id, type, position: { x, y }, data: {} };
 }
+
+/*
+ * Unconditional, because the restore used to be the LAST line of each
+ * fake-timer test: an assertion that threw skipped it and left fake timers
+ * installed for the rest of the file, turning one real failure into a
+ * cascade of unrelated timeouts.
+ */
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('useFlowEditorNodeOperations', () => {
   it('onNodeCreateAtPosition creates a YAML node, sets it as flow node, and marks entry_point on the first non-Condition node', () => {
@@ -141,7 +151,6 @@ describe('useFlowEditorNodeOperations', () => {
     act(() => {
       vi.advanceTimersByTime(NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
     });
-    vi.useRealTimers();
 
     expect(created.position).toEqual({ x: 170, y: 200 });
     // Centre of the new card (460 wide x 460 tall), at the CURRENT zoom —
@@ -177,7 +186,6 @@ describe('useFlowEditorNodeOperations', () => {
     act(() => {
       vi.advanceTimersByTime(NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
     });
-    vi.useRealTimers();
 
     // (480 - 48) / 460 — the shrunken pane's width, not the 800 above.
     expect(setCenter).toHaveBeenCalledWith(400, 430, { zoom: (480 - 2 * NewNodeRevealHelpers.NEW_NODE_REVEAL_MARGIN) / 460 });
@@ -206,7 +214,6 @@ describe('useFlowEditorNodeOperations', () => {
     act(() => {
       vi.advanceTimersByTime(NewNodeRevealHelpers.NEW_NODE_REVEAL_DELAY_MS);
     });
-    vi.useRealTimers();
 
     expect(setCenter).not.toHaveBeenCalled();
   });

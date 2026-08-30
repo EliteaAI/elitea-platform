@@ -76,22 +76,54 @@ export function computeIsPipelineYamlCodeDirty(
   // document, so it still reports dirty and stays saveable. Only formatting
   // stops counting — which is correct, since the editor re-dumps on save
   // regardless, so no formatting a user typed was ever going to survive.
-  let live: unknown;
-  let baseline: unknown;
+  let live: string;
   try {
-    live = load(yamlCode || '');
+    live = stableStringify(load(yamlCode || ''));
   } catch {
     // Text the parser refuses is an edit in progress, not a match.
     return true;
   }
-  try {
-    baseline = load(initYamlCode || '');
-  } catch {
-    // An unparseable BASELINE cannot be compared; fall back to the text.
-    return true;
-  }
 
-  return stableStringify(live) !== stableStringify(baseline);
+  const baseline = baselineFingerprint(initYamlCode);
+  // An unparseable BASELINE cannot be compared; the text already differs.
+  if (baseline === UNPARSEABLE) return true;
+
+  return live !== baseline;
+}
+
+/**
+ * Distinguishes "the baseline does not parse" from "the baseline parses to
+ * nothing". `JSON.stringify(undefined)` is itself `undefined`, so an EMPTY
+ * baseline and a broken one would otherwise be the same value — and they
+ * mean opposite things here.
+ */
+const UNPARSEABLE = Symbol('unparseable-baseline');
+
+/**
+ * The baseline's `stableStringify(load(...))`, cached on the text it came
+ * from.
+ *
+ * `yamlCode` changes on every keystroke in the YAML tab, so this function
+ * runs per character — but `initYamlCode` only moves on load and save, and
+ * re-parsing plus re-sorting an unchanged document (the compiler admits up
+ * to 128 nodes) on every one of those keystrokes is pure waste. One entry is
+ * enough: there is a single baseline on screen at a time.
+ *
+ * `undefined` means the baseline does not parse, which the caller treats as
+ * "cannot compare".
+ */
+let baselineText: string | undefined;
+let baselineValue: string | typeof UNPARSEABLE;
+
+function baselineFingerprint(initYamlCode: string): string | typeof UNPARSEABLE {
+  if (baselineText === initYamlCode) return baselineValue;
+  baselineText = initYamlCode;
+  try {
+    baselineValue = stableStringify(load(initYamlCode || ''));
+  } catch {
+    baselineValue = UNPARSEABLE;
+  }
+  return baselineValue;
 }
 
 /**
