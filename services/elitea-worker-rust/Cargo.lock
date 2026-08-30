@@ -747,6 +747,7 @@ name = "elitea-worker-rust"
 version = "0.1.0"
 dependencies = [
  "adk-anthropic",
+ "adk-runner",
  "adk-rust",
  "async-stream",
  "async-trait",

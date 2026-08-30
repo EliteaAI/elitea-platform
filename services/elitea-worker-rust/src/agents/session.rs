@@ -1184,7 +1184,14 @@ pub(crate) async fn assemble_pipeline_native(
         generation: _,
         regenerate: _,
     } = plan;
-    context_management.prepare_runner_composition();
+    // The pipeline graph binds one model per node, so there is no single
+    // transcript-wide model to summarize with: an active plan is refused.
+    if context_management
+        .prepare_runner_composition(None)?
+        .is_some()
+    {
+        return Err(invalid_configuration());
+    }
     let agent: Arc<dyn Agent> = Arc::new(
         EliteaGraphAgent::new(graph)
             .with_printer_interrupts(Arc::clone(&state.checkpointer), printer_catalog),
@@ -1431,7 +1438,8 @@ where
         generation: _,
         regenerate,
     } = plan;
-    context_management.prepare_runner_composition();
+    let context_compaction =
+        context_management.prepare_runner_composition(Some(model.adk_model()))?;
     let parallel = execution_mode == NativeToolExecutionMode::ParallelApplications;
     if parallel && runtime.has_confirmation_guards() {
         return Err(invalid_configuration());
@@ -1478,10 +1486,14 @@ where
             ))
         },
     );
-    let runner = adk_rust::runner::Runner::builder()
+    let mut runner_builder = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
         .agent(agent)
-        .session_service(runner_sessions)
+        .session_service(runner_sessions);
+    if let Some(compaction) = context_compaction {
+        runner_builder = runner_builder.context_compaction(compaction);
+    }
+    let runner = runner_builder
         .build()
         .map_err(|_| invalid_configuration())?;
     let invocation = if parallel {
@@ -1770,7 +1782,8 @@ where
         generation: _,
         regenerate: _,
     } = plan;
-    context_management.prepare_runner_composition();
+    let context_compaction =
+        context_management.prepare_runner_composition(Some(model.adk_model()))?;
     let stored = sessions
         .get(GetRequest {
             app_name: APP_NAME.to_owned(),
@@ -1791,10 +1804,14 @@ where
         prepared.runtime,
         prepared.parallel_applications,
     )?;
-    let runner = adk_rust::runner::Runner::builder()
+    let mut runner_builder = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
         .agent(agent)
-        .session_service(sessions)
+        .session_service(sessions);
+    if let Some(compaction) = context_compaction {
+        runner_builder = runner_builder.context_compaction(compaction);
+    }
+    let runner = runner_builder
         .build()
         .map_err(|_| invalid_configuration())?;
     Ok(AssembledNativeAgentInvocation::new(

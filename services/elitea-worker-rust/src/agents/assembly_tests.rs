@@ -205,7 +205,7 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
 }
 
 #[test]
-fn context_management_has_an_explicit_fail_closed_runner_seam() {
+fn context_management_admits_the_frozen_contract_and_refuses_the_rest() {
     let mut disabled = ordinary_request(AgentExecutionKind::Application);
     disabled
         .payload
@@ -223,8 +223,23 @@ fn context_management_has_an_explicit_fail_closed_runner_seam() {
         .payload
         .context_settings
         .insert("enabled".to_owned(), json!(true));
-    let error = OrdinaryNoToolProfile::validate(&requested)
-        .expect_err("active context management remains capability-gated");
+    let profile = OrdinaryNoToolProfile::validate(&requested)
+        .expect("the frozen context management contract is admitted");
+    assert!(
+        matches!(
+            profile.context_management(),
+            ContextManagementPlan::Summarize(_)
+        ),
+        "an active contract reaches the Runner composition seam"
+    );
+
+    let mut editing = ordinary_request(AgentExecutionKind::Application);
+    editing
+        .payload
+        .context_settings
+        .insert("enable_context_editing".to_owned(), json!(true));
+    let error = OrdinaryNoToolProfile::validate(&editing)
+        .expect_err("tool-output editing remains capability-gated");
     assert_eq!(
         error.code(),
         NativeAgentAssemblyErrorCode::UnsupportedCapability
@@ -313,11 +328,14 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
             7 => request.payload.checkpoint_id = Some("checkpoint-1".to_owned()),
             8 => request.payload.parallel_reconcile = Some(Map::new()),
             9 => request.payload.auto_approve_sensitive_actions = true,
+            // An UNRECOGNIZED context setting is `InvalidInput` (see
+            // `context_management_tests`); the surface left to pin here is the
+            // one frozen strategy Rust has no ADK primitive for.
             10 => {
                 request
                     .payload
                     .context_settings
-                    .insert("x".to_owned(), json!(1));
+                    .insert("enable_context_editing".to_owned(), json!(true));
             }
             11 => request.payload.return_chat_history = true,
             12 => request.payload.next_input_suggestion.enabled = true,
