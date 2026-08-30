@@ -32,6 +32,7 @@ const {
   ModelCapabilitiesSection,
   OpenAITemplate,
   ProjectAIConfiguration,
+  RequestModelConnection,
   useConfigurationsBySection,
   useModelConfigurationLayer,
 } = aiConfigurationFeature;
@@ -151,15 +152,33 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
             userApiUrl={userApiUrl}
             projectId={projectId}
           />
-          {/* Baseline `ModelConfiguration.jsx:214-226` floats this button over
-              the top-right of the card. It copies the whole configuration as
-              JSON — server URL, base URL, project id, the selected model, its
-              capabilities, and every configuration of every section. */}
-          <Tooltip title={t('ai-configuration.copyConfigurationTooltip', 'Copy configuration')} placement="top">
-            <IconButton color="secondary" onClick={copyConfiguration} sx={styles.copyButton}>
-              <ContentCopyIcon sx={styles.copyIcon} />
-            </IconButton>
-          </Tooltip>
+          {/*
+            The panel's affordance cluster, floated over the top-right of the
+            card exactly where baseline `ModelConfiguration.jsx:214-226` floats
+            the copy button on its own — directly above the Configurations
+            header and its "+" create-configuration button, which is the other
+            half of the same choice: a member who CAN add a configuration uses
+            the "+", and a member who cannot asks for one here.
+
+            `RequestModelConnection` is deliberately not permission-gated in
+            the UI. `admin.moderation.create` has no entry in
+            `shared/lib/permissions.ts`, and the App Catalogue's own "Request
+            Access" button is ungated the same way — the server refuses without
+            it and the dialog surfaces the refusal, which is a truthful answer;
+            a hidden button is not.
+
+            The copy button copies the whole configuration as JSON — server
+            URL, base URL, project id, the selected model, its capabilities,
+            and every configuration of every section.
+          */}
+          <Box sx={styles.panelActions}>
+            <RequestModelConnection projectId={projectId} />
+            <Tooltip title={t('ai-configuration.copyConfigurationTooltip', 'Copy configuration')} placement="top">
+              <IconButton color="secondary" onClick={copyConfiguration}>
+                <ContentCopyIcon sx={styles.copyIcon} />
+              </IconButton>
+            </Tooltip>
+          </Box>
         </Box>
       )}
 
@@ -233,10 +252,13 @@ function getStyles(theme: ReturnType<typeof useTheme>) {
       position: 'relative',
       flexShrink: 0,
     },
-    copyButton: {
+    panelActions: {
       position: 'absolute',
       top: '1rem',
       right: '1rem',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '0.5rem',
     },
     copyIcon: {
       width: '1rem',

@@ -32,47 +32,71 @@
  * ties the stored row to the exact button press that produced it.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * WHY THIS DRIVES THE ANSWER'S "Regenerate", NOT THE QUESTION'S EDIT CONTROL
+ * THE QUESTION'S EDIT AFFORDANCE IS REACHABLE; THE EDITED-REGENERATE TURN IS NOT
  * ─────────────────────────────────────────────────────────────────────────────
  * `e2e/journeys/chat/chat.conversation.spec.ts` J9 drives "Edit the message and
- * regenerate answer" on the user's own bubble. That control is out of reach the
- * moment a turn has been answered and persisted, for TWO independent reasons —
- * both measured here, not inferred:
+ * regenerate answer" on the user's own bubble. This spec used to record that
+ * that control was out of reach the moment a turn had been answered and
+ * persisted. HALF of that is no longer true, and the header now records the fix:
  *
- *  1. THE UI DOES NOT OFFER IT. `ChatMessageList`'s `isEligibleForEdit` requires
- *     `userId === message.userId`, and a transcript loaded from the server
- *     states no author id at all: `GET …/messages/…` returns no user field, so
- *     `normaliseUserMessage`'s `userOptionalFields` omits `userId`
- *     (`entities/message/lib/normalise.ts`). J9 only reaches the control
- *     because it acts on the OPTIMISTIC bubble the send path stamped the
- *     signed-in user onto — and this journey cannot: the first send navigates
- *     to `/app/chat/{id}` (`pages/chat/index.tsx`'s `handleConversationCreated`),
- *     which re-reads the transcript from the server. Measured on the live
- *     stack: after the turn settles the question bubble offers exactly one
- *     button, "Copy to clipboard", and the answer offers "Regenerate".
- *  2. THE SERVER REFUSES AN EDITED QUESTION ANYWAY. The regeneration route
- *     rejects any body whose `updated_items` is non-empty
+ *  1. THE UI OFFERS IT AGAIN — on the reader's OWN reloaded question.
+ *     `ChatMessageList`'s `isEligibleForEdit` gates the control on the current
+ *     author matching `message.userId`. It used to lose: a server-loaded
+ *     transcript stated no author, so `normaliseUserMessage`'s
+ *     `userOptionalFields` omitted `userId` (`entities/message/lib/normalise.ts`)
+ *     and only the OPTIMISTIC send-path bubble ever carried one. That is fixed
+ *     end to end — the transcript now serves `author_participant_id` per row,
+ *     `normalise.ts` resolves the authoring participant to `message.userId` (as
+ *     a `String()`), and `ChatMessageList` now `String()`-normalises BOTH sides
+ *     of the check. That last step matters: the participants payload states the
+ *     author id as a NUMBER (`entity_meta.id`) while `/social/author` states the
+ *     current author id as a string, so a bare `===` between `6` and `"6"`
+ *     missed and the reader's own reloaded question offered only "Copy to
+ *     clipboard". Measured on the live stack after the fix: a hard reload's
+ *     question bubble offers BOTH "Copy to clipboard" AND "Edit the message and
+ *     regenerate answer". This spec asserts that VISIBILITY at the end — a
+ *     UI-visibility check on the reloaded, server-authored question, nothing
+ *     more.
+ *  2. THE SERVER STILL REFUSES AN EDITED QUESTION — by design. The regeneration
+ *     route rejects any body whose `updated_items` is non-empty
  *     (`route.go`: `!emptyJSONArray(body.UpdatedItems)` → 422
  *     `unsupported_agent_execution`), and the client mirrors that refusal —
  *     `buildRegenerateBody` returns `undefined` when `updatedItems` is
  *     non-empty, so an edited question would fall back to the pre-#93 REST
  *     call, which this route answers 400 for want of an `execution_contract`.
  *     That refusal is asserted below rather than described, because it is the
- *     reason "edit and regenerate" cannot be an assertion about a REPLACED
- *     answer: on the current contract a regeneration re-runs the question as
- *     stored, and changing the question is a different turn.
+ *     reason this spec drives the ANSWER'S "Regenerate" for the round trip and
+ *     only asserts the QUESTION'S edit affordance is VISIBLE: on the current
+ *     contract a regeneration re-runs the question as stored, and changing the
+ *     question is a different turn the backend does not support.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE PRECONDITION THE PRODUCT DOES NOT STATE
  * ─────────────────────────────────────────────────────────────────────────────
- * A regeneration is refused 409 `agent_regeneration_pending` while the answer's
- * `chat_message_group.is_streaming` is still TRUE, and that flag is cleared
- * AFTER the answer text is written. So both signals a user has — the answer is
- * on screen, the composer is released — can be true while the button they gate
- * is still refused, and the UI swallows the refusal
- * (`createRegenerateAnswer` restores the previous answer and warns to the
- * console). This spec waits on the column instead of racing it; see
- * `waitForAnswerSettled`.
+ * A regeneration is refused 409 `agent_regeneration_pending` (`retryable: true`,
+ * `Retry-After: 1`) while the answer's `chat_message_group.is_streaming` is
+ * still TRUE, and that flag is cleared AFTER the answer text is written. So
+ * both signals a user has — the answer is on screen, the composer is released —
+ * can be true while the button they gate is still refused.
+ *
+ * THE UI USED TO SWALLOW THAT, and this file used to work around it. The
+ * streamed regeneration reported a bare `false` for every failure, so
+ * `createRegenerateAnswer` fell through to the pre-#93 REST trigger — which
+ * posts no `execution_contract` and is answered 400 — then restored the
+ * previous answer and warned to the console. The click did nothing and said
+ * nothing, so this spec used to POLL `is_streaming` to the point where the
+ * server would accept, and only then click (`waitForAnswerSettled`, deleted
+ * with this change).
+ *
+ * The client now absorbs the window itself: `useChatStreamRunStarters`'
+ * `regenerateDetailed` classifies that ONE refusal as `retry-later`, and
+ * `createRegenerateAnswer` repeats the SAME request across a short bounded
+ * ladder before giving up and writing the reason onto the answer card. So this
+ * spec clicks the way a user does — the moment the button is offered — and
+ * asserts the outcome instead of the precondition: any 409 seen on the way is
+ * required to be the retryable one, and the click is required to end in a 200.
+ * If the retry is ever removed, this races exactly as a user's click would and
+ * goes red, which is the whole point of dropping the poll.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT NO BACKEND HERE CAN DISCRIMINATE
@@ -95,7 +119,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
 import { expectStoredAssistantAnswer, readStoredTranscript } from '../fixtures/api';
@@ -114,59 +138,6 @@ const MAX_NAME = 50;
 /** The run's own token — see `chat.multiturn.spec.ts` for why `Date.now()` alone is not enough. */
 function uniqueToken(tag: string): string {
   return `${tag}${Date.now().toString(36)}${Math.floor(Math.random() * 46_656).toString(36)}`;
-}
-
-/**
- * Block until the server would ACCEPT a regeneration of `answerUid`.
- *
- * The precondition is one column: `ResolveCurrentRegeneration`
- * (`internal/infra/db/repos/agent_start.go`) refuses with
- * `ErrCurrentAgentRegenerationStillFinalizing` — HTTP 409
- * `agent_regeneration_pending`, `retryable: true` — while the answer's
- * `chat_message_group.is_streaming` is still TRUE.
- *
- * That flag is cleared AFTER the text is written, so "the finished answer is in
- * the transcript" does NOT imply "a regeneration will be admitted". Measured:
- * clicking Regenerate the moment `expectStoredAssistantAnswer` returned and the
- * composer went editable answered 409. Both of those are the signals the
- * PRODUCT gives a user, which makes this a real finding rather than a harness
- * detail — the button is offered, and the 409 that follows is swallowed
- * (`createRegenerateAnswer` restores the previous answer and warns to the
- * console). This spec waits for the server-side precondition instead of
- * racing it, so a 409 here would mean the flag never cleared — a stuck turn —
- * rather than a click that was merely early.
- *
- * `is_streaming` is not on the transcript route; it is served per group by the
- * conversation's own detail response under `messages_limit`.
- */
-async function waitForAnswerSettled(
-  page: Page,
-  projectId: string,
-  conversationId: string,
-  answerUid: string,
-): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        const detail = await page.request.get(
-          `${BASE_URL}/api/v2/elitea_core/conversation/prompt_lib/${projectId}/${conversationId}?messages_limit=50`,
-        );
-        if (!detail.ok()) return `HTTP_${detail.status()}`;
-        const body = (await detail.json()) as {
-          message_groups?: readonly { uuid?: string; is_streaming?: boolean }[];
-        };
-        const group = (body.message_groups ?? []).find((item) => item.uuid === answerUid);
-        if (group === undefined) return 'MISSING';
-        return group.is_streaming === true ? 'STREAMING' : 'SETTLED';
-      },
-      {
-        timeout: 120_000,
-        message:
-          'the answer row never cleared is_streaming, so every regeneration of it would be refused ' +
-          '409 agent_regeneration_pending — the turn finalised its text but not its run',
-      },
-    )
-    .toBe('SETTLED');
 }
 
 test('regenerating rewrites the SAME answer row rather than appending a second one', async ({ page }) => {
@@ -255,11 +226,6 @@ test('regenerating rewrites the SAME answer row rather than appending a second o
     'the completed answer must record which run produced it, or nothing can tell a regeneration from a no-op',
   ).not.toBe('');
 
-  // The run behind that answer has to have finished, not just its text — see
-  // `waitForAnswerSettled` for the column that decides it and for why the
-  // product's own "your turn again" signals are not enough.
-  await waitForAnswerSettled(page, projectId, conversationId, answerBefore?.uid ?? '');
-
   // ── The control ─────────────────────────────────────────────────────────
   // Hovered, not clicked blind: the action row is `visibility: hidden` until
   // its answer block is hovered (`ApplicationAnswer.tsx`), and `visibility`
@@ -275,8 +241,29 @@ test('regenerating rewrites the SAME answer row rather than appending a second o
   ).toBeVisible({ timeout: 20_000 });
   await expect(regenerate, 'Regenerate must be usable once the turn has finished').toBeEnabled();
 
+  // Every POST this click produces, not just the first. The client retries the
+  // still-finalizing 409 itself now, so the run may be admitted on the second or
+  // third request — and the ones before it are not failures, they are the
+  // mechanism. `refusals` collects them so the shape of each is asserted rather
+  // than assumed: a 409 that is NOT the retryable one would mean the client is
+  // repeating a request that can never succeed.
+  const refusals: { status: number; error: string; retryable: unknown }[] = [];
+  page.on('response', (response) => {
+    if (!REGENERATE_RE.test(new URL(response.url()).pathname)) return;
+    if (response.request().method() !== 'POST' || response.status() !== 409) return;
+    void response
+      .json()
+      .then((body: { error?: string; retryable?: unknown }) => {
+        refusals.push({ status: 409, error: body.error ?? '', retryable: body.retryable });
+      })
+      .catch(() => undefined);
+  });
+
   const regenerated = page.waitForResponse(
-    (r) => REGENERATE_RE.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
+    (r) =>
+      REGENERATE_RE.test(new URL(r.url()).pathname) &&
+      r.request().method() === 'POST' &&
+      r.status() !== 409,
     { timeout: 60_000 },
   );
   await regenerate.click();
@@ -286,6 +273,16 @@ test('regenerating rewrites the SAME answer row rather than appending a second o
     regenerateResponse.status(),
     `the regeneration was refused: ${(await regenerateResponse.text()).slice(0, 300)}`,
   ).toBe(200);
+  // Whatever the timing produced, every refusal on the way must have been the
+  // one the client is entitled to repeat. `Retry-After: 1` and `retryable: true`
+  // are the server's own statement that repeating works; a `retryable: false`
+  // 409 here would be the client looping on something it cannot fix.
+  for (const refusal of refusals) {
+    expect(
+      refusal,
+      'the client may only repeat a regeneration the server marked retryable',
+    ).toMatchObject({ error: 'agent_regeneration_pending', retryable: true });
+  }
 
   // The SSE contract, opted into by query parameter. Without it the Go route
   // answers 400 outright, so a client that dropped the parameter would fall
@@ -431,4 +428,44 @@ test('regenerating rewrites the SAME answer row rather than appending a second o
   expect(afterRefusal[0]?.content, 'a refused regeneration must not apply the edit it carried').toBe(
     questionBefore?.content,
   );
+
+  // ── The question's edit affordance is now REACHABLE on reload ────────────
+  // Header point 1: this used to read "the UI does not offer it" — a
+  // server-loaded transcript stated no author, `isEligibleForEdit` was false,
+  // and the question bubble offered only "Copy to clipboard". Now the transcript
+  // serves `author_participant_id`, `normalise.ts` resolves it to
+  // `message.userId`, and `ChatMessageList` String()-normalises the author
+  // check, so the reader's OWN question offers the edit control again.
+  //
+  // A HARD RELOAD is deliberate: it re-reads the transcript from the server so
+  // this asserts against the PERSISTED, server-authored question, not the
+  // optimistic bubble the send path stamped the user onto (the only reason J9
+  // could ever reach this control). This is a UI-VISIBILITY assertion only —
+  // driving the edit through to a regenerate is NOT done, because the route
+  // refuses an edited question (the 422 asserted just above), so an
+  // edited-regenerate round trip is a different, unsupported turn.
+  await page.reload();
+  await expect(page.getByTestId('chat-message-input')).toBeEditable({ timeout: 120_000 });
+  const ownQuestion = page
+    .getByTestId('user-message')
+    .filter({ hasText: questionBefore?.content ?? '' })
+    .first();
+  await expect(
+    ownQuestion,
+    "the reloaded transcript must still render the reader's own question",
+  ).toBeVisible({ timeout: 60_000 });
+
+  // The action row is `visibility: hidden` until its bubble is hovered
+  // (`UserMessage.tsx`'s `&:hover .actionButtons`), and `visibility` drops the
+  // node from the accessibility tree — so an edit control that exists but never
+  // becomes reachable surfaces here as "not visible" rather than passing on a
+  // node no user could press. When the reader is NOT the author, the control is
+  // not rendered at all, so this same assertion would fail closed.
+  await ownQuestion.hover();
+  const editControl = ownQuestion.getByRole('button', { name: 'Edit the message and regenerate answer' });
+  await expect(
+    editControl,
+    "a reader's OWN persisted question must offer the edit affordance once the transcript is reloaded from the server",
+  ).toBeVisible({ timeout: 20_000 });
+  await expect(editControl, 'the edit affordance must be usable, not merely present').toBeEnabled();
 });

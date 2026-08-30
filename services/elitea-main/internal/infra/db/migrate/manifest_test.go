@@ -219,7 +219,17 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// user column would reference a pylon table that a corpus-only database
 	// does not have. It records the disagreement over `applications.owner_id`
 	// rather than hiding it.
-	require.EqualValues(t, 128, Head(tenant))
+	//
+	// 129: tenant/0129_chat_canvas_tables.sql, which takes ownership of
+	// chat_messages_canvas, chat_canvas_versions and
+	// chat_canvas_version_authors. ConversationsRepo referenced the first two
+	// and nothing created either, so POST
+	// /elitea_core/canvases/prompt_lib/{projectID} — a registered route behind
+	// a permission shared/0068 seeds — answered 42P01 on every deployment pylon
+	// never touched, and GetMessageByUUID's unconditional LEFT JOIN would have
+	// done the same for every message read once its GET was bound, which the
+	// same session did.
+	require.EqualValues(t, 129, Head(tenant))
 
 	// The agentstate scope is this branch's, and it is counted separately: the
 	// native runtime's ADK sessions and graph checkpoints live in their own

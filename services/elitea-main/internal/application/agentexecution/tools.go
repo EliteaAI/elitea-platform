@@ -541,7 +541,35 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 		if !modelProjectSet {
 			settings["model_project_id"] = int64(selected.ProjectID)
 		}
-		if currentAgentModelFamilyConflict(settings) {
+		// A version that carries NO `temperature` key at all is normalized too,
+		// not only one whose temperature conflicts with a reasoning effort.
+		//
+		// The SDK worker reads it with a SUBSCRIPT --
+		// `"temperature": data['llm_settings']['temperature']`
+		// (elitea-sdk 0.9.8 `runtime/clients/client.py`, the revision
+		// `services/elitea-worker-python/elitea-sdk.lock.json` pins) -- so an
+		// absent key is a `KeyError` that ends the turn with an empty
+		// `is_error` row and an `agent_execution_internal_failure` naming
+		// nothing but `builtins.KeyError`. The native runtime tolerates the
+		// same document, which is why every stack running the Rust worker
+		// looked healthy.
+		//
+		// The two branches that DO normalize already prove this object is
+		// Main's to complete: the fallback path above sets it unconditionally,
+		// and the conflict test below only fires when a temperature is already
+		// there. The one shape left over -- model found, no temperature -- is
+		// exactly what the agent editor stores for a REASONING model (its
+		// picker writes at most one of `temperature`/`reasoning_effort`,
+		// `apps/elitea-web/src/features/agents/model/useSaveVersion.ts`) and
+		// what any API caller that sends `llm_settings` without one stores.
+		//
+		// `normalizeCurrentAgentModelFamily` is the platform's existing answer
+		// for both families (null for a reasoning model, 0.7 otherwise), so it
+		// is reused rather than a second default being invented here. Running
+		// it only when the key is ABSENT keeps every version that already
+		// carries a temperature byte-identical to what it resolved to before.
+		_, hasTemperature := settings["temperature"]
+		if !hasTemperature || currentAgentModelFamilyConflict(settings) {
 			normalizeCurrentAgentModelFamily(settings, selected.SupportsReasoning)
 		}
 	}

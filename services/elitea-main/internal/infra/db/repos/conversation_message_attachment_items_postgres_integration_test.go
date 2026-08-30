@@ -281,3 +281,165 @@ func TestListMessageGroupsTextItemGainsNoAttachmentKeys(t *testing.T) {
 		}
 	}
 }
+
+// PART 2 OF THE SAME GAP, on the OTHER projection.
+//
+// Everything above reads the conversation-DETAILS route (ListMessageGroups).
+// The chat page does not: `useChatPageData.ts` runs the flat transcript route
+// (ListMessages) and hands ITS rows to ChatBox as `message_groups`. Those rows
+// carried `{id, uid, role, content, metadata}` and no items at all, so a
+// reloaded conversation rendered the question and silently dropped the file
+// that rode it — `UserMessage`'s `findAttachmentItems` had nothing to filter
+// and `MessageAttachmentList` rendered null. Two projections of one transcript
+// disagreeing about whether a message has files is the defect; these are the
+// tests that keep them agreeing.
+
+// The row carries the file, and carries it in the shape the details route
+// already serves — asserted as an ENCODED comparison between the two
+// projections rather than key by key, because "the client needs no second
+// reader for this route" is a statement about the whole item, and a key added
+// to one projection and not the other is exactly the drift that would break it.
+func TestListMessagesCarriesTheGroupsAttachmentItem(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	conversationUUID, groupID := seedAttachmentTranscript(t, repo)
+	seedAttachmentTextItem(t, repo, groupID, 0, "look at this")
+	seedAttachmentPayloadItem(t, repo, groupID, 1, conversationUUID+"/report.pdf", "chat-attachments", "document",
+		`[{"type": "text", "text": "Bucket: chat-attachments", "elitea_attachment": {"needs_content_extraction": true}}]`)
+
+	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, wholeTranscript())
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("listed %d rows, want the single group", len(resp.Items))
+	}
+	row := resp.Items[0]
+	if len(row.MessageItems) != 1 {
+		t.Fatalf("row carries %d message_items, want the one attachment: %#v", len(row.MessageItems), row.MessageItems)
+	}
+	// The question's own text stays in `content` and is NOT re-emitted as an
+	// item: two sources for one sentence is how a renderer ends up showing it
+	// twice, or showing the stale one.
+	if row.Content != "look at this" {
+		t.Errorf("row content = %q, want the text item alone", row.Content)
+	}
+
+	groups, err := repo.ListMessageGroups(context.Background(), "1", conversationUUID, 50, "asc")
+	if err != nil {
+		t.Fatalf("list message groups: %v", err)
+	}
+	var fromDetails map[string]any
+	for _, item := range attachmentGroupItems(t, groups[0]) {
+		if item["item_type"] == "attachment_message" {
+			fromDetails = item
+		}
+	}
+	if fromDetails == nil {
+		t.Fatal("the details route returned no attachment item to compare against")
+	}
+	wantJSON, err := json.Marshal(fromDetails)
+	if err != nil {
+		t.Fatalf("marshal details item: %v", err)
+	}
+	gotJSON, err := json.Marshal(row.MessageItems[0])
+	if err != nil {
+		t.Fatalf("marshal transcript item: %v", err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Errorf("transcript item = %s\ndetails item   = %s\nthe two projections must serve one shape", gotJSON, wantJSON)
+	}
+
+	// The keys the renderer actually reads, spelled out once: `name` is the
+	// object key (conversation prefix included) that addresses the stored
+	// object, and `filepath` is what the download hands to artifact storage.
+	details, ok := row.MessageItems[0]["item_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("item_details is %T, want map[string]any", row.MessageItems[0]["item_details"])
+	}
+	if got, want := details["name"], conversationUUID+"/report.pdf"; got != want {
+		t.Errorf("item_details[\"name\"] = %#v, want %#v", got, want)
+	}
+	if got, want := details["filepath"], "/chat-attachments/"+conversationUUID+"/report.pdf"; got != want {
+		t.Errorf("item_details[\"filepath\"] = %#v, want %#v", got, want)
+	}
+	if _, ok := details["content"].([]any); !ok {
+		t.Errorf("item_details[\"content\"] is %T, want a decoded []any — a string breaks the client's image walk", details["content"])
+	}
+}
+
+// A message with no files must not claim an items list. Asserted on the
+// ENCODED row rather than on the Go field: `entities/message`'s normaliser
+// sets `messageItems` only when the KEY is present (its own unit test pins
+// that), so an always-emitted `"message_items": []` would be a wire-level
+// change even though the Go value looks equally empty.
+func TestListMessagesOmitsMessageItemsWhenTheGroupHasNoAttachment(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	conversationUUID, groupID := seedAttachmentTranscript(t, repo)
+	seedAttachmentTextItem(t, repo, groupID, 0, "no file here")
+
+	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, wholeTranscript())
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("listed %d rows, want the single group", len(resp.Items))
+	}
+	encoded, err := json.Marshal(resp.Items[0])
+	if err != nil {
+		t.Fatalf("marshal row: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("decode row: %v", err)
+	}
+	if got, present := wire["message_items"]; present {
+		t.Errorf("row carries message_items = %#v for a group with no attachment; the key must be absent", got)
+	}
+}
+
+// Only the group's OWN attachments. The projection fetches every listed
+// group's items in one query keyed by group id, and a join that lost that key
+// — or a map assembled by position — would hang one message's file off
+// another, which reads as a file the user never sent with that question.
+func TestListMessagesKeepsEachGroupsAttachmentOnItsOwnRow(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	conversationUUID, firstGroup := seedAttachmentTranscript(t, repo)
+	seedAttachmentTextItem(t, repo, firstGroup, 0, "first question")
+	seedAttachmentPayloadItem(t, repo, firstGroup, 1, conversationUUID+"/first.txt", "chat-attachments", "document", "")
+
+	// A second group in the SAME conversation, carrying no file at all.
+	var secondGroup int
+	if err := repo.pool.QueryRow(context.Background(), `
+INSERT INTO p_1.chat_message_group (uuid, author_participant_id, conversation_id)
+SELECT gen_random_uuid(), mg.author_participant_id, mg.conversation_id
+FROM p_1.chat_message_group mg WHERE mg.id = $1
+RETURNING id`, firstGroup).Scan(&secondGroup); err != nil {
+		t.Fatalf("seed second group: %v", err)
+	}
+	seedAttachmentTextItem(t, repo, secondGroup, 0, "second question")
+
+	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, wholeTranscript())
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("listed %d rows, want 2", len(resp.Items))
+	}
+	for _, row := range resp.Items {
+		switch row.Content {
+		case "first question":
+			if len(row.MessageItems) != 1 {
+				t.Errorf("the group that carries a file returned %d items", len(row.MessageItems))
+			}
+		case "second question":
+			if len(row.MessageItems) != 0 {
+				t.Errorf("a group with no file returned %d items: %#v", len(row.MessageItems), row.MessageItems)
+			}
+		default:
+			t.Errorf("unexpected row %q", row.Content)
+		}
+	}
+}

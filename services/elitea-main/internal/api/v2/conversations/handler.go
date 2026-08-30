@@ -56,7 +56,25 @@ type Message struct {
 	ReplyToID           *int           `json:"reply_to_id,omitempty"`
 	ContentType         string         `json:"content_type,omitempty"`
 	Metadata            map[string]any `json:"metadata,omitempty"`
-	CreatedAt           time.Time      `json:"created_at"`
+	// The `attachment_message` items of this group, in the shape the
+	// conversation-DETAILS route already embeds (`ListMessageGroups`): one
+	// `{id, item_type, order_index, item_details}` entry per file, whose
+	// item_details is `attachmentItemDetails`' seven keys.
+	//
+	// The chat page reads THIS route, not the details one
+	// (apps/elitea-web/src/pages/chat/useChatPageData.ts hands these rows to
+	// ChatBox as `message_groups`), so without the field a reloaded
+	// conversation rendered the question and dropped the file that rode it —
+	// everything #606 built on the read side had no producer on the page that
+	// needed it.
+	//
+	// OMITTED, not `[]`, for a group with no files: `entities/message`'s
+	// normaliser sets `messageItems` only when the key is present and its unit
+	// tests pin that ("omits messageItems entirely when the wire does not send
+	// message_items"), so an always-present empty array would make every
+	// message claim an items list it does not have.
+	MessageItems []map[string]any `json:"message_items,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
 }
 
 type ListResponse struct {
@@ -459,160 +477,29 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	conversationUUID := chi.URLParam(r, "conversationID")
-
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apierr.Write(w, apierr.BadRequest("invalid request body"))
-		return
-	}
-
-	pool, _ := h.pool.(*pgxpool.Pool)
-	if pool == nil {
-		apierr.Write(w, fmt.Errorf("no database pool"))
-		return
-	}
-
-	s, schemaOK := tenantSchema(w, projectID)
-	if !schemaOK {
-		return
-	}
-	ctx := r.Context()
-
-	// Resolve conversation by UUID
-	var convID int
-	err := pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT id FROM %s.chat_conversations WHERE uuid::text = $1`, s), conversationUUID).Scan(&convID)
-	if err != nil {
-		err2 := pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT id FROM %s.chat_conversations WHERE id::text = $1`, s), conversationUUID).Scan(&convID)
-		if err2 != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("Conversation with uuid '%s' does not exist", conversationUUID)})
-			return
-		}
-	}
-
-	// Validate await_task_timeout
-	if timeout, ok := body["await_task_timeout"]; ok {
-		var tv float64
-		switch t := timeout.(type) {
-		case float64:
-			tv = t
-		case int:
-			tv = float64(t)
-		}
-		if tv < -1 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "await_task_timeout must be >= -1"})
-			return
-		}
-	}
-
-	// Validate participant_id if provided
-	var participantID *int
-	if pid, ok := body["participant_id"]; ok && pid != nil {
-		pidStr := fmt.Sprintf("%v", pid)
-		var exists int
-		err := pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT 1 FROM %s.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s),
-			convID, pidStr).Scan(&exists)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("Participant %s does not exist in conversation", pidStr)})
-			return
-		}
-		pidInt := int(pid.(float64))
-		participantID = &pidInt
-	}
-
-	// Execute the predict
-	cp := newChatPredictor(pool)
-	start := time.Now()
-
-	userInput, _ := body["user_input"].(string)
-	var aiResponse string
-	var isError bool
-	var errorMsg string
-
-	// Determine execution mode
-	if llmSettings, ok := body["llm_settings"].(map[string]any); ok {
-		// Direct LLM call mode
-		modelName := strVal(llmSettings, "model_name")
-		modelProjectID := projectID
-		if mpid, ok := llmSettings["model_project_id"]; ok {
-			modelProjectID = fmt.Sprintf("%v", mpid)
-		}
-
-		modelCfg, err := cp.resolveModel(ctx, modelProjectID, modelName)
-		if err != nil {
-			aiResponse = fmt.Sprintf("Model resolution error: %s", err.Error())
-			isError = true
-			errorMsg = err.Error()
-		} else {
-			resp, err := cp.callLLM(ctx, modelCfg, userInput)
-			if err != nil {
-				aiResponse = fmt.Sprintf("LLM error: %s", err.Error())
-				isError = true
-				errorMsg = err.Error()
-			} else {
-				aiResponse = resp
-			}
-		}
-	} else if toolCall, ok := body["tool_call_input"].(map[string]any); ok {
-		// Toolkit direct call mode
-		toolName := strVal(toolCall, "tool_name")
-		userInput = fmt.Sprintf("Calling tool: %s", toolName)
-		aiResponse = fmt.Sprintf("Tool %s executed successfully", toolName)
-	} else if participantID != nil {
-		// Agent participant mode - resolve agent and call LLM with system prompt
-		instructions, modelName, err := cp.resolveAgentPrompt(ctx, projectID, *participantID, convID)
-		if err != nil || modelName == "" {
-			// Fallback: try to find any available model
-			modelName = "gpt-4o-mini"
-		}
-
-		modelCfg, err := cp.resolveModel(ctx, projectID, modelName)
-		if err != nil {
-			aiResponse = "I'm an AI assistant. I received your message but couldn't process it due to a configuration issue."
-			isError = true
-			errorMsg = err.Error()
-		} else {
-			prompt := userInput
-			if instructions != "" {
-				prompt = fmt.Sprintf("System: %s\n\nUser: %s", instructions, userInput)
-			}
-			resp, err := cp.callLLM(ctx, modelCfg, prompt)
-			if err != nil {
-				aiResponse = "I'm an AI assistant. I received your message but encountered an error during processing."
-				isError = true
-				errorMsg = err.Error()
-			} else {
-				aiResponse = resp
-			}
-		}
-	} else {
-		aiResponse = "Message received"
-	}
-
-	executionTime := time.Since(start).Seconds()
-
-	// Store message groups and return
-	groups, err := cp.storeAndReturnMessageGroups(
-		ctx, projectID, convID,
-		participantID, participantID,
-		userInput, aiResponse,
-		executionTime, isError, errorMsg,
-	)
-	if err != nil {
-		apierr.Write(w, fmt.Errorf("store messages: %w", err))
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"message_groups": groups,
-		"status":         "completed",
-	})
-}
+// NOTE(#126, #93): `PostMessage` stood here — a synchronous predict shim that
+// resolved a model, called an LLM over plain HTTP itself, and INSERTed the
+// resulting pair of message groups. It was deleted rather than routed, and
+// `predict.go` (its only caller's only dependency) went with it.
+//
+// It was never mounted by any router, and the reason is that the route it
+// implements is already served by something else. pylon declares the message
+// POST at `/api/v2/elitea_core/messages/prompt_lib/<project_id>/
+// <conversation_uuid>` under `models.chat.messages.create`
+// (elitea_core/api/v2/messages.py:220-228,377-385). That is character for
+// character `agentexecution.CurrentApplicationStartPath` with
+// `CurrentApplicationStartPermission` — the live agent-execution start route
+// #93 ported the dispatch onto. Mounting this shim at its own baseline URL
+// would collide with that registration; mounting it anywhere else would invent
+// a URL pylon never served.
+//
+// The two implementations were also not interchangeable. The runtime plane
+// dispatches a real turn and streams it. The shim built its own HTTP request
+// to the credential's api_base, so it bypassed the gateway outright — no
+// budget enforcement, no governance, no request-log row — and where it could
+// not resolve a model it fabricated a reply and stored it as the assistant's
+// answer ("Message received", "Tool %s executed successfully"), falling back to
+// a hardcoded `gpt-4o-mini` no deployment here serves.
 
 const (
 	// Pylon's default page of a transcript is 10 groups
@@ -858,9 +745,24 @@ func (h *Handler) deleteAttachmentObjects(ctx context.Context, projectIDStr stri
 	return nil
 }
 
+// GetMessage is the per-message read pylon declares as `message.py`'s `get`,
+// alongside the `delete` DeleteMessage already serves — one module, one URL,
+// two verbs (elitea_core/api/v2/message.py:176-183).
+//
+// The path param is `{messageID}`, shared with that DELETE sibling, and it
+// carries pylon's `message_group_uid`: a message-GROUP uuid STRING, not the
+// numeric row id the name suggests. The name is the sibling's because chi
+// resolves one param per path segment and the two verbs share the segment.
+//
+// DEFECT this fixes: the method read `chi.URLParam(r, "messageUUID")`, a name
+// no route has ever declared. Registering it under the baseline URL without
+// this change would have handed the repository the empty string for every
+// request, so a freshly mounted route would have answered 404 for every
+// message that exists. Nothing caught it because nothing routed the method —
+// it is the never-run half of the dead wiring, not a regression.
 func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	messageUUID := chi.URLParam(r, "messageUUID")
+	messageUUID := chi.URLParam(r, "messageID")
 	msg, err := h.repo.GetMessageByUUID(r.Context(), projectID, messageUUID)
 	if err != nil {
 		apierr.Write(w, err)

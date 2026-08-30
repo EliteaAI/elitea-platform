@@ -216,6 +216,74 @@ describe('useEditFolder', () => {
   });
 
   /**
+   * DEFECT (stale row-handler): `onEditFolder` reaches a `FolderItem` built by
+   * `Conversations.renderers.tsx`'s render prop, so the closure a folder row
+   * carries can predate the click that selected that folder — and the line it
+   * feeds runs after `await folderApi.update` on top of that. Deciding "is the
+   * folder I just renamed the SELECTED one?" from the captured `activeFolder`
+   * answered `undefined`, and the rename never reached `activeFolder`: the list
+   * showed the new name while every consumer of the active folder kept the old.
+   *
+   * Repro shape from `processes/chat/model/useConversationSidebar.test.tsx`:
+   * capture the handler while nothing is selected, THEN select, THEN invoke
+   * that exact reference.
+   */
+  it('updates the folder selected at CALL time from a handler captured BEFORE it was selected (stale-closure repro)', async () => {
+    server.use(http.put(`${BASE}/elitea_core/folder/prompt_lib/7/f1`, () => HttpResponse.json({ id: 'f1', name: 'Renamed' })));
+
+    const setActiveFolder = vi.fn();
+    const folder = mkFolder({ id: 'f1' });
+    const renamed = mkFolder({ id: 'f1', name: 'Renamed' });
+
+    const { wrapper } = createWrapper(['models.chat.folders.update']);
+    const { result, rerender } = renderHook(
+      ({ activeFolder }: { activeFolder: FolderListItem | undefined }) =>
+        useEditFolder({ projectId: '7', activeFolder, setActiveFolder, setFolders: vi.fn(), toastError: vi.fn() }),
+      { wrapper, initialProps: { activeFolder: undefined as FolderListItem | undefined } },
+    );
+
+    // The reference a row rendered before any folder was selected carries.
+    const staleEdit = result.current.onEditFolder;
+
+    // Selected AFTER the handler was captured.
+    rerender({ activeFolder: folder });
+
+    await staleEdit(renamed);
+
+    // A pre-fix build skips this entirely: its guard compares `undefined`.
+    expect(setActiveFolder).toHaveBeenCalledWith(renamed);
+  });
+
+  /**
+   * The same read, wrong in the other direction: a captured `activeFolder` that
+   * is no longer selected made a rename CLOBBER the selection the user has since
+   * made. `setActiveFolder` is the composition root's own `activeFolder` state
+   * setter, so this silently moved the sidebar's selection under the user.
+   */
+  it('leaves a newly selected folder alone when a stale handler renames the previously selected one', async () => {
+    server.use(http.put(`${BASE}/elitea_core/folder/prompt_lib/7/f1`, () => HttpResponse.json({ id: 'f1', name: 'Renamed' })));
+
+    const setActiveFolder = vi.fn();
+    const first = mkFolder({ id: 'f1' });
+    const second = mkFolder({ id: 'f2' });
+
+    const { wrapper } = createWrapper(['models.chat.folders.update']);
+    const { result, rerender } = renderHook(
+      ({ activeFolder }: { activeFolder: FolderListItem | undefined }) =>
+        useEditFolder({ projectId: '7', activeFolder, setActiveFolder, setFolders: vi.fn(), toastError: vi.fn() }),
+      { wrapper, initialProps: { activeFolder: first } },
+    );
+
+    const staleEdit = result.current.onEditFolder;
+    rerender({ activeFolder: second });
+
+    await staleEdit(mkFolder({ id: 'f1', name: 'Renamed' }));
+
+    // A pre-fix build calls this with the renamed f1, replacing the user's f2.
+    expect(setActiveFolder).not.toHaveBeenCalled();
+  });
+
+  /**
    * `onPinFolder` must NOT invalidate — matches `folderApi.updatePin`'s own
    * deliberate no-invalidate design (the caller does its own optimistic
    * `isPinned` update instead of relying on a refetch, mirroring the old

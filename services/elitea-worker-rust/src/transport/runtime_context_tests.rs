@@ -83,6 +83,7 @@ fn config(deadline: Duration, max_response_bytes: usize) -> RuntimeContextConfig
         deadline,
         max_response_bytes,
         max_application_response_bytes: 1024 * 1024,
+        max_attachment_response_bytes: 1024 * 1024,
     }
 }
 
@@ -423,6 +424,7 @@ fn configuration_bounds_and_origin_canonicalization_match_worker_policy() {
                 deadline: Duration::from_secs(1),
                 max_response_bytes: 32 * 1_024,
                 max_application_response_bytes: 1_024 * 1_024,
+                max_attachment_response_bytes: 1_024 * 1_024,
             },
         );
         assert!(matches!(

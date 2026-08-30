@@ -8,7 +8,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { resetConfigForTests } from '@/shared/config/get-config';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
-import { useNavBlockerStore } from '@/widgets/app-shell';
+import { NavBlockerDialog, useNavBlockerStore } from '@/widgets/app-shell';
 
 // Deep import into the slice's own store: test files are excluded from
 // dependency-cruiser's `no-deep-slice-import` fence, and the store is the
@@ -487,5 +487,69 @@ describe('talking to the pipeline', () => {
 
     expect(await screen.findByText('Failed to open a chat with this pipeline.')).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/pipelines/all/42');
+  }, 15_000);
+
+  /**
+   * Audit (handoff brief): TanStack Router's `navigate()` promise resolves
+   * only once the actual history push commits — traced through
+   * `@tanstack/router-core`'s `commitLocation` (the returned
+   * `commitLocationPromise` only resolves from inside `load()`, reached via
+   * the history subscriber `Transitioner` installs) and `@tanstack/history`'s
+   * `tryNavigation` (a blocked attempt — `blockerFn` resolves `true` — calls
+   * `onBlocked` and returns WITHOUT ever calling `task()`, so `notify()`
+   * never fires and the load/subscriber path that resolves the promise never
+   * runs). `useBlocker`'s own `blockerFnComposed` (`@tanstack/react-router`)
+   * is what resolves `true` on Cancel: `NavBlockerDialog`'s `reset()` calls
+   * `resolve(true)` inside that awaited promise. Net effect, verified by
+   * running this exact test against the unfixed button: clicking Chat while
+   * the guard is armed and then Cancelling the dialog left `await
+   * navigate(...)` pending forever — `isStarting` never went back to
+   * `false`, and the button was stuck on "Opening chat…" until the page was
+   * unmounted. Independent of load; a plain synchronous click reproduces it.
+   */
+  it('recovers the button instead of hanging on "Opening chat…" when the nav-blocker dialog is cancelled', async () => {
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () =>
+        HttpResponse.json({ id: '7', name: 'My Pipeline' }, { status: 201 }),
+      ),
+      http.post('*/elitea_core/participants/prompt_lib/:projectId/:conversationId', () =>
+        HttpResponse.json([], { status: 200 }),
+      ),
+    );
+    const user = userEvent.setup();
+    // `NavBlockerDialog` isn't part of this fixture's route tree (the real
+    // mount point is `AppShell`) — mounted alongside `EditPipeline` here so
+    // the guard this page arms actually has a consumer to block against,
+    // same as the app's real composition.
+    const { router } = renderPipelinesRoute(
+      <>
+        <EditPipeline />
+        <NavBlockerDialog />
+      </>,
+      '/pipelines/all/42',
+      { projectId: '9' },
+    );
+
+    await screen.findByText('GPT-4o');
+    await chooseModel(user, 'Qwen 3.5');
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
+
+    await user.click(await screen.findByTestId('chat-with-pipeline-button', {}, { timeout: 5_000 }));
+
+    // The conversation + participant IS created — the Chat action's own work
+    // completed; only the navigation itself is what the guard intercepts.
+    await waitFor(() => expect(screen.getByTestId('nav-blocker-dialog')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('nav-blocker-dialog')).not.toBeInTheDocument());
+
+    // Still on the edit page — the guard did its job.
+    expect(router.state.location.pathname).toBe('/pipelines/all/42');
+    // The button must recover rather than stay wedged on "Opening chat…"
+    // forever. A short window is enough: nothing further is ever scheduled
+    // to resolve the old code's stuck state, so if this hasn't flipped by
+    // now it never will.
+    await waitFor(() => expect(screen.getByTestId('chat-with-pipeline-button')).toBeEnabled(), { timeout: 2_000 });
+    expect(screen.getByTestId('chat-with-pipeline-button')).toHaveTextContent('Chat');
   }, 15_000);
 });

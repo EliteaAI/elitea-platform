@@ -8,6 +8,11 @@
  * skipped the middle level, so `ModelCapabilitiesSection.tsx` sat in the tree
  * with no importer and the copy button did not exist. This file pins both back
  * onto the page.
+ *
+ * It also pins the page's OTHER composition-level affordance: "Request a model
+ * connection". A component with no mount is the recurring failure on this
+ * surface — `ModelCapabilitiesSection` was exactly that — and a dialog's own
+ * unit tests cannot see it, because they render the dialog directly.
  */
 import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
@@ -185,6 +190,65 @@ describe('AIConfiguration — the ModelConfiguration layer', () => {
        screen that has not rendered yet. */
     expect(await screen.findByText('LLM Models')).toBeInTheDocument();
     expect(screen.queryByText('Model Capabilities')).not.toBeInTheDocument();
+  });
+
+  it('offers the model-connection request beside the copy and create affordances, for this page project', async () => {
+    setConfig();
+    configureGeneratedClient({ baseUrl: BASE });
+    mockBackend();
+
+    let postedTo = '';
+    let postedBody: unknown;
+    server.use(
+      http.post('*/admin/moderation_status/default/:projectId/:entityId', async ({ params, request }) => {
+        postedTo = `${String(params['projectId'])}/${String(params['entityId'])}`;
+        postedBody = await request.json();
+        return HttpResponse.json({ id: 1, status: 'pending' }, { status: 201 });
+      }),
+    );
+
+    renderPage();
+
+    /* The three affordances of one decision, on one screen: copy what is
+       configured, add a configuration, or — for a member who cannot add one —
+       ask an operator for it. */
+    const requestButton = await screen.findByRole('button', { name: 'Request a model connection' });
+    expect(screen.getByRole('button', { name: 'Copy configuration' })).toBeInTheDocument();
+    /* Awaited: the panel's "+" only exists once the configuration list has
+       settled, while the two page-level buttons render immediately. */
+    expect(await screen.findByRole('button', { name: 'Create configuration' })).toBeInTheDocument();
+
+    await userEvent.click(requestButton);
+    await userEvent.type(await screen.findByLabelText('Provider type *'), 'anthropic');
+    await userEvent.type(screen.getByLabelText('Description *'), 'We need Claude here.');
+    await userEvent.click(screen.getByRole('button', { name: 'Send request' }));
+
+    /* The project the PAGE is rendering, not a separately-resolved one: a
+       request filed against the wrong project reaches an operator who cannot
+       act on it. */
+    await waitFor(() => expect(postedTo).toBe(`${PROJECT_ID}/provider:anthropic`));
+    expect(postedBody).toEqual({
+      issue_type: 'Model Connection Request',
+      description: 'We need Claude here.',
+    });
+  });
+
+  it('does not offer the model-connection request on the OpenAI-Template tab', async () => {
+    setConfig();
+    configureGeneratedClient({ baseUrl: BASE });
+    mockBackend();
+
+    renderPage();
+
+    await screen.findByRole('button', { name: 'Request a model connection' });
+    await userEvent.click(screen.getByRole('tab', { name: 'OpenAI Template' }));
+
+    /* That tab configures nothing and has its own chrome — an affordance for
+       requesting a configuration there names a panel the user is not looking
+       at. */
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Request a model connection' })).not.toBeInTheDocument(),
+    );
   });
 
   it('shows no capability section on the OpenAI-Template tab', async () => {

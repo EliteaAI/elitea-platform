@@ -19,9 +19,11 @@
  *     (`POST /elitea_core/messages/prompt_lib/{p}/{c}`), which this stack does
  *     not mount — measured: it answers 405, not 404, i.e. the path exists for
  *     GET/DELETE and has no POST handler.
- *     `internal/api/v2/conversations/handler.go`'s own `PostMessage` (the
- *     legacy predict shim that DOES insert message groups) is mounted by
- *     nothing at all.
+ *     `internal/api/v2/conversations/handler.go` also carried a `PostMessage`
+ *     predict shim that DID insert message groups, but it was routed by
+ *     nothing and has since been DELETED: it re-implemented that same URL,
+ *     which the runtime plane owns (see the `NOTE(#126, #93)` left in its
+ *     place). So there is no second writer to reach for here.
  *     Consequence for M3: a transcript with a foreign author cannot be seeded
  *     from the outside, so the "user bubble is not captioned with the reader's
  *     name" half is asserted in its ANONYMOUS form (nothing on the chat
@@ -29,27 +31,38 @@
  *     of the author-identity work is asserted where it IS observable — on the
  *     participants payload the page itself reads.
  *
- *  2. `GET /elitea_core/messages/prompt_lib/{p}/{c}` ANSWERS 500 IN THIS
- *     STACK, for every conversation, empty ones included. The list query joins
- *     `{schema}.chat_messages_text`, and the E2E database is bootstrapped from
- *     `001_initial.sql`, which does not create that table (measured: `p_1`
- *     holds `chat_message_group` and `chat_message_items` and no
- *     `chat_messages_text`). That is a fixture gap, not a product claim, so
- *     nothing here asserts a status for it either way — M3 asserts the page
- *     survives it, which is exactly what J11 next door already relies on
- *     without saying so.
+ *  2. `GET /elitea_core/messages/prompt_lib/{p}/{c}` USED TO ANSWER 500 IN
+ *     THIS STACK, for every conversation, empty ones included: the list query
+ *     joins `{schema}.chat_messages_text`, and the E2E database is
+ *     bootstrapped from `001_initial.sql`, which did not create that table.
+ *     Closed in the same session — `create_tenant_schema` now declares the
+ *     four chat payload tables (text, context, attachment, trace_step) plus
+ *     the canvas pair, and the seed additionally runs the tenant history with
+ *     `-all-tenants`. M3 still only asserts the page survives the read rather
+ *     than pinning a status, because that is the property it is about; the
+ *     status itself is pinned where it belongs, in the fresh-install
+ *     integration tests under `internal/infra/db/repos`.
  *
- *  3. THE RAIL'S "USERS" ROW DOES NOT RENDER IN ANY STACK.
- *     `features/chat-participants/ui/Participants.tsx` filters user
- *     participants through `entities/participant`'s `isParticipantStillActive`,
- *     which reads the camelCase `entityName` off the raw snake_case wire rows
- *     the conversation payload carries, so the switch matches nothing and
- *     every user row is dropped. Measured on this stack: a conversation with
- *     one user participant renders `participants-container` and its agent
- *     section, and no `users-section` at all. M3 therefore asserts the
- *     resolved identity on the payload THE PAGE RECEIVED rather than on a row
- *     that cannot appear; asserting the absent row would pin a defect as
- *     expected behaviour.
+ *  3. THE RAIL'S "USERS" ROW RENDERS (this was a defect, now fixed). It used
+ *     not to render in any stack: `features/chat-participants/ui/
+ *     Participants.tsx` filtered user participants through
+ *     `entities/participant`'s `isParticipantStillActive`, which read the
+ *     camelCase `entityName` off the raw snake_case wire rows the conversation
+ *     payload carries — so every user row was dropped, twice over. The shape
+ *     missed (`entityName` is `undefined` on a wire row), AND that predicate
+ *     answers `false` for `user` BY DESIGN: the baseline uses it only to gate
+ *     the last message's Regenerate control (`ChatMessageWrapper.jsx:148`),
+ *     never as a rail-visibility filter — the baseline rail lists users by
+ *     `entity_name === 'user'` alone (`ExpandedParticipantsList.jsx:50-56`).
+ *     The fix drops that filter from the rail (users render through their own
+ *     section, as in the baseline) and makes the selector read both shapes.
+ *     M3 now asserts the RENDERED user row (`users-section` +
+ *     `participant-item-<id>`) AND, independently, the resolved identity on
+ *     the payload THE PAGE RECEIVED. The payload check is the stronger of the
+ *     two — it discriminates a resolver that answers the reader instead of the
+ *     named participant, which a rendered name alone cannot — so both stay.
+ *     M2, which attaches no user, asserts the row is ABSENT: the fix must not
+ *     manufacture an empty users row.
  *
  * Every entity this file creates carries the `autotest_` prefix and this
  * file's own `-mgmt` tag, and each test deletes what it made on its way out —
@@ -214,32 +227,26 @@ test('M1: deleting a conversation removes its rail row, blanks the route and 404
   });
 
   /*
-   * Off the row and back on, which is what a person does between opening a
-   * conversation and reaching for its menu — and it is load-bearing here, so
-   * it is spelled out rather than left as an incidental `hover()`.
+   * The kebab is `display: none` until the row is hovered — `ConversationItem`
+   * drives its menu wrapper off `isHovering` state with no CSS `:hover`
+   * fallback (`ConversationItem.styles.ts`) — so hovering the row is the
+   * interaction that reveals what the next line clicks.
    *
-   * MEASURED DEFECT this step steps around, and the reason the step is
-   * described instead of hidden: `useRenderConversationItem`
-   * (`Conversations.renderers.tsx`) returns a `useCallback` with an empty
-   * dependency list that reads every handler out of a `useLatestRef`. The
-   * render prop's identity is therefore constant, so a `DateGroup` whose own
-   * props did not change does not re-render when the sidebar's
-   * `activeConversation` does — and the `ConversationItem` it already
-   * rendered keeps the `deleteConversation` closure captured BEFORE the row
-   * was selected, whose `activeConversation?.id === conversation.id` test is
-   * false. The delete itself still lands (the list transform it applies is
-   * stable); only the "leave the deleted transcript" half is lost.
-   * Reproduced 2 runs in 3 under `--workers=3` without this step, 3 in 3 with
-   * it: clicking the row leaves the pointer ON it, so the later `hover()`
-   * fires no `mouseenter`, and `DateGroup`'s `hoveredItemId` — the only state
-   * that reliably re-renders the row here — never changes.
-   *
-   * The kebab is `display: none` until the row is hovered, so the hover is
-   * also the interaction that reveals what the next line clicks.
+   * This step used to carry a pointer-jiggle workaround (`mouse.move(0, 0)`
+   * then `row.hover()`) that forced `DateGroup` to re-render the row and
+   * refresh a STALE `deleteConversation` closure. `useConversationSidebar`
+   * read `activeConversation` from the closure its handler was built in, and a
+   * memoised `ConversationItem` — reached through `useRenderConversationItem`'s
+   * `useCallback([])` render-prop, which reads its inputs from a `useLatestRef`
+   * so its identity never changes — kept the closure captured BEFORE the row
+   * was selected. That closure's `activeConversation?.id === conversation.id`
+   * test was false, so the DELETE landed and the row vanished but the route
+   * stayed on the deleted transcript (flaked 2 runs in 3 under `--workers=3`).
+   * `deleteConversation` now reads the active conversation LIVE (via a ref), so
+   * the navigate-away branch is correct regardless of when the handler closure
+   * was created, and the jiggle is no longer needed.
    */
   const trigger = page.locator(`#conversation-menu-${conversationId}-trigger`);
-  await page.mouse.move(0, 0);
-  await expect(trigger).toBeHidden();
   await row.hover();
   await expect(trigger).toBeVisible({ timeout: 5_000 });
   await trigger.click();
@@ -320,6 +327,10 @@ test('M2: an agent participant renders in the rail and the rail control removes 
   await expect(agents, 'the attached agent must reach the rail').toBeVisible({ timeout: 15_000 });
   await expect(agents).toContainText('Agents (1)');
   await expect(agents).toContainText(agentName);
+  // No user participant was attached, so the users row must not appear — the
+  // Users-row fix renders that section only for real user participants, never
+  // an empty one (module header, note 3).
+  await expect(page.getByTestId('users-section')).toHaveCount(0);
   await checkA11y(page);
 
   // The per-participant action bar renders only while the card is hovered.
@@ -428,10 +439,26 @@ test('M3: a cold deep link resolves a foreign participant server-side and captio
   await expect(page.getByTestId('chat-message-input')).toBeEditable();
   expect(page.url()).toContain(`/app/chat/${conversationId}`);
 
-  // The payload really drove the screen: the conversation's other participant
-  // is rendered. (Its USER participant cannot be — module header, note 3.)
+  // The payload really drove the screen: BOTH the conversation's agent and
+  // its user participant are rendered. The user row is the participants-rail
+  // fix (module header, note 3) — it lists users by group membership alone,
+  // no longer through `isParticipantStillActive`, so the foreign user reaches
+  // the rail with the display name the server resolved into `meta.user_name`.
   await openParticipantsRail(page);
   await expect(page.getByTestId('participants-section-Agents')).toContainText(agentName);
+
+  const usersSection = page.getByTestId('users-section');
+  await expect(usersSection, 'the user participant must reach the rail after the fix').toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(usersSection).toContainText(foreign.name);
+  // Keyed on `entity_meta.id`, the only id a REST-attached user row carries —
+  // proving the rendered row is THIS foreign participant, not some placeholder.
+  // (The reader-substitution guard stays where it discriminates: on the
+  // payload above and on the chat surface below, not here — a real staff
+  // name can be a substring of another, which a section-scoped text check
+  // cannot tell apart.)
+  await expect(page.getByTestId(`participant-item-${foreign.id}`)).toBeVisible();
 
   // Nothing on the chat surface is captioned with the reader's name. No row
   // can be, in this stack — see the header — so this is a standing guard

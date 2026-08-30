@@ -203,6 +203,19 @@ function TestConnectionBlock({ controller }: TestConnectionBlockProps): ReactNod
           {controller.testMessage || t('credentials.form.testFailed', 'Connection test failed')}
         </Typography>
       )}
+      {/* NOT the error colour: a credential type this build has no checker
+          for has not failed anything, and painting it red sends the user off
+          to fix a credential that is fine. Same "not supported yet" wording
+          the server sends, rendered in the neutral secondary text style the
+          rest of this form uses for informational lines. */}
+      {controller.testResult === 'unsupported' && (
+        <Typography
+          variant="labelSmall"
+          color="text.secondary"
+        >
+          {controller.testMessage || t('credentials.form.testUnsupported', 'Checking connection is not supported yet for this configuration type.')}
+        </Typography>
+      )}
     </Box>
   );
 }

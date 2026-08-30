@@ -41,6 +41,9 @@ use crate::transport::{model_gateway::ModelGatewayError, platform_client::Platfo
 const MAX_AGENTSTATE_CONNECTION_BYTES: usize = 16 * 1024;
 const MAX_RUNTIME_CONTEXT_BYTES: usize = 32 * 1024;
 const MAX_APPLICATION_VERSION_BYTES: usize = 1024 * 1024;
+// The attachment ENVELOPE, not the object: main caps the file at 128 KiB and
+// its JSON envelope at 1 MiB, because the content travels as a JSON string.
+const MAX_ATTACHMENT_OBJECT_BYTES: usize = 1024 * 1024;
 const MAX_MODEL_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_MODEL_SSE_EVENT_BYTES: usize = 256 * 1024;
 const MAX_MODEL_STREAM_BYTES: usize = 8 * 1024 * 1024;
@@ -210,6 +213,7 @@ impl ProductionProfiles {
                 deadline: Duration::from_millis(limits.content_timeout_millis),
                 max_response_bytes: MAX_RUNTIME_CONTEXT_BYTES,
                 max_application_response_bytes: MAX_APPLICATION_VERSION_BYTES,
+                max_attachment_response_bytes: MAX_ATTACHMENT_OBJECT_BYTES,
             },
             model: ModelGatewayConfig {
                 origin: deployment.platform_origin.clone(),

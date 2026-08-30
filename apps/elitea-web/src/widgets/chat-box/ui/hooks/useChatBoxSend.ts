@@ -157,7 +157,7 @@ export function useChatBoxSend(
       : {}),
     context: buildChatStreamContext(params),
   });
-  const { startDetailed, resume, regenerate } = transport;
+  const { startDetailed, resume, regenerateDetailed } = transport;
 
   const startStreamedExecution = useCallback(
     async ({
@@ -280,16 +280,17 @@ export function useChatBoxSend(
           : {}),
       });
       if (body === undefined) return NO_STREAM_TRANSPORT;
-      const started = await regenerate({
+      // Verbatim, not collapsed to a boolean — see `regenerateStreamedWithRetry`
+      // (`useChatBoxHandlers.regenerate.ts`) for the one refusal it carries.
+      return regenerateDetailed({
         projectId,
         conversationUuid: params.conversationUuid,
         responseMessageId: input.messageId,
         body,
       });
-      return started ? STREAM_STARTED : NO_STREAM_TRANSPORT;
     },
     [
-      regenerate,
+      regenerateDetailed,
       projectId,
       projectIdString,
       params.conversationUuid,

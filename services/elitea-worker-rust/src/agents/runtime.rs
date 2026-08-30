@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use super::assembly::OrdinaryNoToolProfile;
+use super::attachments;
 use super::direct_hitl::{
     DirectDelegatedAuthorizationContinuation, DirectHitlDecisionSet, DirectHitlError,
     DirectHitlErrorCode, DirectHitlRunInput,
@@ -170,11 +171,24 @@ pub(crate) struct AuthorizedNativeAssembly<'a> {
     session: ClaimBoundSessionAuthority,
     state_writer_lease: Arc<dyn StateWriterLease>,
     command: AuthorizedNativeCommandBinding,
+    /// This turn's attachment chunks as they will be RENDERED (#606).
+    ///
+    /// It starts as an exact copy of `payload.input_attachments`, so an
+    /// assembly that performs no read builds precisely the message admission
+    /// described. `resolve_attachment_contents` replaces it with the same list
+    /// plus each document this turn managed to read, spliced in beside its own
+    /// header.
+    ///
+    /// It is a field rather than a parameter because the read is ASYNC and plan
+    /// construction is not: admission has to stay a deterministic, local step
+    /// that fails before any credential is issued, so the one IO this needs
+    /// happens before it and hands its result forward.
+    attachments: Vec<serde_json::Value>,
 }
 
 impl<'a> AuthorizedNativeAssembly<'a> {
     #[must_use]
-    pub(crate) const fn from_authorized(
+    pub(crate) fn from_authorized(
         request: &'a AgentExecutionRequest,
         runtime_context: ClaimBoundRuntimeContextAuthority,
         session: ClaimBoundSessionAuthority,
@@ -182,12 +196,40 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         command: AuthorizedNativeCommandBinding,
     ) -> Self {
         Self {
+            attachments: request.payload.input_attachments.clone(),
             request,
             runtime_context,
             session,
             state_writer_lease,
             command,
         }
+    }
+
+    /// Read this turn's attached documents before admission builds the message.
+    ///
+    /// It is deliberately INFALLIBLE. Every failure this can meet — a file
+    /// elitea-main will not serve as text, a stale reference, a refused
+    /// conversation, a transport error — leaves the attachment rendered by its
+    /// header alone, which is pylon's own rule for a file the platform cannot
+    /// read (`rpc/chat_all.py:384-386`) and the property the e2e pins. A turn
+    /// must never die because of a file the question may not even be about.
+    ///
+    /// It runs BEFORE `admit_*` rather than after: the plan owns the human
+    /// message, and rebuilding that message later would mean keeping a second
+    /// copy of the user's own text just to re-splice around it.
+    #[must_use]
+    pub(crate) async fn resolve_attachment_contents(mut self, platform: &PlatformClient) -> Self {
+        let pending = attachments::pending_attachment_reads(&self.attachments);
+        if pending.is_empty() {
+            return self;
+        }
+        let extracted =
+            attachments::read_attachment_documents(platform, &self.runtime_context, &pending).await;
+        if extracted.is_empty() {
+            return self;
+        }
+        self.attachments = attachments::resolved_attachment_chunks(&self.attachments, &extracted);
+        self
     }
 
     #[cfg(test)]
@@ -238,9 +280,15 @@ impl<'a> AuthorizedNativeAssembly<'a> {
                 self.request,
                 &profile,
                 &self.command,
+                &self.attachments,
             )?
         } else {
-            OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?
+            OrdinaryNativeAgentPlan::from_authorized(
+                self.request,
+                &profile,
+                &self.command,
+                &self.attachments,
+            )?
         };
         let toolsets = FrozenToolSnapshot::from_request(self.request)
             .map_err(tool_snapshot_error)?
@@ -305,6 +353,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             self.request,
             profile.shell(),
             &self.command,
+            &self.attachments,
             start.is_resume(),
             start.is_hitl_resume(),
         )?;

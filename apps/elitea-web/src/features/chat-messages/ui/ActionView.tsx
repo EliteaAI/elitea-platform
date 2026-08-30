@@ -50,6 +50,15 @@ export function ActionView({ action, onClick, isSelected = false }: ActionViewPr
   return (
     <>
       <Box
+        // The only handle a browser test has on a tool INVOCATION row. The
+        // row's text is the tool name, which also appears in the answer text
+        // beside it, so `getByText` cannot tell "the runtime ran a tool" from
+        // "the model mentioned one" (measured: the toolkit journeys' mock
+        // quotes the tool result in the reply). `data-tool-action-name`
+        // carries the name so the assertion names one row rather than
+        // matching whichever row happens to contain the string.
+        data-testid="chat-tool-action"
+        data-tool-action-name={action.name ?? ''}
         onClick={handleClick}
         sx={{
           p: 1,

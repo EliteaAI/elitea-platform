@@ -57,6 +57,12 @@ type Handler struct {
 	// providerAdmission decides the status_ok column for a written provider
 	// row (#457, provider_admission.go). nil keeps the column at its default.
 	providerAdmission ProviderAdmission
+	// storedResolver expands the references and redeems the hidden secrets of
+	// an ALREADY SAVED row, so a stored credential can be checked without the
+	// client resending its api_key (stored_check.go). nil makes both stored
+	// checks report an honest "not available" failure; it never falls back to
+	// checking the stored {{secret.NAME}} reference as if it were the key.
+	storedResolver StoredConfigurationResolver
 	// secretSealer stores a schema-declared password value in the project
 	// vault (secret_sealing.go). nil REFUSES such a write; it never falls back
 	// to a plaintext row.
@@ -234,6 +240,26 @@ func (h *Handler) Routes() chi.Router {
 	r.With(create).Post("/check_connection/{mode}/{projectID}/{configType}", h.CheckConnection)
 	r.With(create).Post("/check_connections/{projectID}", h.BatchCheckConnections)
 	r.With(create).Post("/check_connections/{mode}/{projectID}", h.BatchCheckConnections)
+	// The STORED checks and the revalidation take the UPDATE string, not the
+	// create one, and the difference is deliberate. The two routes above test
+	// a payload the caller is holding — a pre-save probe on the create form.
+	// These three address a row that already exists: they read it, resolve its
+	// secrets server-side, and (for revalidate) write its status column. That
+	// is the edit form's control, and `configurations.configuration.update` is
+	// the string the reference declares for every other write to an existing
+	// row (PUT /configuration/{projectID}/{configID} above). The two strings
+	// are granted to the SAME default-mode roles by migrations/shared/0072 —
+	// admin and editor — so no role loses a control either way, and naming the
+	// narrower-in-intent one keeps a viewer, who cannot edit the credential,
+	// from making the platform dial the provider with it.
+	r.With(update).Post("/check_stored_connection/{projectID}/{configID}", h.CheckStoredConnection)
+	r.With(update).Post("/check_stored_connection/{mode}/{projectID}/{configID}", h.CheckStoredConnection)
+	r.With(update).Post("/check_stored_connections/{projectID}", h.BatchCheckStoredConnections)
+	r.With(update).Post("/check_stored_connections/{mode}/{projectID}", h.BatchCheckStoredConnections)
+	// Revalidation re-runs ADMISSION, which is not a provider contact — see
+	// the head of revalidate.go for why the two are separate routes.
+	r.With(update).Post("/revalidate/{projectID}/{configID}", h.RevalidateConfiguration)
+	r.With(update).Post("/revalidate/{mode}/{projectID}/{configID}", h.RevalidateConfiguration)
 	// models.go and model_default.go gate the reviewed copies of these two on
 	// exactly these strings, over the same paths.
 	r.With(list).Get("/models/{projectID}", h.ListModels)

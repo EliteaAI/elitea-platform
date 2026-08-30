@@ -1096,6 +1096,23 @@ components:
         internal/api/v2/applications/handler.go:451, 600, 790.
 
     # ---- DB-jsonb passthrough shells (each individually justified) ----------
+    StoredConnectionCheckRow:
+      type: object
+      required: [id, success]
+      properties:
+        id:
+          oneOf:
+            - type: string
+            - type: integer
+          description: >
+            The id as it was requested, echoed back unchanged and in the type
+            it arrived as, so a client can match a row to its request.
+        success: { type: boolean }
+        message: { type: string }
+        unsupported:
+          type: boolean
+          description: The configuration's type is not registered in this build.
+
     LlmSettings:
       type: object
       properties:
@@ -11686,3 +11703,225 @@ paths:
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '404': { $ref: '#/components/responses/404' }
+
+  # ── The stored-credential checks and the revalidation ──────────────────
+  #
+  # These three are described here rather than added to
+  # internal/api/oapiserver/testdata/reverse_check_allowlist.txt, which is the
+  # list of endpoints the new UI calls and this document does not describe: the
+  # allowlist may only shrink (spec §5.3), and it is at its pinned size.
+  #
+  # THEY ARE NOT THE SAME AS /check_connection. That route checks a payload the
+  # caller SENDS. These read the SAVED row: since the compatibility write path
+  # seals every schema-declared password into the project vault, the stored
+  # `data` object holds a `{{secret.NAME}}` reference and no client can send
+  # the key back. See services/elitea-main/internal/api/v2/configurations/
+  # stored_check.go.
+  #
+  # Each also has a `{mode}` twin the router registers for pylon URL parity
+  # (`/check_stored_connection/{mode}/{project_id}/{config_id}`, and so on).
+  # The twins are deliberately absent from this document, as they are for every
+  # other configurations route: the mode segment is decoration on this surface,
+  # one handler serves both forms, and no client in the workspace calls the
+  # mode-ful URL.
+  /configurations/check_stored_connection/{project_id}/{config_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: config_id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The stored configuration's numeric id or its uuid.
+    post:
+      operationId: checkStoredConfigurationConnection
+      summary: Test a SAVED credential against its provider
+      description: |
+        Reads the credential from the row, redeems its sealed secret through
+        the project vault, and forwards the resolved payload to the LLM
+        gateway's check endpoint. THE REQUEST CARRIES NO BODY: the client does
+        not hold the api_key and must not need to.
+
+        It PERSISTS NOTHING. `status_ok` records that the platform accepted the
+        row — its references expand and its secrets redeem — and nothing in
+        that decision contacts a provider, so a provider outage must not
+        withdraw a project's credentials from the gateway. Re-running that
+        decision is POST /configurations/revalidate/{project_id}/{config_id}.
+
+        A configuration id belonging to another project answers 404: every
+        statement reads the schema the {project_id} names.
+      tags: [configurations]
+      responses:
+        '200':
+          description: The provider accepted the credential.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                    description: Always true on this response.
+                  message: { type: string }
+        '400':
+          description: >
+            The provider rejected the credential, the type has no working check
+            yet, the row did not resolve, or the check is not available in this
+            build. The body is the legacy {success,message} shape, NOT the
+            ErrorResponse every other 400 in this document uses: the browser
+            keys its toast off the status and reads `message` for the text.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                    description: Always false on this response.
+                  message: { type: string }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such configuration in this project.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                    description: Always false on this response.
+                  message: { type: string }
+
+  /configurations/check_stored_connections/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      operationId: batchCheckStoredConfigurationConnections
+      summary: Test many SAVED credentials in one request
+      description: |
+        The batch form of the route above. It ALWAYS answers 200 with one
+        result object per requested id, in request order, because the credential
+        screen marks every credential invalid when this request fails — a 4xx
+        would paint a healthy project red.
+
+        `unsupported` marks a type this build has never heard of. A KNOWN type
+        with no working check yet carries the "not supported yet" message
+        instead, which is the same distinction the unsaved batch check draws.
+        Ids above the item cap report "could not verify" rather than failing the
+        request.
+      tags: [configurations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [configuration_ids]
+              properties:
+                configuration_ids:
+                  type: array
+                  maxItems: 200
+                  items:
+                    oneOf:
+                      - type: string
+                      - type: integer
+                    description: >
+                      A stored configuration's numeric id or its uuid — the
+                      same two forms the path parameter takes. Both a JSON
+                      string and a JSON number are accepted; the shipped
+                      client sends strings.
+                  description: The ids to check, at most 200 of them.
+      responses:
+        '200':
+          description: One result per requested id, in request order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StoredConnectionCheckRow' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  /configurations/revalidate/{project_id}/{config_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: config_id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The stored configuration's numeric id or its uuid.
+    post:
+      operationId: revalidateConfiguration
+      summary: Re-derive a stored configuration's status_ok
+      description: |
+        Re-runs the ADMISSION decision for one saved row and persists the
+        result: do its declared references still expand, do its hidden secrets
+        still redeem, and does policy still admit the project to own it.
+
+        NOTHING CONTACTS A PROVIDER. The live provider round trip is
+        POST /configurations/check_stored_connection/{project_id}/{config_id},
+        and that route stores nothing. The two are separate on purpose: a
+        provider outage must not withdraw every credential in a project from the
+        gateway, and a credential whose vault secret has been deleted must not
+        stay usable because the provider still answers.
+
+        It writes `status_ok` and NO field of the row — no data, no meta, no
+        updated_at. An unmanaged row (a generic configuration, or an imported
+        model with no ai_credentials) keeps the status its writer stored.
+      tags: [configurations]
+      responses:
+        '200':
+          description: The row as it now stands, in the detail route's shape.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, type, section, status_ok]
+                properties:
+                  id: { type: integer }
+                  uuid: { type: string }
+                  project_id: { type: string }
+                  label: { type: string }
+                  name: { type: string }
+                  type: { type: string }
+                  section: { type: string }
+                  data:
+                    type: object
+                    additionalProperties: true
+                    x-elitea-passthrough: >-
+                      NOTE(W2): DB jsonb column `configuration.data`,
+                      re-emitted verbatim by the detail projection this route
+                      reuses
+                      (internal/api/v2/configurations/revalidate.go:131);
+                      the revalidation writes status_ok only and never
+                      inspects these keys, which stay client/section-owned.
+                  meta:
+                    type: object
+                    additionalProperties: true
+                    x-elitea-passthrough: >-
+                      NOTE(W2): DB jsonb column `configuration.meta`, same
+                      verbatim re-emit
+                      (internal/api/v2/configurations/revalidate.go:131) and
+                      same section ownership as `data` above.
+                  shared: { type: boolean }
+                  status_ok: { type: boolean }
+                  status_logs: { type: string }
+                  source: { type: string }
+                  author_id: { type: integer }
+                  created_at: { type: string }
+                  updated_at: { type: string }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '503':
+          description: >
+            This build composed no admission decision, so it cannot revalidate.
+            It answers this rather than 200 with the unchanged row: the two are
+            indistinguishable to a client, and the second is a control that
+            reports success while doing nothing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }

@@ -279,7 +279,13 @@ fn output_continuation_profile_requires_one_clean_explicit_partial() {
 
 #[test]
 fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
-    for mutation in 0..24 {
+    // THREE surfaces LEFT this corpus when the runtime grew variable
+    // substitution: a populated request-level `application.variables`, an
+    // instruction carrying `{{ }}`, and a `meta.variables` dict. All three are
+    // now SERVED (`super::variables`), and each has its own positive test
+    // below — `a_populated_variable_list_is_substituted_into_the_instructions`
+    // and `an_undefined_variable_survives_as_its_own_placeholder`.
+    for mutation in 0..21 {
         let mut request = ordinary_request(AgentExecutionKind::Application);
         match mutation {
             0 => request.payload.ignored_mcp_servers.push(json!("server")),
@@ -295,10 +301,14 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
                 .payload
                 .attached_skills
                 .push(json!({"name": "review"})),
-            5 => request
-                .payload
-                .input_attachments
-                .push(json!({"artifact_id": "one"})),
+            // Attachments are no longer an unsupported surface (#606): their
+            // chunks render into the human message, and their shape is admitted
+            // by `attachments::validate_input_attachments` (a MALFORMED chunk is
+            // `InvalidInput`, not `UnsupportedCapability`, so it belongs in
+            // `attachments`' own tests, not this UnsupportedCapability corpus).
+            // `supports_vision` takes the freed slot — it is a genuine
+            // unimplemented effect surface and is not otherwise covered here.
+            5 => request.payload.supports_vision = true,
             6 => request.payload.user_input = UserInput::ContentBlocks(vec![json!({"text": "x"})]),
             7 => request.payload.checkpoint_id = Some("checkpoint-1".to_owned()),
             8 => request.payload.parallel_reconcile = Some(Map::new()),
@@ -313,22 +323,7 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
             12 => request.payload.next_input_suggestion.enabled = true,
             13 => request.payload.debug_mode = Some(false),
             14 => request.payload.should_continue = true,
-            15 => {
-                request.payload.application.insert(
-                    "variables".to_owned(),
-                    json!([{"name": "audience", "value": "ops"}]),
-                );
-            }
-            16 => {
-                request
-                    .payload
-                    .application
-                    .get_mut("version_details")
-                    .and_then(Value::as_object_mut)
-                    .expect("application version")
-                    .insert("instructions".to_owned(), json!("review {{ audience }}"));
-            }
-            // 17-19, 21-22: names OUTSIDE the platform catalogue, in every
+            // 15-19: names OUTSIDE the platform catalogue, in every
             // slot that used to pin a platform NAME. Every name the agent form
             // can author is now SKIPPED rather than refused (a form toggle
             // must not stop the agent answering — internal_tools.rs
@@ -337,37 +332,30 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
             // nothing the product can do — at the meta, payload and version
             // levels, in two spellings so one constant folded into several
             // slots cannot mask a regression.
-            17 => {
+            15 => {
                 insert_application_meta(
                     &mut request,
                     "internal_tools",
                     json!(["not_a_platform_tool"]),
                 );
             }
-            18 => {
+            16 => {
                 request
                     .payload
                     .internal_tools
                     .push("not_a_platform_tool".to_owned());
             }
-            19 => {
+            17 => {
                 insert_version_internal_tools(&mut request, "not_a_platform_tool");
             }
-            20 => {
-                insert_application_meta(
-                    &mut request,
-                    "variables",
-                    json!({"audience": "operators"}),
-                );
-            }
-            21 => {
+            18 => {
                 insert_version_internal_tools(&mut request, "definitely_unknown");
             }
-            22 => request
+            19 => request
                 .payload
                 .internal_tools
                 .push("definitely_unknown".to_owned()),
-            23 => request.payload.chat_history.push(json!({
+            20 => request.payload.chat_history.push(json!({
                 "role": "user",
                 "content": [{"type": "image_url", "image_url": "https://invalid.example"}],
                 "additional_kwargs": {}
@@ -538,16 +526,23 @@ fn pipeline_tools_templates_and_defaults_are_classified_before_redemption() {
         .expect("SDK-compatible application defaults");
     assert_eq!(profile.max_tokens(), None);
 
+    // An ad-hoc turn carries no variables — `predict_agent` builds its
+    // assistant data with `variables: []` — but it still goes through the
+    // react path's `_resolve_jinja2_variables`, so the template IS rendered
+    // and an undefined name survives as Jinja2's `DebugUndefined` prints it.
+    // The source spelling here is DELIBERATELY unspaced: the canonical
+    // `{{ audience }}` coming back out is what distinguishes a real render
+    // from a string that was merely passed through untouched.
     let mut templated_adhoc = ordinary_request(AgentExecutionKind::Adhoc);
     templated_adhoc
         .payload
         .application
-        .insert("instructions".to_owned(), json!("review {{ audience }}"));
+        .insert("instructions".to_owned(), json!("review {{audience}}"));
     assert_eq!(
         OrdinaryNoToolProfile::validate(&templated_adhoc)
-            .expect_err("unimplemented ad-hoc template")
-            .code(),
-        NativeAgentAssemblyErrorCode::UnsupportedCapability
+            .expect("an ad-hoc template is rendered, not refused")
+            .instructions(),
+        "review {{ audience }}"
     );
 }
 
@@ -860,30 +855,228 @@ fn an_empty_variable_list_is_admitted_in_either_shape() {
     }
 }
 
-/// A list that actually names variables is still refused — and as an
-/// unsupported CAPABILITY, not as malformed input, because substitution is
-/// genuinely not implemented here.
+/// A list that actually names variables is SUBSTITUTED, in both stored shapes.
+///
+/// Main writes `meta.variables` as an array of `{name, value}`; the dict
+/// spelling is the one `assistant.py:574` reads. Both reach the same context,
+/// and the assertion is on the rendered `instructions` rather than on mere
+/// admission — admitting a variable and then ignoring it would pass a
+/// "does it refuse?" test while leaving the author's placeholder on screen.
 #[test]
-fn a_populated_variable_list_is_still_an_unsupported_capability() {
+fn a_populated_variable_list_is_substituted_into_the_instructions() {
     for populated in [
         json!([{"name": "audience", "value": "ops"}]),
         json!({"audience": "ops"}),
     ] {
         let mut request = ordinary_request(AgentExecutionKind::Application);
         insert_application_meta(&mut request, "variables", populated.clone());
-        let Err(error) = AuthorizedNativeAssembly::new(
+        set_application_instructions(&mut request, "review for {{audience}} only");
+        let profile = OrdinaryNoToolProfile::validate(&request)
+            .unwrap_or_else(|error| panic!("a populated variable list: {populated} ({error:?})"));
+        assert_eq!(profile.instructions(), "review for ops only");
+        AuthorizedNativeAssembly::new(
             &request,
             test_runtime_context_authority(),
             AuthorizedNativeCommandBinding::fixture(),
         )
-        .admit_llm_agent(&empty_tool_policy()) else {
-            panic!("variable substitution is not implemented: {populated}");
-        };
+        .admit_llm_agent(&empty_tool_policy())
+        .unwrap_or_else(|error| panic!("a populated variable list: {populated} ({error:?})"));
+    }
+}
+
+/// The REQUEST's own `application.variables` re-VALUE a declared variable and
+/// cannot declare one — `client.py:822-825` updates only names already in the
+/// version's list, and `meta.variables` is applied afterwards and still wins.
+#[test]
+fn participant_variables_revalue_declared_names_only() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version")
+        .insert(
+            "variables".to_owned(),
+            json!([{"name": "tone", "value": "terse"}]),
+        );
+    request.payload.application.insert(
+        "variables".to_owned(),
+        json!([
+            {"name": "tone", "value": "formal"},
+            {"name": "undeclared", "value": "ignored"},
+        ]),
+    );
+    set_application_instructions(&mut request, "{{tone}} / {{undeclared}}");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&request)
+            .expect("participant variables")
+            .instructions(),
+        "formal / {{ undeclared }}"
+    );
+
+    let mut meta_wins = ordinary_request(AgentExecutionKind::Application);
+    meta_wins
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version")
+        .insert(
+            "variables".to_owned(),
+            json!([{"name": "tone", "value": "terse"}]),
+        );
+    insert_application_meta(
+        &mut meta_wins,
+        "variables",
+        json!([{"name": "tone", "value": "stored"}]),
+    );
+    meta_wins.payload.application.insert(
+        "variables".to_owned(),
+        json!([{"name": "tone", "value": "formal"}]),
+    );
+    set_application_instructions(&mut meta_wins, "{{tone}}");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&meta_wins)
+            .expect("meta variables")
+            .instructions(),
+        "stored"
+    );
+}
+
+/// An undefined name is neither blanked nor fatal — Jinja2's `DebugUndefined`
+/// prints it back, and `assistant.py` never overrides that.
+#[test]
+fn an_undefined_variable_survives_as_its_own_placeholder() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    insert_application_meta(
+        &mut request,
+        "variables",
+        json!([{"name": "known", "value": "here"}]),
+    );
+    set_application_instructions(&mut request, "{{known}} then {{missing}}");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&request)
+            .expect("an undefined variable is not a refusal")
+            .instructions(),
+        "here then {{ missing }}"
+    );
+}
+
+/// A malformed collection is still MALFORMED INPUT, not a served shape.
+///
+/// The refusal that moved is the "populated" one; the shape gate did not. A
+/// scalar where a collection belongs, and an array element that is not a row,
+/// are both things no Main path writes.
+#[test]
+fn a_malformed_variable_collection_is_still_invalid_input() {
+    for malformed in [
+        json!("audience"),
+        json!(7),
+        json!(["audience"]),
+        json!([null]),
+    ] {
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        insert_application_meta(&mut request, "variables", malformed.clone());
         assert_eq!(
-            error.code(),
-            NativeAgentAssemblyErrorCode::UnsupportedCapability
+            OrdinaryNoToolProfile::validate(&request)
+                .expect_err("a malformed variable collection")
+                .code(),
+            NativeAgentAssemblyErrorCode::InvalidInput,
+            "malformed variables: {malformed}"
         );
     }
+}
+
+/// A row Fork can genuinely produce — `"name": null` — is SKIPPED, not fatal.
+///
+/// `api/openapi/v2.yaml`'s `VersionVariable` documents both keys as nullable
+/// because `eliteacore/handler.go:2421-2428` rebuilds entries from unvalidated
+/// client maps. `assistant.py:565` skips such a row; refusing it would end
+/// every turn of a forked agent instead.
+#[test]
+fn a_nameless_or_valueless_variable_row_is_skipped() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    insert_application_meta(
+        &mut request,
+        "variables",
+        json!([
+            {"name": null, "value": "orphan"},
+            {"name": "blank", "value": ""},
+            {"name": "absent"},
+            {"name": "served", "value": "yes"},
+        ]),
+    );
+    set_application_instructions(&mut request, "{{served}}|{{blank}}|{{absent}}");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&request)
+            .expect("nullable variable rows are skipped, not refused")
+            .instructions(),
+        "yes|{{ blank }}|{{ absent }}"
+    );
+}
+
+/// A NESTED agent renders its own stored variables too.
+///
+/// The SDK reaches a child through `client.application()` as well
+/// (`runtime/tools/application.py:396`), which builds a second
+/// `LangChainAssistant` over the child's version — so the child's prompt goes
+/// through the same `_resolve_jinja2_variables`. A nested PIPELINE keeps the
+/// parent rule: its instructions are graph YAML and stay untouched.
+#[test]
+fn a_nested_agent_renders_its_own_variables() {
+    let fallback =
+        OrdinaryNoToolProfile::validate(&ordinary_request(AgentExecutionKind::Application))
+            .expect("a parent profile to fall back to");
+
+    let mut child = Map::new();
+    child.insert("tools".to_owned(), json!([]));
+    child.insert(
+        "meta".to_owned(),
+        json!({"variables": [{"name": "region", "value": "eu"}]}),
+    );
+    child.insert(
+        "instructions".to_owned(),
+        json!("serve {{region}} and {{gap}}"),
+    );
+    assert_eq!(
+        OrdinaryNoToolProfile::from_nested_version(&child, &fallback)
+            .expect("a nested agent")
+            .instructions(),
+        "serve eu and {{ gap }}"
+    );
+
+    child.insert("agent_type".to_owned(), json!("pipeline"));
+    assert_eq!(
+        OrdinaryNoToolProfile::from_nested_pipeline_version(&child, &fallback)
+            .expect("a nested pipeline")
+            .instructions(),
+        "serve {{region}} and {{gap}}"
+    );
+}
+
+/// A PIPELINE's instructions are graph YAML, and the SDK does not render them.
+///
+/// `assistant.py`'s `pipeline()` hands `self.prompt` straight to
+/// `create_graph`; only the react path calls `_resolve_jinja2_variables`. A
+/// port that rendered here would rewrite a YAML document behind the compiler's
+/// back.
+#[test]
+fn a_pipeline_graph_is_never_rendered() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    set_application_agent_type(&mut request, "pipeline");
+    insert_application_meta(
+        &mut request,
+        "variables",
+        json!([{"name": "audience", "value": "ops"}]),
+    );
+    set_application_instructions(&mut request, "state: {{audience}}");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate_pipeline_shell(&request, false)
+            .expect("a pipeline shell")
+            .instructions(),
+        "state: {{audience}}"
+    );
 }
 
 /// Smart Tools Selection is a form toggle, and a toggle must not end the turn.

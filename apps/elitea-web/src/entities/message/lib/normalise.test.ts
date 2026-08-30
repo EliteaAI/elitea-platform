@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { convertTime, normaliseAssistantMessage, normaliseUserMessage } from './normalise';
+import { convertTime, isParticipant, normaliseAssistantMessage, normaliseUserMessage } from './normalise';
 import type { MessageAuthorWire, MessageGroupMetaWire, MessageGroupWire, MessageParticipantWire } from './wire';
 
 describe('convertTime', () => {
@@ -23,6 +23,31 @@ describe('convertTime', () => {
   it('is idempotent for the appended-Z case, matching parseability', () => {
     const once = convertTime('2026-01-01T12:30:00');
     expect(new Date(once).toString()).not.toBe('Invalid Date');
+  });
+});
+
+describe('isParticipant', () => {
+  it('matches across the two id spellings that really coexist on the wire', () => {
+    expect(isParticipant(7, '7')).toBe(true);
+    expect(isParticipant('7', 7)).toBe(true);
+    expect(isParticipant(7, 7)).toBe(true);
+    expect(isParticipant('7', '7')).toBe(true);
+  });
+
+  it('does not match two different ids that merely stringify alike-ish', () => {
+    expect(isParticipant(7, 70)).toBe(false);
+    expect(isParticipant('7', ' 7')).toBe(false);
+  });
+
+  it('never matches on undefined, on either side', () => {
+    // A row that states no id must resolve NOBODY. The trap this closes is
+    // `String(undefined) === String(undefined)`, which would attribute an
+    // author-less row to a participant whose id is likewise absent — and, on
+    // the playback path, let a `playerInfo` with no `firstUserMessage` caption
+    // an unresolved author as the player.
+    expect(isParticipant(undefined, undefined)).toBe(false);
+    expect(isParticipant(undefined, 7)).toBe(false);
+    expect(isParticipant(7, undefined)).toBe(false);
   });
 });
 
@@ -66,6 +91,48 @@ describe('normaliseUserMessage', () => {
     expect(normaliseUserMessage(numberToNumber, users, []).name).toBe('Alice');
     expect(normaliseUserMessage(stringToNumber, users, []).name).toBe('Alice');
     expect(normaliseUserMessage(numberToString, users, []).name).toBe('Bob');
+  });
+
+  /*
+   * The whole identity of one row, across both spellings.
+   *
+   * TWO lookups build it — the author one (`name`, `avatar`, `userId`) and the
+   * `sent_to_id` one (`sentTo`) — and only the first was ever normalised, so a
+   * Go payload numbering its ids produced a question that knew its author but
+   * not who it was addressed to. `expect.soft` on every field on purpose: a
+   * hard assertion stops at the first and reports the loss as one missing
+   * string, which is exactly the misreading that let the asymmetry survive.
+   */
+  it('resolves author AND sentTo when the row numbers ids and the roster spells them', () => {
+    const users: readonly MessageAuthorWire[] = [
+      { id: '1', meta: { user_name: 'Alice', user_avatar: 'alice.png' }, entity_meta: { id: 6 } },
+    ];
+    const participants: readonly MessageParticipantWire[] = [{ id: '2', meta: { user_name: 'Support Agent' } }];
+    const group: MessageGroupWire = { ...baseGroup, author_participant_id: 1, sent_to_id: 2 };
+
+    const result = normaliseUserMessage(group, users, participants);
+
+    expect.soft(result.name).toBe('Alice');
+    expect.soft(result.avatar).toBe('alice.png');
+    expect.soft(result.userId).toBe('6');
+    expect.soft(result.sentTo).toBe(participants[0]);
+  });
+
+  it('resolves author AND sentTo when the row spells ids and the roster numbers them', () => {
+    // The roster spelling the Go participants payload actually produces, which
+    // `MessageParticipantWire.id: string` does not describe — hence the cast.
+    const users: readonly MessageAuthorWire[] = [
+      { id: 1, meta: { user_name: 'Alice', user_avatar: 'alice.png' }, entity_meta: { id: 6 } },
+    ];
+    const participants = [{ id: 2, meta: { user_name: 'Support Agent' } }] as unknown as readonly MessageParticipantWire[];
+    const group: MessageGroupWire = { ...baseGroup, author_participant_id: '1', sent_to_id: '2' };
+
+    const result = normaliseUserMessage(group, users, participants);
+
+    expect.soft(result.name).toBe('Alice');
+    expect.soft(result.avatar).toBe('alice.png');
+    expect.soft(result.userId).toBe('6');
+    expect.soft(result.sentTo).toBe(participants[0]);
   });
 
   it.each([
@@ -320,6 +387,29 @@ describe('normaliseAssistantMessage', () => {
     const result = normaliseAssistantMessage(group, [], undefined);
     expect(result.toolActions?.map((action) => action.type)).toEqual(['tool', 'llm']);
     expect(result.toolActions?.[0]).toMatchObject({ name: 'search', id: 'r1' });
+  });
+
+  /*
+   * The answer's own participant crosses the same wire in the same two
+   * spellings, and this lookup is the ONLY thing that hands
+   * `buildToolActions` the participant's `tools[]` — the fallback that
+   * resolves a tool row's `toolkit_type`, and with it the icon the row renders.
+   * A strict === here left every tool row of a numbered-id payload untyped.
+   */
+  it('resolves the answering participant across the two id spellings', () => {
+    const toolCalls = { c1: { toolkit_name: 'jira', tool_name: 'search', tool_run_id: 'r1', timestamp_start: '2026-01-01 12:00:01' } };
+    const tools = [{ name: 'jira', type: 'external' }];
+    const numberedRow: MessageGroupWire = { ...baseGroup, author_participant_id: 3, meta: { tool_calls: toolCalls } };
+    const spelledRow: MessageGroupWire = { ...baseGroup, author_participant_id: '3', meta: { tool_calls: toolCalls } };
+    const spelledRoster: readonly MessageParticipantWire[] = [{ id: '3', meta: { tools } }];
+    const numberedRoster = [{ id: 3, meta: { tools } }] as unknown as readonly MessageParticipantWire[];
+
+    expect.soft(normaliseAssistantMessage(numberedRow, [], spelledRoster).toolActions?.[0]?.toolMeta).toMatchObject({
+      toolkit_type: 'external',
+    });
+    expect.soft(normaliseAssistantMessage(spelledRow, [], numberedRoster).toolActions?.[0]?.toolMeta).toMatchObject({
+      toolkit_type: 'external',
+    });
   });
 
   it('builds hitlInterrupt from meta.hitl_interrupt, defaulting unset fields', () => {

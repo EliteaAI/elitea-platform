@@ -22,7 +22,7 @@ import { setToolkitRelation } from '../lib/toolRelation';
 import { useFilterAddedItems } from '../lib/useFilterAddedItems';
 import type { AgentToolAssociation } from '../lib/types';
 
-import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToolkitInstanceRows } from './ToolMenuSections';
+import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToolkitInstancePager } from './ToolMenuSections';
 
 /**
  * Ported from
@@ -72,10 +72,12 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  *    to know (e.g. a future GA-tracking or toast integration); selecting a
  *    Toolkit/MCP row always attaches it now, matching the baseline, with or
  *    without either callback supplied.
- *  - `ListToolkitInstancesParams` only has `limit`/`offset` — no
- *    server-side search, so the toolkit/MCP search box filters the already-
- *    fetched page client-side (same tolerant-degradation style
- *    `entities/toolkit`'s own `toolkitTypeMenuEntries` uses elsewhere).
+ *  - `ListToolkitInstancesParams` only has `limit`/`offset` (no server-side
+ *    type or name filter), ordered by name. The Toolkit and MCP dropdowns split
+ *    ONE listing client-side by `isMcpToolkit` and filter names client-side; to
+ *    keep both reachable when one type sorts past the other, the sections PAGE
+ *    the listing (offset-based) until the open dropdown has a matching row — see
+ *    `useToolkitInstancePager`/`InstanceAddSection` in `ToolMenuSections.tsx`.
  *  - `ListApplicationsParams` (agents/pipelines) has no page/pageSize
  *    param at all — the baseline's infinite-scroll agent/pipeline lists
  *    have no server-side "load more" to page through; this shows whatever
@@ -104,7 +106,7 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  * `useSearch({ strict: false })` (this component isn't bound to one
  * specific route — `ApplicationTools.tsx` mounts it on both the agent and
  * pipeline editors) reads a returned `?newToolkitId=`/`?mcp=` pair, matches
- * it against the already-fetched `useToolkitInstanceRows` page, and — if
+ * it against the currently-fetched `useToolkitInstancePager` rows, and — if
  * found — calls `attachToolkit`/`attachMcp` (the same real-attach path a
  * manual dropdown click uses, `onAttachToolkit`/`onAttachMcp` fired only as
  * their post-success observer) before clearing all four round-trip params
@@ -113,8 +115,9 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  *    `limit`/`offset`, no id filter — same gap the "no server-side search"
  *    bullet above already flags) — unlike baseline's dedicated
  *    `fetchToolkitDetails` unwrap call, this can only match against
- *    whatever page is ALREADY loaded. A newly created toolkit that sorts
- *    outside the current page (alphabetically, past `instanceLimit`) is
+ *    whatever pages are ALREADY loaded. A newly created toolkit that sorts
+ *    past the pages fetched so far (the sections only auto-page while their
+ *    dropdown is open, so on a fresh return only the first page is loaded) is
  *    invisible to this match and the round trip silently no-ops (URL still
  *    gets cleaned up, matching baseline's own "clean up even on failure"
  *    behaviour) rather than falling back to a toast the way baseline did —
@@ -262,9 +265,13 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
   const attachToolkit = useCallback((toolkit: Toolkit) => attachToolkitInstance(toolkit, onAttachToolkit), [attachToolkitInstance, onAttachToolkit]);
   const attachMcp = useCallback((toolkit: Toolkit) => attachToolkitInstance(toolkit, onAttachMcp), [attachToolkitInstance, onAttachMcp]);
 
-  const [instanceLimit, setInstanceLimit] = useState(20);
-  const loadMoreInstances = useCallback(() => setInstanceLimit((prev) => prev + 20), []);
-  const { rows: instanceRows, isFetching: instancesFetching } = useToolkitInstanceRows(projectId, instanceLimit);
+  // ONE offset-based cursor over the toolkit-instance listing; the Toolkit and
+  // MCP sections each page it independently against their own filtered rows (see
+  // `useToolkitInstancePager`). Replaces the baseline's single shared
+  // `instanceLimit`, which left a section unreachable when its rows sorted past
+  // the first page — the listing has no server-side type filter to split on.
+  const instancePager = useToolkitInstancePager(projectId);
+  const { rows: instanceRows, isFetching: instancesFetching } = instancePager;
 
   // "Create new toolkit" round trip — inbound half. See this module's own doc comment.
   const navigate = useNavigate();
@@ -337,11 +344,9 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
         isEntityUnsaved={isEntityUnsaved}
         tooltip={saveFirstToolkitTooltip}
         isMcp={false}
-        rows={instanceRows}
+        pager={instancePager}
         addedToolkitIds={addedToolkitIds}
-        isFetching={instancesFetching}
         onAttach={attachToolkit}
-        onLoadMore={loadMoreInstances}
         createRoute="/toolkits/create"
         sourceApplicationId={numericApplicationId}
       />
@@ -349,14 +354,17 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
       {isMcpVisible && (
         <InstanceAddSection
           copy={{ label: t('agents.toolMenu.mcp', 'MCP'), searchPlaceholder: t('agents.toolMenu.searchMcps', 'Search mcps...'), emptyMessage: t('agents.toolMenu.noMcps', 'No mcps available') }}
+          // Symmetric with `agent-add-toolkit-button` above. Without it the
+          // only handle on this control is its LABEL, which is translated —
+          // `e2e/streaming/chat.mcp.spec.ts` drives it, and a locale change
+          // must not be able to move the handle out from under the journey.
+          testId="agent-add-mcp-button"
           isEntityUnsaved={isEntityUnsaved}
           tooltip={saveFirstMcpTooltip}
           isMcp={true}
-          rows={instanceRows}
+          pager={instancePager}
           addedToolkitIds={addedToolkitIds}
-          isFetching={instancesFetching}
           onAttach={attachMcp}
-          onLoadMore={loadMoreInstances}
           createRoute="/mcps/create"
           sourceApplicationId={numericApplicationId}
         />

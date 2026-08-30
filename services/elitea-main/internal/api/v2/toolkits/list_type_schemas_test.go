@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
@@ -125,6 +126,56 @@ func TestToolkitTypeCatalogueServesTheCurrentOpenAPISettingsContract(t *testing.
 	required, ok := typeSchema["required"].([]any)
 	if !ok || !reflect.DeepEqual(required, []any{"openapi_configuration", "spec"}) {
 		t.Errorf("openapi required=%#v, want [openapi_configuration spec]", typeSchema["required"])
+	}
+}
+
+// The description must not promise a capability nothing implements.
+//
+// It used to say the specification could be "a URL", which no component in this
+// system has ever honoured: the native worker refuses an http(s) string outright
+// (parse_source -> UnsupportedSource), the SDK worker only runs json.loads then
+// yaml.safe_load over it, elitea-main answers DiscoverTools from the stored row,
+// and the create form's editor parses the same two ways and shows no operations
+// for a URL. A user who believed it saved a toolkit that failed at its first
+// tool call instead of at save time. The handler's own note records why the
+// fetch was not implemented here instead.
+//
+// Asserted on the property the client is SERVED, not on the package map, so a
+// later projection step that rewrites descriptions cannot reintroduce the claim
+// behind this test's back.
+func TestToolkitTypeCatalogueDoesNotPromiseSpecificationsAreFetchedFromAURL(t *testing.T) {
+	t.Parallel()
+
+	body := getToolkitTypeCatalogue(t, pinnedCatalogueOptions(t)...)
+	typeSchema, ok := body["openapi"].(map[string]any)
+	if !ok {
+		t.Fatalf("catalogue has no openapi type; have %v", keysOf(body))
+	}
+	properties, ok := typeSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi has no properties object: %#v", typeSchema)
+	}
+	spec, ok := properties["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi has no spec property; have %v", keysOf(properties))
+	}
+	description, ok := spec["description"].(string)
+	if !ok || description == "" {
+		t.Fatalf("openapi spec has no description: %#v", spec)
+	}
+	// Pinned verbatim rather than matched on "url". The honest text names a URL
+	// on purpose — to tell the user holding one that it will not work — so a
+	// keyword search would fail the correct string and pass a reworded promise
+	// that avoided the word. What must not come back is the CLAIM, and the only
+	// stable way to say that here is to state the sentence the handler serves.
+	const want = "OpenAPI specification as raw JSON or YAML text. A URL is not fetched."
+	if description != want {
+		t.Errorf("openapi spec description = %q, want %q", description, want)
+	}
+	// The retired promise, in the exact form it was served in, so a revert is
+	// named rather than merely different.
+	if strings.Contains(description, "as a URL or raw JSON") {
+		t.Errorf("openapi spec description offers a URL again: %q", description)
 	}
 }
 

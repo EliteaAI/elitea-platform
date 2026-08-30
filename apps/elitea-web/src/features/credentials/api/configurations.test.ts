@@ -1,6 +1,8 @@
 /**
- * configurations.test.ts — contract coverage for the 16 hand-written
- * `/configurations/*` endpoints (manifest API-145..API-160, unit A7).
+ * configurations.test.ts — contract coverage for the 19 hand-written
+ * `/configurations/*` endpoints (manifest API-145..API-160 plus the
+ * stored-connection-check family, unit A7; see configurations.ts's header
+ * for why the latter 3 have no `API-*` id).
  *
  * MSW handlers are registered per-test via `server.use()` (never added to
  * the shared `src/test/msw/handlers/` tree, which this unit does not own —
@@ -9,7 +11,11 @@
  * handlers precisely so per-file `server.use()` is the sanctioned local
  * pattern). Every test asserts the REQUEST the fetcher sent (method, path,
  * query string, body) against the baseline `api/configurations.js`
- * behaviour, not just that a promise resolved.
+ * behaviour, not just that a promise resolved — the stored-connection-check
+ * family has no baseline to assert against, so those tests instead pin the
+ * request/response shape this unit's own contract specifies, and every one
+ * of them proves `fetchData`'s `.data` envelope unwrap (see each test's own
+ * comment) per this unit's R-A5 obligation.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
@@ -18,10 +24,12 @@ import { server } from '../../../test/setup';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 
 import {
+  batchCheckStoredConfigurationConnections,
   buildAvailableConfigurationsTypeUrl,
   buildConfigurationsByTypeUrl,
   buildConfigurationsBySectionUrl,
   buildConfigurationsListUrl,
+  checkStoredConfigurationConnection,
   createConfiguration,
   deleteConfiguration,
   getAvailableConfigurationsType,
@@ -30,6 +38,7 @@ import {
   getConfigurationsBySection,
   getConfigurationsList,
   getSharedConfigurations,
+  revalidateConfiguration,
   updateConfiguration,
 } from './configurations';
 
@@ -292,6 +301,108 @@ describe('API-153 deleteConfiguration', () => {
     );
     await deleteConfiguration(7, 'abc');
     expect(method).toBe('DELETE');
+  });
+});
+
+describe('checkStoredConfigurationConnection', () => {
+  it('POSTs no body to /check_stored_connection/{projectId}/{configId} and unwraps the envelope to the raw check result', async () => {
+    setup();
+    let method = '';
+    let url = '';
+    let bodyText = '';
+    server.use(
+      http.post(`${BASE}/configurations/check_stored_connection/7/abc`, async ({ request }) => {
+        method = request.method;
+        url = request.url;
+        bodyText = await request.text();
+        return HttpResponse.json({ success: true });
+      }),
+    );
+    const result = await checkStoredConfigurationConnection(7, 'abc');
+    expect(method).toBe('POST');
+    expect(url).toContain('/configurations/check_stored_connection/7/abc');
+    expect(bodyText).toBe('');
+    // Proves the `fetchData` unwrap: `eliteaFetch` itself resolves to
+    // `{data, status, headers}` (see mutator.ts's own doc comment) — a
+    // caller that forgot to unwrap `.data` would see that whole envelope
+    // here instead of the bare `{success: true}` the server sent.
+    expect(result).toEqual({ success: true });
+  });
+
+  it('surfaces a failed check as { success: false, message }', async () => {
+    setup();
+    server.use(
+      http.post(`${BASE}/configurations/check_stored_connection/7/abc`, () =>
+        HttpResponse.json({ success: false, message: 'invalid credentials' }),
+      ),
+    );
+    await expect(checkStoredConfigurationConnection(7, 'abc')).resolves.toEqual({
+      success: false,
+      message: 'invalid credentials',
+    });
+  });
+});
+
+describe('batchCheckStoredConfigurationConnections', () => {
+  it('POSTs { configuration_ids } and unwraps the envelope to the raw per-item result array', async () => {
+    setup();
+    let method = '';
+    let capturedBody: unknown;
+    server.use(
+      http.post(`${BASE}/configurations/check_stored_connections/7`, async ({ request }) => {
+        method = request.method;
+        capturedBody = await request.json();
+        return HttpResponse.json([
+          { id: 'a', success: true },
+          { id: 'b', success: false, message: 'expired token' },
+          { id: 'c', unsupported: true },
+        ]);
+      }),
+    );
+    const result = await batchCheckStoredConfigurationConnections(7, ['a', 'b', 'c']);
+    expect(method).toBe('POST');
+    expect(capturedBody).toEqual({ configuration_ids: ['a', 'b', 'c'] });
+    // Same envelope-unwrap proof as above: a bare `.data`-less return here
+    // would resolve to `{data: [...], status, headers}`, which would fail
+    // this exact-array equality.
+    expect(result).toEqual([
+      { id: 'a', success: true },
+      { id: 'b', success: false, message: 'expired token' },
+      { id: 'c', unsupported: true },
+    ]);
+  });
+
+  it('sends an empty configuration_ids array as-is', async () => {
+    setup();
+    let capturedBody: unknown;
+    server.use(
+      http.post(`${BASE}/configurations/check_stored_connections/7`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json([]);
+      }),
+    );
+    await expect(batchCheckStoredConfigurationConnections(7, [])).resolves.toEqual([]);
+    expect(capturedBody).toEqual({ configuration_ids: [] });
+  });
+});
+
+describe('revalidateConfiguration', () => {
+  it('POSTs no body to /revalidate/{projectId}/{configId} and unwraps the envelope to the raw configuration row', async () => {
+    setup();
+    let method = '';
+    let bodyText = '';
+    server.use(
+      http.post(`${BASE}/configurations/revalidate/7/abc`, async ({ request }) => {
+        method = request.method;
+        bodyText = await request.text();
+        return HttpResponse.json({ uid: 'abc', type: 'openai', elitea_title: 'my-cred' });
+      }),
+    );
+    const result = await revalidateConfiguration(7, 'abc');
+    expect(method).toBe('POST');
+    expect(bodyText).toBe('');
+    // Envelope-unwrap proof, same as the other two describe blocks above.
+    expect(result).toEqual({ uid: 'abc', type: 'openai', elitea_title: 'my-cred' });
   });
 });
 

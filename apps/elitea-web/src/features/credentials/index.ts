@@ -96,6 +96,7 @@
  * written to end. Every other symbol here has at least one live external
  * importer, so grouping was the only move that did not cost reach.
  */
+import { useCheckStoredConfigurationConnection, useTestConfigurationConnection } from './api/useConfigurations';
 import { useCredentialWarningModal } from './model/useCredentialWarningModal';
 import { CredentialsControls } from './ui/CredentialsControls';
 import { CredentialsTabBar } from './ui/CredentialsTabBar';
@@ -114,7 +115,6 @@ export {
   useConfigurationsList,
   useCreateConfiguration,
   useDeleteConfiguration,
-  useTestConfigurationConnection,
   useUpdateConfiguration,
 } from './api/useConfigurations';
 export { classifySchemaField, initialDataForSchema } from './lib/schemaField';
@@ -129,6 +129,28 @@ export const CredentialWarning = {
   useModal: useCredentialWarningModal,
   Modal: CredentialWarningModal,
   Banner: CredentialWarningBanner,
+} as const;
+
+/**
+ * The two connection checks, grouped for the same reason (and by the same
+ * rule) as `CredentialWarning`/`CredentialsActions` above: this barrel was
+ * already at 20/20, and `useCheckStoredConfigurationConnection` has no
+ * meaning apart from `useTestConfigurationConnection` — they are the two
+ * halves of ONE control. Which half runs is decided by whether the browser
+ * currently holds the secret:
+ *
+ *   - `useUnsaved` posts the candidate payload, and is the only form that can
+ *     work while the user is still typing a new secret;
+ *   - `useStored` posts NOTHING and names the saved row instead, because a
+ *     stored secret is sealed and never leaves the vault.
+ *
+ * Exporting them as one object costs 1 slot instead of 2 and keeps a caller
+ * from reaching for the payload form on a saved row, which is the mistake
+ * that motivated the stored route in the first place.
+ */
+export const CredentialConnectionChecks = {
+  useUnsaved: useTestConfigurationConnection,
+  useStored: useCheckStoredConfigurationConnection,
 } as const;
 
 /** See this file's own doc comment above for why these two are grouped into one export instead of two. */

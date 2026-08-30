@@ -39,7 +39,7 @@ import { ROLES } from '@/shared/lib/enums';
 import { ChatParticipantType, TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
 
 import type { MessageGroupWire, MessageItemWire, MessageParticipantWire } from '@/entities/message/lib/wire';
-import { convertTime, normaliseAssistantMessage, normaliseUserMessage } from '@/entities/message/lib/normalise';
+import { convertTime, isParticipant, normaliseAssistantMessage, normaliseUserMessage } from '@/entities/message/lib/normalise';
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 
 import { splitWholeResponse } from './chatStreamReasoning';
@@ -127,9 +127,16 @@ export function isUserMessage(
 ): boolean {
   if (role === 'user') return true;
   if (role === 'assistant') return false;
+  // The membership tests are the same participant lookup in `includes` form,
+  // and `includes` is strict: a Go row stating `author_participant_id: 1`
+  // against a roster of string ids matched nothing, and a question whose
+  // `sent_to_id` is set (so the `(!sentToId && !replyToId)` clause is false)
+  // was then classified as an ASSISTANT answer and normalised as one.
+  // `?? ''` is dropped with it: an id the row never states must not match a
+  // roster entry that happens to be empty.
   return (
-    userIds.includes(authorParticipantId ?? '') ||
-    userIds.includes(sentToId ?? '') ||
+    userIds.some((id) => isParticipant(id, authorParticipantId)) ||
+    userIds.some((id) => isParticipant(id, sentToId)) ||
     (!sentToId && !replyToId) ||
     !!sentTo
   );
@@ -160,14 +167,24 @@ export function convertToPlayerQuestion(
   participants: readonly MessageParticipantWire[],
 ): ChatMessage {
   const { content, message_items, created_at, uuid, sent_to_id, author_participant_id, likes } = messageGroup;
-  const sentToParticipant = participants.find((p) => p.id === sent_to_id);
-  const authorParticipant = participants.find((p) => p.id === author_participant_id);
+  // `isParticipant`, not `===`: the ids cross this wire in two spellings (see
+  // its docblock). One lookup governs `name` and `avatar` below, the other
+  // `sentTo` — and this function already stringifies `sent_to_id` for
+  // `participantId`, so comparing it strictly was an inconsistency inside one
+  // returned object.
+  const sentToParticipant = participants.find((p) => isParticipant(p.id, sent_to_id));
+  const authorParticipant = participants.find((p) => isParticipant(p.id, author_participant_id));
 
   // The wire type uses snake_case (`user_name`, `user_avatar`); the old app
   // also reads these same properties from its Participant shape.
   let name = authorParticipant?.meta?.user_name ?? 'You';
   let avatar = authorParticipant?.meta?.user_avatar ?? '';
-  if (playerInfo.firstUserMessage?.author_participant_id === authorParticipant?.id) {
+  // Declared `string | number` on one side and `string` on the other, compared
+  // strictly — the mismatch that decides whether the player's own name and
+  // avatar are used at all. `undefined` on either side no longer matches: a
+  // `playerInfo` carrying no `firstUserMessage` used to compare equal to an
+  // author who did not resolve, and captioned an anonymous row as the player.
+  if (isParticipant(authorParticipant?.id, playerInfo.firstUserMessage?.author_participant_id)) {
     name = playerInfo.user.name ?? name;
     avatar = playerInfo.user.avatar ?? avatar;
   }

@@ -259,6 +259,17 @@ func TestTheModelPairsMatchThePinnedCatalogue(t *testing.T) {
 
 // modelRowScan returns a scan func standing in for one model row.
 func modelRowScan(data string) func(...any) error {
+	return modelRowScanUpdated(data, true)
+}
+
+// modelRowScanUpdated is the same, with the row's `updated_at` under the
+// caller's control. `updated: false` is a freshly created model — Create
+// writes `created_at` only, so its `updated_at` is NULL.
+//
+// The timestamps go through `scanFakeTimestamp` (global_providers_test.go),
+// which reproduces pgx's refusal to put a NULL into a `*time.Time`. The
+// destination type is what is being pinned.
+func modelRowScanUpdated(data string, updated bool) func(...any) error {
 	return func(targets ...any) error {
 		if len(targets) != 10 {
 			return errors.New("column count mismatch")
@@ -271,9 +282,42 @@ func modelRowScan(data string) func(...any) error {
 		*(targets[5].(*[]byte)) = []byte(data)
 		*(targets[6].(*bool)) = true
 		*(targets[7].(*string)) = ""
-		*(targets[8].(*time.Time)) = time.Unix(1_700_000_000, 0).UTC()
-		*(targets[9].(*time.Time)) = time.Unix(1_700_000_000, 0).UTC()
-		return nil
+		created := fakeRowTimestamp
+		if err := scanFakeTimestamp(8, "created_at", targets[8], &created); err != nil {
+			return err
+		}
+		var updatedAt *time.Time
+		if updated {
+			updatedAt = &created
+		}
+		return scanFakeTimestamp(9, "updated_at", targets[9], updatedAt)
+	}
+}
+
+// TestANeverUpdatedModelDoesNotBreakTheWholeListing — the model surface's half
+// of the F1 regression pinned in global_providers_test.go.
+//
+// The same shape, the same consequence: `updated_at` is NULL on a freshly
+// created model, this scanner asked pgx for a `time.Time`, and the resulting
+// `cannot scan NULL into *time.Time` is raised per row — so publishing ONE
+// platform model made GET /admin/gateway/platform_models answer 500 for every
+// row and every operator. Both scanners are asserted because fixing one and
+// reading the other as "the same code, so it must be fine" is how the second
+// half of a paired defect survives.
+func TestANeverUpdatedModelDoesNotBreakTheWholeListing(t *testing.T) {
+	item, err := scanGlobalModel(
+		modelRowScanUpdated(`{"name":"gpt-4o"}`, false), []string{"platform-openai"}, true)
+	if err != nil {
+		t.Fatalf("a freshly created model was refused by the listing: %v", err)
+	}
+	if item.Name != "gpt-4o" {
+		t.Errorf("item = %+v, want the row reported rather than skipped", item)
+	}
+	if item.CreatedAt != fakeRowTimestamp.Format(time.RFC3339) {
+		t.Errorf("created_at = %q, want the row's creation time", item.CreatedAt)
+	}
+	if item.UpdatedAt != "" {
+		t.Errorf("updated_at = %q, want empty for a row that was never updated", item.UpdatedAt)
 	}
 }
 

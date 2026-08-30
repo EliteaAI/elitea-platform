@@ -540,6 +540,175 @@ BEGIN
             message_group_id INTEGER REFERENCES %I.chat_message_group(id) ON DELETE CASCADE
         )', schema_name, schema_name);
 
+    -- The 1:1 payload tables a message item's `item_type` discriminator selects,
+    -- and the execution trace hanging off a group.
+    --
+    -- WHY THEY ARE HERE AS WELL AS IN THE TENANT HISTORY. This file builds the
+    -- ONLY tenant schema a first install has. `migrations/tenant/0123` and
+    -- `0127` own the same four tables, but the tenant history does not
+    -- necessarily run: the journeys E2E stack applies this file with psql and
+    -- then invokes `/elitea-migrate` with NO FLAGS
+    -- (apps/elitea-web/scripts/e2e-stack.sh), which is Bootstrap plus
+    -- ApplyShared and nothing else, and deploy/docker-compose.e2e-standalone.yml
+    -- has no migrate service to make up the difference. So p_1 there was exactly
+    -- what the block above builds — a message graph whose leaves did not exist.
+    --
+    -- The consequence was not a missing feature. GET
+    -- /elitea_core/messages/prompt_lib/{project}/{conversation} joins
+    -- chat_messages_text for every group's content and then joins
+    -- chat_messages_attachment for its files, and BOTH propagate rather than
+    -- answering an empty transcript (#599), so the route answered
+    -- `relation "p_1.chat_messages_text" does not exist` (42P01) -> 500 for
+    -- EVERY conversation on that stack. The writer failed identically:
+    -- predict.go's `INSERT INTO chat_messages_text` had nowhere to land.
+    --
+    -- SAFE IN BOTH DIRECTIONS, because every statement is IF NOT EXISTS and the
+    -- shapes are identical to 0123/0127. Where the tenant history runs first
+    -- these are no-ops; where it runs after this file they are, and it still
+    -- records itself in the ledger. Neither ordering produces 42P07, and neither
+    -- produces two deployments carrying different columns for one table — a
+    -- Postgres integration test compares the two definitions column for column
+    -- rather than trusting that claim
+    -- (repos/conversation_messages_fresh_install_postgres_integration_test.go).
+    --
+    -- The shapes come from those migrations, which take them in turn from the
+    -- pg_catalog dump of the live legacy database (schema p_1) rather than from
+    -- pylon's SQLAlchemy models. Two details that read as oversights are
+    -- deliberate and are copied rather than improved: chat_messages_attachment's
+    -- `content` is `json` and NOT `jsonb`, because a deployment running both
+    -- pylon and this service must read back the bytes that were written, and
+    -- `jsonb` normalises whitespace, reorders keys and drops duplicates; and
+    -- chat_messages_context lists `id` LAST, which is the deployed column order.
+
+    -- One row per text message item. Sharing chat_message_items' primary key
+    -- rather than carrying its own is what makes the item's type discriminator
+    -- and its payload impossible to disagree.
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_messages_text (
+            id INTEGER PRIMARY KEY REFERENCES %I.chat_message_items(id) ON DELETE CASCADE,
+            content TEXT NOT NULL
+        )', schema_name, schema_name);
+
+    -- Same 1:1 shape for context items (support-assistant context and friends).
+    -- context_type is nullable: the adhoc resolver treats a NULL type as "not a
+    -- support_assistant_context" and refuses the turn on it, so the column has
+    -- to be able to hold that state rather than defaulting to something
+    -- plausible.
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_messages_context (
+            context_data JSONB NOT NULL,
+            context_type TEXT,
+            id INTEGER PRIMARY KEY REFERENCES %I.chat_message_items(id) ON DELETE CASCADE
+        )', schema_name, schema_name);
+
+    -- One row per uploaded chat attachment (#606). The discriminator that
+    -- selects it is the literal `attachment_message`, not `attachment`.
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_messages_attachment (
+            id INTEGER PRIMARY KEY REFERENCES %I.chat_message_items(id) ON DELETE CASCADE,
+            name VARCHAR(256) NOT NULL,
+            bucket VARCHAR(256) NOT NULL,
+            attachment_type VARCHAR(256) NOT NULL,
+            content JSON
+        )', schema_name, schema_name);
+
+    -- Execution-step drill-down (#277). Written by repos/agent_trace.go as the
+    -- worker streams node events, read by the message-traces API, and deleted
+    -- wholesale per message group on regeneration. BIGSERIAL rather than the
+    -- bare BIGINT the sqlc projection records: agent_trace.go inserts a step
+    -- WITHOUT supplying an id, so the column has to carry a default.
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_message_trace_step (
+            id BIGSERIAL PRIMARY KEY,
+            message_group_id INTEGER NOT NULL REFERENCES %I.chat_message_group(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            run_id TEXT,
+            parent_agent_name TEXT,
+            parent_agent_call_id TEXT,
+            started_at TIMESTAMPTZ,
+            finished_at TIMESTAMPTZ,
+            is_error BOOLEAN NOT NULL DEFAULT false,
+            has_visible_content BOOLEAN NOT NULL DEFAULT true,
+            tool_name TEXT,
+            tool_inputs JSONB,
+            tool_output TEXT,
+            finish_reason TEXT,
+            step_type TEXT,
+            text TEXT,
+            thinking TEXT,
+            model_name TEXT,
+            attrs JSONB
+        )', schema_name, schema_name);
+
+    -- The canvas branch of the same graph, and the same bargain again — see
+    -- migrations/tenant/0129, which owns these three and carries the full
+    -- reasoning. CreateCanvas INSERTs into chat_messages_canvas and
+    -- chat_canvas_versions, and it is reached by a REGISTERED production route
+    -- (POST /elitea_core/canvases/prompt_lib/{projectID}, behind
+    -- `models.chat.canvas.create`, which shared/0068 seeds), so on this stack it
+    -- answered 42P01 for every caller that cleared the permission gate.
+    -- GetMessageByUUID LEFT JOINs chat_messages_canvas for every item of every
+    -- message, canvas or not; that read is latent rather than live only because
+    -- its handler is not currently registered by any router, and owning the
+    -- table is what keeps wiring it later from being a regression.
+    --
+    -- chat_messages_canvas lists `id` LAST for the same reason
+    -- chat_messages_context does: it is the deployed column order.
+    -- `canvas_type` carries no length limit because the deployed column carries
+    -- none, and a shorter column here would reject a value pylon accepts in a
+    -- database they share. chat_canvas_version_authors has no Go reader or
+    -- writer yet — it is the source of the `editors` list CreateCanvas already
+    -- returns empty — and is created anyway, because 0123's header records what
+    -- happened the last time this graph was owned only as far as the error
+    -- message named.
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_messages_canvas (
+            name TEXT NOT NULL,
+            canvas_type VARCHAR NOT NULL,
+            id INTEGER PRIMARY KEY REFERENCES %I.chat_message_items(id) ON DELETE CASCADE
+        )', schema_name, schema_name);
+
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_canvas_versions (
+            id SERIAL PRIMARY KEY,
+            code_language VARCHAR(32),
+            canvas_content TEXT NOT NULL,
+            canvas_item_id INTEGER NOT NULL REFERENCES %I.chat_messages_canvas(id) ON DELETE CASCADE,
+            created_at TIMESTAMP NOT NULL DEFAULT now()
+        )', schema_name, schema_name);
+
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.chat_canvas_version_authors (
+            id SERIAL PRIMARY KEY,
+            participant_id INTEGER NOT NULL REFERENCES %I.chat_participants(id) ON DELETE CASCADE,
+            canvas_version_id INTEGER NOT NULL REFERENCES %I.chat_canvas_versions(id) ON DELETE CASCADE,
+            CONSTRAINT _participant_id_canvas_version_id_uc UNIQUE (participant_id, canvas_version_id)
+        )', schema_name, schema_name, schema_name);
+
+    -- PostgreSQL does not index a referencing column for you, and every access
+    -- path in the chat query set is by parent: the trace read, its FOR UPDATE
+    -- lock and its regeneration DELETE go by message group;
+    -- InsertCurrentAgentTextItem runs a count(*) over chat_message_items'
+    -- message_group_id to pick the next order_index on every streamed text item;
+    -- and groups are always read by conversation. Without these each degrades to
+    -- a sequential scan over the whole project history. Same names as 0123,
+    -- so whichever definition runs second finds them present.
+    EXECUTE format('
+        CREATE INDEX IF NOT EXISTS chat_message_trace_step_message_group_id_idx
+            ON %I.chat_message_trace_step (message_group_id, id)', schema_name);
+    EXECUTE format('
+        CREATE INDEX IF NOT EXISTS chat_message_items_message_group_id_idx
+            ON %I.chat_message_items (message_group_id, order_index)', schema_name);
+    EXECUTE format('
+        CREATE INDEX IF NOT EXISTS chat_message_group_conversation_id_idx
+            ON %I.chat_message_group (conversation_id, id)', schema_name);
+    -- Keeps the deployed name, `ix_tenant_...`, rather than one of our own: an
+    -- index we named differently would be a SECOND index on the same column in
+    -- every deployment where pylon already built the first.
+    EXECUTE format('
+        CREATE INDEX IF NOT EXISTS ix_tenant_chat_canvas_versions_created_at
+            ON %I.chat_canvas_versions (created_at)', schema_name);
+
     -- Selected conversations (per-user pinned)
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I.chat_selected_conversations (

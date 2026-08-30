@@ -48,8 +48,10 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
+import MenuItem from '@mui/material/MenuItem';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
+import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
@@ -111,12 +113,40 @@ export function AdminAppRequests() {
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           {t('pages.admin.appRequests.title', 'App Requests')}
         </Typography>
-        <SimpleSearchBar
-          value={state.search}
-          onChange={state.onSearchChange}
-          placeholder={t('pages.admin.appRequests.search', 'Search by requesting user')}
-          data-testid="admin-app-requests-search"
-        />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {/*
+            Server-side, via the `issue_type` param the queue endpoint has
+            always accepted (`requests.go`'s `queueFilters`) — no client sent
+            it before this control. Options come from a bounded, unfiltered
+            sample (`useAdminAppRequestsPage`'s header explains why), not from
+            a fixed enum: the queue is issue-type-agnostic by design, so there
+            is no closed set of labels to hardcode.
+          */}
+          <TextField
+            select
+            size="small"
+            label={t('pages.admin.appRequests.filter.issueType', 'Issue Type')}
+            value={state.issueTypeFilter}
+            onChange={(event) => state.onIssueTypeFilterChange(event.target.value)}
+            sx={{ minWidth: '11rem' }}
+            data-testid="admin-app-requests-issue-type-filter"
+          >
+            <MenuItem value="">
+              {t('pages.admin.appRequests.filter.allIssueTypes', 'All')}
+            </MenuItem>
+            {state.issueTypeOptions.map((issueType) => (
+              <MenuItem key={issueType} value={issueType}>
+                {issueType}
+              </MenuItem>
+            ))}
+          </TextField>
+          <SimpleSearchBar
+            value={state.search}
+            onChange={state.onSearchChange}
+            placeholder={t('pages.admin.appRequests.search', 'Search by requesting user')}
+            data-testid="admin-app-requests-search"
+          />
+        </Box>
       </Box>
 
       <Typography variant="bodySmall" color="text.secondary">

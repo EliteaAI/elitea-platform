@@ -140,6 +140,7 @@ fn runtime_context_client_from(
             deadline: Duration::from_secs(1),
             max_response_bytes: 32 * 1_024,
             max_application_response_bytes: 1_024 * 1_024,
+            max_attachment_response_bytes: 1_024 * 1_024,
         },
     )
     .expect("runtime-context fixture client")
@@ -1605,8 +1606,13 @@ async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupt
     attach_nested_agent(&mut request);
     let binding = AuthorizedNativeCommandBinding::fixture();
     let profile = OrdinaryNoToolProfile::validate(&request).expect("root application profile");
-    let plan = OrdinaryNativeAgentPlan::from_authorized(&request, &profile, &binding)
-        .expect("root session plan");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &binding,
+        &request.payload.input_attachments,
+    )
+    .expect("root session plan");
     let user_id = plan.user_id().to_owned();
     let session_id = plan.session_id().to_owned();
 
@@ -2060,8 +2066,13 @@ async fn recursive_saved_agent_confirmation_persists_the_exact_two_tier_path() {
     attach_nested_agent(&mut request);
     let binding = AuthorizedNativeCommandBinding::fixture();
     let profile = OrdinaryNoToolProfile::validate(&request).expect("root application profile");
-    let plan = OrdinaryNativeAgentPlan::from_authorized(&request, &profile, &binding)
-        .expect("root session plan");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &binding,
+        &request.payload.input_attachments,
+    )
+    .expect("root session plan");
     let user_id = plan.user_id().to_owned();
     let session_id = plan.session_id().to_owned();
 

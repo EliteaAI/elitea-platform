@@ -217,10 +217,16 @@ REPEAT_ARGS=""
 # `chat-stream-rust`) invoke it with no Playwright flags of their own. So the
 # pin lives here, once.
 # E2E_WORKER tells the specs WHICH runtime answers the turns. The two legs
-# pin different contracts on purpose — the native runtime refuses populated
-# variables where the SDK worker serves them, and the pipeline/HITL journeys
-# author the native runtime's shapes — so a spec must know its leg, and this
-# script is the one place that knows it authoritatively.
+# pin different contracts on purpose — the pipeline/HITL journeys author the
+# native runtime's shapes — so a spec must know its leg, and this script is
+# the one place that knows it authoritatively.
+#
+# `chat.variables.spec.ts` USED to be on that list and no longer is: it proved
+# substitution on the native leg alone while Main's version projection built an
+# empty `variables` list (the SDK reads `meta.variables` only when it is a
+# dict, so the same agent answered on the python leg with its placeholder
+# intact). The projection now carries the version's real list, so that spec
+# runs one assertion on BOTH legs.
 E2E_WORKER="${STANDALONE_WORKER:-python}"
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then

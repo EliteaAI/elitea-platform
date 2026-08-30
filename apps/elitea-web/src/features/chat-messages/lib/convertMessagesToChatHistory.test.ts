@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MessageGroupWire } from '@/entities/message/lib/wire';
+import type { MessageGroupWire, MessageParticipantWire } from '@/entities/message/lib/wire';
 
-import { convertMessagesToChatHistory, isUserMessage } from './convertMessagesToChatHistory';
+import { convertMessagesToChatHistory, convertToPlayerQuestion, isUserMessage } from './convertMessagesToChatHistory';
 
 describe('isUserMessage', () => {
   it("trusts the row's own role over the relationship heuristic", () => {
@@ -22,6 +22,18 @@ describe('isUserMessage', () => {
     expect(isUserMessage('u1', 'p2', ['u1'], undefined, undefined, 'assistant')).toBe(false);
   });
 
+  it('recognises a roster id the row spells the other way round', () => {
+    // The membership tests are strict `includes`. `sentToId` is set in every
+    // case below, so the `(!sentToId && !replyToId)` clause cannot rescue a
+    // missed match — the row is classified as an assistant answer instead.
+    expect.soft(isUserMessage(1, 2, ['1'], undefined, undefined)).toBe(true);
+    expect.soft(isUserMessage('1', 2, [1], undefined, undefined)).toBe(true);
+    expect.soft(isUserMessage(9, 1, ['1'], undefined, undefined)).toBe(true);
+    // ...and it must not start matching rows it never matched: an id no
+    // roster entry carries is still not a user message.
+    expect.soft(isUserMessage(9, 8, ['1'], undefined, undefined)).toBe(false);
+  });
+
   it('falls back to the heuristic when no role is stated', () => {
     // The `message_group` shape carries no `role`, and that path must keep
     // behaving exactly as it did — it is what the conversation-load path uses.
@@ -29,6 +41,149 @@ describe('isUserMessage', () => {
     expect(isUserMessage('p1', 'p2', [], 'r1', undefined)).toBe(false);
     expect(isUserMessage('u1', 'p2', ['u1'], 'r1', undefined)).toBe(true);
     expect(isUserMessage('p1', 'p2', [], 'r1', { entity_name: 'users' })).toBe(true);
+  });
+});
+
+/*
+ * ── the two id spellings that meet in this file ────────────────────────────
+ *
+ * `MessageGroupWire` declares `author_participant_id`/`sent_to_id` as
+ * `string | number` because both spellings are wire truth: the Go payloads
+ * state participant ids as NUMBERS, the socket-era payloads carried STRINGS.
+ * Every lookup below compares through `isParticipant`
+ * (`entities/message/lib/normalise`) for that reason; a strict `===` resolves
+ * nobody the moment the two spellings cross, and resolves nobody SILENTLY.
+ */
+
+/** A user + an agent, ids spelled as strings — the socket-era roster shape. */
+const SPELLED_ROSTER: readonly MessageParticipantWire[] = [
+  { id: '1', meta: { user_name: 'Alice', user_avatar: 'alice.png' }, entity_meta: { id: 6 } },
+  { id: '2', meta: { user_name: 'Support Agent' } },
+];
+
+/**
+ * The same roster with NUMERIC ids — the shape the Go participants payload
+ * actually produces, which `MessageParticipantWire.id: string` does not
+ * describe (hence the cast).
+ */
+const NUMBERED_ROSTER = [
+  { id: 1, meta: { user_name: 'Alice', user_avatar: 'alice.png' }, entity_meta: { id: 6 } },
+  { id: 2, meta: { user_name: 'Support Agent' } },
+] as unknown as readonly MessageParticipantWire[];
+
+const PLAYER: { user: { name: string; avatar: string } } = {
+  user: { name: 'Player', avatar: 'player.png' },
+};
+
+function question(fields: Partial<MessageGroupWire>): MessageGroupWire {
+  return { id: 5, uuid: 'q-1', content: 'hi', created_at: '2026-01-01 12:00:00', ...fields };
+}
+
+describe('convertToPlayerQuestion across the two id spellings', () => {
+  /*
+   * ONE comparison per lookup, and each governs more than a label: the author
+   * lookup decides `name` AND `avatar`, the `sent_to_id` lookup decides
+   * `sentTo` (which is how the bubble knows who the question was addressed
+   * to). `expect.soft` throughout, so a failing run shows the whole identity
+   * of the row going at once rather than stopping at the first field — the
+   * loss is structural, not cosmetic.
+   */
+  it('resolves the author and the recipient when the row numbers ids and the roster spells them', () => {
+    const result = convertToPlayerQuestion(
+      question({ author_participant_id: 1, sent_to_id: 2 }),
+      PLAYER,
+      SPELLED_ROSTER,
+    );
+
+    expect.soft(result.name).toBe('Alice');
+    expect.soft(result.avatar).toBe('alice.png');
+    expect.soft(result.sentTo).toBe(SPELLED_ROSTER[1]);
+  });
+
+  it('resolves the author and the recipient when the row spells ids and the roster numbers them', () => {
+    const result = convertToPlayerQuestion(
+      question({ author_participant_id: '1', sent_to_id: '2' }),
+      PLAYER,
+      NUMBERED_ROSTER,
+    );
+
+    expect.soft(result.name).toBe('Alice');
+    expect.soft(result.avatar).toBe('alice.png');
+    expect.soft(result.sentTo).toBe(NUMBERED_ROSTER[1]);
+  });
+
+  /*
+   * The second comparison in this function: `firstUserMessage
+   * .author_participant_id` (declared `string | number`) against the resolved
+   * participant's `id` (declared `string`). It is the switch that decides
+   * whether the player's own name and avatar are used at all, and the two
+   * sides were declared in different spellings and compared strictly.
+   */
+  it('substitutes the player identity across either spelling of firstUserMessage', () => {
+    const numbered = convertToPlayerQuestion(
+      question({ author_participant_id: '1' }),
+      { ...PLAYER, firstUserMessage: { author_participant_id: 1 } },
+      SPELLED_ROSTER,
+    );
+    const spelled = convertToPlayerQuestion(
+      question({ author_participant_id: 1 }),
+      { ...PLAYER, firstUserMessage: { author_participant_id: '1' } },
+      NUMBERED_ROSTER,
+    );
+
+    expect.soft(numbered.name).toBe('Player');
+    expect.soft(numbered.avatar).toBe('player.png');
+    expect.soft(spelled.name).toBe('Player');
+    expect.soft(spelled.avatar).toBe('player.png');
+  });
+
+  it('does not caption an unresolved author as the player when neither side states an id', () => {
+    // `undefined === undefined` was TRUE: a playerInfo carrying no
+    // `firstUserMessage` matched an author who resolved to nobody, and the
+    // player's name and avatar were stamped onto a row that states no author.
+    const result = convertToPlayerQuestion(question({}), PLAYER, SPELLED_ROSTER);
+
+    expect.soft(result.name).toBe('You');
+    expect.soft(result.avatar).toBe('');
+  });
+});
+
+describe('convertMessagesToChatHistory over a numbered-id payload', () => {
+  /*
+   * `isUserMessage`'s roster membership tests are the same lookup in
+   * `includes` form, and `includes` is strict. A Go row stating
+   * `author_participant_id: 1` against a roster of string ids matched neither
+   * clause; its `sent_to_id` is set, so `(!sentToId && !replyToId)` is false
+   * too — and the user's own question was routed to the ASSISTANT normaliser.
+   *
+   * That one comparison therefore governs the entire row: role, name, avatar,
+   * the `userId` the edit and delete controls gate on, and `sentTo`. Asserted
+   * softly, together, because they are lost together.
+   */
+  it('classifies the question as the user\'s and carries its whole identity through', () => {
+    const history = convertMessagesToChatHistory(
+      [question({ author_participant_id: 1, sent_to_id: 2 })],
+      SPELLED_ROSTER,
+    );
+
+    expect.soft(history[0]?.role).toBe('user');
+    expect.soft(history[0]?.name).toBe('Alice');
+    expect.soft(history[0]?.avatar).toBe('alice.png');
+    expect.soft(history[0]?.userId).toBe('6');
+    expect.soft(history[0]?.sentTo).toBe(SPELLED_ROSTER[1]);
+  });
+
+  it('does the same when the row spells its ids and the roster numbers them', () => {
+    const history = convertMessagesToChatHistory(
+      [question({ author_participant_id: '1', sent_to_id: '2' })],
+      NUMBERED_ROSTER,
+    );
+
+    expect.soft(history[0]?.role).toBe('user');
+    expect.soft(history[0]?.name).toBe('Alice');
+    expect.soft(history[0]?.avatar).toBe('alice.png');
+    expect.soft(history[0]?.userId).toBe('6');
+    expect.soft(history[0]?.sentTo).toBe(NUMBERED_ROSTER[1]);
   });
 });
 

@@ -55,10 +55,11 @@ func TestPostgresAgentRuntimeContextNarrowsCapabilityWithoutWideningInputs(t *te
 			*target = query
 			*captured = args
 			return contentRowFunc(func(dest ...any) error {
-				require.Len(t, dest, 3)
+				require.Len(t, dest, 4)
 				*dest[0].(*int64) = 42
 				*dest[1].(*string) = "17"
 				*dest[2].(*string) = runtimeContextInitiatorUser
+				*dest[3].(*string) = "5f5a1ad4-2b30-4a54-9b7f-2d05a0d3f6c1"
 				return nil
 			})
 		}
@@ -189,10 +190,15 @@ func TestPostgresAgentRuntimeContextRefusesIndexClaimIntegration(t *testing.T) {
     initiator TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
 )`,
+		// client_stream_id is chat_conversations.uuid, and it is NOT NULL in
+		// the real table (0055_agent_execution_admission.sql). The attachment
+		// object route authorizes on it, so a fixture without it would let a
+		// query that stopped projecting it still pass here.
 		`CREATE TABLE elitea_runtime.agent_execution_jobs (
     execution_id TEXT NOT NULL,
     generation BIGINT NOT NULL,
     capability_id TEXT NOT NULL,
+    client_stream_id TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
 )`,
 		`CREATE TABLE elitea_runtime.workload_sessions (
@@ -238,8 +244,9 @@ VALUES ('execution-index', 1, 'index.ingest.v1', 'user')`,
     (execution_id, generation, resource_project_id, actor_id, desired_state, capability_id)
 VALUES ('execution-agent', 1, 42, '17', 'RUNNING', 'agent.execute.application.v1')`,
 		`INSERT INTO elitea_runtime.agent_execution_jobs
-    (execution_id, generation, capability_id)
-VALUES ('execution-agent', 1, 'agent.execute.application.v1')`,
+    (execution_id, generation, capability_id, client_stream_id)
+VALUES ('execution-agent', 1, 'agent.execute.application.v1',
+        '5f5a1ad4-2b30-4a54-9b7f-2d05a0d3f6c1')`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)

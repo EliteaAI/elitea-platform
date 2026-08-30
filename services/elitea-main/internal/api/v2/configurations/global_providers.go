@@ -67,6 +67,7 @@ package configurations
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,7 +97,169 @@ func (h *Handler) GlobalProviderRoutes() chi.Router {
 	r.Post("/", h.CreateGlobalProvider)
 	r.Put("/{configID}", h.UpdateGlobalProvider)
 	r.Delete("/{configID}", h.DeleteGlobalProvider)
+	// The two operations on a SAVED platform credential, delegated to the same
+	// executors the project plane calls (stored_check.go, revalidate.go).
+	//
+	// They are the pair the listing above made necessary. `status_ok` is the
+	// column the gateway requires, and the listing publishes it — so an
+	// operator can now SEE a platform credential the gateway will refuse, and
+	// until these routes existed the only repair was to open that row in the
+	// public project's ordinary settings screen and save it again. The whole
+	// point of this surface is that an operator should not have to know that
+	// screen exists.
+	//
+	// The two are separate for the reason revalidate.go's header states at
+	// length: `check` dials the provider and writes NOTHING, `revalidate`
+	// re-runs admission and writes nothing but `status_ok`. Merging them would
+	// let a provider outage withdraw every platform credential from the
+	// gateway.
+	//
+	// THERE IS NO MODEL-LEVEL TWIN, deliberately. A platform model's health is
+	// its credential's: `global_models.go` pairs a public model with public
+	// credentials only, so a check of a model row would either re-check the
+	// credential under another name — reporting the same fact twice, from two
+	// screens that can then disagree — or dial the provider with a row that
+	// holds no secret at all. `GlobalModelRoutes` therefore gets neither route.
+	r.Post("/{configID}/check", h.CheckGlobalProviderConnection)
+	r.Post("/{configID}/revalidate", h.RevalidateGlobalProvider)
+	// The THIRD operation on a saved platform credential: what models does its
+	// provider offer? It is the successor to legacy's `import_llm_models`,
+	// which read LiteLLM's own model table — a table Bifrost does not keep, so
+	// the provider's own listing is the inventory. See
+	// global_provider_models.go, which owns the whole route; nothing else in
+	// this file changes for it.
+	//
+	// It READS ONLY. Adoption is a separate, per-model write through
+	// GlobalModelRoutes, so the one place that derives a model's section,
+	// validates its credential link and runs admission stays the only author
+	// of those rows.
+	r.Post("/{configID}/models", h.ListGlobalProviderModels)
 	return r
+}
+
+// CheckGlobalProviderConnection serves POST /admin/gateway/providers/{configID}/check.
+//
+// It is the project plane's single stored check, pointed at the public
+// project's row: no request body, HTTP 200 with {"success":true} on a proven
+// round trip and HTTP 400 with {"success":false,"message":…} for every
+// failure. The contract is the delegated handler's because it IS the delegated
+// handler — the browser control that renders this answer is the one the
+// credentials screen already uses.
+//
+// The secret is never sent by the caller and never reaches this file: the row
+// is read server-side and redeemed through the same resolver the gateway's
+// admission uses. That is the property stored_check.go exists for, and the
+// reason this route can exist at all — the api_key of a platform credential is
+// sealed in the PUBLIC project's vault, so an operator holding
+// `configuration.governance` has no copy of it to re-type.
+func (h *Handler) CheckGlobalProviderConnection(w http.ResponseWriter, r *http.Request) {
+	request, ok := h.pinPublicProject(w, r)
+	if !ok {
+		return
+	}
+	// The refusals are written HERE rather than by the fence, because the check
+	// answers `{"success":…,"message":…}` in every branch — including its 404 —
+	// and one browser control renders all of them. An `{"error":…}` body, which
+	// is what apierr writes and what the three CRUD verbs correctly answer,
+	// would leave that control with no message to show and a `success` field
+	// that reads as undefined.
+	switch err := h.admitGlobalProviderRow(request); {
+	case errors.Is(err, errGlobalProviderRowUnreadable):
+		// A failed READ is not a deleted credential. stored_check.go refuses to
+		// conflate the two for its own statement, and the fence in front of it
+		// must not reintroduce the conflation: a saturated pool would then tell
+		// an operator that every platform credential has been deleted.
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"message": globalProviderCheckUnverifiedMessage,
+		})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"success": false,
+			"message": "Configuration not found",
+		})
+		return
+	}
+	h.CheckStoredConnection(w, request)
+}
+
+// RevalidateGlobalProvider serves POST /admin/gateway/providers/{configID}/revalidate.
+//
+// It re-runs ADMISSION for the public project's row and persists `status_ok`,
+// answering with the row as it now stands — the same Configuration object the
+// project-plane twin returns, so the admin screen can replace the row it holds
+// without a second read.
+//
+// This is the repair for the state the listing surfaced: a platform credential
+// whose referenced secret was removed, or whose vault entry was rewritten,
+// keeps `status_ok = true` until something re-derives it, and every gateway
+// read selects on that column.
+func (h *Handler) RevalidateGlobalProvider(w http.ResponseWriter, r *http.Request) {
+	request, ok := h.pinPublicProject(w, r)
+	if !ok {
+		return
+	}
+	switch err := h.admitGlobalProviderRow(request); {
+	case errors.Is(err, errGlobalProviderRowUnreadable):
+		// The delegated handler answers 500 for a failed read of the row and
+		// 404 only for a row that is absent, and says why: a status control
+		// that reports "deleted" whenever the pool is saturated sends an
+		// operator to re-create a credential that is still there. The fence in
+		// front of it draws the same line.
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
+		return
+	case err != nil:
+		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
+		return
+	}
+	h.RevalidateConfiguration(w, request)
+}
+
+// globalProviderCheckUnverifiedMessage is stored_check.go's own wording for a
+// failure that is not a provider verdict, repeated byte for byte because the
+// same control renders this answer and that one.
+const globalProviderCheckUnverifiedMessage = "Could not verify the connection right now. Please try again."
+
+// errGlobalProviderRowMissing and errGlobalProviderRowUnreadable are the two
+// ways the fence below refuses.
+//
+// They are DISTINCT values because the two routes in front of them answer them
+// differently, and because collapsing them is the recurring defect this
+// repository keeps meeting: absence read as correctness. "The row is not on
+// this surface" is a verdict about the row; "the read failed" is a verdict
+// about the platform, and only the first should ever be shown as a 404.
+var (
+	errGlobalProviderRowMissing    = errors.New("no provider row of this surface")
+	errGlobalProviderRowUnreadable = errors.New("the public project's configuration row could not be read")
+)
+
+// admitGlobalProviderRow fences a stored-row route on this surface's section.
+//
+// It is requireGlobalRowSection's decision — the same query, through the same
+// helper — reported as an error instead of written as a response, because the
+// check and the revalidation answer in two different shapes.
+//
+// WITHOUT IT EACH ROUTE ADDRESSES THE WHOLE TABLE, exactly as Update and
+// Delete did before requireGlobalRowSection existed: both delegated handlers
+// address a row by id alone, so `POST /providers/{toolkit credential id}/check`
+// would make the platform dial GitHub with the public project's toolkit
+// credential, and `POST /providers/{model id}/revalidate` would re-derive a
+// platform MODEL's status column from this surface — under a permission
+// granted for governance.
+func (h *Handler) admitGlobalProviderRow(r *http.Request) error {
+	configID := chi.URLParam(r, "configID")
+	if configID == "" {
+		return errGlobalProviderRowMissing
+	}
+	section, found, err := h.globalRowSection(r.Context(), configID)
+	if err != nil {
+		return errGlobalProviderRowUnreadable
+	}
+	if !found || section != GlobalProviderSection {
+		return errGlobalProviderRowMissing
+	}
+	return nil
 }
 
 // pinPublicProject rewrites the request so the delegated handler reads the
@@ -270,10 +433,20 @@ func (h *Handler) ListGlobalProviders(w http.ResponseWriter, r *http.Request) {
 //
 // It takes `rows.Scan` rather than the `pgx.Rows`, so the redaction rules — the
 // part with the disclosure decision in them — are testable without a database.
+//
+// The timestamps are scanned as POINTERS because `updated_at` is nullable in
+// the tenant projection and a freshly created row leaves it NULL — Create
+// writes `created_at` only. Scanning into a `time.Time` made pgx refuse the
+// row with `cannot scan NULL into *time.Time`, and because the refusal is
+// raised per row on a listing, ONE never-updated credential turned every
+// operator's GET /admin/gateway/providers into 500 "list failed": creating a
+// platform provider bricked the screen that shows it. Every other reader in
+// this package (handler.go List/Get/Update, revalidate.go) already scans these
+// two columns this way; these two scanners were the outliers.
 func scanGlobalProvider(scan func(...any) error) (GlobalProvider, error) {
 	var item GlobalProvider
 	var data []byte
-	var createdAt, updatedAt time.Time
+	var createdAt, updatedAt *time.Time
 	if err := scan(&item.ID, &item.UUID, &item.Label, &item.Name, &item.Type,
 		&data, &item.StatusOK, &item.StatusLogs, &createdAt, &updatedAt); err != nil {
 		return GlobalProvider{}, err
@@ -305,8 +478,16 @@ func scanGlobalProvider(scan func(...any) error) (GlobalProvider, error) {
 			Sealed: configurationapp.IsCurrentSecretReference(value),
 		})
 	}
-	item.CreatedAt = createdAt.Format(time.RFC3339)
-	item.UpdatedAt = updatedAt.Format(time.RFC3339)
+	// A never-updated row reports NO update time rather than borrowing its
+	// creation time: `updated_at` answers "when was this last changed", and
+	// "never" is the honest answer for a row nobody has edited. That is what
+	// the detail route already reports for the same row.
+	if createdAt != nil {
+		item.CreatedAt = createdAt.Format(time.RFC3339)
+	}
+	if updatedAt != nil {
+		item.UpdatedAt = updatedAt.Format(time.RFC3339)
+	}
 	return item, nil
 }
 
@@ -596,36 +777,47 @@ func (h *Handler) requireGlobalRowSection(
 	w http.ResponseWriter, r *http.Request, allowed ...string,
 ) bool {
 	configID := chi.URLParam(r, "configID")
-	if configID == "" {
-		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
-		return false
+	if configID != "" {
+		if section, found, err := h.globalRowSection(r.Context(), configID); found && err == nil {
+			for _, want := range allowed {
+				if section == want {
+					return true
+				}
+			}
+		}
 	}
+	apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
+	return false
+}
+
+// globalRowSection reads one public-project row's `section`.
+//
+// The three-valued return is the point: a row that is THERE, a row that is
+// NOT, and a read that FAILED are three different facts, and only the caller
+// knows which of them its own response shape can express. Update and Delete
+// answer 404 to all three, for the reason requireGlobalRowSection states; the
+// two stored-row routes do not, because the executors behind them do not.
+//
+// It is shared by every verb of this surface that addresses a stored row, so
+// the fence's QUERY exists once: a second copy would be where a later edit
+// makes one surface's scoping disagree with another's.
+func (h *Handler) globalRowSection(ctx context.Context, configID string) (string, bool, error) {
 	schema := pgx.Identifier{fmt.Sprintf("p_%d", h.publicProjectID)}.Sanitize()
 
 	var section string
-	err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(
 		// COALESCE so a NULL section is a clean refusal rather than a scan
 		// error logged as a failure: a row with no section belongs to no
 		// surface, which is the same answer either way.
 		`SELECT COALESCE(section, '') FROM %s.configuration WHERE %s = $1`,
 		schema, configurationIDColumn(configID)), configID).Scan(&section)
 	if err != nil {
-		// A missing row and an unreadable one both answer 404 rather than 500.
-		// The delegated handlers answer 404 for a missing row anyway, so a 500
-		// here would only distinguish "the check failed" from "the row is not
-		// yours" — and the safe reading of a failed check is to refuse.
-		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.ErrorContext(r.Context(), "global configuration section check failed",
-				"schema", schema, "configuration_id", configID, "err", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
 		}
-		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
-		return false
+		slog.ErrorContext(ctx, "global configuration section check failed",
+			"schema", schema, "configuration_id", configID, "err", err)
+		return "", false, err
 	}
-	for _, want := range allowed {
-		if section == want {
-			return true
-		}
-	}
-	apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
-	return false
+	return section, true, nil
 }

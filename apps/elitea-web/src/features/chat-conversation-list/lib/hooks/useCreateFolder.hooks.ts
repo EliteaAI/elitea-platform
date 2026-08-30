@@ -12,7 +12,22 @@ import type { FolderListItem } from './conversationListState.types';
 
 export interface UseCreateFolderParams {
   readonly projectId: string | undefined;
-  readonly folders: readonly FolderListItem[];
+  /**
+   * NO LONGER READ — kept only because the composition root
+   * (`processes/chat/model/useConversationSidebar.ts`) still passes it, and an
+   * object literal with an undeclared property is a type error.
+   *
+   * It was the base of the post-create list write, and that write happens AFTER
+   * `await folderApi.create`: a render-time snapshot there discarded every
+   * folder that landed during the POST (`useQueryFoldersList` populates the
+   * same container asynchronously, and its first page routinely arrives inside
+   * that window), because the write REPLACED the list rather than amending it.
+   * The write is a functional updater now, so it reads the list React holds at
+   * commit time — the strongest form of the "read live" fix, and the one
+   * `processes/chat/model/useConversationSidebar.ts`'s ref doc block names as
+   * already-safe-by-construction. Delete this field once the call site drops it.
+   */
+  readonly folders?: readonly FolderListItem[];
   readonly setActiveFolder: (folder: FolderListItem | undefined) => void;
   readonly setFolders: Dispatch<SetStateAction<readonly FolderListItem[]>>;
   readonly toastError: (message: string) => void;
@@ -56,7 +71,7 @@ export interface UseCreateFolderResult {
  * folder" as `undefined` throughout this slice.
  */
 export function useCreateFolder(params: UseCreateFolderParams): UseCreateFolderResult {
-  const { projectId, folders, setActiveFolder, setFolders, toastError, setActiveParticipant, onResetCreateFlag } = params;
+  const { projectId, setActiveFolder, setFolders, toastError, setActiveParticipant, onResetCreateFlag } = params;
   const hasCreatePermission = useHasPermission(projectId, PERMISSIONS.chat.folders.create);
   const [createError, setCreateError] = useState<unknown>(undefined);
   const queryClient = useQueryClient();
@@ -85,7 +100,9 @@ export function useCreateFolder(params: UseCreateFolderParams): UseCreateFolderR
         setCreateError(undefined);
         const createdItem: FolderListItem = { ...created, conversations: [] };
         setActiveFolder(createdItem);
-        setFolders([createdItem, ...folders.filter((item) => !item.isNew)]);
+        // Amends the list React holds NOW rather than replacing it with a
+        // render-time copy — see `folders` in `UseCreateFolderParams`.
+        setFolders((prev) => [createdItem, ...prev.filter((item) => !item.isNew)]);
         // `folderApi.create` is the plain fetcher, not `folderApi.useCreate`
         // (no consumer anywhere uses the mutation-hook forms — see that
         // file's own doc comment) — invalidate here so a background
@@ -101,7 +118,7 @@ export function useCreateFolder(params: UseCreateFolderParams): UseCreateFolderR
         onCreatedCallback?.();
       }
     },
-    [projectId, hasCreatePermission, setActiveFolder, setFolders, folders, toastError, queryClient],
+    [projectId, hasCreatePermission, setActiveFolder, setFolders, toastError, queryClient],
   );
 
   const onCancelCreateFolder = useCallback(

@@ -34,6 +34,38 @@ export function convertTime(time: string): string {
   return `${time}Z`;
 }
 
+/**
+ * Match a participant (or `users[]` author) row against an id a message states.
+ *
+ * String-normalised on BOTH sides, because both spellings are wire truth: the
+ * Go payloads state participant ids as NUMBERS — `author_participant_id` and
+ * `sent_to_id` on the transcript rows, and the ids on the participants payload
+ * alike — while the socket-era payloads carried STRINGS. That is why
+ * `MessageAuthorWire.id` and `MessageGroupWire.author_participant_id`/
+ * `sent_to_id` are all declared `string | number` in `./wire`. A strict `===`
+ * across the two spellings resolves NO participant, silently.
+ *
+ * Its failure is not cosmetic, because one comparison governs a whole
+ * identity: the author lookup decides `name`, `avatar` AND `userId` together,
+ * and a missing `userId` is what the edit and delete controls gate on
+ * (`ChatMessageList`, `entities/message`'s `canDeleteMessage`). An unresolved
+ * author captions the reader's own question "User No Longer Available" and
+ * takes the message's own controls with it.
+ *
+ * `undefined` never matches: a row that states no id must resolve nobody, not
+ * a participant whose id stringifies to `"undefined"`.
+ *
+ * The live-stream path applies the same rule to the same two spellings —
+ * `features/chat-messages/lib/chatStreamMessageSyncFrames.ts`.
+ */
+export function isParticipant(
+  participantId: string | number | undefined,
+  statedId: string | number | undefined,
+): boolean {
+  if (participantId === undefined || statedId === undefined) return false;
+  return String(participantId) === String(statedId);
+}
+
 // ── convertToUserQuestion (lines 35-82) ────────────────────────────────────
 
 /**
@@ -116,12 +148,16 @@ export function normaliseUserMessage(
   participants: readonly MessageParticipantWire[],
 ): UserMessage {
   const statesAnAuthor = messageGroup.author_participant_id !== undefined && messageGroup.author_participant_id !== '';
-  // String-normalised: the Go transcript endpoint states the id as a number
-  // and the Go participants payload does too, but socket-era payloads carried
-  // strings — a strict === across the two spellings silently resolves no
-  // author, which reads as "User No Longer Available".
-  const foundUser = users.find((user) => String(user.id) === String(messageGroup.author_participant_id));
-  const foundParticipant = participants.find((participant) => participant.id === messageGroup.sent_to_id);
+  // Both lookups go through `isParticipant`: the author one always did (in its
+  // own inline form), while `sent_to_id` — which crosses the SAME wire in the
+  // same two spellings — was left strict, so a row whose author resolved could
+  // still lose the `sentTo` participant beside it. Stringifying one side of an
+  // object literal (`participantId: String(sent_to_id)`, below) while
+  // comparing the other strictly was the asymmetry.
+  const foundUser = users.find((user) => isParticipant(user.id, messageGroup.author_participant_id));
+  const foundParticipant = participants.find((participant) =>
+    isParticipant(participant.id, messageGroup.sent_to_id),
+  );
   const sentTo = resolveSentTo(messageGroup, foundParticipant);
 
   return {
@@ -306,7 +342,12 @@ export function normaliseAssistantMessage(
   const meta = messageGroup.meta;
   const { isError, isSummarized, references } = resolveAssistantSummaryFields(meta);
   const { thinkingSteps, toolCalls, firstToolTimestampStart } = resolveAssistantToolInputs(meta);
-  const foundParticipant = participants?.find((participant) => participant.id === messageGroup.author_participant_id);
+  // Same lookup, same two spellings — this one feeds `buildToolActions`' tools
+  // fallback, so a strict === costs every tool row its `toolkit_type` (and the
+  // icon that reads it) whenever the payload numbers its participant ids.
+  const foundParticipant = participants?.find((participant) =>
+    isParticipant(participant.id, messageGroup.author_participant_id),
+  );
 
   const toolActions = buildToolActions(
     thinkingSteps,

@@ -715,6 +715,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentModelCatalog http.Handler
 	var currentModelDefault http.Handler
 	var configProviderAdmission configurationapi.ProviderAdmission
+	// The resolve+unseal capability the STORED connection checks need
+	// (internal/api/v2/configurations/stored_check.go). It composes here, with
+	// the admission decision, because both read the same expander and the same
+	// project vault this Configurations runtime owns, and a second vault with
+	// a second key source is #399's defect.
+	var configStoredResolver configurationapi.StoredConfigurationResolver
 	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
@@ -825,6 +831,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// on a nil receiver instead of leaving the column alone.
 		if providerAdmission != nil {
 			configProviderAdmission = providerAdmission
+		}
+		storedResolver, storedResolverErr := runtimecomposition.NewCurrentStoredConfigurationResolver(
+			currentConfigurationsRoot,
+		)
+		if storedResolverErr != nil {
+			return fmt.Errorf("compose current stored configuration resolution: %w", storedResolverErr)
+		}
+		// Assigned only when non-nil, for the same reason as the two
+		// dependencies around it: a nil POINTER boxed into this interface
+		// makes the handler's nil test false, so the stored check would call a
+		// method on a nil receiver instead of reporting itself unavailable.
+		if storedResolver != nil {
+			configStoredResolver = storedResolver
 		}
 		// No /llm data plane is composed here. This block used to build the
 		// LiteLLM facade (an authenticated reverse proxy plus an administration
@@ -1454,6 +1473,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ConfigConnectionChecker:    configConnectionChecker,
 		GatewayStatus:              gatewayStatus,
 		ConfigProviderAdmission:    configProviderAdmission,
+		ConfigStoredResolver:       configStoredResolver,
 		ObjectStore:                objectStore,
 		ProjectVectorStore:         projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering

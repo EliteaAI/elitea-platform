@@ -76,6 +76,15 @@ var projectSurfaceRoutes = []projectSurfaceRoute{
 	{http.MethodPost, "/api/v2/configurations/check_connection/administration/7/open_ai", "/api/v2/configurations/check_connection/administration/8/open_ai", configurationCreatePermission},
 	{http.MethodPost, "/api/v2/configurations/check_connections/7", "/api/v2/configurations/check_connections/8", configurationCreatePermission},
 	{http.MethodPost, "/api/v2/configurations/check_connections/administration/7", "/api/v2/configurations/check_connections/administration/8", configurationCreatePermission},
+	// The STORED checks and the revalidation address an existing row, so they
+	// gate on the UPDATE string — see the comment beside their registration in
+	// the configurations handler's Routes().
+	{http.MethodPost, "/api/v2/configurations/check_stored_connection/7/11", "/api/v2/configurations/check_stored_connection/8/11", configurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/check_stored_connection/administration/7/11", "/api/v2/configurations/check_stored_connection/administration/8/11", configurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/check_stored_connections/7", "/api/v2/configurations/check_stored_connections/8", configurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/check_stored_connections/administration/7", "/api/v2/configurations/check_stored_connections/administration/8", configurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/revalidate/7/11", "/api/v2/configurations/revalidate/8/11", configurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/revalidate/administration/7/11", "/api/v2/configurations/revalidate/administration/8/11", configurationUpdatePermission},
 	{http.MethodGet, "/api/v2/configurations/models/7", "/api/v2/configurations/models/8", configurationListPermission},
 	{http.MethodGet, "/api/v2/configurations/models/administration/7", "/api/v2/configurations/models/administration/8", configurationListPermission},
 	{http.MethodPost, "/api/v2/configurations/models/7", "/api/v2/configurations/models/8", configurationUpdatePermission},

@@ -309,6 +309,15 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
                 assembly.request().payload.toolkit_guardrails.as_ref(),
                 &self.tool_policy,
             )?;
+            // #606: this turn's attached documents are read HERE, before
+            // admission builds the human message. It is infallible by design —
+            // a file the platform will not serve reaches the model as its name
+            // alone rather than failing the turn.
+            tracing::Span::current().record("stage", "attachments");
+            let assembly = assembly
+                .resolve_attachment_contents(self.platform.as_ref())
+                .await;
+            tracing::Span::current().record("stage", "admission");
             let admitted = assembly.admit_llm_agent(tool_policy.as_ref())?;
             if admitted.is_resume() && !self.sessions.supports_resume() {
                 return Err(unsupported_session_resume());

@@ -9,9 +9,9 @@
  * so failed runs' leftovers are identifiable and sweepable.
  */
 import type { APIRequestContext, Page } from '@playwright/test';
-import { expect } from '@playwright/test';
+import { expect, request as playwrightRequest } from '@playwright/test';
 
-import { BASE_URL } from '../../playwright.config';
+import { BASE_URL, STORAGE_STATE } from '../../playwright.config';
 
 export const AUTOTEST_PREFIX = 'autotest_';
 
@@ -430,8 +430,13 @@ export interface StoredTurnRefusalOptions {
  * than as any status code a Playwright `waitForResponse` could see. That is
  * exactly the shape `chat.agent-tools.spec.ts`'s own header comment measured
  * for an unsupported internal tool, and it is the shape
- * `chat.variables.spec.ts` measures for a populated `meta.variables` — see
- * that file's header for the runtime source this pins.
+ * `chat.attachments.spec.ts` measures for an unserved attachment — see those
+ * files' headers for the runtime source each one pins.
+ *
+ * (`chat.variables.spec.ts` used to be the other example here. It is not any
+ * more: the native runtime SUBSTITUTES a populated `meta.variables` now, so
+ * that journey asserts a served answer and reads the substituted prompt back
+ * out of the mock's model journal.)
  *
  * Polled, not read once, for the same reason `expectStoredAssistantAnswer`
  * is: the stream settles in the browser before the store finalises the row,
@@ -602,4 +607,727 @@ export async function readStoredAssistantAnswer(
     content: assistant.content ?? '',
     isError: assistant.metadata?.is_error === true,
   };
+}
+
+/** One `chat_message_items` row as the conversation-details route serves it. */
+export interface StoredMessageItem {
+  /** `chat_message_items.item_type` — `text_message`, `attachment_message`, … */
+  readonly itemType: string;
+  /**
+   * The item's type-specific payload, verbatim.
+   *
+   * `{content}` for a text item; for an `attachment_message` the seven keys
+   * `attachmentItemDetails` emits (#606) — `id`, `item_type`, `name`, `bucket`,
+   * `filepath`, `attachment_type`, `content` — where `content` is a DECODED
+   * array of LangChain content chunks, never a string.
+   */
+  readonly details: Readonly<Record<string, unknown>>;
+}
+
+/** One `chat_message_group` with its items, as the details route embeds it. */
+export interface StoredMessageGroup {
+  readonly id: string;
+  readonly uuid: string;
+  /** `string_agg` of the group's `text_message` items ALONE — attachments are not spliced in. */
+  readonly content: string;
+  readonly items: readonly StoredMessageItem[];
+}
+
+/**
+ * The conversation's message GROUPS, with every item's `item_details`.
+ *
+ * A different route and a different projection from `readStoredTranscript`
+ * above, and that difference is the whole reason this exists. The transcript
+ * route (`/elitea_core/messages/...`) collapses each group to ONE `content`
+ * string built from its `text_message` items only — deliberately, so that an
+ * attachment's payload cannot be spliced into a message's rendered text (see
+ * the `#606` note above the backward-compat loop in
+ * `services/elitea-main/internal/infra/db/repos/conversations.go`). An
+ * attachment is therefore structurally invisible there, and a spec asserting
+ * "this turn carried a file" against that route would be asserting against a
+ * projection that cannot answer the question either way.
+ *
+ * The items live on `GET /elitea_core/conversation/prompt_lib/{p}/{c}`
+ * instead, and ONLY when `messages_limit` is supplied: the handler embeds
+ * `message_groups` exactly then (`api/v2/conversations/handler.go`), so
+ * omitting the parameter yields a well-formed 200 carrying no groups at all —
+ * which reads as "this conversation has no messages" rather than as a caller
+ * mistake. It is always sent here and never left to a default.
+ *
+ * `sort_order=asc` for the reason `readStoredTranscript` sends it: the
+ * repository interpolates the order into `ORDER BY mg.created_at` and the
+ * default is DESC, so an "in order" reading of the result would be backwards.
+ *
+ * A non-2xx THROWS, naming the status and body. `ListMessageGroups` already
+ * answers its OWN query failures with an empty slice rather than an error, so
+ * a broken query reaches a client as a successful empty transcript; swallowing
+ * a transport failure here as well would leave a caller unable to tell a
+ * missing attachment from a route that never ran.
+ */
+export async function readStoredMessageGroups(
+  page: Page,
+  projectId: string,
+  conversationId: string | number,
+  limit = 50,
+): Promise<readonly StoredMessageGroup[]> {
+  const url =
+    `${BASE_URL}/api/v2/elitea_core/conversation/prompt_lib/${projectId}/${String(conversationId)}` +
+    `?messages_limit=${String(limit)}&sort_order=asc`;
+  const response = await page.request.get(url);
+  if (!response.ok()) {
+    throw new Error(
+      `readStoredMessageGroups: GET ${url} -> ${response.status()} ${response.statusText()}\n` +
+      `${(await response.text()).slice(0, 300)}`,
+    );
+  }
+  const body = (await response.json()) as {
+    message_groups?: readonly {
+      id?: unknown;
+      uuid?: unknown;
+      content?: unknown;
+      message_items?: readonly { item_type?: unknown; item_details?: unknown }[];
+    }[];
+  };
+  return (body.message_groups ?? []).map((group) => ({
+    id: String(group.id ?? ''),
+    uuid: String(group.uuid ?? ''),
+    content: typeof group.content === 'string' ? group.content : '',
+    items: (group.message_items ?? []).map((item) => ({
+      itemType: typeof item.item_type === 'string' ? item.item_type : '',
+      details:
+        typeof item.item_details === 'object' && item.item_details !== null
+          ? (item.item_details as Record<string, unknown>)
+          : {},
+    })),
+  }));
+}
+
+/** Every `attachment_message` item in a conversation, flattened across its groups. */
+export function attachmentItemsOf(
+  groups: readonly StoredMessageGroup[],
+): readonly StoredMessageItem[] {
+  return groups.flatMap((group) =>
+    group.items.filter((item) => item.itemType === 'attachment_message'),
+  );
+}
+
+/** One MCP connection created through the toolkits API. */
+export interface CreatedMcpConnection {
+  /** `elitea_tools.id` — what `entity_tool_mapping` and the attach route address. */
+  readonly id: string;
+  /** The row's stored `settings`, read back from the response rather than echoed from the request. */
+  readonly settings: Record<string, unknown>;
+}
+
+/** What a caller may put in an MCP connection's `settings`. */
+export interface McpConnectionSettings {
+  /**
+   * The MCP server endpoint. HTTPS ONLY on the native runtime: `parse_endpoint`
+   * (`services/elitea-worker-rust/src/toolkits/mcp.rs:592-609`) refuses every
+   * other scheme, refuses userinfo, a query string and a fragment, and the
+   * client that follows is built `https_only` with no verification switch.
+   * Main's own proxy validator is LOOSER — it also allows `http` on a loopback
+   * host (`internal/api/v2/eliteacore/handler.go:3521-3530`) — so a URL the
+   * platform stores happily can still be one the native runtime refuses.
+   */
+  readonly url?: string;
+  /** The tool names to admit from the server's catalogue. Empty/absent means "whatever it publishes". */
+  readonly selected_tools?: readonly string[];
+  /** Anything else the toolkit row should carry. */
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Create an MCP connection (an `elitea_tools` row of type `mcp`).
+ *
+ * WHY THIS IS AN API HELPER AND NOT A FORM DRIVER. `/app/mcps/create` renders
+ * a schema-driven form whose type tiles come from the project's toolkit-type
+ * catalogue, filtered to the mcp-flavoured entries
+ * (`src/features/toolkits/lib/hooks/useGetCurrentMCPSchemas.hooks.ts:54-56`).
+ * This stack's catalogue publishes NO such entry — `GET /elitea_core/toolkits/
+ * prompt_lib/{project}` answers with `application, artifact, custom, database,
+ * datasource, github, jira, openapi` and nothing else — so the selector is
+ * empty and the page shows its "Still no local MCP available" state, the same
+ * one `e2e/visual/routes.visual.spec.ts:369-374` snapshots. There is no tile to
+ * click and therefore no form to fill: a connection can only be authored
+ * through this route today, which is also what `e2e/journeys/mcps/
+ * mcps.oauth.spec.ts:229-232` does inline. Should the catalogue ever publish an
+ * mcp type, a spec that wants the form should drive it and this helper should
+ * stay for the setup-only callers.
+ *
+ * `settings` is returned as the SERVER stored it, not as the caller sent it, so
+ * a test asserting on the endpoint asserts on the value the runtime will read.
+ */
+export async function createMcpConnection(
+  page: Page,
+  projectId: string,
+  name: string,
+  settings: McpConnectionSettings = {},
+): Promise<CreatedMcpConnection> {
+  const path = `/elitea_core/tools/prompt_lib/${projectId}`;
+  const response = await page.request.post(`${BASE_URL}/api/v2${path}`, {
+    data: {
+      name,
+      type: 'mcp',
+      description: `${AUTOTEST_PREFIX}e2e mcp connection`,
+      settings,
+    },
+  });
+  if (!response.ok()) {
+    throw new Error(
+      `createMcpConnection: POST ${path} returned ${response.status()}: ${(await response.text()).slice(0, 300)}`,
+    );
+  }
+  const body = (await response.json()) as { id?: string | number; settings?: Record<string, unknown> };
+  const id = String(body.id ?? '');
+  if (!/^\d+$/.test(id)) {
+    throw new Error(
+      `createMcpConnection: POST ${path} answered without a numeric id: ${JSON.stringify(body).slice(0, 300)}`,
+    );
+  }
+  return { id, settings: body.settings ?? {} };
+}
+
+/** Delete a toolkit/MCP connection (cleanup helper). Never throws. */
+export async function deleteToolkit(
+  page: Page,
+  projectId: string,
+  toolkitId: string,
+): Promise<void> {
+  await page.request.delete(
+    `${BASE_URL}/api/v2/elitea_core/tool/prompt_lib/${projectId}/${toolkitId}`,
+  );
+}
+
+/** One toolkit row as an agent version serves it back under `version_details.tools`. */
+export interface AttachedToolkitRow {
+  /** `elitea_tools.id`. The attach route addresses this, NOT the mapping's own id. */
+  readonly toolId: string;
+  /** The toolkit family — `mcp` for an MCP connection, and what `is_mcp_type` keys on. */
+  readonly type: string;
+  readonly name: string;
+  /** The settings the runtime will read. Served straight from the stored row. */
+  readonly settings: Record<string, unknown>;
+  /** The tool names the mapping admits, after the version-level intersection. */
+  readonly selectedTools: readonly string[];
+}
+
+/**
+ * Read back the toolkits attached to one agent version, as the server serves
+ * them — the projection `services/elitea-main/internal/db/queries/agent_chat.sql:27-110`
+ * builds and the worker's frozen tool snapshot parses
+ * (`services/elitea-worker-rust/src/toolkits/snapshot.rs:327-353`).
+ *
+ * Asserting on THIS rather than on the attach response is the point: the
+ * agent-as-tool attach once answered 200 and wrote nothing at all (see
+ * `chat.agent-tools.spec.ts`'s defect class 2), and an attach that writes no
+ * row is invisible from the mutation's own status code.
+ */
+export async function readAttachedToolkits(
+  page: Page,
+  projectId: string,
+  agentId: string,
+): Promise<readonly AttachedToolkitRow[]> {
+  const url = `${BASE_URL}/api/v2/elitea_core/application/prompt_lib/${projectId}/${agentId}`;
+  const response = await page.request.get(url);
+  if (!response.ok()) {
+    throw new Error(
+      `readAttachedToolkits: GET ${url} -> ${response.status()} ${response.statusText()}\n` +
+      `${(await response.text()).slice(0, 300)}`,
+    );
+  }
+  const body = (await response.json()) as {
+    version_details?: {
+      tools?: readonly {
+        tool_id?: string | number;
+        id?: string | number;
+        type?: string;
+        name?: string;
+        config?: Record<string, unknown>;
+        settings?: Record<string, unknown>;
+        selected_tools?: readonly string[];
+      }[];
+    };
+  };
+  return (body.version_details?.tools ?? []).map((tool) => ({
+    toolId: String(tool.tool_id ?? tool.id ?? ''),
+    type: tool.type ?? '',
+    name: tool.name ?? '',
+    // The agent read serves the stored settings under `config`; the chat
+    // resolver serves the same bytes under `settings`. Take whichever is
+    // present so a caller asserts on the endpoint either way.
+    settings: tool.config ?? tool.settings ?? {},
+    selectedTools: tool.selected_tools ?? [],
+  }));
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * The TOOLKIT-INVOCATION journeys' shared steps
+ *
+ * `chat.toolkit.spec.ts` and `chat.toolkit-hitl.spec.ts` drive the SAME
+ * `openapi` toolkit — one through a read-only call, one through a
+ * sensitive-action pause — and the pieces below are the ones both need and
+ * neither can weaken alone: the wire contract with `deploy/mock-llm/server.py`,
+ * the form flow that authors the toolkit, and the platform guardrail that
+ * decides whether a call pauses.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The mock's host address. `deploy/docker-compose.standalone-full.yml`
+ * publishes `STANDALONE_MOCK_PORT` for exactly this, and
+ * `e2e/streaming/index.streaming.spec.ts` already reads the model journal the
+ * same way.
+ */
+const MOCK_HOST = `http://localhost:${process.env['STANDALONE_MOCK_PORT'] ?? '8090'}`;
+
+/**
+ * The `[[mock:call_tool …]]` contract, restated.
+ *
+ * These names are the wire contract with `deploy/mock-llm/server.py`
+ * (`TOOL_STATUS_OPERATION`, `TOOL_CREATE_OPERATION`, `TOOL_*_SENTINEL` and
+ * `CALL_TOOL_MARKER_PREFIX`). They are restated rather than imported because
+ * the mock is a Python file in another service's tree and there is nothing to
+ * import — so the pairing is ASSERTED instead: `fetchMockToolSpec` below reads
+ * the document the mock actually serves and fails if it does not carry these
+ * operation ids.
+ */
+export const MOCK_TOOL_READ_OPERATION = 'mock_tool_status';
+export const MOCK_TOOL_EFFECTFUL_OPERATION = 'mock_tool_create_item';
+/**
+ * The sentinel the EFFECTFUL route puts in its own reply (`TOOL_CREATE_SENTINEL`).
+ *
+ * Only the effectful one is exported, because only it has an unconditional
+ * assertion to serve: a DECLINED call must never produce it. The read route's
+ * sentinel has no such use — whether it reaches the transcript depends on
+ * whether the worker can reach the tool at all (see `MockToolSpec.reachable`),
+ * so asserting on it would state a stack property, not a contract.
+ */
+export const MOCK_TOOL_CREATE_SENTINEL = 'MOCKTOOLCREATED';
+/**
+ * The last word of the mock's continuation reply (`CALL_TOOL_SENTINEL`).
+ *
+ * The SETTLE SIGNAL for every assertion about a tool result, and it has to be
+ * this rather than anything nearer the front. The stored assistant row is
+ * readable while it is still being written, and a tool result is long — the
+ * runtime's blocked-call payload is ~770 bytes with its `type` field LAST. A
+ * poll on the denial comment (which appears early) returned a 370-byte prefix
+ * and the next assertion then reported `sensitive_tool_blocked` missing from a
+ * row that carried it (measured). Polling on the sentinel cannot settle early.
+ */
+export const MOCK_CALL_TOOL_SENTINEL = 'MOCKCALLTOOLEND';
+
+/** The prompt that makes the mock answer with a call to `operation`. */
+export function callToolPrompt(operation: string, tail: string): string {
+  return `[[mock:call_tool ${operation}]] ${tail}`;
+}
+
+/** One entry of the mock's TOOL journal — see `_record_tool` in the mock. */
+export interface MockToolJournalEntry {
+  readonly method: string;
+  readonly path: string;
+  readonly operation: string;
+  readonly body?: string;
+}
+
+/** One entry of the mock's MODEL journal, with the fields these journeys read. */
+export interface MockLlmJournalEntry {
+  readonly path: string;
+  readonly mode: string | null;
+  /** The function names this request offered the model. */
+  readonly tools: readonly string[];
+  /**
+   * The SYSTEM prompt the request carried (`_system_text` in the mock).
+   *
+   * The only observable for anything the runtime does to an agent's
+   * instructions — agent-variable substitution above all — because the reply
+   * is an echo of the last USER message and shows the system prompt never.
+   * Read by `chat.variables.spec.ts`.
+   */
+  readonly instructions: string;
+}
+
+async function readMockJournal<T>(page: Page, url: string): Promise<readonly T[]> {
+  const response = await page.request.get(url, { timeout: 15_000 });
+  expect(
+    response.ok(),
+    `the mock's journal is not readable at ${url}. The llm-mock service must publish ` +
+      'STANDALONE_MOCK_PORT — see deploy/docker-compose.standalone-full.yml.',
+  ).toBe(true);
+  const body = (await response.json()) as { data?: readonly T[] };
+  return body.data ?? [];
+}
+
+async function clearMockJournal(page: Page, url: string): Promise<void> {
+  const cleared = await page.request.delete(url, { timeout: 15_000 });
+  expect(cleared.ok(), `the mock's journal is not clearable at ${url}`).toBe(true);
+}
+
+/**
+ * The TOOL calls the mock has served, newest last.
+ *
+ * SEPARATE from the model journal on purpose, and that separation is the whole
+ * point of the endpoint: "the agent ran this tool" is a fact about traffic
+ * between the WORKER and the tool's own host, which never reaches the model
+ * hop and therefore leaves no trace a model-side assertion could read.
+ */
+export async function readMockToolJournal(page: Page): Promise<readonly MockToolJournalEntry[]> {
+  return readMockJournal<MockToolJournalEntry>(page, `${MOCK_HOST}/tool/__journal`);
+}
+
+/** Empty the TOOL journal, so a journey can bound the window it asserts over. */
+export async function clearMockToolJournal(page: Page): Promise<void> {
+  await clearMockJournal(page, `${MOCK_HOST}/tool/__journal`);
+}
+
+/** The MODEL requests the mock has served, newest last. */
+export async function readMockLlmJournal(page: Page): Promise<readonly MockLlmJournalEntry[]> {
+  return readMockJournal<MockLlmJournalEntry>(page, `${MOCK_HOST}/__journal`);
+}
+
+/** Empty the MODEL journal. */
+export async function clearMockLlmJournal(page: Page): Promise<void> {
+  await clearMockJournal(page, `${MOCK_HOST}/__journal`);
+}
+
+/** The OpenAPI document the mock serves, as text and as the base URL it declares. */
+export interface MockToolSpec {
+  /** The document verbatim — what a toolkit's `settings.spec` must hold. */
+  readonly text: string;
+  /** `servers[0].url`. */
+  readonly baseUrl: string;
+  /**
+   * Whether the native Rust worker can actually REACH that base URL.
+   *
+   * Its OpenAPI client is `https_only()` (`families/openapi/client.rs`), and
+   * the certificate has to chain to a public root — the worker image carries
+   * the Debian bundle and nothing else. So a `https://llm-mock:…` base URL
+   * materializes, is offered to the model and is DISPATCHED, and the request
+   * then fails in the transport. A journey asserts the tool-side journal only
+   * where this is true; everywhere else it asserts the dispatch instead.
+   */
+  readonly reachable: boolean;
+}
+
+/**
+ * Read the OpenAPI document the mock serves, and assert it is the one these
+ * journeys were written against.
+ *
+ * Fetched rather than written out here so the toolkit a journey authors and
+ * the routes the mock answers cannot disagree: one document, generated from
+ * the mock's own constants, is both the thing pasted into the form and the
+ * thing served at the base URL it names.
+ */
+export async function fetchMockToolSpec(page: Page): Promise<MockToolSpec> {
+  const url = `${MOCK_HOST}/tool/openapi.json`;
+  const response = await page.request.get(url, { timeout: 15_000 });
+  expect(
+    response.ok(),
+    `the mock does not serve a tool specification at ${url} — is the llm-mock image current? ` +
+      'Rebuild it with `deploy/scripts/standalone-stack.sh build llm-mock`.',
+  ).toBe(true);
+  const text = await response.text();
+  const document = JSON.parse(text) as {
+    servers?: readonly { url?: string }[];
+    paths?: Record<string, Record<string, { operationId?: string }>>;
+  };
+  const operations = Object.values(document.paths ?? {}).flatMap((item) =>
+    Object.values(item).map((operation) => operation.operationId),
+  );
+  expect(
+    operations,
+    'the mock serves a tool specification that does not carry the read operation these journeys call',
+  ).toContain(MOCK_TOOL_READ_OPERATION);
+  expect(
+    operations,
+    'the mock serves a tool specification that does not carry the effectful operation these journeys call',
+  ).toContain(MOCK_TOOL_EFFECTFUL_OPERATION);
+  const baseUrl = document.servers?.[0]?.url ?? '';
+  expect(baseUrl, 'the tool specification must declare an absolute server URL').not.toBe('');
+  return { text, baseUrl, reachable: baseUrl.startsWith('http://') };
+}
+
+/** An `openapi` toolkit created through the toolkit form. */
+export interface OpenApiToolkitCreatedThroughForm {
+  /** The project the form wrote into — read from the request, never assumed. */
+  readonly projectId: string;
+  /** `elitea_tools.id` — the key the agent attach and every later route uses. */
+  readonly toolkitId: string;
+  /** The toolkit's name, which is also how the agent's "+ Toolkit" menu lists it. */
+  readonly name: string;
+}
+
+/** Matched WITHOUT a project id: these journeys work inside the driver's personal project (#290). */
+const TOOLKITS_RE = /\/elitea_core\/tools\/prompt_lib\/(\d+)$/;
+
+/**
+ * Author an `openapi` toolkit by filling in the toolkit form, and hand back
+ * what the server stored.
+ *
+ * THROUGH THE FORM, deliberately. The type grid, the schema editor and the
+ * operation list it derives are the surface these journeys exist to exercise,
+ * and none of it is reachable from the API fixture: `settings.selected_tools`
+ * is populated by the FORM as a side effect of the schema parsing
+ * (`mergeSelectedToolsWithNewSchema`), so a toolkit created by POST carries
+ * whatever the caller typed rather than what a user gets.
+ *
+ * The form carries NO `data-testid` anywhere — measured, the whole
+ * toolkit-creation surface is addressed by role and label — so the selectors
+ * below are roles and accessible names, matching
+ * `e2e/journeys/toolkits/toolkits.lifecycle.spec.ts`.
+ *
+ * Leaves the browser on the created toolkit's detail page, which is where the
+ * form navigates on success.
+ */
+export async function createOpenApiToolkitThroughForm(
+  page: Page,
+  name: string,
+  specText: string,
+): Promise<OpenApiToolkitCreatedThroughForm> {
+  // Armed BEFORE the save: the response carries the project id and the stored
+  // settings, so the assertions read what the server wrote.
+  const created = page.waitForResponse(
+    (r) => TOOLKITS_RE.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
+    { timeout: 45_000 },
+  );
+
+  await page.goto(`${BASE_URL}/app/toolkits/create`);
+  await expect(page.getByPlaceholder('Search toolkits')).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'OpenAPI', exact: true }).click();
+
+  const nameInput = page.getByRole('textbox', { name: 'Toolkit Name' });
+  await expect(nameInput, 'the openapi form must offer a name field').toBeVisible({ timeout: 20_000 });
+  await nameInput.fill(name);
+
+  // The schema editor is a CodeMirror instance with no testid and no
+  // accessible name (`OpenAPISchemaInput` does not pass one), so `.cm-content`
+  // is the only handle — and `fill()` on it is a TRAP, measured: CodeMirror 6
+  // reconciles its own document from transactions, ignores the plain `input`
+  // event Playwright's fill dispatches, and the form then saves
+  // `settings.spec: ""` while the editor looks full on screen and on the
+  // failure screenshot. `keyboard.insertText` goes in as a real text-insertion
+  // event, which CodeMirror's DOM-change handler reads, and — unlike typing
+  // character by character — is not mangled by the editor's bracket and quote
+  // auto-closing.
+  const editor = page.locator('.cm-content').first();
+  await expect(editor, 'the openapi form must offer a schema editor').toBeVisible({ timeout: 20_000 });
+  await editor.click();
+  await page.keyboard.insertText(specText);
+
+  // The PARSED operation table is what proves the editor's content reached the
+  // form's parser. Not the operation NAME as text: the specification is itself
+  // visible inside the editor, so a name match passes against an editor whose
+  // content never left it — which is exactly the failure above. The table
+  // renders only once `openAPIExtract` has returned at least one operation.
+  await expect(
+    page.getByRole('table', { name: 'tools actions table' }),
+    'the form never parsed the pasted specification — no operation table appeared',
+  ).toBeVisible({ timeout: 30_000 });
+
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  await expect(save).toBeEnabled({ timeout: 15_000 });
+  await save.click();
+
+  const response = await created;
+  expect(
+    response.status(),
+    `the toolkit must be created: ${(await response.text()).slice(0, 300)}`,
+  ).toBe(201);
+  const projectId = TOOLKITS_RE.exec(new URL(response.url()).pathname)?.[1] ?? '';
+  expect(projectId, 'the toolkit must belong to a project').not.toBe('');
+  const body = (await response.json()) as {
+    id?: string;
+    settings?: { spec?: string; selected_tools?: readonly string[] };
+  };
+  const toolkitId = String(body.id ?? '');
+  expect(toolkitId, 'the created toolkit must carry an id').toMatch(/^\d+$/);
+  expect(
+    body.settings?.selected_tools ?? [],
+    'the form must have selected the operations it parsed, or the agent exposes no tool',
+  ).toContain(MOCK_TOOL_READ_OPERATION);
+
+  return { projectId, toolkitId, name };
+}
+
+/**
+ * Attach a toolkit to the agent open in the edit page, through the Tools
+ * panel's own "+ Toolkit" picker.
+ *
+ * Through the PICKER rather than the PATCH it emits, because the picker is the
+ * unvalidated half: the button is disabled while the agent is unsaved, the
+ * menu lists instances from a paged request and filters them client-side, and
+ * the attach it sends omits `selected_tools` entirely — a presence-sensitive
+ * distinction (#248) that a hand-written PATCH would not reproduce.
+ */
+export async function attachToolkitThroughPicker(page: Page, toolkitName: string): Promise<void> {
+  const attached = page.waitForResponse(
+    (r) => /\/elitea_core\/tool\/prompt_lib\/\d+\/\d+$/.test(new URL(r.url()).pathname) &&
+      r.request().method() === 'PATCH',
+    { timeout: 45_000 },
+  );
+  const addButton = page.getByTestId('agent-add-toolkit-button');
+  await expect(
+    addButton,
+    'the Tools panel must offer the toolkit picker — it stays disabled while the agent is unsaved',
+  ).toBeEnabled({ timeout: 30_000 });
+  await addButton.click();
+
+  // PAGED IN, not searched for. The dropdown fetches 20 instances at a time
+  // (`GET …/tools/prompt_lib/{project}?limit=20`, `ORDER BY name`) and filters
+  // what it already has CLIENT-side, so a toolkit past the first page cannot
+  // be reached by typing its name — the filtered list is empty, there is
+  // nothing to scroll, and the next page is never requested. Measured on a
+  // stack carrying 31 toolkits: a freshly created `autotest_tk-…` sorts after
+  // 20 `autotest_child-…` rows and the search found nothing.
+  //
+  // So the menu's own infinite scroll is driven instead: its scroller is the
+  // Menu PAPER (`slotProps.paper.onScroll`), and it asks for another 20 once
+  // it is within 48px of the bottom.
+  const item = page.getByRole('menuitem', { name: new RegExp(toolkitName) });
+  const menuPaper = page.locator('.MuiMenu-paper').first();
+  await expect(menuPaper, 'the toolkit picker did not open').toBeVisible({ timeout: 15_000 });
+  await expect
+    .poll(
+      async () => {
+        const found = await item.count();
+        if (found === 0) {
+          await menuPaper.evaluate((element) => {
+            element.scrollTop = element.scrollHeight;
+          });
+        }
+        return found;
+      },
+      {
+        timeout: 60_000,
+        message: `the picker never listed ${toolkitName}, even after paging to the end of the list`,
+      },
+    )
+    .toBeGreaterThan(0);
+  await item.first().click();
+
+  const response = await attached;
+  expect(
+    response.status(),
+    `the toolkit attach was refused: ${(await response.text()).slice(0, 300)}`,
+  ).toBeLessThan(300);
+}
+
+/** The platform-wide toolkit security policy, as the admin route serves it. */
+export interface ToolkitGuardrailValues {
+  readonly blocked_toolkits: readonly string[];
+  readonly blocked_tools: Record<string, readonly string[]>;
+  readonly sensitive_tools: Record<string, readonly string[]>;
+  readonly sensitive_action_company_name: string;
+  readonly sensitive_action_message_template: string;
+}
+
+const GUARDRAILS_PATH = '/api/v2/admin/plugin_config_values/administration/guardrails';
+
+/**
+ * Write the platform-wide `toolkit_security` policy, as the ADMIN persona.
+ *
+ * This is GLOBAL state and there is no narrower place to put it: the runtime
+ * reads `sensitive_tools` from the agent execution input, which
+ * `resolveToolkitGuardrails` fills from `centry.platform_config` alone — no
+ * per-agent or per-project override exists. The chat driver cannot write it
+ * (measured: 403), so a second, admin-authenticated request context is used
+ * for this one call and closed again.
+ *
+ * A caller that sets it MUST restore it, and must do so from a hook that runs
+ * on failure too — every other spec in this project shares the stack, and a
+ * leaked `sensitive_tools` entry turns their tool calls into pauses nothing
+ * answers.
+ */
+export async function setToolkitGuardrails(values: ToolkitGuardrailValues): Promise<void> {
+  const admin = await playwrightRequest.newContext({
+    baseURL: BASE_URL,
+    storageState: STORAGE_STATE.admin,
+  });
+  try {
+    const saved = await admin.put(GUARDRAILS_PATH, { data: { values } });
+    expect(
+      saved.status(),
+      `the admin persona must be able to write the guardrails policy: ${(await saved.text()).slice(0, 300)}`,
+    ).toBe(200);
+    // Read back rather than trust the 200: the value this journey depends on
+    // is the one a LATER turn will be frozen against, and a write that landed
+    // in a different section would answer 200 all the same.
+    const readBack = await admin.get(GUARDRAILS_PATH);
+    expect(readBack.ok(), 'the guardrails policy must be readable after the write').toBe(true);
+    const stored = (await readBack.json()) as { values?: { sensitive_tools?: Record<string, unknown> } };
+    expect(
+      Object.keys(stored.values?.sensitive_tools ?? {}),
+      'the sensitive-tool policy the server stored is not the one that was written',
+    ).toEqual(Object.keys(values.sensitive_tools));
+  } finally {
+    await admin.dispose();
+  }
+}
+
+/** The empty policy — what a stack starts with, and what a journey restores. */
+export const EMPTY_TOOLKIT_GUARDRAILS: ToolkitGuardrailValues = {
+  blocked_toolkits: [],
+  blocked_tools: {},
+  sensitive_tools: {},
+  sensitive_action_company_name: '',
+  sensitive_action_message_template: '',
+};
+
+/** The stored assistant row's `metadata.hitl_interrupt`, as these journeys read it. */
+export interface StoredHitlInterrupt {
+  readonly guardrail_type?: string;
+  readonly available_actions?: readonly string[];
+  readonly tool_call_id?: string;
+  readonly tool_name?: string;
+  readonly toolkit_name?: string;
+  readonly toolkit_type?: string;
+  readonly interrupt_id?: string;
+}
+
+/**
+ * Poll until the newest stored assistant row carries a HITL interrupt, and
+ * return it.
+ *
+ * The STORE rather than the card, for the same reason
+ * `expectStoredAssistantAnswer` reads the store: the interrupt's identity —
+ * `tool_call_id` and `interrupt_id` — is what a later assertion has to bind
+ * the decision to, and none of it is rendered.
+ */
+export async function readStoredHitlInterrupt(
+  page: Page,
+  projectId: string,
+  conversationId: string | number,
+  timeout = 150_000,
+): Promise<StoredHitlInterrupt> {
+  let interrupt: StoredHitlInterrupt | undefined;
+  await expect
+    .poll(
+      async () => {
+        const stored = await page.request.get(
+          `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${String(conversationId)}`,
+        );
+        if (!stored.ok()) return false;
+        const body = (await stored.json()) as {
+          items?: readonly {
+            role?: string;
+            metadata?: { hitl_interrupt?: StoredHitlInterrupt; is_error?: boolean };
+          }[];
+        };
+        const assistant = body.items?.find((item) => item.role === 'assistant');
+        // A refused turn is stored as an assistant row too, and it never grows
+        // an interrupt — so failing fast on it turns a 150s timeout into a
+        // message that names the refusal.
+        expect(
+          assistant?.metadata?.is_error,
+          'the turn was refused instead of pausing — read the worker log for the assembly error code',
+        ).not.toBe(true);
+        interrupt = assistant?.metadata?.hitl_interrupt;
+        return interrupt !== undefined;
+      },
+      {
+        timeout,
+        message: 'the turn never parked on a sensitive-tool pause',
+      },
+    )
+    .toBe(true);
+  return interrupt ?? {};
 }

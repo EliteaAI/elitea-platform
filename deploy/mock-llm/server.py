@@ -11,10 +11,29 @@ What it serves, which is exactly what bifrost's vLLM provider asks for:
   GET  /v1/models             so a model list through the gateway is not empty
   GET  /healthz               for the compose healthcheck
 
-It also keeps a REQUEST JOURNAL, and serves it (issue #470):
+It also serves a tiny TOOL API, so an `openapi` TOOLKIT can point at this same
+process and a test can prove SERVER-SIDE that an agent actually invoked it:
 
-  GET    /__journal           the recorded requests, newest last
-  DELETE /__journal           empty the journal
+  GET  /tool/openapi.json     the OpenAPI 3.0.3 document for the two routes below
+  GET  /tool/status           read-only; returns a fixed document
+  POST /tool/items            effectful; returns a fixed creation receipt
+
+It keeps TWO REQUEST JOURNALS, and serves both (issue #470 for the first):
+
+  GET    /__journal           the recorded MODEL requests, newest last
+  DELETE /__journal           empty it
+  GET    /tool/__journal      the recorded TOOL calls, newest last
+  DELETE /tool/__journal      empty it
+
+Two journals rather than one because the questions are different and the
+windows are different: "which model did the gateway ask" is answered by the
+first, "did the agent run this tool" only by the second, and a spec bounding
+one window must not erase the other's evidence.
+
+Each MODEL entry also records the SYSTEM prompt the request carried, because
+that is the only observable for anything the runtime does to the instructions
+(agent-variable substitution, above all): the reply echoes the last USER
+message and can never show it.
 
 The journal is the only place a test can read what the gateway actually put on
 the wire. A vector width does not identify a model, and a 200 does not prove
@@ -41,6 +60,11 @@ PER-REQUEST MODES, SELECTED BY THE PROMPT (see `_script_for`):
   [[mock:slow]]       stream a long, scripted reply one word at a time with a
                       per-chunk delay, so a test can act while the turn is
                       still open (press Stop, navigate away, drop the stream).
+  [[mock:call_tool <operationId>]]
+                      answer with a CALL to that operation of an attached
+                      toolkit, then — once the tool result comes back — with a
+                      normal answer quoting it verbatim and ending in
+                      CALL_TOOL_SENTINEL.
 
 The marker travels in the PROMPT and nowhere else, and that is the whole point.
 An environment variable or a control endpoint would be process-wide: one mock
@@ -105,6 +129,27 @@ CHUNK_DELAY_SECONDS = float(os.environ.get("MOCK_LLM_CHUNK_DELAY_MS", "0")) / 10
 # other leaves a spec waiting for a behaviour nothing produces.
 SLOW_MARKER = "[[mock:slow]]"
 ASK_USER_MARKER = "[[mock:ask_user]]"
+# `[[mock:call_tool <operationId>]]` — answer with a CALL to one operation of
+# the TOOL API this same process serves under /tool (see TOOL_* below), then —
+# once the tool result comes back — with a normal answer quoting it.
+#
+# The operation name travels in the marker rather than being fixed, because the
+# two toolkit journeys need different ones: a READ-ONLY GET, which the native
+# runtime may execute, and an EFFECTFUL POST, which it pauses on. One mode with
+# a parameter keeps the two specs on the same code path, so a break in the mode
+# cannot pass one journey and fail the other for unrelated reasons.
+CALL_TOOL_MARKER_PREFIX = "[[mock:call_tool "
+CALL_TOOL_MARKER_SUFFIX = "]]"
+# The last word of the continuation reply, and the reason it exists: the
+# stored assistant row is READABLE WHILE IT IS STILL BEING WRITTEN, and a tool
+# result is long — the native runtime's blocked-call payload alone is ~700
+# bytes. A journey that polls for something near the FRONT of that payload
+# (the denial comment, the tool name) settles on a half-written row and then
+# asserts against text that has not arrived yet; measured, that reported a
+# missing `sensitive_tool_blocked` on a row that carried it a moment later.
+# A sentinel at the very END is a settle signal that cannot be reached early,
+# and it is the same trick SLOW_SENTINEL plays for the streaming journey.
+CALL_TOOL_SENTINEL = "MOCKCALLTOOLEND"
 
 # The slow reply's shape. The tail is a fixed, ordered word sequence so a
 # truncated reply can be told from a complete one by CONTENT and not only by
@@ -144,6 +189,58 @@ ASK_USER_QUESTIONS = [
         "allow_other": True,
     }
 ]
+# ── The TOOL API (issue: toolkit-invocation coverage) ────────────────────────
+#
+# A second, tiny HTTP API served by this SAME process under /tool, so a real
+# `openapi` TOOLKIT can point at it and a test can prove, SERVER-SIDE, that the
+# agent runtime actually called the operation. The LLM journal above proves
+# what the gateway put on the wire; it cannot prove that a TOOL ran, because a
+# tool call happens between the worker and the tool's own host and never
+# touches the model hop at all.
+#
+# It lives here rather than in a new service for the same reason the mock LLM
+# is vendored: one more compose service is one more image to build, one more
+# healthcheck to wait on and one more port to collide with, for a handler that
+# is forty lines. The stack already builds this image and already publishes
+# this port for the journal.
+#
+# TWO OPERATIONS, and the split is the whole point:
+#
+#   GET  /tool/status   read-only. `OpenApiOperation::is_read_only` is
+#                       `matches!(method, GET | HEAD | OPTIONS)`
+#                       (services/elitea-worker-rust/.../openapi/spec.rs), and
+#                       the native runtime's direct-HITL replay admits an
+#                       APPROVED call only when that is true.
+#   POST /tool/items    effectful. The same runtime refuses an approved replay
+#                       for it ("approved direct HITL replay remains closed for
+#                       an effectful tool") and only ever produces the DENIED
+#                       result, which is what chat.toolkit-hitl.spec.ts asserts.
+#
+# THE SERVERS URL IS HTTPS BY DEFAULT, and that is not cosmetic. The native
+# Rust worker's OpenAPI client is `https_only()` and its base-URL parser
+# refuses any other scheme (`parse_https_base`), so an `http://` server URL
+# makes the whole TURN fail at toolset materialization rather than making one
+# tool call fail. Overridable because the Python worker's SDK toolkit accepts
+# `http://`, and a leg driven against that worker wants the reachable address.
+TOOL_PATH_PREFIX = "/tool"
+TOOL_BASE_URL = os.environ.get("MOCK_LLM_TOOL_BASE_URL", "https://llm-mock:8090/tool")
+# The operation ids. `operationId` is what the worker names the ADK function
+# after (`parse_operations`), what `selected_tools` filters on, and what the
+# `[[mock:call_tool …]]` marker carries — one string, three consumers.
+TOOL_STATUS_OPERATION = "mock_tool_status"
+TOOL_CREATE_OPERATION = "mock_tool_create_item"
+# Sentinels rather than bare "ok": a test asserting on the tool result has to
+# be able to tell it from every other string in the transcript, including the
+# echo of its own prompt.
+TOOL_STATUS_SENTINEL = "MOCKTOOLSTATUS"
+TOOL_CREATE_SENTINEL = "MOCKTOOLCREATED"
+TOOL_STATUS_BODY = {"status": "ok", "sentinel": TOOL_STATUS_SENTINEL}
+TOOL_CREATE_BODY = {"created": True, "sentinel": TOOL_CREATE_SENTINEL}
+# Bounded like the LLM journal, and for the same reason.
+MAX_TOOL_JOURNAL_ENTRIES = int(os.environ.get("MOCK_LLM_TOOL_JOURNAL_LIMIT", "500"))
+# A tool request body is a scripted JSON object, never a batch of embeddings.
+MAX_TOOL_BODY_BYTES = 64 << 10
+
 # 16 MiB rather than 1: an embeddings batch is up to MAX_EMBEDDING_INPUTS
 # token-id arrays, which is an order of magnitude larger than any chat body and
 # would otherwise be rejected as "body too large" on the index path alone.
@@ -158,6 +255,12 @@ MOCK_CREDENTIAL_PREFIX = "mock-key-"
 
 _JOURNAL: list[dict] = []
 _JOURNAL_LOCK = threading.Lock()
+# The TOOL journal is SEPARATE from the LLM one on purpose. A test asserting
+# "the agent called the tool" must not have to filter the model traffic out of
+# its window, and — more importantly — `DELETE /__journal` must not silently
+# erase the tool evidence a spec is about to read, nor the reverse.
+_TOOL_JOURNAL: list[dict] = []
+_TOOL_JOURNAL_LOCK = threading.Lock()
 
 
 def _credential_label(authorization: str) -> str:
@@ -184,6 +287,13 @@ def _record(entry: dict) -> None:
             del _JOURNAL[:-MAX_JOURNAL_ENTRIES]
 
 
+def _record_tool(entry: dict) -> None:
+    with _TOOL_JOURNAL_LOCK:
+        _TOOL_JOURNAL.append(entry)
+        if len(_TOOL_JOURNAL) > MAX_TOOL_JOURNAL_ENTRIES:
+            del _TOOL_JOURNAL[:-MAX_TOOL_JOURNAL_ENTRIES]
+
+
 def _message_text(message: dict) -> str:
     """One message's text, whether it arrived as a string or as typed parts."""
     content = message.get("content")
@@ -197,6 +307,28 @@ def _message_text(message: dict) -> str:
             if isinstance(part, dict) and part.get("type") == "text"
         ).strip()
     return ""
+
+
+def _system_text(messages: list[dict]) -> str:
+    """Every instruction message this request carried, joined by newline.
+
+    The ONLY place a test can read what the runtime assembled as the system
+    prompt. It matters because agent-variable substitution rewrites the system
+    prompt and NOTHING else: the reply is an echo of the last USER message, so
+    a journey asserting on the answer alone cannot tell a substituted `{{var}}`
+    from an unsubstituted one — it would pass either way.
+
+    `developer` counts as well as `system`: an `o<digit>` model name makes the
+    native runtime send that role instead
+    (`services/elitea-worker-rust/src/transport/model_gateway.rs`,
+    `instruction_role`), and a journal that missed it would report an empty
+    prompt for a request that carried a full one.
+    """
+    return "\n".join(
+        _message_text(message)
+        for message in messages or []
+        if message.get("role") in ("system", "developer")
+    ).strip()
 
 
 def _last_user_text(messages: list[dict]) -> str | None:
@@ -230,6 +362,31 @@ def _tool_result_text(messages: list[dict]) -> str | None:
     """
     for message in reversed(messages or []):
         if message.get("role") in ("tool", "function"):
+            return _message_text(message)
+    return None
+
+
+def _tool_result_text_this_turn(messages: list[dict]) -> str | None:
+    """The newest tool result BELONGING TO THE CURRENT TURN, or None.
+
+    Distinct from `_tool_result_text` above, which scans the whole transcript.
+    That is right for a single-turn script and WRONG for a conversation that
+    takes a second scripted turn: the runtime replays the entire history, so a
+    tool result left by turn one is still there when turn two's first pass
+    arrives — and a resume detector that finds it answers with TEXT, quoting a
+    stale result, instead of emitting the call the new prompt asked for.
+    Measured: the second turn of the sensitive-tool journey never paused, and
+    its reply quoted the FIRST turn's blocked payload.
+
+    The current turn starts at the last `user` message, so only tool messages
+    after it can belong to it. `_tool_result_text` is deliberately left alone —
+    it is the contract the `[[mock:ask_user]]` journey already runs on.
+    """
+    for message in reversed(messages or []):
+        role = message.get("role")
+        if role == "user":
+            return None
+        if role in ("tool", "function"):
             return _message_text(message)
     return None
 
@@ -269,6 +426,130 @@ def _ask_user_tool_calls() -> list[dict]:
     ]
 
 
+def _tool_openapi_document() -> dict:
+    """The OpenAPI 3.0.3 document describing the two /tool operations.
+
+    Served so a toolkit's schema has ONE source of truth: the spec a journey
+    pastes into the form and the routes this file answers are generated from
+    the same constants, so an operation renamed here cannot leave a journey
+    selecting a name nothing serves.
+
+    Shaped for the native runtime's parser and nothing wider:
+      - `servers[0].url` is absolute (a relative one is refused);
+      - every operation carries an explicit `operationId`, because a generated
+        name is derived from the method and path and would change under any
+        path edit;
+      - the POST's `requestBody` declares `application/json` — the parser
+        refuses a body with no JSON media type — and is NOT required, so a
+        scripted call with empty arguments is still a valid call.
+    """
+    return {
+        "openapi": "3.0.3",
+        "info": {"title": "Elitea mock tool API", "version": "1.0.0"},
+        "servers": [{"url": TOOL_BASE_URL}],
+        "paths": {
+            "/status": {
+                "get": {
+                    "operationId": TOOL_STATUS_OPERATION,
+                    "summary": "Read the mock tool status. Read-only.",
+                    "responses": {
+                        "200": {
+                            "description": "the fixed status document",
+                            "content": {"application/json": {"schema": {"type": "object"}}},
+                        }
+                    },
+                }
+            },
+            "/items": {
+                "post": {
+                    "operationId": TOOL_CREATE_OPERATION,
+                    "summary": "Create one mock item. Has a remote effect.",
+                    "requestBody": {
+                        "required": False,
+                        "content": {"application/json": {"schema": {"type": "object"}}},
+                    },
+                    "responses": {
+                        "201": {
+                            "description": "the fixed creation receipt",
+                            "content": {"application/json": {"schema": {"type": "object"}}},
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+
+def _call_tool_operation(prompt: str) -> str | None:
+    """The operation id a `[[mock:call_tool <op>]]` prompt names, or None.
+
+    Returns None for a prompt with no marker AND for a marker naming nothing,
+    so a malformed marker falls through to the default echo rather than
+    emitting a call to the empty string — which the runtime would refuse with
+    an error that names neither the mock nor the marker.
+    """
+    start = prompt.find(CALL_TOOL_MARKER_PREFIX)
+    if start < 0:
+        return None
+    rest = prompt[start + len(CALL_TOOL_MARKER_PREFIX):]
+    end = rest.find(CALL_TOOL_MARKER_SUFFIX)
+    if end < 0:
+        return None
+    operation = rest[:end].strip()
+    return operation or None
+
+
+def _call_tool_call_id(operation: str, prompt: str) -> str:
+    """A call id that is stable for one prompt and distinct between prompts.
+
+    A fixed literal would repeat inside one conversation, and the HITL journey
+    takes two scripted turns in the same conversation — a decision recorded
+    against a call id that also names an earlier call cannot be told from a
+    stale one. Deriving it from the prompt keeps a rerun reproducible while
+    keeping two different turns apart.
+    """
+    digest = hashlib.sha256(f"{operation}\0{prompt}".encode()).hexdigest()[:16]
+    return f"call_mock_tool_{digest}"
+
+
+def _call_tool_calls(operation: str, prompt: str) -> list[dict]:
+    """The one scripted call to `operation`, with empty arguments.
+
+    Empty rather than populated because neither operation declares a required
+    parameter, and an argument the tool's JSON Schema does not admit is
+    refused by the runtime before any request is made
+    (`additionalProperties: false` in `operation_schema`).
+    """
+    return [
+        {
+            "index": 0,
+            "id": _call_tool_call_id(operation, prompt),
+            "type": "function",
+            "function": {"name": operation, "arguments": "{}"},
+        }
+    ]
+
+
+def _offered_tool_names(request: dict) -> list[str]:
+    """The function names this request OFFERED the model, in order.
+
+    Recorded in the journal because it is the only server-side, model-
+    independent evidence that a toolkit materialized: a turn whose toolkit was
+    dropped at assembly still answers, and still looks exactly like a turn that
+    carried it. An absent or malformed `tools` array records an empty list
+    rather than failing the request — the journal must never be the reason a
+    turn breaks.
+    """
+    names = []
+    for tool in request.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            names.append(function["name"])
+    return names
+
+
 def _script_for(messages: list[dict]) -> _ChatScript:
     """Choose this request's behaviour from the prompt it carries.
 
@@ -292,6 +573,28 @@ def _script_for(messages: list[dict]) -> _ChatScript:
             None,
             CHUNK_DELAY_SECONDS,
             "ask_user_resumed",
+        )
+
+    operation = _call_tool_operation(prompt)
+    if operation is not None:
+        answered = _tool_result_text_this_turn(messages)
+        if answered is None:
+            # First pass: invoke the toolkit operation the marker names.
+            return _ChatScript(
+                "",
+                _call_tool_calls(operation, prompt),
+                CHUNK_DELAY_SECONDS,
+                "call_tool",
+            )
+        # Resume: quote the tool result verbatim. That is what makes the
+        # answer discriminating — a run whose tool was never dispatched, or
+        # whose call was BLOCKED, carries a different result string, and the
+        # stored reply says which one happened without reading a single log.
+        return _ChatScript(
+            f"{PREFIX} tool {operation} said {answered} {CALL_TOOL_SENTINEL}".strip(),
+            None,
+            CHUNK_DELAY_SECONDS,
+            "call_tool_resumed",
         )
 
     if SLOW_MARKER in prompt:
@@ -413,8 +716,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_DELETE(self) -> None:  # noqa: N802 - stdlib naming
-        """Empty the journal, so a test can bound the window it asserts over."""
-        if self.path.split("?", 1)[0] != "/__journal":
+        """Empty a journal, so a test can bound the window it asserts over."""
+        path = self.path.split("?", 1)[0]
+        if path == f"{TOOL_PATH_PREFIX}/__journal":
+            with _TOOL_JOURNAL_LOCK:
+                _TOOL_JOURNAL.clear()
+            self._send(200, {"object": "list", "data": [], "count": 0})
+            return
+        if path != "/__journal":
             self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
             return
         with _JOURNAL_LOCK:
@@ -431,6 +740,26 @@ class Handler(BaseHTTPRequestHandler):
                 entries = list(_JOURNAL)
             self._send(200, {"object": "list", "data": entries, "count": len(entries)})
             return
+        if path == f"{TOOL_PATH_PREFIX}/__journal":
+            with _TOOL_JOURNAL_LOCK:
+                entries = list(_TOOL_JOURNAL)
+            self._send(200, {"object": "list", "data": entries, "count": len(entries)})
+            return
+        if path == f"{TOOL_PATH_PREFIX}/openapi.json":
+            # NOT journaled: reading the document is not calling the tool, and
+            # a journey that fetched the spec would otherwise leave an entry
+            # indistinguishable from an invocation.
+            self._send(200, _tool_openapi_document())
+            return
+        if path == f"{TOOL_PATH_PREFIX}/status":
+            _record_tool({
+                "method": "GET",
+                "path": path,
+                "operation": TOOL_STATUS_OPERATION,
+                "at": time.time(),
+            })
+            self._send(200, TOOL_STATUS_BODY)
+            return
         if path == "/v1/models":
             self._send(200, {
                 "object": "list",
@@ -444,6 +773,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
         path = self.path.split("?", 1)[0]
+        if path == f"{TOOL_PATH_PREFIX}/items":
+            self._tool_create_item(path)
+            return
         if path not in ("/v1/chat/completions", "/v1/completions", "/v1/embeddings"):
             self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
             return
@@ -482,6 +814,13 @@ class Handler(BaseHTTPRequestHandler):
             "encoding_format": request.get("encoding_format"),
             "dimensions": request.get("dimensions"),
             "mode": script.mode if script else None,
+            # The function names this request offered the model. Empty for
+            # every request that carries no toolkit, which is every request
+            # every other consumer of this journal makes.
+            "tools": _offered_tool_names(request),
+            # The SYSTEM prompt this request carried, verbatim. Empty for
+            # /v1/embeddings, which has no messages. See `_system_text`.
+            "instructions": _system_text(request.get("messages") or []),
             "at": time.time(),
         })
 
@@ -502,6 +841,31 @@ class Handler(BaseHTTPRequestHandler):
             self._stream(completion_id, created, model, script)
         else:
             self._unary(completion_id, created, model, script)
+
+    def _tool_create_item(self, path: str) -> None:
+        """`POST /tool/items` — the EFFECTFUL operation, journaled before it answers.
+
+        Journaled unconditionally, exactly as the LLM path is, because the
+        assertion this route exists for is a NEGATIVE one: a rejected
+        sensitive-tool call must leave NO entry here. An entry written only on
+        success could not tell "never called" from "called and refused".
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        if length < 0 or length > MAX_TOOL_BODY_BYTES:
+            self._send(413, {"error": {"message": "body too large", "type": "invalid_request_error"}})
+            return
+        raw = self.rfile.read(length) if length else b""
+        _record_tool({
+            "method": "POST",
+            "path": path,
+            "operation": TOOL_CREATE_OPERATION,
+            # Bounded and decoded leniently: the point of recording it is to
+            # show a call happened, and a body this server cannot decode must
+            # not become a 500 that reads as a tool outage.
+            "body": raw.decode("utf-8", "replace")[:1024],
+            "at": time.time(),
+        })
+        self._send(201, TOOL_CREATE_BODY)
 
     def _embeddings(self, request: dict) -> None:
         """`POST /v1/embeddings` — what the index plane's embedding hop calls.

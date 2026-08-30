@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 // providerHandler builds a handler carrying the REAL pinned catalogue, because
@@ -42,7 +46,43 @@ func providerRequest(method, target, body string) *http.Request {
 
 // fakeProviderRows stands in for one result row, so the redaction rules are
 // exercised without a database.
-type fakeProviderRows struct{ data []byte }
+//
+// `neverUpdated` gives the row a NULL `updated_at`, which is the state EVERY
+// freshly created platform credential is in — Create writes `created_at` only.
+type fakeProviderRows struct {
+	data         []byte
+	neverUpdated bool
+}
+
+// fakeRowTimestamp is the instant both fakes report, so a formatted timestamp
+// is a fixed string rather than "whenever the test ran".
+var fakeRowTimestamp = time.Unix(1_700_000_000, 0).UTC()
+
+// scanFakeTimestamp writes one timestamp column into whatever destination the
+// scanner asked for — INCLUDING pgx's refusal.
+//
+// The refusal is the whole point. pgx cannot put a NULL into a `*time.Time`,
+// and a scanner that asks for one is rejected here with the message elitea-main
+// logged in production, so the destination TYPE is what these tests pin. A fake
+// that quietly wrote a zero time into a `*time.Time` would report every scanner
+// as correct and could never have caught this.
+func scanFakeTimestamp(index int, column string, target any, value *time.Time) error {
+	switch dest := target.(type) {
+	case **time.Time:
+		*dest = value
+		return nil
+	case *time.Time:
+		if value == nil {
+			return fmt.Errorf(
+				"can't scan into dest[%d] (col: %s): cannot scan NULL into *time.Time",
+				index, column)
+		}
+		*dest = *value
+		return nil
+	default:
+		return fmt.Errorf("dest[%d] (col: %s): unsupported destination %T", index, column, target)
+	}
+}
 
 func (f *fakeProviderRows) Scan(targets ...any) error {
 	if len(targets) != 10 {
@@ -56,9 +96,15 @@ func (f *fakeProviderRows) Scan(targets ...any) error {
 	*(targets[5].(*[]byte)) = f.data
 	*(targets[6].(*bool)) = true
 	*(targets[7].(*string)) = ""
-	*(targets[8].(*time.Time)) = time.Unix(1_700_000_000, 0).UTC()
-	*(targets[9].(*time.Time)) = time.Unix(1_700_000_000, 0).UTC()
-	return nil
+	created := fakeRowTimestamp
+	if err := scanFakeTimestamp(8, "created_at", targets[8], &created); err != nil {
+		return err
+	}
+	updated := &created
+	if f.neverUpdated {
+		updated = nil
+	}
+	return scanFakeTimestamp(9, "updated_at", targets[9], updated)
 }
 
 // TestASurfaceWithNoPublicProjectRefusesRatherThanGuessing.
@@ -341,6 +387,48 @@ func TestACorruptDataColumnDoesNotBreakTheWholeListing(t *testing.T) {
 	}
 }
 
+// TestANeverUpdatedRowDoesNotBreakTheWholeListing is the F1 regression.
+//
+// MEASURED, through the admin panel: creating a platform provider answered 201,
+// and every subsequent GET /admin/gateway/providers answered 500 "list failed"
+// — for every operator, permanently, until someone touched the row in SQL. The
+// server log said
+//
+//	can't scan into dest[9] (col: updated_at): cannot scan NULL into *time.Time
+//
+// `updated_at` is nullable in the tenant projection and Create writes only
+// `created_at`, so a brand-new credential HAS a NULL there. The listing scanned
+// it into a `time.Time`, pgx refused the row, and the refusal is raised per row
+// on a listing — so ONE new row took the whole screen down, including every row
+// that was fine. The surface for publishing a provider bricked itself on first
+// use.
+//
+// The assertion is on the SCAN, not on a status code: a listing that answered
+// 200 while dropping the row would also be wrong, so the row's identity is
+// checked too.
+func TestANeverUpdatedRowDoesNotBreakTheWholeListing(t *testing.T) {
+	item, err := scanGlobalProvider((&fakeProviderRows{
+		data:         []byte(`{"api_base":"https://api.openai.com/v1"}`),
+		neverUpdated: true,
+	}).Scan)
+	if err != nil {
+		t.Fatalf("a freshly created credential was refused by the listing: %v", err)
+	}
+	if item.Name != "platform-openai" {
+		t.Errorf("item = %+v, want the row reported rather than skipped", item)
+	}
+	if item.CreatedAt != fakeRowTimestamp.Format(time.RFC3339) {
+		t.Errorf("created_at = %q, want the row's creation time", item.CreatedAt)
+	}
+	// Reported as "never updated" rather than as its creation time: an
+	// operator reading `updated_at` is asking when the credential last CHANGED,
+	// and a row nobody has edited has no such moment. The detail route already
+	// answers this way for the same row.
+	if item.UpdatedAt != "" {
+		t.Errorf("updated_at = %q, want empty for a row that was never updated", item.UpdatedAt)
+	}
+}
+
 // TestANonStringSecretIsNotStringifiedOnItsWayOut — a secret stored as a number
 // or an object must not be rendered into a string here. Reporting it as "not
 // set" is the safe error.
@@ -390,6 +478,13 @@ func TestTheMountedSurfaceAnswersThePathsTheClientCalls(t *testing.T) {
 		{http.MethodPost, "/gateway/providers"},
 		{http.MethodPut, "/gateway/providers/4"},
 		{http.MethodDelete, "/gateway/providers/4"},
+		// The stored-row pair. `/{configID}` and `/{configID}/check` are
+		// siblings in the same sub-router, and chi resolves them by depth — a
+		// 404 here would be the Test-connection button on the platform
+		// credential screen failing on a deployment where everything else is
+		// correct.
+		{http.MethodPost, "/gateway/providers/4/check"},
+		{http.MethodPost, "/gateway/providers/4/revalidate"},
 	} {
 		recorder := httptest.NewRecorder()
 		root.ServeHTTP(recorder, httptest.NewRequest(probe.method, probe.path, nil))
@@ -493,4 +588,188 @@ func sectionAdmitted(section string, allowed ...string) bool {
 		}
 	}
 	return false
+}
+
+/* ── the stored operations on a platform credential ────────────────────── */
+
+// governanceResolver resolves the central permissions a caller holds, and
+// asserts the MODE the gate resolves in.
+//
+// `administration` is not decoration here: `configuration.governance` is
+// granted in that mode by shared migration 0082, so a gate that resolved in
+// the default mode would reach nobody — which is the #386 shape, a route that
+// answers 403 to every caller on a clean database and looks like a permission
+// problem at the operator's end.
+func governanceResolver(t *testing.T, granted ...string) auth.PermissionResolver {
+	t.Helper()
+	return governanceResolverFunc(func(
+		_ context.Context, _ auth.User, mode string, projectID string,
+	) (auth.PermissionResolution, error) {
+		if mode != auth.PermissionModeAdministration {
+			t.Errorf("the gate resolved in mode %q, want %q",
+				mode, auth.PermissionModeAdministration)
+		}
+		if projectID != "" {
+			t.Errorf("a CENTRAL gate resolved against project %q; this surface names no project",
+				projectID)
+		}
+		return auth.PermissionResolution{UserID: 1, Permissions: granted}, nil
+	})
+}
+
+type governanceResolverFunc func(
+	context.Context, auth.User, string, string,
+) (auth.PermissionResolution, error)
+
+func (f governanceResolverFunc) ResolvePermissions(
+	ctx context.Context, principal auth.User, mode string, projectID string,
+) (auth.PermissionResolution, error) {
+	return f(ctx, principal, mode, projectID)
+}
+
+// gatedProviderRouter mounts this surface the way router.go does: the central
+// permission is applied at the MOUNT, and the sub-router applies none itself.
+func gatedProviderRouter(t *testing.T, handler *Handler, resolver auth.PermissionResolver) chi.Router {
+	t.Helper()
+	root := chi.NewRouter()
+	root.Use(func(next http.Handler) http.Handler {
+		// Stands in for apimw.Auth. Without a user in the context every gate
+		// answers 401, and the 403 this file is about would never be reached.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(auth.ContextWithUser(r.Context(), auth.User{ID: "1"})))
+		})
+	})
+	root.Group(func(r chi.Router) {
+		r.Use(apimw.RequireCentralPermissions(
+			resolver, auth.PermissionModeAdministration, "configuration.governance"))
+		r.Route("/gateway", func(r chi.Router) {
+			r.Mount("/providers", handler.GlobalProviderRoutes())
+		})
+	})
+	return root
+}
+
+// TestTheStoredProviderRoutesInheritTheCentralGate.
+//
+// The gate is applied at the mount, so a route ADDED to GlobalProviderRoutes is
+// gated by construction — which is exactly why it is worth pinning: nothing in
+// this package would fail if a later refactor moved these two registrations
+// outside that mount, and the two of them are the ones that make the platform
+// dial a provider and rewrite a credential's status column.
+//
+// The entitled direction is asserted too. A gate that refuses everybody is
+// indistinguishable from a correct one when only the refusal is measured, and
+// 503 (routed, then refused for want of a store) is the answer that proves the
+// request reached the handler.
+func TestTheStoredProviderRoutesInheritTheCentralGate(t *testing.T) {
+	for _, target := range []string{
+		"/gateway/providers/4/check",
+		"/gateway/providers/4/revalidate",
+	} {
+		for name, test := range map[string]struct {
+			granted []string
+			want    int
+		}{
+			"no permission at all":       {want: http.StatusForbidden},
+			"another central permission": {granted: []string{"admin.moderation"}, want: http.StatusForbidden},
+			"configuration.governance": {
+				granted: []string{"configuration.governance"},
+				want:    http.StatusServiceUnavailable,
+			},
+		} {
+			t.Run(target+" "+name, func(t *testing.T) {
+				router := gatedProviderRouter(t,
+					&Handler{publicProjectID: 1}, governanceResolver(t, test.granted...))
+
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, target, nil))
+
+				if recorder.Code != test.want {
+					t.Fatalf("POST %s = %d, want %d (body %s)",
+						target, recorder.Code, test.want, recorder.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestTheStoredProviderRoutesRefuseWithNoPublicProject — the same refusal the
+// other four verbs give, for the same reason. Guessing project 1 would dial a
+// provider with, or rewrite the status of, a row in a schema this deployment's
+// gateway may never read.
+func TestTheStoredProviderRoutesRefuseWithNoPublicProject(t *testing.T) {
+	router := chi.NewRouter()
+	router.Route("/gateway", func(r chi.Router) {
+		r.Mount("/providers", (&Handler{}).GlobalProviderRoutes())
+	})
+
+	for _, target := range []string{
+		"/gateway/providers/4/check",
+		"/gateway/providers/4/revalidate",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, target, nil))
+
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Errorf("POST %s = %d, want 503 when no public project is configured",
+				target, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), "AI_PROJECT_ID") {
+			t.Errorf("POST %s: the body does not say how to fix it: %s",
+				target, recorder.Body.String())
+		}
+	}
+}
+
+// TestAFailedSectionReadIsNotReportedAsADeletedCredential.
+//
+// The fence in front of both routes reads the row's section, and that read can
+// FAIL — a saturated pool, a dropped connection. Answering 404 for it would
+// tell an operator that a platform credential which is still there has been
+// deleted, and send them to re-create one. The executors behind these routes
+// both refuse to conflate the two (stored_check.go says so at its read;
+// revalidate.go answers 500 rather than 404), and the fence must not
+// reintroduce the conflation in front of them.
+//
+// The two answer in their OWN shapes, which is the other half of this test: the
+// check's control reads `success`/`message`, and the CRUD verbs' reads `error`.
+func TestAFailedSectionReadIsNotReportedAsADeletedCredential(t *testing.T) {
+	// A closed pool fails every statement, which is what a saturated one looks
+	// like from the fence.
+	handler := NewHandler(revalidateClosedPool(t), WithPublicProjectID(1))
+	router := chi.NewRouter()
+	router.Route("/gateway", func(r chi.Router) {
+		r.Mount("/providers", handler.GlobalProviderRoutes())
+	})
+
+	for _, test := range []struct {
+		target string
+		want   int
+		field  string
+	}{
+		{"/gateway/providers/4/check", http.StatusBadRequest, "success"},
+		{"/gateway/providers/4/revalidate", http.StatusInternalServerError, "error"},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, test.target, nil))
+
+		if recorder.Code == http.StatusNotFound {
+			t.Errorf("POST %s answered 404 for a failed read; absence and failure "+
+				"must not be the same answer", test.target)
+			continue
+		}
+		if recorder.Code != test.want {
+			t.Errorf("POST %s = %d, want %d (body %s)",
+				test.target, recorder.Code, test.want, recorder.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Errorf("POST %s: body %q is not JSON: %v", test.target, recorder.Body.String(), err)
+			continue
+		}
+		if _, present := body[test.field]; !present {
+			t.Errorf("POST %s answered %v, which carries no %q field — the control that "+
+				"renders it would show nothing", test.target, body, test.field)
+		}
+	}
 }

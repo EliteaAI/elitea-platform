@@ -143,9 +143,38 @@ func (repository *CurrentAgentStartRepository) currentResponseSettling(
 // The narrowing matters. `resolve` collapses about twenty-five different
 // refusals into one error, and all but this one are static conversation or
 // participant configuration that no amount of waiting changes: a start that is
-// genuinely unsupported still fails on the first attempt, at the first probe,
-// with no added latency. A probe that itself fails is treated as "do not wait"
+// genuinely unsupported never SLEEPS here — it is refused at the first probe,
+// which finds nothing settling, and answered from the confirming read that
+// probe demands (below). A probe that itself fails is treated as "do not wait"
 // — it is advisory, and the original refusal is the answer.
+//
+// ── A SETTLE REPORT IS A REASON TO RE-READ, NOT A REASON TO GIVE UP ──────────
+//
+// The loop below never returns a refusal it read BEFORE the probe told it the
+// response had settled. That is not defensive tidying; it is the whole
+// correctness of this wait.
+//
+// A resolve answers from the snapshot its statement took. The probe that
+// follows it is a separate, later transaction. When the worker's terminal
+// projection commits BETWEEN the two, the probe truthfully reports "settled"
+// while the refusal in hand was produced by a read that could not yet see it —
+// and returning that refusal answers 422 to a turn the very next read admits.
+//
+// That window is not theoretical and it is not rare where it matters. After a
+// HITL resume the runtime's `pipeline_finish` and its terminal frame are
+// milliseconds apart (an ordinary turn leaves ~500ms between them), so the
+// composer is released essentially AT the terminal write and the next send
+// lands squarely on it. Measured on the standalone stack before this change
+// (conversation 329, 2026-08-29): terminal write stamped 23:27:44.316, the 422
+// logged at 23:27:44.328 — 12ms later, with the same resolve returning a row
+// when replayed by hand. Every conversation that had answered an `ask_user`
+// question or decided a sensitive-tool pause refused its NEXT send, which is
+// how a paused conversation became a dead one.
+//
+// So `!settling` re-resolves once and answers with THAT. There is nothing left
+// to wait for at that point — the state the gate objected to is gone — which is
+// why this branch returns rather than looping. The extra query is paid only on
+// a start that was already being refused.
 func (repository *CurrentAgentStartRepository) resolveAfterCurrentResponseSettles(
 	ctx context.Context,
 	projectID int64,
@@ -159,8 +188,14 @@ func (repository *CurrentAgentStartRepository) resolveAfterCurrentResponseSettle
 	deadline := time.Now().Add(currentAgentSettleBudget)
 	for time.Now().Before(deadline) {
 		settling, probeErr := repository.currentResponseSettling(ctx, projectID, conversationUUID)
-		if probeErr != nil || !settling {
+		if probeErr != nil {
 			return err
+		}
+		if !settling {
+			// Whether the conversation settled just now or was never streaming
+			// at all, only a read taken AFTER this probe can say — and the
+			// refusal in hand was taken before it.
+			return resolve()
 		}
 		select {
 		case <-ctx.Done():

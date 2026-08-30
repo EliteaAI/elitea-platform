@@ -269,8 +269,100 @@ func TestCurrentToolkitSettingsResolverKeepsSecretsSealedOutsideClaimMode(t *tes
 	if credential[CurrentFrozenConfigurationMarker] != true {
 		t.Fatalf("configuration admission marker missing: %#v", credential)
 	}
-	if optional, exists := result["optional"]; !exists || optional != nil {
-		t.Fatalf("missing configuration field was not normalized to null: %#v", result)
+	// An absent configuration field is normalized to the EMPTY OBJECT, not to
+	// null. It used to be null, and the native worker refuses a non-object
+	// there — see the note in resolveConfigurationField for the two files that
+	// measured it. The type assertion is the assertion: `nil` is not a
+	// `map[string]any`, so a regression fails here rather than reading as an
+	// empty map.
+	optional, exists := result["optional"]
+	if !exists {
+		t.Fatalf("missing configuration field was dropped instead of normalized: %#v", result)
+	}
+	empty, ok := optional.(map[string]any)
+	if !ok || len(empty) != 0 {
+		t.Fatalf("missing configuration field = %#v, want an empty object", optional)
+	}
+	// No marker: nothing was expanded, so the claim-time materializer must read
+	// it as an ordinary map and not as a configuration it has to own.
+	if _, marked := empty[CurrentFrozenConfigurationMarker]; marked {
+		t.Fatalf("the empty configuration carries the frozen marker: %#v", empty)
+	}
+}
+
+// The freeze shape the native worker's OpenAPI family actually admits.
+//
+// The `openapi` toolkit is the one built-in whose credential is genuinely
+// optional: an anonymous API needs none, and the create form saves none unless
+// the user picks one, so this is the shape EVERY toolkit that form produces
+// arrives in. `merged_auth_settings`
+// (services/elitea-worker-rust/src/toolkits/families/openapi/config.rs) reads
+// the field with `as_object()` and refuses anything else, which ended the whole
+// turn with `native_agent.invalid_configuration` while the settings beside it —
+// spec and selected_tools — were correct and untouched.
+//
+// Both modes are exercised: the worker reads the CLAIM freeze, and admission
+// reads the REFERENCE one, so a fix that only reached one of them would leave
+// the turn refused or the toolkit unsavable.
+func TestCurrentToolkitSettingsResolverFreezesAnAbsentOpenApiCredentialAsAnEmptyObject(t *testing.T) {
+	for _, mode := range []CurrentToolkitSettingsMode{
+		CurrentToolkitSettingsReferenceMode,
+		CurrentToolkitSettingsClaimMode,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			schemas := &currentToolkitSchemaCatalogStub{schemas: map[string]CurrentToolkitSchema{
+				// The pinned SDK snapshot's whole `openapi` properties block
+				// (internal/runtimecomposition/current_toolkit_schema_snapshot.json).
+				"openapi": {Properties: map[string]any{
+					"openapi_configuration": map[string]any{
+						"configuration_types": []any{"openapi"},
+					},
+				}},
+			}}
+			configurations := &currentConfigurationExpanderStub{fn: func(CurrentExpansionRequest) (map[string]any, error) {
+				return nil, errors.New("no configuration is referenced, so nothing may be expanded")
+			}}
+			resolver := newCurrentToolkitSettingsResolverForTest(
+				t,
+				schemas,
+				&currentNestedToolkitReaderStub{},
+				configurations,
+				&currentModelVisibilityStub{},
+				&currentToolkitUnsecreterStub{},
+			)
+
+			result, err := resolver.Resolve(context.Background(), CurrentToolkitSettingsRequest{
+				ToolkitType: "openapi",
+				// Exactly what the create form stores today: a specification, a
+				// selection, and no credential key at all.
+				Settings: map[string]any{
+					"spec":           "openapi: 3.0.0\npaths: {}\n",
+					"selected_tools": []any{"readStatus"},
+				},
+				ProjectID: 7,
+				UserID:    42,
+				Mode:      mode,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(configurations.calls) != 0 {
+				t.Fatalf("an absent credential must not be expanded: %#v", configurations.calls)
+			}
+			configuration, exists := result["openapi_configuration"]
+			if !exists {
+				t.Fatalf("openapi_configuration was not frozen at all: %#v", result)
+			}
+			// `as_object()` on the worker side. nil fails it; an empty map is
+			// merged and leaves parse_auth at OpenApiAuth::Anonymous.
+			empty, ok := configuration.(map[string]any)
+			if !ok || len(empty) != 0 {
+				t.Fatalf("openapi_configuration = %#v, want an empty object", configuration)
+			}
+			if result["spec"] != "openapi: 3.0.0\npaths: {}\n" {
+				t.Fatalf("the specification did not survive the freeze: %#v", result["spec"])
+			}
+		})
 	}
 }
 

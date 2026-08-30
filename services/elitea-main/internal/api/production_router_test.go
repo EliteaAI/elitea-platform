@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
+	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
@@ -1781,6 +1783,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/elitea_core/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}",
 		"GET /api/v2/elitea_core/index_types/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}",
+		"GET /api/v2/elitea_core/message/prompt_lib/{projectID}/{messageID}",
 		"GET /api/v2/elitea_core/message_trace/prompt_lib/{projectID}/{stepID}",
 		"GET /api/v2/elitea_core/message_traces/prompt_lib/{projectID}/{conversationID}",
 		"GET /api/v2/elitea_core/messages/prompt_lib/{projectID}/{conversationID}",
@@ -1895,6 +1898,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/admin/gateway/governance/validate-cel",
 		"POST /api/v2/admin/gateway/platform_models/",
 		"POST /api/v2/admin/gateway/providers/",
+		// The two STORED operations on a platform credential: a live provider
+		// round trip that writes nothing, and an admission re-run that writes
+		// status_ok. Both are the project plane's own executors pointed at the
+		// public project's row (configurations/global_providers.go).
+		"POST /api/v2/admin/gateway/providers/{configID}/check",
+		"POST /api/v2/admin/gateway/providers/{configID}/models",
+		"POST /api/v2/admin/gateway/providers/{configID}/revalidate",
 		"POST /api/v2/admin/moderation_status/{mode}/{projectID}/{entityID}",
 		"POST /api/v2/admin/modes/administration",
 		"POST /api/v2/admin/permissions/{scope}/{mode}",
@@ -1918,10 +1928,16 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/configurations/check_connection/{projectID}/{configType}",
 		"POST /api/v2/configurations/check_connections/{mode}/{projectID}",
 		"POST /api/v2/configurations/check_connections/{projectID}",
+		"POST /api/v2/configurations/check_stored_connection/{mode}/{projectID}/{configID}",
+		"POST /api/v2/configurations/check_stored_connection/{projectID}/{configID}",
+		"POST /api/v2/configurations/check_stored_connections/{mode}/{projectID}",
+		"POST /api/v2/configurations/check_stored_connections/{projectID}",
 		"POST /api/v2/configurations/configurations/{mode}/{projectID}",
 		"POST /api/v2/configurations/configurations/{projectID}",
 		"POST /api/v2/configurations/models/{mode}/{projectID}",
 		"POST /api/v2/configurations/models/{projectID}",
+		"POST /api/v2/configurations/revalidate/{mode}/{projectID}/{configID}",
+		"POST /api/v2/configurations/revalidate/{projectID}/{configID}",
 		"POST /api/v2/context_manager/optimize_context/{projectID}/{conversationID}",
 		"POST /api/v2/context_manager/summaries/{projectID}/{conversationID}",
 		"POST /api/v2/elitea_core/applications/prompt_lib/{projectID}",
@@ -2271,4 +2287,115 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 			ExecutionEvents: runtimeHandler,
 		},
 	})
+}
+
+// ---------------------------------------------------------------------------
+// The per-message read: GET /elitea_core/message/prompt_lib/{projectID}/{messageID}
+// ---------------------------------------------------------------------------
+
+// recordingMessageRepo answers the one Repository method the per-message read
+// uses and records what it was asked for. Everything else is the embedded
+// interface, nil — the conversations group registers on `ConvsRepo != nil`
+// alone, so no other method is reached by these two requests.
+//
+// It records rather than merely answering because the status code is not the
+// discriminating signal here; see the test below.
+type recordingMessageRepo struct {
+	v2convs.Repository
+	gotProjectID  string
+	gotMessageUID string
+}
+
+func (r *recordingMessageRepo) GetMessageByUUID(
+	_ context.Context, projectID, messageUUID string,
+) (map[string]any, error) {
+	r.gotProjectID = projectID
+	r.gotMessageUID = messageUUID
+	return map[string]any{"uuid": messageUUID, "message_items": []any{}}, nil
+}
+
+func perMessageReadRouter(repo v2convs.Repository, granted ...string) http.Handler {
+	return NewRouter(RouterConfig{
+		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		ConvsRepo:                 repo,
+		ProjectAccessQuerier:      &memberOfProject{project: "7"},
+		ProjectPermissionResolver: fakePermissionResolver{granted: granted, forProject: "7"},
+	})
+}
+
+const perMessageReadUID = "0f8f6d1e-9c2a-4a1b-8f3e-2b7c5d4e6a90"
+
+// pylon declares `get` and `delete` on ONE module — elitea_core/api/v2/
+// message.py:176-183 — and this router bound only the delete. The read was
+// implemented (`(*conversations.Handler).GetMessage`) and registered by
+// nothing, which is #126's dead-wiring class: `git log -S` finds no commit
+// that ever routed it, so it is a gap rather than a regression.
+//
+// TWO claims are asserted together, because either alone passes against a
+// route that does not work:
+//
+//  1. the request REACHES the handler through the permission gate — the
+//     wiring claim, which a 401/403/404 would falsify; and
+//  2. the uuid FROM THE PATH is the one the repository is asked for.
+//
+// (2) is the discriminating half and the reason this test builds the real
+// router rather than the conversations package's own test router. GetMessage
+// read `chi.URLParam(r, "messageUUID")`, a param name NO route declares, so
+// mounting it unchanged would have handed the repository the empty string on
+// every request and answered 404 for every message that exists. A status-only
+// assertion cannot see that — the handler still returns 200 for whatever the
+// repository hands back — and the conversations package's test router could
+// not see it either, because it names its own params.
+func TestProductionRouterServesThePerMessageRead(t *testing.T) {
+	repo := &recordingMessageRepo{}
+	router := perMessageReadRouter(repo, "models.chat.messages.details")
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(
+		http.MethodGet, "/api/v2/elitea_core/message/prompt_lib/7/"+perMessageReadUID, nil)))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if repo.gotProjectID != "7" {
+		t.Errorf("repository asked for project %q, want \"7\"", repo.gotProjectID)
+	}
+	if repo.gotMessageUID != perMessageReadUID {
+		t.Fatalf("repository asked for message %q, want %q — the handler is reading a "+
+			"path param the route does not declare", repo.gotMessageUID, perMessageReadUID)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, recorder.Body.String())
+	}
+	if body["uuid"] != perMessageReadUID {
+		t.Errorf("response uuid = %v, want %q", body["uuid"], perMessageReadUID)
+	}
+}
+
+// The read carries its OWN permission. pylon gates the get on
+// `models.chat.messages.details` and the delete on `models.chat.messages.delete`
+// (message.py:39,73), and the two are withheld differently — delete is denied
+// to a viewer in both modes, details is granted to a viewer in both.
+//
+// A caller holding only the sibling's delete string must therefore be refused
+// here. Without this, a gate copied from the DELETE one line below it would
+// look correct in every other test in this file: the route would still answer,
+// still reach the handler, and still return the right message — for a
+// principal pylon does not let read it.
+func TestPerMessageReadDoesNotAcceptTheDeleteSiblingsPermission(t *testing.T) {
+	repo := &recordingMessageRepo{}
+	router := perMessageReadRouter(repo, "models.chat.messages.delete")
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(
+		http.MethodGet, "/api/v2/elitea_core/message/prompt_lib/7/"+perMessageReadUID, nil)))
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if repo.gotMessageUID != "" {
+		t.Fatalf("the repository was reached (%q) despite the refusal", repo.gotMessageUID)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -106,14 +107,28 @@ type checkerCall struct {
 // #319 fixes) is caught by asserting len(calls) rather than trusting the
 // canned result field.
 type fakeConnectionChecker struct {
+	// mu guards calls: BatchCheckStoredConnections fans Check out over
+	// goroutines, so an unguarded append is a real data race under -race —
+	// in the test double, not in production, which is why only the
+	// postgres-enabled batch test ever tripped it.
+	mu     sync.Mutex
 	calls  []checkerCall
 	result handler.ConnectionCheckResult
 	err    error
 }
 
 func (f *fakeConnectionChecker) Check(_ context.Context, configType string, data map[string]any) (handler.ConnectionCheckResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, checkerCall{configType: configType, data: data})
 	return f.result, f.err
+}
+
+// recordedCalls snapshots the recorder under the same lock the writer takes.
+func (f *fakeConnectionChecker) recordedCalls() []checkerCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]checkerCall(nil), f.calls...)
 }
 
 func setupConfigRouterWithChecker(checker handler.ConnectionChecker) *chi.Mux {
@@ -141,7 +156,7 @@ type configurationRoute struct {
 	permission string
 }
 
-// configurationRoutes lists all 22 registrations, mode-less twin and `{mode}`
+// configurationRoutes lists all 28 registrations, mode-less twin and `{mode}`
 // twin alike. The `{mode}` rows use `administration` deliberately: that is the
 // segment a caller would reach for to escape a project-scoped gate, and it must
 // resolve in the DEFAULT mode like every other row.
@@ -160,6 +175,16 @@ var configurationRoutes = []configurationRoute{
 	{http.MethodPost, "/api/v2/configurations/check_connection/administration/7/open_ai", handler.CurrentConfigurationCreatePermission},
 	{http.MethodPost, "/api/v2/configurations/check_connections/7", handler.CurrentConfigurationCreatePermission},
 	{http.MethodPost, "/api/v2/configurations/check_connections/administration/7", handler.CurrentConfigurationCreatePermission},
+	// The stored checks and the revalidation address a row that already
+	// exists, so they gate on the UPDATE string — the same string every other
+	// write to an existing row uses. See the comment beside their registration
+	// in Routes().
+	{http.MethodPost, "/api/v2/configurations/check_stored_connection/7/11", handler.CurrentConfigurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/check_stored_connection/administration/7/11", handler.CurrentConfigurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/check_stored_connections/7", handler.CurrentConfigurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/check_stored_connections/administration/7", handler.CurrentConfigurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/revalidate/7/11", handler.CurrentConfigurationUpdatePermission},
+	{http.MethodPost, "/api/v2/configurations/revalidate/administration/7/11", handler.CurrentConfigurationUpdatePermission},
 	{http.MethodGet, "/api/v2/configurations/models/7", handler.CurrentConfigurationListPermission},
 	{http.MethodGet, "/api/v2/configurations/models/administration/7", handler.CurrentConfigurationListPermission},
 	{http.MethodPost, "/api/v2/configurations/models/7", handler.CurrentConfigurationUpdatePermission},
@@ -544,7 +569,7 @@ func TestAvailableFiltersBySection(t *testing.T) {
 // invoking the connection checker (the real provider round trip). Before this
 // fix, CheckConnection returned success:true unconditionally, ignoring the
 // request body and never calling anything — that stub would fail this
-// assertion (len(checker.calls) would stay 0).
+// assertion (len(checker.recordedCalls()) would stay 0).
 func TestCheckConnection_ReportsSuccessOnlyWhenCheckerCalled(t *testing.T) {
 	checker := &fakeConnectionChecker{
 		result: handler.ConnectionCheckResult{Success: true, Message: "Connection successful"},
@@ -560,13 +585,13 @@ func TestCheckConnection_ReportsSuccessOnlyWhenCheckerCalled(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
-	if len(checker.calls) != 1 {
-		t.Fatalf("expected exactly one checker call, got %d — success must come from a real round trip", len(checker.calls))
+	if len(checker.recordedCalls()) != 1 {
+		t.Fatalf("expected exactly one checker call, got %d — success must come from a real round trip", len(checker.recordedCalls()))
 	}
-	if checker.calls[0].configType != "open_ai" {
-		t.Errorf("checker called with type %q, want open_ai", checker.calls[0].configType)
+	if checker.recordedCalls()[0].configType != "open_ai" {
+		t.Errorf("checker called with type %q, want open_ai", checker.recordedCalls()[0].configType)
 	}
-	if apiBase, _ := checker.calls[0].data["api_base"].(string); apiBase != "https://api.openai.com/v1" {
+	if apiBase, _ := checker.recordedCalls()[0].data["api_base"].(string); apiBase != "https://api.openai.com/v1" {
 		t.Errorf("checker called with api_base %q, want the request body's value", apiBase)
 	}
 
@@ -600,8 +625,8 @@ func TestCheckConnection_BadCredentialReportsFailure(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d; body: %s", rec.Code, rec.Body.String())
 	}
-	if len(checker.calls) != 1 {
-		t.Fatalf("expected exactly one checker call, got %d", len(checker.calls))
+	if len(checker.recordedCalls()) != 1 {
+		t.Fatalf("expected exactly one checker call, got %d", len(checker.recordedCalls()))
 	}
 
 	var result map[string]any
@@ -674,16 +699,20 @@ func TestCheckConnection_UnknownTypeReturns404WithoutCallingChecker(t *testing.T
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(checker.calls) != 0 {
-		t.Fatalf("checker must not be called for an unknown type, got %d calls", len(checker.calls))
+	if len(checker.recordedCalls()) != 0 {
+		t.Fatalf("checker must not be called for an unknown type, got %d calls", len(checker.recordedCalls()))
 	}
 }
 
 // TestCheckConnection_KnownButUncheckableTypeReturns400WithoutCallingChecker
-// covers every type this Go build still cannot really check (toolkit
-// credential types, amazon_bedrock, vertex_ai, ...): it must report the
-// honest "not supported yet" failure legacy's own registry fallback used —
-// never the previous unconditional success.
+// covers every type this Go build still cannot really check (the toolkit
+// credential types: github, jira, confluence, ...). It must report the honest
+// "not supported yet" failure legacy's own registry fallback used — never the
+// previous unconditional success.
+//
+// amazon_bedrock and vertex_ai used to be in that set. They are not any more:
+// the gateway grew a real probe for each, so they are asserted as CHECKABLE by
+// TestCheckConnection_CloudProviderTypesAreCheckable below.
 func TestCheckConnection_KnownButUncheckableTypeReturns400WithoutCallingChecker(t *testing.T) {
 	checker := &fakeConnectionChecker{result: handler.ConnectionCheckResult{Success: true}}
 	r := setupConfigRouterWithChecker(checker)
@@ -698,8 +727,8 @@ func TestCheckConnection_KnownButUncheckableTypeReturns400WithoutCallingChecker(
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(checker.calls) != 0 {
-		t.Fatalf("checker must not be called for a not-yet-checkable type, got %d calls", len(checker.calls))
+	if len(checker.recordedCalls()) != 0 {
+		t.Fatalf("checker must not be called for a not-yet-checkable type, got %d calls", len(checker.recordedCalls()))
 	}
 	var result map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
@@ -707,6 +736,59 @@ func TestCheckConnection_KnownButUncheckableTypeReturns400WithoutCallingChecker(
 	}
 	if success, _ := result["success"].(bool); success {
 		t.Fatal("a not-yet-checkable type must never report success")
+	}
+}
+
+// TestCheckConnection_CloudProviderTypesAreCheckable pins the membership of
+// checkableConnectionTypes for amazon_bedrock and vertex_ai: each must reach
+// the checker instead of being short-circuited into the "not supported yet"
+// message.
+//
+// It asserts the ROUTE's behaviour rather than reading the map, because the
+// map alone cannot fail usefully: what the user sees is whether the button
+// tests the credential or refuses it. The checker here is a fake, so this
+// proves the request is delegated — the real provider round trip lives on the
+// gateway side (internal/llmproxy/checkconnection_cloud_test.go).
+func TestCheckConnection_CloudProviderTypesAreCheckable(t *testing.T) {
+	cases := []struct {
+		configType string
+		data       string
+	}{
+		{
+			configType: "amazon_bedrock",
+			data:       `{"aws_access_key_id":"AKIA","aws_secret_access_key":"secret","aws_region_name":"us-east-1"}`,
+		},
+		{
+			configType: "vertex_ai",
+			data:       `{"vertex_project":"p","vertex_location":"us-central1","vertex_credentials":"{\"type\":\"service_account\"}"}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.configType, func(t *testing.T) {
+			checker := &fakeConnectionChecker{
+				result: handler.ConnectionCheckResult{Success: true, Message: "Connection successful"},
+			}
+			r := setupConfigRouterWithChecker(checker)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/"+c.configType, strings.NewReader(c.data))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if len(checker.recordedCalls()) != 1 {
+				t.Fatalf("%s must reach the checker, got %d calls; body=%s", c.configType, len(checker.recordedCalls()), rec.Body.String())
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+			var result map[string]any
+			if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if success, _ := result["success"].(bool); !success {
+				t.Fatalf("expected success=true from the checker, got %v", result)
+			}
+		})
 	}
 }
 
@@ -776,8 +858,8 @@ func TestBatchCheckConnections_MixedItems(t *testing.T) {
 	if unsupported, _ := results[1]["unsupported"].(bool); !unsupported {
 		t.Errorf("expected unsupported=true for cfg-2 (unknown type), got %v", results[1])
 	}
-	if len(checker.calls) != 1 {
-		t.Fatalf("expected exactly one checker call (cfg-1 only), got %d — success must come from a real round trip", len(checker.calls))
+	if len(checker.recordedCalls()) != 1 {
+		t.Fatalf("expected exactly one checker call (cfg-1 only), got %d — success must come from a real round trip", len(checker.recordedCalls()))
 	}
 }
 
@@ -813,8 +895,8 @@ func TestBatchCheckConnections_BadCredentialReportsFailure(t *testing.T) {
 	if success, _ := results[0]["success"].(bool); success {
 		t.Fatal("a credential the provider rejects must not report success")
 	}
-	if len(checker.calls) != 1 {
-		t.Fatalf("expected exactly one checker call, got %d", len(checker.calls))
+	if len(checker.recordedCalls()) != 1 {
+		t.Fatalf("expected exactly one checker call, got %d", len(checker.recordedCalls()))
 	}
 }
 

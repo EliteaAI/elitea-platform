@@ -232,6 +232,54 @@ describe('useConversationSidebar — conversation delete', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/chat'));
   });
 
+  /**
+   * DEFECT (stale row-handler): the row's Delete handler is captured by a
+   * memoised `ConversationItem` reached through `useRenderConversationItem`'s
+   * `useCallback([])` render-prop, so a row rendered BEFORE it was selected
+   * keeps the `deleteConversation` closure that existed at that first render.
+   * When `deleteConversation` decided "am I deleting the open one?" from that
+   * closure's captured `activeConversation`, the answer was `undefined` — the
+   * DELETE still landed and the row vanished, but the route stayed on the
+   * just-deleted transcript.
+   *
+   * The earlier delete test cannot see this: it reads
+   * `result.current.conversationsProps.onDeleteConversation` AFTER selecting,
+   * so it always gets the freshest handler. This one captures the handler
+   * BEFORE the click, then invokes that exact reference — the stale closure a
+   * real `ConversationItem` holds — and proves the navigate-away branch still
+   * fires because `deleteConversation` now reads the active conversation live.
+   */
+  it('navigates to /chat from a Delete handler captured BEFORE the row was selected (stale-closure repro)', async () => {
+    seedProjectSeven();
+    server.use(http.delete('/api/v2/elitea_core/conversation/prompt_lib/7/c1', () => HttpResponse.json({})));
+    const { Wrapper, router } = makeRoutedWrapper();
+    const { result } = renderHook(() => useConversationSidebar(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    act(() => {
+      result.current.conversationsProps.setDateGroups([{ name: 'Today', conversations: [conversation] }]);
+      result.current.conversationsProps.setFolders([{ id: 'f1', name: 'Folder', conversations: [conversation] }]);
+    });
+
+    // Grab the Delete handler NOW, while nothing is selected — this is the
+    // closure a row rendered before selection carries. A pre-fix build closes
+    // over `activeConversation === undefined` here.
+    const staleDelete = result.current.conversationsProps.onDeleteConversation;
+
+    // Select it the way a user does — a click — AFTER the handler was captured.
+    act(() => result.current.conversationsProps.onSelectConversation(conversation));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/chat/c1'));
+
+    // Invoke the STALE handler, not the current one.
+    act(() => staleDelete(conversation));
+
+    await waitFor(() => expect(result.current.conversationsProps.dateGroups[0]?.conversations).toEqual([]));
+    expect(result.current.conversationsProps.folders[0]?.conversations).toEqual([]);
+    expect(result.current.conversationsProps.selectedConversationId).toBeUndefined();
+    // The branch a pre-fix build skipped: the route must leave the deleted id.
+    await waitFor(() => expect(router.state.location.pathname).toBe('/chat'));
+  });
+
   it('does not navigate away when the deleted conversation is not the active one', async () => {
     seedProjectSeven();
     server.use(http.delete('/api/v2/elitea_core/conversation/prompt_lib/7/c1', () => HttpResponse.json({})));
@@ -249,5 +297,106 @@ describe('useConversationSidebar — conversation delete', () => {
     await waitFor(() => expect(result.current.conversationsProps.dateGroups[0]?.conversations).toEqual([other]));
     expect(result.current.conversationsProps.selectedConversationId).toBe('c2');
     expect(router.state.location.pathname).toBe('/chat/c2');
+  });
+});
+
+/**
+ * DEFECT (stale row-handler, rename): `renameConversation` is
+ * `onChangeActiveConversationName` — by name and by contract it acts on
+ * whatever conversation is open WHEN IT IS CALLED. It read `activeConversation`
+ * out of its own render closure instead, and listed it in the `useCallback`
+ * dependency array, so correctness depended entirely on a fresh handler
+ * reference reaching the row. It does not always: `Conversations` hands row
+ * callbacks down through `useRenderConversationItem`'s `useCallback([])`
+ * render prop into a memoised `ConversationItem`, exactly the arrangement that
+ * lets a row keep the closure it was rendered with. A closure captured before
+ * any selection carries `activeConversation === undefined`, and the guard turns
+ * every later rename into a silent no-op — no PUT, no error, the old name
+ * still on screen.
+ *
+ * Same repro shape as the Delete stale-closure test above: capture the handler
+ * while nothing is selected, THEN select, THEN invoke that exact reference.
+ */
+describe('useConversationSidebar — conversation rename', () => {
+  it('renames the conversation open at CALL time from a handler captured BEFORE it was selected (stale-closure repro)', async () => {
+    seedProjectSeven();
+    const renameBodies: unknown[] = [];
+    server.use(
+      http.put('/api/v2/elitea_core/conversation/prompt_lib/7/c1', async ({ request }) => {
+        renameBodies.push(await request.json());
+        return HttpResponse.json({ id: 'c1', name: 'Typed later', is_private: true });
+      }),
+    );
+    const { Wrapper, router } = makeRoutedWrapper();
+    const { result } = renderHook(() => useConversationSidebar(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    act(() => result.current.conversationsProps.setDateGroups([{ name: 'Today', conversations: [conversation] }]));
+
+    // Grab the rename handler NOW, while nothing is selected — a pre-fix build
+    // closes over `activeConversation === undefined` at this point.
+    const staleRename = result.current.conversationsProps.onChangeActiveConversationName;
+
+    act(() => result.current.conversationsProps.onSelectConversation(conversation));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/chat/c1'));
+
+    // Invoke the STALE reference, not the current one.
+    act(() => staleRename('Typed later'));
+
+    // A pre-fix build sends nothing at all: its guard short-circuits.
+    await waitFor(() => expect(renameBodies).toEqual([{ name: 'Typed later' }]));
+  });
+
+  it('still sends nothing when no conversation is open', async () => {
+    seedProjectSeven();
+    const renameBodies: unknown[] = [];
+    server.use(
+      http.put('/api/v2/elitea_core/conversation/prompt_lib/7/c1', async ({ request }) => {
+        renameBodies.push(await request.json());
+        return HttpResponse.json({ id: 'c1', name: 'Nope', is_private: true });
+      }),
+    );
+    const { Wrapper } = makeRoutedWrapper();
+    const { result } = renderHook(() => useConversationSidebar(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    act(() => result.current.conversationsProps.onChangeActiveConversationName('Nope'));
+
+    // The live read must still fail closed — reading the ref replaced the
+    // stale value, not the guard.
+    await waitFor(() => expect(result.current).not.toBeNull());
+    expect(renameBodies).toEqual([]);
+  });
+});
+
+/**
+ * DEFECT (stale header-handler): "Create folder" carries the baseline's
+ * re-entrancy guard — while a draft folder is already open, a second click is
+ * a no-op rather than stacking a second draft. "Is a draft already open?" is
+ * answered when the button is CLICKED, but the guard read `activeFolder` out of
+ * the render closure that built the callback, so a reference captured before
+ * the first draft existed answered `undefined` forever and stacked a draft on
+ * every call. Two drafts in `folders` means two `FolderItem`s in edit mode, and
+ * `onCreateFolder` only ever confirms `activeFolder` — the orphan stays.
+ */
+describe('useConversationSidebar — create-folder re-entrancy', () => {
+  it('refuses a second draft from a handler captured BEFORE the first draft existed (stale-closure repro)', async () => {
+    seedProjectSeven();
+    const { Wrapper } = makeRoutedWrapper();
+    const { result } = renderHook(() => useConversationSidebar(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    // The header button holds one reference for the life of the sidebar; a
+    // pre-fix build's copy closes over `activeFolder === undefined`.
+    const staleCreateFolder = result.current.conversationsProps.onClickCreateNewFolder;
+
+    act(() => staleCreateFolder());
+    await waitFor(() => expect(result.current.conversationsProps.folders.filter((folder) => folder.isNew === true)).toHaveLength(1));
+
+    // The SAME reference again. A pre-fix build's guard still sees `undefined`
+    // and stacks a second draft; the live read sees the one already open.
+    act(() => staleCreateFolder());
+
+    expect(result.current.conversationsProps.folders.filter((folder) => folder.isNew === true)).toHaveLength(1);
   });
 });

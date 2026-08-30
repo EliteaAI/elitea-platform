@@ -31,7 +31,6 @@ import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArro
 
 import { ChatParticipantType } from '../model/constants';
 import type { TransformedParticipant } from '../model/types';
-import { isParticipantStillActive } from '@/entities/participant';
 import { ParticipantsLayout } from './ParticipantsLayout';
 import type { ParticipantsProps } from './Participants.types';
 import { ENTITY_ORDER } from './Participants.types';
@@ -161,15 +160,39 @@ export const Participants = memo(
     // Users section — extract and limit
     // -----------------------------------------------------------------------
 
+    /*
+     * Baseline `ExpandedParticipantsList.jsx:50-56`: the users row is the
+     * `entity_name === Users` group, sorted, and nothing else. Membership of
+     * `groupedByType[Users]` IS that filter.
+     *
+     * This used to `.filter(isParticipantStillActive)` first, and the row
+     * could therefore never render at all. Two independent reasons, either
+     * one fatal:
+     *  1. `entities/participant`'s selector keys off the camelCase DOMAIN
+     *     shape (`entityName`), and every row here is the raw snake_case
+     *     wire row (`entity_name`) the conversation payload carries — the
+     *     same mismatch `../lib/helpers.ts`'s CORRECTION note already
+     *     records for this cluster's other two selector imports. It matched
+     *     nothing and answered falsy for every row.
+     *  2. Even on the right shape it answers `false` for `user` BY DESIGN —
+     *     the baseline's only caller is the last-message Regenerate gate
+     *     (`ChatMessageWrapper.jsx:148`), where "a user is not something a
+     *     turn can be re-addressed to" is the correct answer. It is a
+     *     re-addressability predicate, not a visibility one.
+     * Measured on the E2E stack before the fix: a conversation with one user
+     * participant rendered `participants-container` and its agent section and
+     * no `users-section` at all.
+     *
+     * Copied before sorting — `groupedByType`'s arrays are memoised and
+     * `Array.prototype.sort` mutates in place.
+     */
     const userParticipants = useMemo(
       () =>
-        groupedByType[ChatParticipantType.Users]
-          ?.filter(isParticipantStillActive)
-          .sort((a, b) => {
-            const aId = Number(a.entity_meta?.id ?? 0);
-            const bId = Number(b.entity_meta?.id ?? 0);
-            return aId - bId;
-          }) ?? [],
+        [...(groupedByType[ChatParticipantType.Users] ?? [])].sort((a, b) => {
+          const aId = Number(a.entity_meta?.id ?? 0);
+          const bId = Number(b.entity_meta?.id ?? 0);
+          return aId - bId;
+        }),
       [groupedByType],
     );
 

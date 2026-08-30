@@ -31,6 +31,7 @@ import {
   getConfigurationGroup,
   sortConfigurationsByDisplayName,
 } from '@/features/settings/lib/ai-configuration/configuration.helpers';
+import { toConfigurationId, useStoredConnectionHealthContext } from '@/features/settings/lib/ai-configuration/useStoredConnectionHealth';
 
 import ConfigurationCard from './ConfigurationCard';
 
@@ -136,12 +137,19 @@ function ConfigCards({
   // routing into the configuration's edit view. Wired here (not passed
   // down as a prop) since the hook must be called from a component body.
   const { navigateToConfiguration } = useConfigurationNavigation();
+  // Read here, not threaded from the panel: `ConfigurationSection` already
+  // destructures 12 props, which IS the §3.5 component-props budget, and this
+  // component never reads the value — it only forwards it. See
+  // `StoredConnectionHealthView`'s own doc comment. The card boundary below
+  // stays explicit props.
+  const connectionHealth = useStoredConnectionHealthContext();
 
   return (
     <Box sx={styles.configurationsContainer}>
       {configurations.map((configuration, index) => {
         const cfg = configuration;
         const d = cfg.data as Record<string, unknown> | undefined;
+        const configurationId = toConfigurationId(cfg.id);
         return (
           <ConfigurationCard
             key={`${(cfg.id as string) || (cfg.name as string)}-${index}`}
@@ -150,6 +158,9 @@ function ConfigCards({
             canEdit={canEdit}
             isDefault={defaultSettingValue === `${(d?.name as string) ?? ''}<<>>${(cfg.project_id as string) ?? ''}`}
             onClick={navigateToConfiguration}
+            health={connectionHealth.health[configurationId]}
+            onRevalidate={connectionHealth.revalidate}
+            isRevalidating={connectionHealth.revalidatingId === configurationId}
           />
         );
       })}

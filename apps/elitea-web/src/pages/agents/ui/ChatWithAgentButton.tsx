@@ -106,15 +106,17 @@ export function ChatWithAgentButton({ projectId, applicationId, name, activeVers
   const handleClick = useCallback(async () => {
     if (input === undefined || isStarting) return;
     setIsStarting(true);
+    let conversationId: string;
     try {
       const conversation = await createConversation({
         projectId: input.projectId,
         name: (input.name ?? '').slice(0, MAX_CONVERSATION_NAME) || t('pages.agents.chatWithAgent.defaultName', 'New Chat'),
         is_private: true,
       });
+      conversationId = String(conversation.id);
       await addParticipants({
         projectId: input.projectId,
-        conversationId: String(conversation.id),
+        conversationId,
         participants: [
           { entity_name: 'user', entity_meta: { id: Number(input.userId) } },
           {
@@ -129,16 +131,38 @@ export function ChatWithAgentButton({ projectId, applicationId, name, activeVers
           },
         ],
       });
-      // The chat page's participant selection makes the freshly attached
-      // agent the ACTIVE participant on load, so the first send addresses it
-      // — verified in a browser against the standalone stack. Awaited, so a
-      // navigation failure reaches the same error surface as a failed create
-      // instead of vanishing into a voided promise.
-      await navigate({ to: '/chat/$conversationId', params: { conversationId: String(conversation.id) } });
     } catch {
       onError();
       setIsStarting(false);
+      return;
     }
+    // The chat page's participant selection makes the freshly attached
+    // agent the ACTIVE participant on load, so the first send addresses it
+    // — verified in a browser against the standalone stack.
+    //
+    // NOT awaited, and `isStarting` is cleared BEFORE this call rather than
+    // from its resolution (audit, handoff brief — same finding as the
+    // pipelines twin, `ChatWithPipelineButton.tsx`): this page arms
+    // `useUnsavedChangesNavBlocker` while the form is dirty, and this
+    // navigation is exactly the kind of nav-away that guard exists to catch
+    // — so it deliberately does NOT bypass the dialog the way
+    // `handleDiscarded`/`handleDeleted` do. But TanStack Router's
+    // `navigate()` promise resolves only once the history push actually
+    // commits (`@tanstack/router-core`'s `commitLocation`); a BLOCKED
+    // attempt that the user then CANCELS never commits —
+    // `@tanstack/history`'s `tryNavigation` returns as soon as the blocker
+    // resolves `true` without ever calling `task()`/`notify()`, so nothing
+    // ever resolves that promise. Measured against the unfixed button (this
+    // page's twin's own test, `EditPipeline.test.tsx`'s "recovers the
+    // button instead of hanging…", reproduced here too): `await
+    // navigate(...)` left `isStarting` stuck `true` — "Opening chat…"
+    // forever — the instant the user clicked Cancel on the guard's own
+    // dialog. Firing it and moving on avoids the hang while still letting
+    // the dialog show and block for real; a genuine navigate() failure
+    // (effectively unreachable for this static, well-formed `to`) still
+    // reaches the same error surface via `.catch`.
+    setIsStarting(false);
+    void navigate({ to: '/chat/$conversationId', params: { conversationId } }).catch(onError);
   }, [input, isStarting, createConversation, addParticipants, navigate, onError]);
 
   return (

@@ -1,5 +1,4 @@
 /** Focused factories for ordinary ChatBox turn actions. */
-import { conversationApi } from "@/entities/conversation";
 import type { ChatMessage } from "@/features/chat-messages";
 import { t } from "@/shared/i18n";
 import { ROLES } from "@/shared/lib/enums";
@@ -8,14 +7,10 @@ import {
   buildDefaultMessagePayload,
   buildFailedTurnMessage,
   buildOptimisticUserMessage,
-  buildRegeneratePayload,
   buildSendResult,
   findActionRequiredToolAction,
-  findQuestionForAnswer,
-  maybeSetStreamingInfo,
   NO_STREAM_TRANSPORT,
   readServerUrl,
-  regeneratingPatch,
   resolveConversationForSend,
   resolveParticipantId,
   resolveUploadConversationId,
@@ -29,7 +24,6 @@ import type {
   ChatBoxHandlerDeps,
   SendQuestionParams,
   SendResult,
-  UpdatedMessageItem,
 } from "./useChatBoxHandlers.helpers";
 
 /**
@@ -123,9 +117,12 @@ export function createSendQuestion(
     const participantId = resolveParticipantId(participant);
     const { uuid: resolvedConversationUuid, createdConversation } =
       await resolveConversationForSend(deps, question);
+    // The conversation's UUID, not its numeric id — see
+    // `resolveUploadConversationId`: the object key it becomes is what
+    // admission authorises the attachment against.
     const uploadConversationId = resolveUploadConversationId(
       createdConversation,
-      deps.conversationId,
+      deps.conversationUuid,
     );
     const attachmentList = await uploadPendingAttachments(
       deps,
@@ -170,70 +167,6 @@ export function createSendQuestion(
       return { success: false };
     }
     return buildSendResult(createdConversation);
-  };
-}
-
-function restoreAnswer(
-  deps: ChatBoxHandlerDeps,
-  messageId: string,
-  answer: ChatMessage | undefined,
-): void {
-  if (!answer) return;
-  deps.setChatHistory((prev) =>
-    prev.map((item) => (item.id !== messageId ? item : answer)),
-  );
-}
-
-export function createRegenerateAnswer(
-  deps: ChatBoxHandlerDeps,
-): (
-  messageId: string,
-  updatedItems?: readonly UpdatedMessageItem[],
-) => Promise<void> {
-  return async (messageId, updatedItems) => {
-    if (!deps.regenerateStreamedExecution && !deps.triggerRegenerate) {
-      console.warn(
-        "[useChatBoxHandlers] regenerateAnswer: no regeneration transport provided",
-      );
-      return;
-    }
-    const answer = deps.chatHistory.find((item) => item.id === messageId);
-    const questionMessage = findQuestionForAnswer(deps.chatHistory, answer);
-    let previousAnswer: ChatMessage | undefined;
-    deps.setChatHistory((prev) => {
-      previousAnswer = prev.find((item) => item.id === messageId);
-      return prev.map((item) =>
-        item.id !== messageId ? item : regeneratingPatch(item),
-      );
-    });
-    maybeSetStreamingInfo(deps.setStreamingInfo, questionMessage?.id);
-    if (deps.regenerateStreamedExecution && questionMessage) {
-      const outcome = await deps.regenerateStreamedExecution({
-        messageId,
-        questionId: questionMessage.id,
-        question: questionMessage.content,
-        ...(updatedItems !== undefined ? { updatedItems } : {}),
-      });
-      if (outcome.started) return;
-    }
-    if (!deps.triggerRegenerate) {
-      restoreAnswer(deps, messageId, previousAnswer);
-      return;
-    }
-    const payload = buildRegeneratePayload(
-      deps,
-      messageId,
-      questionMessage,
-      updatedItems,
-    );
-    try {
-      await deps.triggerRegenerate(
-        payload as Parameters<typeof conversationApi.regenerate>[0],
-      );
-    } catch (error) {
-      console.warn("[useChatBoxHandlers] regenerate failed:", error);
-      restoreAnswer(deps, messageId, previousAnswer);
-    }
   };
 }
 

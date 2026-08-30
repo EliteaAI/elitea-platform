@@ -10,7 +10,8 @@ use std::sync::Arc;
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 
 use super::runtime_context::{
-    ClaimScopedEliteaContext, RuntimeApplicationVersion, RuntimeContextClient, RuntimeContextError,
+    ClaimScopedEliteaContext, RuntimeApplicationVersion, RuntimeAttachmentObject,
+    RuntimeContextClient, RuntimeContextError,
 };
 
 /// Shared platform transport facade. Invocation authority is always supplied
@@ -51,6 +52,30 @@ impl PlatformClient {
     ) -> Result<RuntimeApplicationVersion, RuntimeContextError> {
         self.runtime_context
             .load_application_version(authority, application_id, version_id)
+            .await
+    }
+
+    /// Read one of this turn's attached documents using the live claim.
+    ///
+    /// Main serves it from the same private mTLS content route family and
+    /// authorizes on the claim's own project AND conversation
+    /// (`PostAttachmentObject`), so this facade passes the reference through
+    /// unchanged and adds no scope of its own — there is nothing here that
+    /// could widen what the claim already permits.
+    ///
+    /// Unlike `resolve_application_version`, a failure of this call is NOT a
+    /// failure of the turn. Its caller (`agents::attachments`) treats every
+    /// error as "unreadable", announces the file by name and continues, which
+    /// is pylon's own rule for a file the platform cannot read
+    /// (`rpc/chat_all.py:384-386`).
+    pub(crate) async fn read_attachment_object(
+        &self,
+        authority: &ClaimBoundRuntimeContextAuthority,
+        bucket: &str,
+        name: &str,
+    ) -> Result<RuntimeAttachmentObject, RuntimeContextError> {
+        self.runtime_context
+            .load_attachment_object(authority, bucket, name)
             .await
     }
 }

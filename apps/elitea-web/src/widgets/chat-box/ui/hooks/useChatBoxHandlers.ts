@@ -66,10 +66,10 @@ import type {
 import {
   createClearChat,
   createDeleteAnswer,
-  createRegenerateAnswer,
   createSendQuestion,
   undeliveredText,
 } from "./useChatBoxHandlers.turns";
+import { createRegenerateAnswer } from "./useChatBoxHandlers.regenerate";
 
 /*
  * [#71] `UpdatedMessageItem` and `UploadedAttachmentOutcome` were dropped from

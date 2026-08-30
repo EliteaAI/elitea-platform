@@ -36,10 +36,18 @@ import {
 } from "@/entities/conversation/api/conversationApi";
 import { EliteaApiError } from "@/shared/api/generated/mutator";
 
-/** Result of starting a run before the widget decides whether socket fallback is safe. */
+/**
+ * Result of starting a run before the widget decides whether socket fallback is
+ * safe.
+ *
+ * `retry-later` is produced by the REGENERATION route only, and it is not a
+ * failure: it is the server saying "ask again in a moment". See
+ * `REGENERATION_PENDING` below.
+ */
 export type AgentStreamStartAttempt =
   | { readonly started: true }
   | { readonly started: false; readonly reason: "no-transport" }
+  | { readonly started: false; readonly reason: "retry-later" }
   | {
       readonly started: false;
       readonly reason: "rejected";
@@ -51,6 +59,50 @@ const NO_TRANSPORT: AgentStreamStartAttempt = {
   started: false,
   reason: "no-transport",
 };
+/**
+ * The previous run of THIS answer has not released it yet — retry, do not
+ * fall back.
+ *
+ * `POST /elitea_core/regenerate/prompt_lib/{project}/{answer}` answers 409
+ * `{"error":"agent_regeneration_pending","retryable":true}` with
+ * `Retry-After: 1` while the answer's `chat_message_group.is_streaming` is
+ * still TRUE (`writeStartError` in
+ * `services/elitea-main/internal/api/v2/agentexecution/route.go`, raised by
+ * `ResolveCurrentRegeneration`). That flag is cleared AFTER the answer text is
+ * written, so both signals the product gives a user — the answer is on screen,
+ * the composer is released — are true for a short window in which the button
+ * they gate is still refused.
+ *
+ * It is distinguished HERE, and nowhere downstream, because this is the only
+ * place the refusal exists: the legacy REST trigger the caller falls back to
+ * posts the same regeneration WITHOUT an `execution_contract`, which the route
+ * answers 400 for. A retry attached to that fallback can never see this 409.
+ */
+const REGENERATION_PENDING: AgentStreamStartAttempt = {
+  started: false,
+  reason: "retry-later",
+};
+
+/**
+ * True for the still-finalizing regeneration refusal, and for nothing else.
+ *
+ * Both halves are required. A 409 alone is not enough — the same status also
+ * carries `agent_hitl_already_resolved` and
+ * `agent_authorization_already_resolved`, which state `retryable: false`
+ * because repeating them would never succeed.
+ */
+function isRegenerationPending(error: unknown): boolean {
+  if (!(error instanceof EliteaApiError)) return false;
+  const failure = error.failure;
+  if (failure.kind !== "http" || failure.status !== 409) return false;
+  const body = failure.body;
+  if (typeof body !== "object" || body === null) return false;
+  const stated = body as Readonly<Record<string, unknown>>;
+  return (
+    stated["error"] === "agent_regeneration_pending" &&
+    stated["retryable"] === true
+  );
+}
 
 function serverFailureMessage(body: unknown, status: number): string {
   if (typeof body === "object" && body !== null) {
@@ -151,7 +203,15 @@ export interface ChatStreamRunStarters {
    * live view of it is missing.
    */
   readonly resume: (params: ContinueAgentExecutionParams) => Promise<boolean>;
-  /** Regenerate one persisted answer and take ownership of its replacement stream. */
+  /**
+   * Regenerate one persisted answer, with the distinction between an absent
+   * transport and the still-finalizing refusal the caller must retry rather
+   * than fall back on.
+   */
+  readonly regenerateDetailed: (
+    params: ChatStreamRegenerateParams,
+  ) => Promise<AgentStreamStartAttempt>;
+  /** `regenerateDetailed`'s boolean shorthand, as `start` is `startDetailed`'s. */
   readonly regenerate: (params: ChatStreamRegenerateParams) => Promise<boolean>;
 }
 
@@ -211,8 +271,10 @@ export function useChatStreamRunStarters(
     [subscribeToRun],
   );
 
-  const regenerate = useCallback(
-    async (params: ChatStreamRegenerateParams): Promise<boolean> => {
+  const regenerateDetailed = useCallback(
+    async (
+      params: ChatStreamRegenerateParams,
+    ): Promise<AgentStreamStartAttempt> => {
       let accepted: AgentExecutionStart;
       try {
         accepted = await regenerateConversation({
@@ -221,8 +283,12 @@ export function useChatStreamRunStarters(
           id: params.responseMessageId,
           executionContract: AGENT_REGENERATE_CONTRACT,
         });
-      } catch {
-        return false;
+      } catch (error) {
+        // ONE failure is singled out, and only because repeating it works: the
+        // still-finalizing 409. Every other error keeps the behaviour this
+        // function has always had — report no-transport and let the caller fall
+        // back — so nothing but the retry decision changes here.
+        return isRegenerationPending(error) ? REGENERATION_PENDING : NO_TRANSPORT;
       }
       // The contract was accepted, so the run exists even when an older server
       // omits its replay URL. Never start the same regeneration over a socket.
@@ -232,13 +298,19 @@ export function useChatStreamRunStarters(
         params.projectId,
         nonEmptyString(params.body["question_id"]),
       );
-      return true;
+      return STARTED;
     },
     [subscribeToRun],
   );
 
+  const regenerate = useCallback(
+    async (params: ChatStreamRegenerateParams): Promise<boolean> =>
+      (await regenerateDetailed(params)).started,
+    [regenerateDetailed],
+  );
+
   return useMemo(
-    () => ({ startDetailed, start, resume, regenerate }),
-    [startDetailed, start, resume, regenerate],
+    () => ({ startDetailed, start, resume, regenerateDetailed, regenerate }),
+    [startDetailed, start, resume, regenerateDetailed, regenerate],
   );
 }

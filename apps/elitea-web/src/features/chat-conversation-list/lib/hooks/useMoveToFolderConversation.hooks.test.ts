@@ -104,6 +104,95 @@ describe('useMoveToFolderConversation', () => {
     );
   });
 
+  /**
+   * DEFECT (stale captured reference, re-invoked): `hasPlaybackConversations`
+   * answers "does a playback snapshot of this conversation exist RIGHT NOW?"
+   * from two lists this same hook mutates. `useDragAndDrop`'s
+   * `moveDraggedConversationsToTarget` awaits ONE captured
+   * `onMoveToFolderConversation` reference once per dragged conversation, in
+   * sequence, and `moveTargetConversationToNewFolder` re-enters it after `await
+   * folderApi.create` — so the guard was answered from a snapshot taken before
+   * any of that, and a move the guard exists to refuse went through and PUT.
+   *
+   * Repro shape from `processes/chat/model/useConversationSidebar.test.tsx`:
+   * capture the handler while the lists are empty, THEN let the playback
+   * snapshot appear, THEN invoke that exact reference.
+   */
+  it('refuses a move whose playback snapshot appeared AFTER the handler was captured (stale-closure repro)', async () => {
+    let hit = false;
+    server.use(
+      http.put(`${BASE}/elitea_core/conversation/prompt_lib/7/c1`, () => {
+        hit = true;
+        return HttpResponse.json({});
+      }),
+    );
+
+    const toastError = vi.fn();
+    const conv = mkConv({ id: 'c1' });
+    const playbackSnapshot = mkConv({ id: 'c1', isPlayback: true });
+    const targetFolder = mkFolder({ id: 'fA', conversations: [] });
+
+    const { result, rerender } = renderHook(
+      ({ conversations }: { conversations: readonly ConversationWithTargetFolder[] }) =>
+        useMoveToFolderConversation({
+          projectId: '7',
+          setFolders: vi.fn(),
+          setActiveFolder: vi.fn(),
+          setConversations: vi.fn(),
+          toastError,
+          conversations,
+        }),
+      { initialProps: { conversations: [] as readonly ConversationWithTargetFolder[] } },
+    );
+
+    // The reference the drag loop reuses for every dragged conversation.
+    const staleMove = result.current.onMoveToFolderConversation;
+
+    // The playback snapshot appears AFTER that reference was captured.
+    rerender({ conversations: [playbackSnapshot] });
+
+    const outcome = await staleMove(conv, targetFolder);
+
+    // A pre-fix build consults the empty snapshot, lets the move through and PUTs.
+    expect(outcome).toEqual({ success: false, error: 'Cannot move conversation with active playback conversations' });
+    expect(hit).toBe(false);
+  });
+
+  /** The same guard, over the OTHER list it reads: a playback snapshot living inside a folder. */
+  it('refuses a move whose playback snapshot appeared inside a folder after the handler was captured (stale-closure repro)', async () => {
+    let hit = false;
+    server.use(
+      http.put(`${BASE}/elitea_core/conversation/prompt_lib/7/c1`, () => {
+        hit = true;
+        return HttpResponse.json({});
+      }),
+    );
+
+    const conv = mkConv({ id: 'c1' });
+    const targetFolder = mkFolder({ id: 'fA', conversations: [] });
+
+    const { result, rerender } = renderHook(
+      ({ folders }: { folders: readonly FolderListItem[] }) =>
+        useMoveToFolderConversation({
+          projectId: '7',
+          setFolders: vi.fn(),
+          setActiveFolder: vi.fn(),
+          setConversations: vi.fn(),
+          toastError: vi.fn(),
+          folders,
+        }),
+      { initialProps: { folders: [] as readonly FolderListItem[] } },
+    );
+
+    const staleMove = result.current.onMoveToFolderConversation;
+    rerender({ folders: [mkFolder({ id: 'fB', conversations: [mkConv({ id: 'c1', isPlayback: true })] })] });
+
+    const outcome = await staleMove(conv, targetFolder);
+
+    expect(outcome.success).toBe(false);
+    expect(hit).toBe(false);
+  });
+
   it('onMoveToNewFolderConversation: creates a local draft folder (isNew) after the 10ms delay and activates it', async () => {
     const setFolders = vi.fn();
     const setActiveFolder = vi.fn();

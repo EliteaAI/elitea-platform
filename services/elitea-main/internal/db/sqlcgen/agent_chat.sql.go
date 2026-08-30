@@ -1738,7 +1738,49 @@ SELECT conversation.id AS conversation_id,
                  AND skill_mapping.entity_type = 'agent'
            ), '[]'::jsonb),
            'tags', '[]'::jsonb,
-           'variables', '[]'::jsonb
+           -- The version's AUTHORED variable list, and no longer ` + "`" + `'[]'::jsonb` + "`" + `.
+           --
+           -- This key was hardcoded empty, and it is the SDK worker's PRIMARY
+           -- variable source: at the revision
+           -- ` + "`" + `services/elitea-worker-python/elitea-sdk.lock.json` + "`" + ` pins
+           -- (elitea-sdk 0.9.8 @ b5113a12), ` + "`" + `assistant.py:557-576` + "`" + ` builds
+           -- ` + "`" + `prompt_variables` + "`" + ` out of ` + "`" + `data['variables']` + "`" + ` -- a LIST of
+           -- ` + "`" + `{name, value}` + "`" + ` rows -- and ` + "`" + `:597-657` + "`" + ` renders ` + "`" + `instructions` + "`" + `
+           -- through Jinja2 with that map. With the list always empty, every
+           -- authored ` + "`" + `{{name}}` + "`" + ` reached the model UNSUBSTITUTED, as the
+           -- literal ` + "`" + `{{ name }}` + "`" + ` its ` + "`" + `DebugUndefined` + "`" + ` prints.
+           --
+           -- The SDK's only OTHER source cannot rescue it: ` + "`" + `assistant.py:574` + "`" + `
+           -- guards ` + "`" + `meta['variables']` + "`" + ` with ` + "`" + `isinstance(..., dict)` + "`" + ` while
+           -- this platform stores an ARRAY, so that branch never runs here.
+           -- Filling THIS key is what makes substitution work against the
+           -- PINNED SDK unpatched -- the worker's patch set is cherry-picked
+           -- from upstream commits (` + "`" + `services/elitea-worker-python/
+           -- Containerfile` + "`" + `), so a third patch would have to be landed in
+           -- another repository first.
+           --
+           -- ` + "`" + `application_versions` + "`" + ` has no variables COLUMN: the authored rows
+           -- live in ` + "`" + `meta` + "`" + ` under ` + "`" + `variables` + "`" + `, folded in by
+           -- ` + "`" + `internal/api/v2/applications/handler.go:511-512` + "`" + ` (create) and
+           -- ` + "`" + `:915-933` + "`" + ` (update), and read back out under the ` + "`" + `variables` + "`" + ` key
+           -- by that same handler's ` + "`" + `versionDetailsResponse` + "`" + ` (:547, :568). The
+           -- runtime now reads exactly where the HTTP API reads, so the edit
+           -- page and the model cannot disagree about what an agent declares.
+           --
+           -- Type-gated rather than COALESCEd. Only an ARRAY is projected, so
+           -- a ` + "`" + `meta.variables` + "`" + ` written as an OBJECT still projects ` + "`" + `[]` + "`" + ` here
+           -- and is left to the two decoders that accept that spelling -- the
+           -- SDK's own dict branch and the native runtime's
+           -- ` + "`" + `variables::capture_variables` + "`" + ` -- both of which reach it through
+           -- the ` + "`" + `meta` + "`" + ` key this projection already carries. A ` + "`" + `meta` + "`" + ` that is
+           -- SQL NULL, jsonb ` + "`" + `null` + "`" + ` or any non-object yields NULL from ` + "`" + `->` + "`" + `,
+           -- whose ` + "`" + `jsonb_typeof` + "`" + ` is NULL and therefore not ` + "`" + `'array'` + "`" + `, so it
+           -- takes the same empty branch instead of erroring.
+           'variables', CASE
+               WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
+               THEN application_version.meta::jsonb -> 'variables'
+               ELSE '[]'::jsonb
+           END
        )::text AS application_version_details_json
        -- END shared application_version_details_json projection
 FROM chat_conversations AS conversation
@@ -2271,7 +2313,49 @@ SELECT application_version.id AS application_version_id,
                  AND skill_mapping.entity_type = 'agent'
            ), '[]'::jsonb),
            'tags', '[]'::jsonb,
-           'variables', '[]'::jsonb
+           -- The version's AUTHORED variable list, and no longer ` + "`" + `'[]'::jsonb` + "`" + `.
+           --
+           -- This key was hardcoded empty, and it is the SDK worker's PRIMARY
+           -- variable source: at the revision
+           -- ` + "`" + `services/elitea-worker-python/elitea-sdk.lock.json` + "`" + ` pins
+           -- (elitea-sdk 0.9.8 @ b5113a12), ` + "`" + `assistant.py:557-576` + "`" + ` builds
+           -- ` + "`" + `prompt_variables` + "`" + ` out of ` + "`" + `data['variables']` + "`" + ` -- a LIST of
+           -- ` + "`" + `{name, value}` + "`" + ` rows -- and ` + "`" + `:597-657` + "`" + ` renders ` + "`" + `instructions` + "`" + `
+           -- through Jinja2 with that map. With the list always empty, every
+           -- authored ` + "`" + `{{name}}` + "`" + ` reached the model UNSUBSTITUTED, as the
+           -- literal ` + "`" + `{{ name }}` + "`" + ` its ` + "`" + `DebugUndefined` + "`" + ` prints.
+           --
+           -- The SDK's only OTHER source cannot rescue it: ` + "`" + `assistant.py:574` + "`" + `
+           -- guards ` + "`" + `meta['variables']` + "`" + ` with ` + "`" + `isinstance(..., dict)` + "`" + ` while
+           -- this platform stores an ARRAY, so that branch never runs here.
+           -- Filling THIS key is what makes substitution work against the
+           -- PINNED SDK unpatched -- the worker's patch set is cherry-picked
+           -- from upstream commits (` + "`" + `services/elitea-worker-python/
+           -- Containerfile` + "`" + `), so a third patch would have to be landed in
+           -- another repository first.
+           --
+           -- ` + "`" + `application_versions` + "`" + ` has no variables COLUMN: the authored rows
+           -- live in ` + "`" + `meta` + "`" + ` under ` + "`" + `variables` + "`" + `, folded in by
+           -- ` + "`" + `internal/api/v2/applications/handler.go:511-512` + "`" + ` (create) and
+           -- ` + "`" + `:915-933` + "`" + ` (update), and read back out under the ` + "`" + `variables` + "`" + ` key
+           -- by that same handler's ` + "`" + `versionDetailsResponse` + "`" + ` (:547, :568). The
+           -- runtime now reads exactly where the HTTP API reads, so the edit
+           -- page and the model cannot disagree about what an agent declares.
+           --
+           -- Type-gated rather than COALESCEd. Only an ARRAY is projected, so
+           -- a ` + "`" + `meta.variables` + "`" + ` written as an OBJECT still projects ` + "`" + `[]` + "`" + ` here
+           -- and is left to the two decoders that accept that spelling -- the
+           -- SDK's own dict branch and the native runtime's
+           -- ` + "`" + `variables::capture_variables` + "`" + ` -- both of which reach it through
+           -- the ` + "`" + `meta` + "`" + ` key this projection already carries. A ` + "`" + `meta` + "`" + ` that is
+           -- SQL NULL, jsonb ` + "`" + `null` + "`" + ` or any non-object yields NULL from ` + "`" + `->` + "`" + `,
+           -- whose ` + "`" + `jsonb_typeof` + "`" + ` is NULL and therefore not ` + "`" + `'array'` + "`" + `, so it
+           -- takes the same empty branch instead of erroring.
+           'variables', CASE
+               WHEN jsonb_typeof(application_version.meta::jsonb -> 'variables') = 'array'
+               THEN application_version.meta::jsonb -> 'variables'
+               ELSE '[]'::jsonb
+           END
        )::text AS application_version_details_json
        -- END shared application_version_details_json projection
 FROM application_versions AS application_version

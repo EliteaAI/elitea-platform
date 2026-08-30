@@ -35,21 +35,26 @@ import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
 
+import { LlmProviderAdoptModelsDialog } from './LlmProviderAdoptModelsDialog';
 import { LlmProviderDialog } from './LlmProviderDialog';
 import {
   ConfirmDelete,
   ProviderAlerts,
   ProviderResults,
+  type ProviderRowActions,
 } from './LlmProviderTableParts';
 import { PlatformModelsPanel } from './PlatformModelsPanel';
 import { configFailureReason } from './api/adminConfigurationApi';
 import { SharedScopeWarning } from './LlmProviderScopeWarning';
 import {
   useAdminLlmProviders,
+  useCheckAdminLlmProvider,
   useCreateAdminLlmProvider,
   useDeleteAdminLlmProvider,
+  useRevalidateAdminLlmProvider,
   useUpdateAdminLlmProvider,
   type LlmProvider,
+  type LlmProviderCheckResult,
   type LlmProviderDraft,
 } from './api/adminLlmProvidersApi';
 
@@ -61,17 +66,91 @@ function unsealedProviders(items: readonly LlmProvider[]): readonly LlmProvider[
   return items.filter((item) => item.secrets.some((secret) => !secret.sealed));
 }
 
+type CheckResultsUpdater = (
+  updater: (prev: Record<number, LlmProviderCheckResult>) => Record<number, LlmProviderCheckResult>,
+) => void;
+
+/**
+ * Starts one row's live check and routes both outcomes into the panel's local
+ * `checkResults` map. A free function — not inlined into the component — so
+ * `LlmProxyProvidersPanel` itself stays within the §3.5 complexity budget as
+ * the row grew a second action.
+ *
+ * `onError` fires only for what `useCheckAdminLlmProvider` could not resolve
+ * into `{success,message}` itself — a genuine transport failure, not the
+ * check route's own documented 400/404 (that module's own header explains why
+ * those resolve rather than throw). Rendering it the same way as a real
+ * failure, rather than a separate top-level alert, keeps every check verdict
+ * in the one place an operator is already looking: this row.
+ */
+function runProviderCheck(
+  check: { mutate: (id: number, options: { onSuccess: (result: LlmProviderCheckResult) => void; onError: (error: unknown) => void }) => void },
+  setCheckResults: CheckResultsUpdater,
+  row: LlmProvider,
+): void {
+  setCheckResults((prev) => {
+    // Cleared, not left stale, while the new round trip is in flight — a
+    // holdover "Connected" from the last press must not sit under a request
+    // that has not answered yet.
+    if (!(row.id in prev)) return prev;
+    const next = { ...prev };
+    delete next[row.id];
+    return next;
+  });
+  check.mutate(row.id, {
+    onSuccess: (result) => setCheckResults((prev) => ({ ...prev, [row.id]: result })),
+    onError: (checkError) =>
+      setCheckResults((prev) => ({
+        ...prev,
+        [row.id]: {
+          success: false,
+          message: configFailureReason(checkError) ?? t('pages.admin.llmProviders.checkFailed', 'Live check failed'),
+        },
+      })),
+  });
+}
+
+/** The row a mutation is currently running against, or `undefined` when it is idle — the `pendingIds` pattern `useAdminAppRequestsPage.ts` uses, narrowed to one id since only one row can be mid-flight per action here. */
+function pendingRowId(mutation: { readonly isPending: boolean; readonly variables: number | undefined }): number | undefined {
+  return mutation.isPending ? mutation.variables : undefined;
+}
+
 export function LlmProxyProvidersPanel(): ReactNode {
   const [editor, setEditor] = useState<{ readonly open: boolean; readonly row: LlmProvider | undefined }>({
     open: false,
     row: undefined,
   });
   const [pendingDelete, setPendingDelete] = useState<LlmProvider | undefined>(undefined);
+  // The provider whose catalogue is being read, or undefined when no adoption
+  // is open. It is the row itself rather than an id because the dialog needs
+  // the credential's TITLE: a platform model names its provider by title, and
+  // the server refuses a link naming anything else.
+  const [adoptFrom, setAdoptFrom] = useState<LlmProvider | undefined>(undefined);
 
   const { data, isPending, error } = useAdminLlmProviders();
   const createProvider = useCreateAdminLlmProvider();
   const updateProvider = useUpdateAdminLlmProvider();
   const deleteProvider = useDeleteAdminLlmProvider();
+  const checkProvider = useCheckAdminLlmProvider();
+  const revalidateProvider = useRevalidateAdminLlmProvider();
+
+  // This session's own live-check verdicts, kept locally rather than in the
+  // query cache: a check writes NOTHING server-side (see the api module's own
+  // header), so there is no row to invalidate or refetch, and a react-query
+  // mutation only ever remembers its LAST call — one entry per row is what
+  // lets a Test on row B leave row A's result on screen.
+  const [checkResults, setCheckResults] = useState<Record<number, LlmProviderCheckResult>>({});
+
+  const onCheck = (row: LlmProvider) => runProviderCheck(checkProvider, setCheckResults, row);
+  const onRevalidate = (row: LlmProvider) => revalidateProvider.mutate(row.id);
+  const rowActions: ProviderRowActions = {
+    onCheck,
+    onRevalidate,
+    onAdopt: setAdoptFrom,
+    checkResults,
+    checkingId: pendingRowId(checkProvider),
+    revalidatingId: pendingRowId(revalidateProvider),
+  };
 
   // Both derived from `data.items`, which is stable between refetches, rather
   // than from a `?? []` fallback that is a fresh array on every render — the
@@ -122,6 +201,7 @@ export function LlmProxyProvidersPanel(): ReactNode {
         loadError={error}
         saveError={saveError}
         deleteError={deleteProvider.error}
+        revalidateError={revalidateProvider.error}
         unsealed={unsealed}
       />
 
@@ -152,6 +232,7 @@ export function LlmProxyProvidersPanel(): ReactNode {
         items={items}
         onEdit={(row) => setEditor({ open: true, row })}
         onDelete={setPendingDelete}
+        rowActions={rowActions}
       />
 
       <ConfirmDelete
@@ -168,6 +249,14 @@ export function LlmProxyProvidersPanel(): ReactNode {
           apart. */}
       <Divider sx={{ marginTop: '0.5rem' }} />
       <PlatformModelsPanel />
+
+      {/* The successor to legacy's `import_llm_models`: the provider's own
+          catalogue, read on demand with the stored credential, adopted one
+          model at a time by an operator rather than by a cron job. */}
+      <LlmProviderAdoptModelsDialog
+        provider={adoptFrom}
+        onClose={() => setAdoptFrom(undefined)}
+      />
 
       <LlmProviderDialog
         open={editor.open}

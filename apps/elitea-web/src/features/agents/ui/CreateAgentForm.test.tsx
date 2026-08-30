@@ -1,11 +1,18 @@
+import { useCallback, useState, type ReactNode } from 'react';
+
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
+
 import { renderWithProviders } from '../__tests__/testUtils';
+import { setFieldValueAtPath } from '../lib/agentFieldChange';
 import type { AgentDraftValues } from '../model/types';
 
 import { CreateAgentForm } from './CreateAgentForm';
+
+installCodeMirrorTestPolyfills();
 
 const baseValues: AgentDraftValues = {
   name: 'My Agent',
@@ -253,6 +260,91 @@ describe('CreateAgentForm', () => {
       />,
     );
     expect(screen.queryByText('Variables')).not.toBeInTheDocument();
+  });
+
+  /*
+   * Variable AUTHORING, end to end through the real editor. `CreateAgentForm`
+   * is controlled, so these drive it through the same round trip every page
+   * mount performs (`setFieldValueAtPath` is the very implementation
+   * `lib/useAgentEditorCreate.ts` uses) — a `vi.fn()` `onFieldChange` would
+   * only prove the call was made, not that the row actually renders.
+   */
+  function StatefulCreateAgentForm({ initial }: { readonly initial: AgentDraftValues }): ReactNode {
+    const [values, setValues] = useState<AgentDraftValues>(initial);
+    const onFieldChange = useCallback((path: string, value: unknown) => {
+      setValues((previous) => setFieldValueAtPath(previous, path, value));
+    }, []);
+    return (
+      <CreateAgentForm
+        values={values}
+        onFieldChange={onFieldChange}
+      />
+    );
+  }
+
+  /** CM6's `.cm-content` is the editable surface the instructions field types into. */
+  function getInstructionsEditor(container: HTMLElement): HTMLElement {
+    const content = container.querySelector('.cm-content');
+    if (!(content instanceof HTMLElement)) throw new Error('CodeMirror content element not found');
+    return content;
+  }
+
+  it('surfaces a variable row when a placeholder is typed into the instructions', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = renderWithProviders(
+      <StatefulCreateAgentForm initial={{ ...baseValues, version_details: { ...baseValues.version_details, instructions: '' } }} />,
+    );
+
+    expect(screen.queryByTestId('application-variables')).not.toBeInTheDocument();
+
+    await user.click(getInstructionsEditor(container));
+    // `{{` is user-event's escape for a literal `{`; `}` needs none.
+    await user.keyboard('Summarize {{{{topic}}');
+
+    expect(await screen.findByTestId('application-variables')).toBeInTheDocument();
+    expect(await screen.findByLabelText('topic')).toHaveValue('');
+  });
+
+  it('keeps a value typed into a derived row when the instructions are edited again', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = renderWithProviders(
+      <StatefulCreateAgentForm
+        initial={{
+          ...baseValues,
+          version_details: { ...baseValues.version_details, instructions: 'About {{topic}}', variables: [{ name: 'topic', value: '' }] },
+        }}
+      />,
+    );
+
+    await user.type(await screen.findByLabelText('topic'), 'weather');
+    await waitFor(() => expect(screen.getByLabelText('topic')).toHaveValue('weather'));
+
+    await user.click(getInstructionsEditor(container));
+    await user.keyboard('{End} and {{{{tone}}');
+
+    expect(await screen.findByLabelText('tone')).toHaveValue('');
+    expect(screen.getByLabelText('topic')).toHaveValue('weather');
+  });
+
+  it('removes the row once its placeholder is deleted from the instructions', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = renderWithProviders(
+      <StatefulCreateAgentForm
+        initial={{
+          ...baseValues,
+          version_details: { ...baseValues.version_details, instructions: 'About {{topic}}', variables: [{ name: 'topic', value: '' }] },
+        }}
+      />,
+    );
+
+    expect(await screen.findByLabelText('topic')).toBeInTheDocument();
+
+    await user.click(getInstructionsEditor(container));
+    // Select-all + retype: the whole placeholder goes, so the row must too.
+    await user.keyboard('{Control>}a{/Control}About the weather.');
+
+    await waitFor(() => expect(screen.queryByLabelText('topic')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('application-variables')).not.toBeInTheDocument();
   });
 
   it('renders ApplicationVariables and forwards edits when variables are present', () => {

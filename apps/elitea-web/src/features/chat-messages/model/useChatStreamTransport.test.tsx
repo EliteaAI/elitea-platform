@@ -1302,4 +1302,79 @@ describe("the regeneration path owns its replacement stream", () => {
     expect(requestBody).toEqual({ message_id: RESPONSE_MESSAGE_ID });
     expect(registry.getOpen()[0]?.url).toContain(EVENTS_URL);
   });
+
+  /**
+   * The still-finalizing refusal, read off the REAL response rather than a
+   * hand-built error.
+   *
+   * This is the only place in the app that can tell `retry-later` from every
+   * other failure, and the distinction is not cosmetic: `no-transport` sends
+   * the caller to the legacy REST trigger, which posts the same regeneration
+   * WITHOUT an `execution_contract` and is answered 400 — so a widget-level
+   * retry can only ever work if this classification happens here first.
+   */
+  it("reports the still-finalizing 409 as retry-later, not as an absent transport", async () => {
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/regenerate/prompt_lib/7/${RESPONSE_MESSAGE_ID}`,
+        () =>
+          HttpResponse.json(
+            {
+              error: "agent_regeneration_pending",
+              message: "The previous agent response is still being finalized.",
+              retryable: true,
+            },
+            { status: 409, headers: { "Retry-After": "1" } },
+          ),
+      ),
+    );
+    const { api, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await expect(
+        api.current?.regenerateDetailed({
+          projectId: 7,
+          conversationUuid: "uuid-1",
+          responseMessageId: RESPONSE_MESSAGE_ID,
+          body: { message_id: RESPONSE_MESSAGE_ID },
+        }),
+      ).resolves.toEqual({ started: false, reason: "retry-later" });
+    });
+
+    // Refused ⇒ no run to watch. A subscription here would leave a stream open
+    // for an execution the server never created.
+    expect(registry.getOpen()).toHaveLength(0);
+  });
+
+  /**
+   * The OTHER 409s on the same route state `retryable: false`
+   * (`agent_hitl_already_resolved`, `agent_authorization_already_resolved`) —
+   * repeating those never succeeds, so they must keep the fallback behaviour.
+   */
+  it("does NOT read a non-retryable 409 as retry-later", async () => {
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/regenerate/prompt_lib/7/${RESPONSE_MESSAGE_ID}`,
+        () =>
+          HttpResponse.json(
+            { error: "agent_hitl_already_resolved", retryable: false },
+            { status: 409 },
+          ),
+      ),
+    );
+    const { api, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await expect(
+        api.current?.regenerateDetailed({
+          projectId: 7,
+          conversationUuid: "uuid-1",
+          responseMessageId: RESPONSE_MESSAGE_ID,
+          body: { message_id: RESPONSE_MESSAGE_ID },
+        }),
+      ).resolves.toEqual({ started: false, reason: "no-transport" });
+    });
+  });
 });

@@ -8,7 +8,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { resetConfigForTests } from '@/shared/config/get-config';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
-import { useNavBlockerStore } from '@/widgets/app-shell';
+import { NavBlockerDialog, useNavBlockerStore } from '@/widgets/app-shell';
 
 import { EditApplication } from './EditApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
@@ -801,5 +801,62 @@ describe('talking to the agent', () => {
 
     expect(await screen.findByText('Failed to open a chat with this agent.')).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/agents/all/42');
+  }, 15_000);
+
+  /**
+   * Audit (handoff brief) — same finding as the pipelines twin
+   * (`EditPipeline.test.tsx`'s identically-named test, whose doc comment
+   * traces the exact TanStack Router/history mechanism): a BLOCKED
+   * `navigate()` that the user then CANCELS never commits, so the promise
+   * `ChatWithAgentButton` used to `await` never settled either. Measured
+   * against the unfixed button: `isStarting` stayed `true` forever the
+   * instant Cancel was clicked on the guard's own dialog — "Opening chat…"
+   * with no way back short of leaving the page.
+   */
+  it('recovers the button instead of hanging on "Opening chat…" when the nav-blocker dialog is cancelled', async () => {
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () =>
+        HttpResponse.json({ id: '7', name: 'My Agent' }, { status: 201 }),
+      ),
+      http.post('*/elitea_core/participants/prompt_lib/:projectId/:conversationId', () =>
+        HttpResponse.json([], { status: 200 }),
+      ),
+    );
+    const user = userEvent.setup();
+    // `NavBlockerDialog` isn't part of this fixture's route tree (the real
+    // mount point is `AppShell`) — mounted alongside `EditApplication` here
+    // so the guard this page arms actually has a consumer to block against,
+    // same as the app's real composition.
+    const { router } = renderAgentsRoute(
+      <>
+        <EditApplication />
+        <NavBlockerDialog />
+      </>,
+      '/agents/all/42',
+      { projectId: '9' },
+    );
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await chooseModel(user, 'Qwen 3.5');
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
+
+    await user.click(await screen.findByTestId('chat-with-agent-button', {}, { timeout: 5_000 }));
+
+    // The conversation + participant IS created — the Chat action's own work
+    // completed; only the navigation itself is what the guard intercepts.
+    await waitFor(() => expect(screen.getByTestId('nav-blocker-dialog')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('nav-blocker-dialog')).not.toBeInTheDocument());
+
+    // Still on the edit page — the guard did its job.
+    expect(router.state.location.pathname).toBe('/agents/all/42');
+    // The button must recover rather than stay wedged on "Opening chat…"
+    // forever. A short window is enough: nothing further is ever scheduled
+    // to resolve the old code's stuck state, so if this hasn't flipped by
+    // now it never will.
+    await waitFor(() => expect(screen.getByTestId('chat-with-agent-button')).toBeEnabled(), { timeout: 2_000 });
+    expect(screen.getByTestId('chat-with-agent-button')).toHaveTextContent('Chat');
   }, 15_000);
 });

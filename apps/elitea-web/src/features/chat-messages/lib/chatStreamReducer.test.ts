@@ -1149,8 +1149,11 @@ describe('applyChatStreamFrame — summaries', () => {
 
 describe('applyChatStreamFrame — chat_user_message', () => {
   const USER_UUID = 'question-uuid-1';
+  // The real participant shape: `id` is the chat_participants ROW id and
+  // `entity_meta.id` is the AUTH USER id — two different values, which is the
+  // whole point (measured on the live stack: row 1 / user 6).
   const PARTICIPANTS = [
-    { id: 'p-author', meta: { user_name: 'Alice', user_avatar: 'alice.png' } },
+    { id: 'p-author', entity_meta: { id: 6, email: 'alice@example.com' }, meta: { user_name: 'Alice', user_avatar: 'alice.png' } },
     { id: 'p-agent', meta: { user_name: 'Support Agent' } },
   ];
   const ECHO_CONTEXT: ChatStreamContext = { ...CONTEXT, participants: PARTICIPANTS };
@@ -1175,10 +1178,89 @@ describe('applyChatStreamFrame — chat_user_message', () => {
       name: 'Alice',
       avatar: 'alice.png',
       content: 'what is the status?',
-      userId: 'p-author',
+      // The AUTH USER id off the roster, NOT the `author_participant_id` the
+      // frame states. Every other producer of `ChatMessage.userId`
+      // (`normalise.ts`'s `userOptionalFields`, `buildOptimisticUserMessage`)
+      // writes the auth id, and every reader (`ChatMessageList`'s edit/delete
+      // gating, `entities/message`'s `canDeleteMessage`) compares against it —
+      // stamping the participant id here made a live question unmatchable by
+      // its own author, which reads on screen as its edit and delete controls
+      // silently disappearing.
+      userId: '6',
       participantId: 'p-agent',
       sentTo: PARTICIPANTS[1],
     });
+    // Stated explicitly: the two ids are genuinely different values, so this
+    // case cannot pass by accident on a fixture where they coincide.
+    expect(history[0]?.userId).not.toBe('p-author');
+  });
+
+  it('states NO author id when the roster cannot resolve the author', () => {
+    // Never the participant id as a fallback: it would restate the very
+    // mismatch above, and an unattributed row is the honest answer.
+    const unknownAuthor = applyChatStreamFrame([], echo({ author_participant_id: 'ghost' }), ECHO_CONTEXT);
+    expect(unknownAuthor[0]?.userId).toBeUndefined();
+
+    // A resolved author who carries no entity_meta (the agent participant) is
+    // the same case.
+    const agentAuthor = applyChatStreamFrame([], echo({ author_participant_id: 'p-agent' }), ECHO_CONTEXT);
+    expect(agentAuthor[0]?.userId).toBeUndefined();
+  });
+
+  // ── the two id spellings that really meet here ─────────────────────────
+  //
+  // `ChatStreamFrame` types `author_participant_id`/`sent_to_id` as
+  // `string | number` because both spellings are on the wire: the Go payloads
+  // state participant ids as NUMBERS, the socket-era payloads this vocabulary
+  // was captured from stated them as STRINGS. The persisted path
+  // (`normalise.ts`'s `normaliseUserMessage`) compares `String()` on BOTH
+  // sides for exactly this reason; the live path used a strict `===`, which
+  // resolves nobody the moment the two spellings cross.
+  //
+  // Each case asserts name, avatar AND userId together, because ONE comparison
+  // governs all three: an unresolved author is not a missing display name, it
+  // is a question that also loses the auth id its edit and delete controls
+  // gate on. `sentTo` rides the same lookup, so it is asserted too.
+  //
+  // `expect.soft` on purpose: a hard assertion stops at `name` and reports the
+  // loss as cosmetic, which is the misreading this whole case exists to
+  // prevent — the failure output has to show all four fields going at once.
+  const NUMERIC_ID_AUTHOR = { user_name: 'Alice', user_avatar: 'alice.png' };
+
+  it('resolves a NUMERIC frame id against STRING participant ids', () => {
+    const stringRoster = [
+      { id: '1', entity_meta: { id: 6 }, meta: NUMERIC_ID_AUTHOR },
+      { id: '2', meta: { user_name: 'Support Agent' } },
+    ];
+    const history = applyChatStreamFrame(
+      [],
+      echo({ author_participant_id: 1, sent_to_id: 2 }),
+      { ...CONTEXT, participants: stringRoster },
+    );
+
+    expect.soft(history[0]?.name).toBe('Alice');
+    expect.soft(history[0]?.avatar).toBe('alice.png');
+    expect.soft(history[0]?.userId).toBe('6');
+    expect.soft(history[0]?.sentTo).toBe(stringRoster[1]);
+  });
+
+  it('resolves a STRING frame id against NUMERIC participant ids', () => {
+    // The roster spelling the Go payloads actually produce, which
+    // `MessageParticipantWire.id: string` does not describe — hence the cast.
+    const numericRoster = [
+      { id: 1, entity_meta: { id: 6 }, meta: NUMERIC_ID_AUTHOR },
+      { id: 2, meta: { user_name: 'Support Agent' } },
+    ] as unknown as NonNullable<ChatStreamContext['participants']>;
+    const history = applyChatStreamFrame(
+      [],
+      echo({ author_participant_id: '1', sent_to_id: '2' }),
+      { ...CONTEXT, participants: numericRoster },
+    );
+
+    expect.soft(history[0]?.name).toBe('Alice');
+    expect.soft(history[0]?.avatar).toBe('alice.png');
+    expect.soft(history[0]?.userId).toBe('6');
+    expect.soft(history[0]?.sentTo).toBe(numericRoster[1]);
   });
 
   it('keys off uuid, not message_id', () => {

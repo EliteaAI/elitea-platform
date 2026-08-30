@@ -942,6 +942,35 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, fmt.Errorf("construct nested application version context: %w", err)
 		}
 	}
+	// attachmentObjects is what lets an attached DOCUMENT reach the model as
+	// text rather than as a filename. The native runtime has no other channel
+	// to object storage (no vault, no `artifact` toolkit family, and an egress
+	// allowlist that reaches the model gateway alone), so without this route a
+	// chunk flagged `needs_content_extraction` is announced and skipped
+	// (services/elitea-worker-rust/src/agents/attachments.rs).
+	//
+	// A nil ObjectStore leaves it nil, and the route unregistered: mixed
+	// deployments keep the Centry artifacts capability authoritative and run
+	// this service with no Go object store at all, and there the honest answer
+	// is that the runtime keeps announcing files it cannot read — not a route
+	// that exists and fails.
+	var attachmentObjects *storage.RuntimeAttachmentObjectService
+	if config.AgentExecutionDispatchEnabled && dependencies.ObjectStore != nil {
+		attachmentSource, attachmentErr := repos.NewCurrentAttachmentObjectRepository(
+			dependencies.AdmissionPool,
+			dependencies.ObjectStore,
+		)
+		if attachmentErr != nil {
+			return nil, fmt.Errorf("construct attachment object reader: %w", attachmentErr)
+		}
+		attachmentObjects, err = storage.NewRuntimeAttachmentObjectService(
+			contentRepository,
+			attachmentSource,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct attachment object context: %w", err)
+		}
+	}
 	if config.IndexIngestDispatchEnabled {
 		currentIndex, err = newCurrentIndexRuntime(
 			dependencies.AdmissionPool,
@@ -969,7 +998,18 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		// on this shared listener could otherwise read any agent version in
 		// the project it was admitted for. The capability filter in
 		// AuthorizeAgentRuntimeContext is what makes that false.
-		if nestedApplicationVersions != nil {
+		if nestedApplicationVersions != nil && attachmentObjects != nil {
+			contentServer, err = storage.NewAgentAttachmentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				currentIndex.materializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				attachmentObjects,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		} else if nestedApplicationVersions != nil {
 			contentServer, err = storage.NewNestedAgentRuntimeContentServerWithLimits(
 				contentRepository,
 				contentRepository,
@@ -1212,15 +1252,28 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			)
 		}
 	} else if config.AgentExecutionDispatchEnabled {
-		contentServer, err = storage.NewNestedAgentRuntimeContentServerWithLimits(
-			contentRepository,
-			contentRepository,
-			agentMaterializer,
-			runtimeToken,
-			nestedApplicationVersions,
-			maxInputContentBytes,
-			maxContentRequests,
-		)
+		if attachmentObjects != nil {
+			contentServer, err = storage.NewAgentAttachmentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				agentMaterializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				attachmentObjects,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		} else {
+			contentServer, err = storage.NewNestedAgentRuntimeContentServerWithLimits(
+				contentRepository,
+				contentRepository,
+				agentMaterializer,
+				runtimeToken,
+				nestedApplicationVersions,
+				maxInputContentBytes,
+				maxContentRequests,
+			)
+		}
 		if err != nil {
 			return nil, err
 		}

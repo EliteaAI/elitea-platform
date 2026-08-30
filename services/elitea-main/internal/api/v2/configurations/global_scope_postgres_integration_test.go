@@ -30,6 +30,7 @@ package configurations_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -141,6 +142,11 @@ func applyTenantSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 }
 
 // seedRow inserts one configuration row and returns its id and uuid.
+//
+// It stamps `updated_at`, which is NOT what a created row looks like. See
+// seedNeverUpdatedRow: every row this helper makes has been "edited", so the
+// listing tests below could never have met a NULL `updated_at` — which is how
+// F1 reached production with this harness already in place.
 func seedRow(t *testing.T, pool *pgxpool.Pool, section, configType, title string) (int, string) {
 	t.Helper()
 	var id int
@@ -157,6 +163,41 @@ func seedRow(t *testing.T, pool *pgxpool.Pool, section, configType, title string
 		t.Fatalf("seed %s/%s row: %v", section, configType, err)
 	}
 	return id, rowUUID
+}
+
+// seedNeverUpdatedRow inserts a row the way CREATE does: `created_at` only.
+//
+// This is not an exotic state. `updated_at` is nullable in the projection and
+// the insert statement in handler.go names neither timestamp, so EVERY row this
+// platform has ever created starts here and stays here until someone edits it.
+func seedNeverUpdatedRow(t *testing.T, pool *pgxpool.Pool, section, configType, title string) int {
+	t.Helper()
+	schema := fmt.Sprintf("p_%d", globalScopeProject)
+	var id int
+	err := pool.QueryRow(context.Background(), fmt.Sprintf(`
+		INSERT INTO %q.configuration
+			(uuid, project_id, elitea_title, type, section, data, meta, shared,
+			 status_ok, source, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, '{}'::jsonb, '{}'::jsonb, true,
+			 true, 'user', now())
+		RETURNING id`, schema),
+		globalScopeProject, title, configType, section).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed never-updated %s/%s row: %v", section, configType, err)
+	}
+	var stamped bool
+	if err := pool.QueryRow(context.Background(), fmt.Sprintf(
+		`SELECT updated_at IS NOT NULL FROM %q.configuration WHERE id = $1`, schema),
+		id).Scan(&stamped); err != nil {
+		t.Fatalf("read back the seeded row: %v", err)
+	}
+	// Asserted, not assumed. A projection that grew a DEFAULT or a trigger on
+	// `updated_at` would make this seed stamp the column, and the regression
+	// below would then pass against the bug it exists to catch.
+	if stamped {
+		t.Fatalf("the seeded row carries an updated_at; this test cannot see the defect it pins")
+	}
+	return id
 }
 
 // globalScopeRouter mounts both platform surfaces at the paths production uses.
@@ -419,5 +460,103 @@ func TestTheModelListingShowsOnlyModels(t *testing.T) {
 	// appear as an ITEM, and the two are told apart by the key it sits under.
 	if !strings.Contains(body, `"credential_names":["platform-openai"]`) {
 		t.Errorf("the platform credential is not offered as a link target: %s", body)
+	}
+}
+
+/* ── the F1 regression ─────────────────────────────────────────────────── */
+
+// TestANewlyCreatedProviderDoesNotBreakTheProviderListing is F1, against a real
+// PostgreSQL and a real pgx.
+//
+// MEASURED through the admin panel: POST /admin/gateway/providers answered 201,
+// and every GET after it answered 500 "list failed" with
+//
+//	can't scan into dest[9] (col: updated_at): cannot scan NULL into *time.Time
+//
+// A listing raises its scan error per ROW, so the operator did not lose the new
+// credential — they lost the whole screen, including every credential that was
+// already there, for everyone, until the row was touched in SQL. Publishing a
+// platform provider bricked the surface for publishing platform providers.
+//
+// The status code alone is not the assertion. A handler that skipped unreadable
+// rows would answer 200 with the new credential missing — the invisible-data
+// shape this codebase keeps meeting — so the row's title and its total are
+// checked, and so is the row that was already in the table.
+func TestANewlyCreatedProviderDoesNotBreakTheProviderListing(t *testing.T) {
+	pool := newGlobalScopePool(t)
+	router := globalScopeRouter(pool)
+
+	seedRow(t, pool, "ai_credentials", "open_ai", "existing-openai")
+	seedNeverUpdatedRow(t, pool, "ai_credentials", "open_ai", "brand-new-openai")
+
+	recorder := globalScopeDo(t, router, http.MethodGet, "/gateway/providers")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /providers = %d after ONE provider was created (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Total int `json:"total"`
+		Items []struct {
+			Name      string `json:"elitea_title"`
+			CreatedAt string `json:"created_at"`
+			UpdatedAt string `json:"updated_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the listing: %v (body %s)", err, recorder.Body.String())
+	}
+	if body.Total != 2 || len(body.Items) != 2 {
+		t.Fatalf("the listing carries %d of 2 credentials: %s", len(body.Items), recorder.Body.String())
+	}
+	for _, item := range body.Items {
+		if item.CreatedAt == "" {
+			t.Errorf("%s reports no creation time", item.Name)
+		}
+		if item.Name == "brand-new-openai" && item.UpdatedAt != "" {
+			t.Errorf("a never-updated row reports updated_at %q rather than nothing", item.UpdatedAt)
+		}
+		if item.Name == "existing-openai" && item.UpdatedAt == "" {
+			t.Errorf("an edited row lost its updated_at")
+		}
+	}
+}
+
+// TestANewlyCreatedModelDoesNotBreakTheModelListing — the model surface's half
+// of the same defect. Both are asserted because `scanGlobalModel` carried the
+// identical two lines, and a fix applied to one of a pair is how the other half
+// survives a repair.
+func TestANewlyCreatedModelDoesNotBreakTheModelListing(t *testing.T) {
+	pool := newGlobalScopePool(t)
+	router := globalScopeRouter(pool)
+
+	seedRow(t, pool, "llm", "llm_model", "existing-gpt-4o")
+	seedNeverUpdatedRow(t, pool, "llm", "llm_model", "brand-new-gpt-4o")
+
+	recorder := globalScopeDo(t, router, http.MethodGet, "/gateway/platform_models")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /platform_models = %d after ONE model was created (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Total int `json:"total"`
+		Items []struct {
+			Name      string `json:"elitea_title"`
+			CreatedAt string `json:"created_at"`
+			UpdatedAt string `json:"updated_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the listing: %v (body %s)", err, recorder.Body.String())
+	}
+	if body.Total != 2 || len(body.Items) != 2 {
+		t.Fatalf("the listing carries %d of 2 models: %s", len(body.Items), recorder.Body.String())
+	}
+	for _, item := range body.Items {
+		if item.CreatedAt == "" {
+			t.Errorf("%s reports no creation time", item.Name)
+		}
+		if item.Name == "brand-new-gpt-4o" && item.UpdatedAt != "" {
+			t.Errorf("a never-updated row reports updated_at %q rather than nothing", item.UpdatedAt)
+		}
 	}
 }

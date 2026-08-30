@@ -579,6 +579,7 @@ fn pipeline_runtime_from_responses_with_capture(
             deadline: Duration::from_secs(1),
             max_response_bytes: 32 * 1_024,
             max_application_response_bytes: 1_024 * 1_024,
+            max_attachment_response_bytes: 1_024 * 1_024,
         },
     )
     .expect("pipeline runtime-context fixture");
@@ -1124,6 +1125,7 @@ fn private_pipeline_session_id(request: &super::request::AgentExecutionRequest) 
         request,
         profile.shell(),
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
         false,
         false,
     )
@@ -1990,6 +1992,7 @@ async fn pipeline_agent_node_block_preserves_same_call_structured_result_without
         &request,
         profile.shell(),
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
         false,
         false,
     )
@@ -2604,6 +2607,7 @@ async fn llm_node_ask_user_resumes_the_checkpointed_call_with_the_answer_result(
             deadline: Duration::from_secs(1),
             max_response_bytes: 32 * 1_024,
             max_application_response_bytes: 1_024 * 1_024,
+            max_attachment_response_bytes: 1_024 * 1_024,
         },
     )
     .expect("ask_user runtime-context fixture");
@@ -2910,6 +2914,7 @@ fn delegated_authorization_llm_assembler(
             deadline: Duration::from_secs(1),
             max_response_bytes: 32 * 1_024,
             max_application_response_bytes: 1_024 * 1_024,
+            max_attachment_response_bytes: 1_024 * 1_024,
         },
     )
     .expect("pipeline runtime-context fixture");
@@ -2953,6 +2958,7 @@ async fn run_llm_node_block(action: &str, comment: Option<&str>, expected_reason
         &request,
         profile.shell(),
         &AuthorizedNativeCommandBinding::fixture(),
+        &request.payload.input_attachments,
         false,
         false,
     )
@@ -3097,6 +3103,7 @@ fn sensitive_llm_node_assembler() -> (
             deadline: Duration::from_secs(1),
             max_response_bytes: 32 * 1_024,
             max_application_response_bytes: 1_024 * 1_024,
+            max_attachment_response_bytes: 1_024 * 1_024,
         },
     )
     .expect("pipeline runtime-context fixture");

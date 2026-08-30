@@ -93,13 +93,69 @@ case "$CMD" in
         $EXEC_BIN_EARLY exec -i "$PG_EARLY" psql -U elitea -d elitea < "$INIT_SQL" >/dev/null 2>&1 || true
       fi
     fi
-    # Run elitea-migrate (idempotent) to apply any pending shared history.
+    # ── elitea-migrate, in TWO passes ────────────────────────────────────────
+    #
+    # This one applies the SHARED history only. The TENANT history (the
+    # migrations/tenant/ chain, 0120-…) needs `-all-tenants`, and that flag
+    # cannot be passed HERE — it runs after the seed SQL, below. Why:
+    #
+    #   `-all-tenants` PREFLIGHTS. migrate.TenantProjects enumerates every
+    #   `create_success` project and validateTenantProjects REFUSES THE WHOLE
+    #   RUN if any of them lacks a `p_<id>` schema. The admin fixtures
+    #   90001-90003 are INSERTED by the seed SQL below, and their schemas are
+    #   created by its `DO $schemas$` loop at the end. At this point in the
+    #   seed those projects therefore either do not exist yet (first run) or
+    #   exist without schemas (they were inserted by a previous seed and this
+    #   one has not reached the loop) — and in the second case the flag refuses
+    #   and no tenant migration runs for ANY project, project 1 included.
+    #
+    # So: shared here, tenant after the loop that provisions the schemas the
+    # preflight demands. This ordering is the same one deploy/scripts/
+    # standalone-stack.sh uses — it runs `elitea-migrate -all-tenants` AFTER
+    # calling this very script's `seed`, and for the same stated reason.
+    #
+    # This pass is still load-bearing where it stands, and is not merely the
+    # first half of the second one: migrate.Bootstrap applies 001_initial.sql
+    # to an empty database, and the psql apply above swallows every error with
+    # `|| true`, so this is what guarantees the seed SQL has a schema to write
+    # into at all. It also has to stay a SEPARATE invocation because the seed
+    # SQL between the two passes writes rows the tenant pass then depends on.
     MAIN_CONTAINER=$(resolve_container_name "$E2E_PROJECT" "${E2E_PROJECT}.*elitea-main" \
       "$("${COMPOSE_BIN%% *}" ps --format '{{.Names}}' 2>/dev/null || true)")
-    if [ -n "$MAIN_CONTAINER" ]; then
-      echo "  → Running elitea-migrate…"
-      "${COMPOSE_BIN%% *}" exec "$MAIN_CONTAINER" /elitea-migrate >/dev/null 2>&1 || true
+    # Absence used to be silent (`if [ -n "$MAIN_CONTAINER" ]`), which is the
+    # same failure the postgres lookup below refuses to accept: a seed that
+    # cannot find the container cannot migrate, and every consequence of that
+    # surfaces hours later as a 500 from a route naming a missing relation.
+    if [ -z "$MAIN_CONTAINER" ]; then
+      echo "ERROR: could not locate the elitea-main container. Is the stack up?" >&2
+      echo "  Without it neither migration pass can run, and the tenant schemas" >&2
+      echo "  keep the shape 001_initial.sql left them in." >&2
+      exit 1
     fi
+
+    # Both passes go through this, and a failure is PRINTED and FATAL.
+    #
+    # The shared pass used to end in `>/dev/null 2>&1 || true`. That is how the
+    # tenant history came to be missing from this stack with nothing reporting
+    # it, and it is what would hide a refusing `-all-tenants` preflight — the
+    # one failure mode the ordering above exists to avoid, made invisible by
+    # the way the call was written. A migration that does not run must say so.
+    run_elitea_migrate() {
+      local label="$1"
+      shift
+      local out
+      local status=0
+      out=$("${COMPOSE_BIN%% *}" exec "$MAIN_CONTAINER" /elitea-migrate "$@" 2>&1) || status=$?
+      if [ "$status" -ne 0 ]; then
+        echo "ERROR: elitea-migrate ${label} failed (exit ${status})." >&2
+        echo "  command: /elitea-migrate $*" >&2
+        printf '%s\n' "$out" >&2
+        exit 1
+      fi
+    }
+
+    echo "  → Running elitea-migrate (shared history)…"
+    run_elitea_migrate "shared history"
 
     # Resolve postgres container name.
     # Project name is `${E2E_PROJECT}` so the container is <project>-postgres-1.
@@ -1146,10 +1202,17 @@ DECLARE
 BEGIN
     FOR target IN
         -- Every create_success project, not only those missing a schema:
-        -- `create_tenant_schema` is idempotent (all 47 tables are
-        -- CREATE TABLE IF NOT EXISTS), so running it unconditionally also
-        -- repairs a schema that exists but is empty — the state a bare
-        -- CREATE SCHEMA would have left behind.
+        -- `create_tenant_schema` is idempotent — every CREATE TABLE in it is
+        -- an IF NOT EXISTS and so is every CREATE INDEX — so running it
+        -- unconditionally also repairs a schema that exists but is empty, the
+        -- state a bare CREATE SCHEMA would have left behind.
+        --
+        -- The table COUNT that used to be in that sentence ("all 47 tables")
+        -- is gone on purpose. It was already stale — 001_initial.sql holds 51
+        -- CREATE TABLE statements now — and a number narrated in a comment
+        -- cannot notice when it stops being true. The property that actually
+        -- has to hold is asserted instead, after the tenant migration pass
+        -- below, against the migration ledger.
         SELECT p.id
         FROM centry.project p
         WHERE p.create_success = TRUE
@@ -1244,6 +1307,91 @@ ENDSQL
       -U elitea -d elitea < "$SEED_TMP"
     rm -f "$SEED_TMP"
     echo "  ✓ DB rows seeded (calendar-day fixtures anchored in ${E2E_TZ})."
+
+    # ── tenant migrations, the SECOND migrate pass ───────────────────────────
+    #
+    # HERE and not at the shared pass, because only now does every
+    # `create_success` project have the `p_<id>` schema `-all-tenants` demands:
+    # the `DO $schemas$` loop at the end of the seed SQL above has just
+    # provisioned them, the admin fixtures 90001-90003 included. Run before it,
+    # the flag's preflight refuses for the whole deployment and NOTHING is
+    # migrated — not even project 1, whose schema has been there since
+    # 001_initial.sql.
+    #
+    # Without this pass the tenant chain never ran on this stack at all. The
+    # shared pass applies migrations/shared/; the tenant history is only
+    # reached under `-tenant-project` or `-all-tenants`
+    # (cmd/elitea-migrate/main.go), the compose file has no migrate service,
+    # and elitea-main runs SKIP_MIGRATIONS=1 — so the tenant schemas kept
+    # exactly the shape 001_initial.sql gave them. MEASURED consequences on
+    # this stack before this call existed: `configuration_revisions` and
+    # `configuration_validation_projection` absent (tenant/0120),
+    # `elitea_tools.shared_id` / `.shared_owner_id` / `.updated_at` absent
+    # (0124), `entity_tool_mapping.entity_id` absent (0125). Any Go read path
+    # naming one of them answers 42P01/42703, which reaches the browser as a
+    # 500 — the same shape the transcript route had before the chat tables
+    # landed in the baseline.
+    #
+    # `-all-tenants` matches what the two other deployments of this binary
+    # pass: deploy/scripts/standalone-stack.sh and the Helm pre-install hook in
+    # deploy/helm/elitea/values.yaml. Both flags are idempotent — an applied
+    # migration is skipped by version+checksum — so re-seeding re-runs nothing.
+    echo "  → Running elitea-migrate -all-tenants (tenant history)…"
+    run_elitea_migrate "tenant history (-all-tenants)" -all-tenants
+
+    # ── postcondition: the tenant history reached EVERY tenant schema ────────
+    #
+    # Asserted against the migration ledger rather than narrated, and asserted
+    # per project rather than in aggregate: `-all-tenants` applies the chain in
+    # a loop and exits on the first failure, so a run that stopped halfway
+    # leaves the projects it reached complete and the rest untouched.
+    #
+    # The expected number is DERIVED from the shipped chain, not restated. A
+    # literal here would be the "all 47 tables" comment again — correct when
+    # written, silently wrong at the next migration, and with no way to notice.
+    # The image under test is built from this same tree, so the files on disk
+    # are the files inside the container.
+    TENANT_MIGRATIONS=$(find "${REPO_ROOT}/services/elitea-main/migrations/tenant" \
+      -name '*.sql' -type f 2>/dev/null | wc -l | tr -d ' ')
+    # A path that stopped resolving must not read as "nothing to check". This
+    # gate has been defeated that way before (check-playwright-image-tag, #157):
+    # the directory moved, the lookup found nothing, and the "nothing found →
+    # OK" branch passed everything from then on.
+    if [ "${TENANT_MIGRATIONS:-0}" -lt 1 ]; then
+      echo "ERROR: found no tenant migrations under" >&2
+      echo "  ${REPO_ROOT}/services/elitea-main/migrations/tenant" >&2
+      echo "  The chain cannot be empty; the path has moved and this assertion" >&2
+      echo "  would otherwise pass on every stack, migrated or not." >&2
+      exit 1
+    fi
+    TENANT_LEDGER_GAPS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COALESCE(string_agg(id::text || ':' || applied::text, ', ' ORDER BY id), '')
+      FROM (
+        SELECT p.id AS id,
+               (SELECT COUNT(*)
+                  FROM elitea_runtime.schema_migrations m
+                 WHERE m.target_kind = 'tenant'
+                   AND m.target_id = p.id::text) AS applied
+        FROM centry.project p
+        WHERE p.create_success = TRUE
+      ) AS ledger
+      WHERE applied <> ${TENANT_MIGRATIONS};")
+    if [ -n "$TENANT_LEDGER_GAPS" ]; then
+      echo "ERROR: the tenant migration history did not reach every tenant schema." >&2
+      echo "  expected ${TENANT_MIGRATIONS} tenant migration(s) per project" >&2
+      echo "  projects short of that (id:applied): ${TENANT_LEDGER_GAPS}" >&2
+      echo "  A p_<id> schema left at the 001_initial.sql baseline is missing" >&2
+      echo "  configuration_revisions, configuration_validation_projection and" >&2
+      echo "  the 0124/0125 columns, and every route that names one answers 500." >&2
+      echo "  If every project is short by the SAME small number, suspect a stale" >&2
+      echo "  image instead: the expected count is read from this tree, the applied" >&2
+      echo "  ones come from the chain embedded in the running elitea-main image." >&2
+      echo "  Rebuild it (compose build / standalone-stack.sh build) and re-seed." >&2
+      exit 1
+    fi
+    TENANT_SCHEMAS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*) FROM centry.project WHERE create_success = TRUE;")
+    echo "  ✓ tenant history verified: ${TENANT_MIGRATIONS} migration(s) applied to all ${TENANT_SCHEMAS} tenant schema(s)."
 
     # ── postcondition: the personas must actually resolve permissions ────────
     #

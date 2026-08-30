@@ -2123,6 +2123,45 @@
                 "features/toolkits",
                 "features/pipelines"
             ]
+        },
+        {
+            "$comment": "Stored-connection-check family — no baseline (apps/elitea-ui) precedent and no P1 parity-census API-* id; coded directly to this Go-native backend route's contract while it is built in parallel. See features/credentials/api/configurations.ts's header for the full account. These three carry an operationId even though source is handwritten, which the append convention above does not anticipate: api/openapi/v2.yaml now DESCRIBES them, and elitea-main's TestSpecRouterConformance/manifest_reverse_check covers a manifest endpoint by operationId only (its path branch compares against server-based candidates, so a root-relative manifest path never matches). Setting it back to null turns that gate red, and the allowlist it would otherwise need is at its pinned maximum and may only shrink. Rules (a) and (b) of check-endpoint-manifest.mjs constrain source:generated entries only, so a handwritten entry with an operationId is legal there.",
+            "id": "credentials.checkStoredConfigurationConnection",
+            "method": "POST",
+            "path": "/configurations/check_stored_connection/{projectId}/{configId}",
+            "operationId": "checkStoredConfigurationConnection",
+            "source": "handwritten",
+            "responseSchema": "StoredConnectionCheckResult",
+            "fixture": null,
+            "usedBy": [
+                "features/credentials"
+            ]
+        },
+        {
+            "$comment": "Stored-connection-check family — see credentials.checkStoredConfigurationConnection's $comment above.",
+            "id": "credentials.batchCheckStoredConfigurationConnections",
+            "method": "POST",
+            "path": "/configurations/check_stored_connections/{projectId}",
+            "operationId": "batchCheckStoredConfigurationConnections",
+            "source": "handwritten",
+            "responseSchema": "StoredConnectionCheckRow[]",
+            "fixture": null,
+            "usedBy": [
+                "features/credentials"
+            ]
+        },
+        {
+            "$comment": "Stored-connection-check family — see credentials.checkStoredConfigurationConnection's $comment above.",
+            "id": "credentials.revalidateConfiguration",
+            "method": "POST",
+            "path": "/configurations/revalidate/{projectId}/{configId}",
+            "operationId": "revalidateConfiguration",
+            "source": "handwritten",
+            "responseSchema": "ConfigurationWire",
+            "fixture": null,
+            "usedBy": [
+                "features/credentials"
+            ]
         }
     ]
 }

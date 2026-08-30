@@ -301,10 +301,44 @@ var toolkitTypeSchemas = map[string]map[string]any{
 				"title":       "Base Url",
 				"description": "Optional base URL override. Use it when the specification has no absolute server URL.",
 			},
+			// INLINE ONLY, and the description says so.
+			//
+			// It used to read "OpenAPI specification as a URL or raw JSON or
+			// YAML text", paraphrasing the SDK field's own
+			// "OpenAPI specification (URL or raw JSON/YAML text)". No component
+			// in this system has ever fetched that URL:
+			//
+			//   - the native worker refuses one outright — parse_source returns
+			//     UnsupportedSource for a string starting http:// or https://
+			//     (services/elitea-worker-rust/src/toolkits/families/openapi/spec.rs);
+			//   - the SDK worker does not fetch either: _parse_openapi_spec
+			//     (elitea_sdk/tools/openapi/api_wrapper.py:513) only runs
+			//     json.loads then yaml.safe_load, and a bare URL parses to a
+			//     string, so it ends at "OpenAPI spec must parse to an object";
+			//   - elitea-main never reads it over the network at all —
+			//     DiscoverTools answers from the stored row;
+			//   - the create form's editor parses the pasted text with the same
+			//     JSON-then-YAML pair (OpenAPISchemaInput.tsx) and shows no
+			//     operations for a URL. Its placeholder already says
+			//     "Enter or drag&drop your OpenAPI schema here, or choose file"
+			//     and needs no correction.
+			//
+			// So the promise had no implementation anywhere, and a user who
+			// believed it saved a toolkit that fails at its first tool call
+			// rather than at save time. Fetching it here instead would put an
+			// outbound request on a tenant-authored URL inside elitea-main,
+			// which has no egress allowlist and deliberately does not build one
+			// — the standing rule, stated at internal/api/v2/configurations/
+			// check_connection.go:10-14, is that the gateway owns the SSRF-safe
+			// egress guard (#13) and "elitea-main must not reimplement that
+			// guard to reach the same provider a second, unguarded way".
+			// Server-side spec fetching is therefore a gateway-side feature, not
+			// a line in this map; the description now states the shape that is
+			// actually implemented.
 			"spec": map[string]any{
 				"type":         "string",
 				"title":        "Spec",
-				"description":  "OpenAPI specification as a URL or raw JSON or YAML text.",
+				"description":  "OpenAPI specification as raw JSON or YAML text. A URL is not fetched.",
 				"ui_component": "openapi_spec",
 			},
 			"selected_tools": map[string]any{

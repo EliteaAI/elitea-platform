@@ -180,4 +180,97 @@ describe('usePinConversation', () => {
     const revertUpdater = setActiveConversation.mock.calls[1]?.[0] as (prev: Conversation | undefined) => Conversation | undefined;
     expect(revertUpdater(active)?.isPinned).toBe(false);
   });
+
+  /**
+   * DEFECT (stale row-handler): `onPinConversation` reaches a memoised
+   * `ConversationItem` through `useRenderConversationItem`'s `useCallback([])`
+   * render prop, so a row rendered BEFORE its conversation was selected keeps
+   * the closure that render built. Deciding "is this the open conversation?"
+   * from that closure's captured `activeConversation` answered `undefined`, and
+   * the open transcript's own `isPinned` was never synced — the row moved into
+   * the pinned section while the open conversation still rendered as unpinned.
+   *
+   * Repro shape borrowed from `processes/chat/model/useConversationSidebar.
+   * test.tsx`: grab the handler while nothing is selected, THEN select, THEN
+   * invoke that exact reference.
+   */
+  it('syncs the conversation open at CALL time from a handler captured BEFORE it was selected (stale-closure repro)', async () => {
+    server.use(http.post(`${BASE}/social/pin/prompt_lib/7/conversation/1`, () => HttpResponse.json({ ok: true }, { status: 200 })));
+
+    const setActiveConversation = vi.fn();
+    const conv = mkConv({ id: '1' });
+
+    const { result, rerender } = renderHook(
+      ({ activeConversation }: { activeConversation: Conversation | undefined }) =>
+        usePinConversation({
+          projectId: '7',
+          activeConversation,
+          setActiveConversation,
+          setPinnedConversations: vi.fn(),
+          setDateGroups: vi.fn(),
+          setFolders: vi.fn(),
+        }),
+      { wrapper, initialProps: { activeConversation: undefined as Conversation | undefined } },
+    );
+
+    // The reference a row rendered before any selection carries.
+    const stalePin = result.current.onPinConversation;
+
+    // Selected AFTER the handler was captured.
+    rerender({ activeConversation: conv });
+
+    await stalePin(conv, true);
+
+    // A pre-fix build never calls this at all: its guard compares `undefined`.
+    expect(setActiveConversation).toHaveBeenCalledTimes(1);
+    const updater = setActiveConversation.mock.calls[0]?.[0] as (prev: Conversation | undefined) => Conversation | undefined;
+    expect(updater(conv)?.isPinned).toBe(true);
+  });
+
+  /**
+   * DEFECT (same value, read a whole round trip later): the rollback branch runs
+   * AFTER `await togglePin`. Reading the conversation that was open when the
+   * request STARTED made a failed pin write its `isPinned` onto whichever
+   * conversation the user had switched to in the meantime.
+   */
+  it('rolls back against the conversation open when the request FAILED, not the one open when it started', async () => {
+    let release: () => void = () => {};
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post(`${BASE}/social/pin/prompt_lib/7/conversation/1`, async () => {
+        await inFlight;
+        return HttpResponse.json({ message: 'boom' }, { status: 500 });
+      }),
+    );
+
+    const setActiveConversation = vi.fn();
+    const opened = mkConv({ id: '1' });
+    const switchedTo = mkConv({ id: '2' });
+
+    const { result, rerender } = renderHook(
+      ({ activeConversation }: { activeConversation: Conversation | undefined }) =>
+        usePinConversation({
+          projectId: '7',
+          activeConversation,
+          setActiveConversation,
+          setPinnedConversations: vi.fn(),
+          setDateGroups: vi.fn(),
+          setFolders: vi.fn(),
+          toastError: vi.fn(),
+        }),
+      { wrapper, initialProps: { activeConversation: opened } },
+    );
+
+    const pending = result.current.onPinConversation(opened, true);
+    // The user opens a different conversation while the POST is in flight.
+    rerender({ activeConversation: switchedTo });
+    release();
+    await pending;
+
+    // Exactly one write — the optimistic one, while '1' really was open. A
+    // pre-fix build writes a second time, patching '2' with '1' rollback.
+    expect(setActiveConversation).toHaveBeenCalledTimes(1);
+  });
 });

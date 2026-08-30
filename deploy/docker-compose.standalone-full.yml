@@ -972,6 +972,69 @@ services:
       - standalone_worker_spool:/spool
     restart: "no"
 
+  # ── Remote MCP server double (agents/chat MCP journey) ────────────────────
+  #
+  # The only third-party process the native runtime dials before an agent can
+  # answer. `services/elitea-worker-rust/src/toolkits/mcp.rs` opens a
+  # Streamable HTTP session against a toolkit's `settings.url` and asks the
+  # server for its catalogue; every other toolkit family is materialized from
+  # stored settings alone. Without a server on the other end, a runtime that
+  # speaks MCP and one that refuses it produce the same failed turn.
+  #
+  # HTTPS, not HTTP: the worker's MCP client is built `https_only` and
+  # `parse_endpoint` rejects every other scheme (mcp.rs:220,599). Its
+  # certificate is minted at image build time — see deploy/mock-mcp/Containerfile.
+  #
+  # It is NOT in GATEWAY_EGRESS_ALLOWLIST and must not be: that variable is
+  # read only by the LLM gateway (internal/config/config.go:349) and governs a
+  # tenant credential's api_base. The worker's MCP egress has no allowlist at
+  # all — the endpoint is constrained by scheme and syntax only.
+  mcp-mock:
+    image: ghcr.io/eliteaai/elitea-mock-mcp:standalone
+    build:
+      context: ./mock-mcp
+      dockerfile: Containerfile
+    environment:
+      MOCK_MCP_PORT: "8443"
+    healthcheck:
+      # The certificate is self-signed, so the probe cannot use the default
+      # verifying context. It is checking that the process is listening and
+      # completing a TLS handshake, not that the chain is trusted — the worker
+      # is what must trust it, and mcp-mock-trust is what makes that true.
+      test: ["CMD", "python3", "-c",
+             "import ssl,urllib.request;urllib.request.urlopen('https://127.0.0.1:8443/healthz',context=ssl._create_unverified_context()).read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    restart: unless-stopped
+
+  # Publishes the mock's certificate to whoever must trust it.
+  #
+  # A separate one-shot because the mock itself runs non-root and a fresh named
+  # volume starts 0755 root-owned — the same reason worker-spool-init exists.
+  # It runs the mock's OWN image, which is where the certificate lives.
+  #
+  # The bundle is the image's public roots PLUS the mock's self-signed
+  # certificate, never the certificate alone: `SSL_CERT_FILE` REPLACES the
+  # platform trust store rather than adding to it
+  # (rustls-native-certs-0.8.4/src/lib.rs:50-57), so a bundle holding only the
+  # mock would silently strip every public root from the consumer.
+  mcp-mock-trust:
+    image: ghcr.io/eliteaai/elitea-mock-mcp:standalone
+    build:
+      context: ./mock-mcp
+      dockerfile: Containerfile
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - cat /etc/ssl/certs/ca-certificates.crt /opt/mock-mcp/tls/ca.crt
+        > /trust/mcp-mock-ca-bundle.pem
+        && chmod 0644 /trust/mcp-mock-ca-bundle.pem
+    volumes:
+      - standalone_mcp_mock_trust:/trust
+    restart: "no"
+
   # ── Traefik: routes /app → elitea-web, /api → elitea-main ──────────────────
   traefik:
     image: traefik:v3.4
@@ -998,3 +1061,6 @@ volumes:
   # The worker's output spool. Private (0700, uid 10001) — prepared by
   # worker-spool-init because a fresh named volume starts 0755 root-owned.
   standalone_worker_spool:
+  # The trust bundle the native worker uses to verify mcp-mock's certificate.
+  # Written by mcp-mock-trust; mounted read-only by whoever dials the mock.
+  standalone_mcp_mock_trust:

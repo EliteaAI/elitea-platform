@@ -33,10 +33,24 @@ export interface MessageAuthorWire {
   readonly entity_meta?: { readonly email?: string; readonly id?: string | number };
 }
 
-/** A `participants` array entry (lines 48, 74-78, 128-129, 205). */
+/**
+ * A `participants` array entry (lines 48, 74-78, 128-129, 205).
+ *
+ * `entity_meta` carries the AUTH USER id (`entity_meta.id`), which is a
+ * different number from `id` (the chat_participants ROW id) — measured on the
+ * live stack, participant row `1` carries `entity_meta.id: 6`. It is declared
+ * here because the conversation-details payload serves it on every
+ * participant and this app already relies on that: `convertMessagesToChatHistory`
+ * and `useSyncChatMessage`'s `filterUserParticipants` both hand the SAME
+ * participant objects to `normaliseUserMessage` as its `users:
+ * MessageAuthorWire[]` argument, whose `userOptionalFields` reads
+ * `entity_meta.id` off them. Same optionality and same `string | number`
+ * union as `MessageAuthorWire` above, for the same reason.
+ */
 export interface MessageParticipantWire {
   readonly id: string;
   readonly meta?: { readonly tools?: readonly MessageParticipantToolWire[]; readonly user_name?: string; readonly user_avatar?: string };
+  readonly entity_meta?: { readonly email?: string; readonly id?: string | number };
 }
 
 /** `foundParticipant.meta.tools[]` (line 205). */

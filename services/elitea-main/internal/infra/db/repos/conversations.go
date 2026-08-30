@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1415,16 +1416,24 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 	defer rows.Close()
 
 	items := []conversations.Message{}
+	// Index-aligned with `items`: the numeric group id each row was built
+	// from, which the attachment projection below keys on. Kept beside the
+	// slice rather than re-parsed out of `Message.ID` (a string on the wire)
+	// so the join reads the id the database returned, not a round trip
+	// through its decimal spelling.
+	groupIDs := []int{}
 	for rows.Next() {
 		var m conversations.Message
 		var meta []byte
 		var entityName string
+		var groupID int
 		// A scan failure used to `continue`, so an unreadable row silently
 		// dropped a message out of the transcript.
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt,
+		if err := rows.Scan(&groupID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt,
 			&m.AuthorParticipantID, &m.SentToID, &m.ReplyToID, &m.Content); err != nil {
 			return conversations.MessagesListResponse{}, fmt.Errorf("conversations: scan message: %w", err)
 		}
+		m.ID = strconv.Itoa(groupID)
 		if meta != nil {
 			_ = json.Unmarshal(meta, &m.Metadata) // best-effort: DB column is trusted JSON
 		}
@@ -1436,9 +1445,39 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		}
 		m.ContentType = "text"
 		items = append(items, m)
+		groupIDs = append(groupIDs, groupID)
 	}
 	if err := rows.Err(); err != nil {
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
+	}
+
+	// The files each question was sent with (#606 read path, part 2).
+	//
+	// This projection is what the CHAT PAGE reads: useChatPageData.ts hands
+	// these rows to ChatBox as `message_groups`, and `UserMessage`'s
+	// `findAttachmentItems` filters them for `attachment_message` items. Until
+	// this join existed the route answered every row with no items at all, so a
+	// reloaded conversation showed the question and silently dropped the file
+	// that rode it — while the details route, reading the SAME rows through
+	// ListMessageGroups, returned it. Two projections of one transcript
+	// disagreeing is the defect; the second one is now this.
+	//
+	// TEXT ITEMS ARE DELIBERATELY NOT INCLUDED. This route already collapses
+	// each group's text into `content` (the string_agg above), which every
+	// client reads as the message body; re-emitting the same text as items
+	// would give two sources for one sentence and let them drift. Attachments
+	// have no such representation here — they exist in this response only as
+	// items — so they are what this carries.
+	if len(groupIDs) > 0 {
+		byGroup, err := r.attachmentItemsByGroup(ctx, s, groupIDs)
+		if err != nil {
+			return conversations.MessagesListResponse{}, err
+		}
+		for i := range items {
+			if attachments := byGroup[groupIDs[i]]; len(attachments) > 0 {
+				items[i].MessageItems = attachments
+			}
+		}
 	}
 
 	totalPages := total / limit
@@ -1465,6 +1504,63 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		PageSize:   limit,
 		TotalPages: totalPages,
 	}, nil
+}
+
+// attachmentItemsByGroup projects the `attachment_message` items of the given
+// message groups, in the SAME shape ListMessageGroups embeds them in — item id,
+// discriminator, order index and the `attachmentItemDetails` payload — so a
+// client that already renders the details route's items needs no second reader
+// for this one. Two shapes for one item is how a renderer ends up branching on
+// which endpoint it was handed.
+//
+// INNER JOIN, not LEFT. An item whose discriminator says `attachment_message`
+// but which has no chat_messages_attachment row is not an attachment with empty
+// fields, it is a broken row; joining it in with nil name/bucket would hang an
+// unaddressable `filepath: "//"` off a message and point the client's download
+// at artifact storage for a file that does not exist. It is dropped instead,
+// which is the same "the row is required as well as the item_type" rule
+// ListMessageGroups states for its own LEFT-joined equivalent.
+//
+// A query failure PROPAGATES. `chat_messages_attachment` is a tenant table
+// (migrations/tenant/0127) and a schema where it is missing answers 42P01 here;
+// reporting that as "this conversation's messages carry no files" is the #599
+// failure shape — an empty successful answer that a caller cannot tell from the
+// truth — and it is exactly how the attachment gap stayed invisible on the read
+// side for as long as it did.
+func (r *ConversationsRepo) attachmentItemsByGroup(ctx context.Context, s string, groupIDs []int) (map[int][]map[string]any, error) {
+	q := fmt.Sprintf(`
+		SELECT mi.message_group_id, mi.id, mi.item_type, mi.order_index,
+			ma.name, ma.bucket, ma.attachment_type, ma.content
+		FROM %s.chat_message_items mi
+		JOIN %s.chat_messages_attachment ma ON ma.id = mi.id
+		WHERE mi.message_group_id = ANY($1) AND mi.item_type = 'attachment_message'
+		ORDER BY mi.message_group_id, mi.order_index`, s, s)
+
+	rows, err := r.pool.Query(ctx, q, groupIDs)
+	if err != nil {
+		return nil, fmt.Errorf("conversations: list message attachments: %w", err)
+	}
+	defer rows.Close()
+
+	byGroup := map[int][]map[string]any{}
+	for rows.Next() {
+		var groupID, itemID, orderIndex int
+		var itemType, name, bucket, attachmentType string
+		var content []byte
+		if err := rows.Scan(&groupID, &itemID, &itemType, &orderIndex, &name, &bucket, &attachmentType, &content); err != nil {
+			return nil, fmt.Errorf("conversations: scan message attachment: %w", err)
+		}
+		byGroup[groupID] = append(byGroup[groupID], map[string]any{
+			"id":           itemID,
+			"item_type":    itemType,
+			"order_index":  orderIndex,
+			"item_details": attachmentItemDetails(itemID, itemType, name, bucket, attachmentType, content),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("conversations: list message attachments: %w", err)
+	}
+	return byGroup, nil
 }
 
 func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error) {

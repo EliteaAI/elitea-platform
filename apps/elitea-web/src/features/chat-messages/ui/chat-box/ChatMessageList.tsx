@@ -123,10 +123,56 @@ export interface ChatMessageListProps {
   readonly emptyState?: ReactNode;
 }
 
+/**
+ * The author id a value actually STATES, or `undefined` when it states none.
+ *
+ * `''` is not an identity: `entities/message/lib/normalise.ts` uses the empty
+ * string as "the attribution STOPS here" for a row with no author, and
+ * `ChatBox.tsx` passes `userId={userId ?? ''}` while `useGetCurrentAuthor` is
+ * still in flight (or forever, if it fails). Both spellings of "unstated"
+ * therefore have to collapse to one before any comparison.
+ *
+ * `String()`-normalised for the same reason `normaliseUserMessage` documents:
+ * `message.userId` is always a string, but the reader's id comes from the
+ * unvalidated `GET /social/author` envelope, whose `id` the transcript and
+ * participants payloads state as a NUMBER.
+ */
+function statedAuthorId(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  return String(value);
+}
+
+/**
+ * Whether the reader may act on a message authored by `authorId`.
+ *
+ * The two unstated sides are deliberately NOT symmetric:
+ *
+ * - reader unstated ⇒ PERMIT. This is the documented pre-identity escape
+ *   hatch — no reader has been stated, so the surface keeps the behaviour it
+ *   had before author identity existed rather than refusing everything. It was
+ *   unreachable until `statedAuthorId` above, because `ChatBox` renders `''`
+ *   rather than `undefined`, so a reader whose author query was merely PENDING
+ *   was refused edit and delete on their own messages with no explanation.
+ * - author unstated ⇒ REFUSE. An unattributed row must not become editable
+ *   and deletable by everyone in a shared conversation; absent attribution is
+ *   the one case where refusing is the safe answer.
+ */
+function isOwnMessage(readerId: string | undefined, authorId: string | undefined): boolean {
+  const reader = statedAuthorId(readerId);
+  if (reader === undefined) return true;
+  const author = statedAuthorId(authorId);
+  if (author === undefined) return false;
+  return reader === author;
+}
+
 /** Baseline `ChatMessageWrapper.jsx`'s `canDeleteThisAIMessage` — whether `userId` authored the question this AI answer replies to. */
-function canDeleteAiMessage(chatHistory: readonly ChatMessage[], message: ChatMessage, userId: string): boolean {
+function canDeleteAiMessage(
+  chatHistory: readonly ChatMessage[],
+  message: ChatMessage,
+  userId: string | undefined,
+): boolean {
   const question = chatHistory.find((item) => item.id === message.questionId);
-  return question?.userId === userId;
+  return isOwnMessage(userId, question?.userId);
 }
 
 /**
@@ -240,14 +286,14 @@ export function ChatMessageList({
           const messageId = message.id;
           const isLastMessage = index === chatHistory.length - 1;
           const messageIsStreaming = Boolean(message.isStreaming) || (isLastMessage && isStreaming);
+          // Ownership goes through `isOwnMessage` on every branch, so the
+          // String-normalisation and the unstated-reader/unstated-author rules
+          // are decided in exactly one place (see its docblock).
           const isEligibleForEdit =
-            isUser &&
-            index === lastUserMessageIndex &&
-            !isStreaming &&
-            (userId === undefined || userId === message.userId);
+            isUser && index === lastUserMessageIndex && !isStreaming && isOwnMessage(userId, message.userId);
           const canDeleteMessage = isUser
-            ? userId === undefined || message.userId === userId
-            : userId === undefined || canDeleteAiMessage(chatHistory, message, userId);
+            ? isOwnMessage(userId, message.userId)
+            : canDeleteAiMessage(chatHistory, message, userId);
           const handleDelete =
             isLastMessage && message.id !== WELCOME_MESSAGE_ID && !message.isSummarized && canDeleteMessage && onDeleteAnswer
               ? () => { onDeleteAnswer(messageId); }

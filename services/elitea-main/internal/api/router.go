@@ -264,6 +264,12 @@ type RouterConfig struct {
 	// compatibility write routes store (#457). nil leaves every written row at
 	// the column default, false, which the LLM gateway refuses.
 	ConfigProviderAdmission v2configs.ProviderAdmission
+	// ConfigStoredResolver resolves a STORED row's references and hidden
+	// secrets, so /check_stored_connection(s) can test a saved credential
+	// without the client resending its api_key. nil leaves those two routes
+	// reporting an honest "not available" failure; it never checks the stored
+	// {{secret.NAME}} reference as though it were the key.
+	ConfigStoredResolver v2configs.StoredConfigurationResolver
 }
 
 type RuntimeRoutes struct {
@@ -882,6 +888,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		v2configs.WithPermissionResolver(coreResolver),
 		v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
 		v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
+		v2configs.WithStoredConfigurationResolver(cfg.ConfigStoredResolver),
 		v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
 		v2configs.WithPublicProjectID(apimw.PublicProjectID()),
 	)
@@ -2017,6 +2024,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
 					r.With(requireMessageDelete).
 						Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
+					// message.py declares BOTH verbs on one module, so the
+					// per-message read shares this DELETE's URL and its
+					// {messageID} param — pylon's `message_group_uid`, a
+					// message-GROUP uuid string (message.py:176-183). The read
+					// declares `models.chat.messages.details`
+					// (message.py:39), which is NOT a new name: it is the
+					// string message_trace.py already declares and 0063 already
+					// grants, so mounting this needs no migration and 403s
+					// nobody who could read the transcript.
+					//
+					// GetMessage was implemented and routed by nothing until
+					// now (#126's dead-wiring class). Its repository read is
+					// the only caller of ConversationsRepo.GetMessageByUUID,
+					// whose unconditional LEFT JOIN on chat_messages_canvas is
+					// what the fresh-install tenant migration made safe.
+					r.With(projectPermission("models.chat.messages.details")).
+						Get("/message/prompt_lib/{projectID}/{messageID}", convHandler.GetMessage)
 					r.With(requireMessageDelete).
 						Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
 					r.With(projectPermission("models.chat.participants.create")).

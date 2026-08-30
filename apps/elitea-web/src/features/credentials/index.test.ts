@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { useCheckStoredConfigurationConnection, useTestConfigurationConnection } from './api/useConfigurations';
 import { useCredentialWarningModal } from './model/useCredentialWarningModal';
 import { CredentialsControls } from './ui/CredentialsControls';
 import { CredentialsTabBar } from './ui/CredentialsTabBar';
@@ -39,6 +40,14 @@ import * as slice from './index';
  * the assertion below only ever sanity-checked the RUNTIME half and never
  * saw the real breach — see `index.ts`'s own doc comment for why this pair
  * is one unit.
+ *
+ * `CredentialConnectionChecks` is the third grouping, added when the SAVED-row
+ * check landed: `useTestConfigurationConnection` (payload form) and
+ * `useCheckStoredConfigurationConnection` (no-body form) are the two halves of
+ * one control, and the barrel was again at 20/20. The flat
+ * `useTestConfigurationConnection` export is gone on purpose — a caller that
+ * still reaches for it by name on a saved row is reaching for the form that
+ * cannot work there, so making it unavailable is part of the fix.
  */
 const PUBLIC_SURFACE = [
   'useAvailableConfigurationsType',
@@ -46,8 +55,8 @@ const PUBLIC_SURFACE = [
   'useConfigurationsList',
   'useCreateConfiguration',
   'useDeleteConfiguration',
-  'useTestConfigurationConnection',
   'useUpdateConfiguration',
+  'CredentialConnectionChecks',
   'classifySchemaField',
   'initialDataForSchema',
   'extractInformationFromCredentialError',
@@ -86,6 +95,11 @@ describe('features/credentials public surface (A7-api-model)', () => {
     expect(slice.CredentialsActions.Controls).toBe(CredentialsControls);
   });
 
+  it('groups the two connection checks under CredentialConnectionChecks, wired to their real implementations', () => {
+    expect(slice.CredentialConnectionChecks.useUnsaved).toBe(useTestConfigurationConnection);
+    expect(slice.CredentialConnectionChecks.useStored).toBe(useCheckStoredConfigurationConnection);
+  });
+
   it('no longer exposes the two actions-row components as flat exports', () => {
     // The whole point of the grouping is that it costs one budget slot
     // instead of two; a re-added flat alias would silently put the
@@ -93,5 +107,6 @@ describe('features/credentials public surface (A7-api-model)', () => {
     const exported: readonly string[] = Object.keys(slice);
     expect(exported).not.toContain('CredentialsTabBar');
     expect(exported).not.toContain('CredentialsControls');
+    expect(exported).not.toContain('useTestConfigurationConnection');
   });
 });

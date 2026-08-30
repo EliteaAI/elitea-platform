@@ -48,6 +48,9 @@ const LLM_CONFIG = {
   data: { name: 'gpt-4o' },
 };
 
+const SECOND_CONFIG = { ...LLM_CONFIG, id: 2, elitea_title: 'Claude Opus', label: 'anthropic', type: 'anthropic', data: { name: 'opus' } };
+const THIRD_CONFIG = { ...LLM_CONFIG, id: 3, elitea_title: 'Ollama Local', label: 'ollama', type: 'ollama', data: { name: 'llama' } };
+
 function setConfig(): void {
   globals['elitea_ui_config'] = {
     vite_server_url: 'https://elitea.example',
@@ -58,7 +61,7 @@ function setConfig(): void {
 }
 
 /** `ConfigurationCard` navigates through TanStack Router, so a real router must wrap the panel. */
-function renderPanel(): void {
+function renderPanel(configs: Record<string, unknown>[] = [LLM_CONFIG]): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -69,7 +72,7 @@ function renderPanel(): void {
         <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
           <CssBaseline />
           <ConfigurationsPanel
-            configurationsBySection={{ llm: [LLM_CONFIG] }}
+            configurationsBySection={{ llm: configs }}
             projectId={PROJECT_ID}
             isLoading={false}
           />
@@ -149,5 +152,114 @@ describe('ConfigurationsPanel default-model saving', () => {
     await userEvent.click(await screen.findByRole('option', { name: 'OpenAI GPT-4o' }));
 
     await waitFor(() => expect(screen.queryByText('insufficient permissions')).not.toBeInTheDocument());
+  });
+});
+
+/**
+ * The health dots. The batch route takes ids and NO payload — the stored
+ * secret is sealed and this screen never had it — so what these tests pin is
+ * the mapping: one response row lands on one card, by id, in each of its
+ * three verdicts.
+ */
+describe('ConfigurationsPanel connection health', () => {
+  function mockModels(): void {
+    server.use(
+      http.get(`${BASE}/configurations/models/${PROJECT_ID}`, () =>
+        HttpResponse.json({ items: [], total: 0, default_model_name: '', default_model_project_id: '' }),
+      ),
+    );
+  }
+
+  it('does not check anything until the button is pressed, then paints each verdict on its own card', async () => {
+    setConfig();
+    configureGeneratedClient({ baseUrl: BASE });
+    mockEditPermission();
+    mockModels();
+    let sentBody = '';
+    server.use(
+      http.post(`${BASE}/configurations/check_stored_connections/${PROJECT_ID}`, async ({ request }) => {
+        sentBody = await request.text();
+        return HttpResponse.json([
+          { id: '1', success: true },
+          { id: '2', success: false, message: 'invalid api key' },
+          { id: '3', success: false, unsupported: true },
+        ]);
+      }),
+    );
+
+    renderPanel([LLM_CONFIG, SECOND_CONFIG, THIRD_CONFIG]);
+
+    // Nothing has been checked on mount — this is the whole reason the button
+    // exists, and an auto-firing panel would be N provider round trips per
+    // page view.
+    expect((await screen.findByTestId('configuration-health-dot-1')).getAttribute('data-health')).toBe('unchecked');
+    expect(sentBody).toBe('');
+
+    await userEvent.click(screen.getByTestId('check-connections'));
+
+    await waitFor(() => expect(screen.getByTestId('configuration-health-dot-1').getAttribute('data-health')).toBe('ok'));
+    expect(screen.getByTestId('configuration-health-dot-2').getAttribute('data-health')).toBe('failed');
+    expect(screen.getByTestId('configuration-health-dot-3').getAttribute('data-health')).toBe('unsupported');
+    // The failure's own words, not a generic string, are what the dot carries.
+    expect(screen.getByTestId('configuration-health-dot-2')).toHaveAttribute('aria-label', 'invalid api key');
+    // Ids only: no `data`, no api_key, nothing that could be a secret.
+    expect(JSON.parse(sentBody)).toEqual({ configuration_ids: ['1', '2', '3'] });
+  });
+
+  it('a batch that fails leaves the dots UNCHECKED and says so once, instead of painting the project red', async () => {
+    setConfig();
+    configureGeneratedClient({ baseUrl: BASE });
+    mockEditPermission();
+    mockModels();
+    server.use(
+      http.post(`${BASE}/configurations/check_stored_connections/${PROJECT_ID}`, () =>
+        HttpResponse.json({ error: 'gateway unavailable' }, { status: 503 }),
+      ),
+    );
+
+    renderPanel([LLM_CONFIG, SECOND_CONFIG]);
+    await userEvent.click(await screen.findByTestId('check-connections'));
+
+    // A request that never answered says NOTHING about these rows. Marking
+    // them failed — which is what the legacy panel did — reports a healthy
+    // project as broken; the reason belongs beside the button that started it.
+    expect(await screen.findByText('The connection check could not be run.')).toBeInTheDocument();
+    expect(screen.getByTestId('configuration-health-dot-1').getAttribute('data-health')).toBe('unchecked');
+    expect(screen.getByTestId('configuration-health-dot-2').getAttribute('data-health')).toBe('unchecked');
+  });
+
+  it('re-validating one card repaints it from the status_ok the route returns', async () => {
+    setConfig();
+    configureGeneratedClient({ baseUrl: BASE });
+    mockEditPermission();
+    mockModels();
+    let revalidateBody = '';
+    server.use(
+      http.post(`${BASE}/configurations/revalidate/${PROJECT_ID}/1`, async ({ request }) => {
+        revalidateBody = await request.text();
+        return HttpResponse.json({
+          id: 1,
+          name: 'gpt-4o',
+          type: 'openai',
+          section: 'llm',
+          status_ok: false,
+          status_logs: 'secret openai_key is missing from the vault',
+        });
+      }),
+    );
+
+    renderPanel();
+
+    // The ported card hardcoded "OK" for every row; a re-validate is the one
+    // thing that can replace it with the row's real status.
+    expect(await screen.findByText(/OK/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('configuration-revalidate-1'));
+
+    await waitFor(() => expect(screen.getByTestId('configuration-health-dot-1').getAttribute('data-health')).toBe('failed'));
+    expect(screen.getByTestId('configuration-health-dot-1')).toHaveAttribute('aria-label', 'secret openai_key is missing from the vault');
+    expect(screen.getByText(/In Progress/)).toBeInTheDocument();
+    // Re-deriving admission needs nothing from the client.
+    expect(revalidateBody).toBe('');
   });
 });

@@ -34,10 +34,21 @@ use crate::protocol::control::{
 
 const TOKEN_CONTEXT_SCHEMA: &str = "elitea.runtime.elitea-client-token.v1";
 const APPLICATION_VERSION_SCHEMA: &str = "elitea.runtime.application-version.v1";
+const ATTACHMENT_OBJECT_SCHEMA: &str = "elitea.runtime.attachment-object.v1";
 const MAX_SAFE_TEXT_BYTES: usize = 256;
 const MAX_ORIGIN_BYTES: usize = 2_048;
 const MAX_TOKEN_CONTEXT_BYTES: usize = 32 * 1_024;
 const MAX_APPLICATION_VERSION_BYTES: usize = 1_024 * 1_024;
+/// The attachment ENVELOPE's ceiling, which is not the object's.
+///
+/// Main caps one attachment's bytes at 128 KiB and its JSON envelope at 1 MiB
+/// (`maxRuntimeAttachmentObjectBytes` / `maxRuntimeAttachmentObjectResponseBytes`
+/// in `services/elitea-main/internal/infra/storage/runtime_attachment_object.go`),
+/// because the content travels as a JSON string and a control-character-dense
+/// file escapes to six characters per byte. This side has to admit the envelope
+/// main is willing to send, so it is the larger of the two numbers that appears
+/// here.
+const MAX_ATTACHMENT_OBJECT_BYTES: usize = 1_024 * 1_024;
 const MAX_TOKEN_BYTES: usize = 16 * 1_024;
 const MAX_RUNTIME_CONTEXT_DEADLINE: Duration = Duration::from_mins(5);
 const CLAIM_HEADER: HeaderName = HeaderName::from_static("x-elitea-claim-id");
@@ -81,6 +92,7 @@ pub(crate) struct RuntimeContextConfig {
     pub(crate) deadline: Duration,
     pub(crate) max_response_bytes: usize,
     pub(crate) max_application_response_bytes: usize,
+    pub(crate) max_attachment_response_bytes: usize,
 }
 
 impl RuntimeContextConfig {
@@ -92,6 +104,8 @@ impl RuntimeContextConfig {
             || self.max_response_bytes > MAX_TOKEN_CONTEXT_BYTES
             || self.max_application_response_bytes == 0
             || self.max_application_response_bytes > MAX_APPLICATION_VERSION_BYTES
+            || self.max_attachment_response_bytes == 0
+            || self.max_attachment_response_bytes > MAX_ATTACHMENT_OBJECT_BYTES
         {
             return Err(RuntimeContextError::InvalidConfiguration(
                 "the runtime context configuration is malformed",
@@ -376,6 +390,78 @@ impl RuntimeContextClient {
             .await
             .map_err(|_| RuntimeContextError::Timeout("the nested application request timed out"))?
     }
+
+    /// Read one stored chat attachment's TEXT through the same live claim.
+    ///
+    /// Main serves this from the private content listener
+    /// (`ContentServer.PostAttachmentObject` in
+    /// `services/elitea-main/internal/infra/storage/runtime_attachment_object.go`),
+    /// and it authorizes on the CLAIM's own project and conversation: the
+    /// `(bucket, name)` pair below only selects INSIDE them, so a key belonging
+    /// to another chat is refused there rather than trusted here.
+    ///
+    /// `name` is the object key and it contains slashes
+    /// (`{conversationUUID}/{filename}`). It is percent-encoded into ONE path
+    /// segment — `PATH_SEGMENT` encodes `/` — because main routes on
+    /// `r.URL.RawPath` and unescapes the segment itself, the same mechanism the
+    /// immutable input route already uses for its content id.
+    pub(crate) async fn load_attachment_object(
+        &self,
+        authority: &ClaimBoundRuntimeContextAuthority,
+        bucket: &str,
+        name: &str,
+    ) -> Result<RuntimeAttachmentObject, RuntimeContextError> {
+        if !bounded_reference(bucket) || !bounded_reference(name) {
+            return Err(RuntimeContextError::InvalidConfiguration(
+                "the attachment reference is malformed",
+            ));
+        }
+        let binding = authority.redemption_binding();
+        validate_binding(&binding)?;
+        let request = build_attachment_request(&binding, bucket, name)?;
+        let operation = load_attachment_response(
+            self.rpc.as_ref(),
+            request,
+            &binding,
+            bucket,
+            name,
+            &self.config,
+        );
+        timeout(self.config.deadline, operation)
+            .await
+            .map_err(|_| RuntimeContextError::Timeout("the attachment request timed out"))?
+    }
+}
+
+/// One claim-scoped attachment document, already proven to belong to the
+/// claimed execution's own project and conversation by the service that served
+/// it.
+///
+/// `content` is TEXT: main refuses anything it cannot serve as valid UTF-8, so
+/// this type has no binary shape to represent. It is deliberately not `Debug`
+/// or `Clone` — the bytes are tenant document content and belong in exactly one
+/// place, the prompt this turn is building.
+pub(crate) struct RuntimeAttachmentObject {
+    bucket: String,
+    name: String,
+    content: String,
+}
+
+impl RuntimeAttachmentObject {
+    #[must_use]
+    pub(crate) fn bucket(&self) -> &str {
+        &self.bucket
+    }
+
+    #[must_use]
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub(crate) fn into_content(self) -> String {
+        self.content
+    }
 }
 
 /// One claim-bound, already-frozen and claim-materialized child definition.
@@ -483,6 +569,31 @@ fn build_application_request(
     Ok(request)
 }
 
+fn build_attachment_request(
+    binding: &RuntimeContextRedemptionBinding<'_>,
+    bucket: &str,
+    name: &str,
+) -> Result<Request<Body>, RuntimeContextError> {
+    let execution = utf8_percent_encode(binding.execution_id, PATH_SEGMENT);
+    let bucket_segment = utf8_percent_encode(bucket, PATH_SEGMENT);
+    let name_segment = utf8_percent_encode(name, PATH_SEGMENT);
+    let path = format!(
+        "/executions/{execution}/generations/{}/runtime-context/attachments/{bucket_segment}/{name_segment}",
+        binding.generation
+    );
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .body(Body::empty())
+        .map_err(|_| {
+            RuntimeContextError::AuthorizationFailed(
+                "the attachment request authority is malformed",
+            )
+        })?;
+    insert_claim_headers(&mut request, binding)?;
+    Ok(request)
+}
+
 fn insert_claim_headers(
     request: &mut Request<Body>,
     binding: &RuntimeContextRedemptionBinding<'_>,
@@ -581,6 +692,53 @@ async fn load_application_response(
         application_id,
         version_id,
         version_details: decoded.version_details,
+    })
+}
+
+async fn load_attachment_response(
+    rpc: &dyn RuntimeContextRpc,
+    request: Request<Body>,
+    binding: &RuntimeContextRedemptionBinding<'_>,
+    bucket: &str,
+    name: &str,
+    config: &RuntimeContextConfig,
+) -> Result<RuntimeAttachmentObject, RuntimeContextError> {
+    let response = rpc
+        .post(request)
+        .await
+        .map_err(RuntimeContextError::Transport)?;
+    let declared_length =
+        validate_response_head_with_limit(&response, config.max_attachment_response_bytes)?;
+    let body = collect_body(
+        response,
+        declared_length,
+        config.max_attachment_response_bytes,
+    )
+    .await?;
+    let decoded: AttachmentObjectResponse = serde_json::from_slice(&body).map_err(|_| {
+        RuntimeContextError::InvalidResponse("the attachment response is malformed")
+    })?;
+    // The identity is re-checked against what was ASKED for, not merely against
+    // itself. Main derives the project and the conversation from the claim, so
+    // a document that names a different project or a different object than this
+    // request selected means the two ends disagree about what was authorized —
+    // which must fail the read, never silently enrich a prompt.
+    if decoded.schema_version != ATTACHMENT_OBJECT_SCHEMA
+        || decoded.project_id == 0
+        || decoded.project_id.to_string() != binding.resource_project_id
+        || decoded.bucket != bucket
+        || decoded.name != name
+        || decoded.content.is_empty()
+        || u64::try_from(decoded.content.len()) != Ok(decoded.byte_length)
+    {
+        return Err(RuntimeContextError::AuthorizationFailed(
+            "the attachment response does not match the accepted execution",
+        ));
+    }
+    Ok(RuntimeAttachmentObject {
+        bucket: decoded.bucket,
+        name: decoded.name,
+        content: decoded.content,
     })
 }
 
@@ -776,6 +934,15 @@ fn bounded_text(value: &str) -> bool {
         && !value.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0))
 }
 
+/// varchar(256) each side in migrations/tenant/0127, and both the Go admission
+/// path and `agents::attachments` refuse anything longer. A reference this
+/// worker cannot have been handed is not worth a round trip.
+fn bounded_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_SAFE_TEXT_BYTES
+        && !value.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0))
+}
+
 fn canonical_positive_integer(value: &str) -> bool {
     value.parse::<u64>().is_ok_and(|parsed| {
         parsed > 0 && i64::try_from(parsed).is_ok() && parsed.to_string() == value
@@ -788,6 +955,19 @@ struct RuntimeContextResponse {
     schema_version: String,
     project_id: u64,
     token: SecretToken,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentObjectResponse {
+    schema_version: String,
+    project_id: u64,
+    bucket: String,
+    name: String,
+    #[allow(dead_code)] // Carried for diagnostics; the bytes decide, not the type.
+    media_type: String,
+    byte_length: u64,
+    content: String,
 }
 
 #[derive(Deserialize)]

@@ -23,9 +23,9 @@
  * None of the three fails a unit suite: the components are individually
  * correct and the wiring between them is what was missing (the recurring
  * "composition root" class). So this journey drives the WHOLE loop in a
- * browser and asserts the two things a broken loop cannot produce: answer
- * CONTROLS on the pause card, and a stored FINAL answer that quotes what was
- * answered.
+ * browser and asserts the three things a broken loop cannot produce: answer
+ * CONTROLS on the pause card, a stored FINAL answer that quotes what was
+ * answered, and a conversation that can still be SENT TO afterwards.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY THE ASSERTIONS ARE SHAPED THIS WAY
@@ -40,7 +40,11 @@
  *    option. The mock's continuation script echoes the substituted tool result
  *    (`MOCK: resumed User answered: …`), so "Staging" in the stored row proves
  *    the answer reached the MODEL — not merely that the route accepted a body.
- *    An answer that never reached it would still store a second reply.
+ *    An answer that never reached it would still store a second reply;
+ *  - the FOLLOW-UP turn is sent at the moment the composer is released, before
+ *    anything is read back. Section 7 carries why that order is the assertion
+ *    and not an accident: waiting for the stored answer first waits for the
+ *    very state whose absence refused the send.
  *
  * WHY IT LIVES HERE: `journeys/**` runs against
  * `docker-compose.e2e-standalone.yml`, which has no runtime plane, no worker
@@ -58,7 +62,8 @@
  * the continuation is still streaming, and the first draft polled only for
  * the resumed marker (first chunk) before reading the transcript once — so
  * it sampled a half-written row and reported the answer missing, locally
- * and in CI. The poll now uses the ANSWER text as its settle signal.
+ * and in CI. Both stored reads now happen at the END, after the follow-up
+ * turn has been answered, so nothing is sampled mid-write.
  */
 import { expect, test } from '@playwright/test';
 
@@ -273,44 +278,105 @@ test('an ask_user pause renders answerable controls, and the answer finishes the
     'the answer must reach the route as a structured value, not as an encoded string',
   ).toEqual({ environment: OPTION_LABEL });
 
-  // ── 7. The run finishes ON the answer ──────────────────────────────────
-  // The mock's continuation script quotes the substituted tool result, so the
-  // stored reply proves the answer reached the MODEL. `expectStoredAssistantAnswer`
-  // reads the NEWEST assistant row and rules out the `is_error` card a refused
-  // turn would leave in the same place.
-  // The poll's `contains` is the ANSWER, not just the resumed marker: the
-  // stored row is readable while the continuation is still streaming, and
-  // the marker arrives in the first chunk — polling for it and then reading
-  // the transcript once sampled a half-written row ("MOCK: resumed \"User ")
-  // and reported the answer missing (measured, both locally and in CI). The
-  // answer text lands in a later chunk of the same message, so it is the
-  // settle signal AND the assertion in one.
+  // ── 7. The composer is released — and the NEXT turn must be admitted ───
+  //
+  // A released composer is not proof the conversation is alive. A conversation
+  // that can never be sent to again satisfies every assertion above and every
+  // assertion below: the card is gone, the answer is stored, the input is
+  // editable. The refusal lands on the NEXT send, which nothing here used to
+  // make — so the approve leg of `chat.toolkit-hitl.spec.ts` had to open a
+  // second conversation to get past it.
+  //
+  // Measured before the fix (3/3 against this stack): the start POST answered
+  // 422 `unsupported_agent_execution`, while a second turn after an ORDINARY
+  // turn answered 200 (`chat.multiturn.spec.ts`). The overlap gate refuses
+  // while the conversation holds a response marked as being written, and the
+  // start path's settle wait (`resolveAfterCurrentResponseSettles`,
+  // services/elitea-main/internal/infra/db/repos/agent_start.go) threw away the
+  // settle report it was waiting for: when the resume's terminal write landed
+  // between the resolve and the probe, it answered with the pre-settle
+  // refusal. A resumed run's `pipeline_finish` and its terminal write are
+  // milliseconds apart, so the composer is released essentially AT that write
+  // and the next send lands on it.
+  //
+  // ORDER IS THE DISCRIMINATOR HERE, and it is why the stored-answer poll now
+  // runs AFTER this send rather than before it. That poll waits for the
+  // resumed answer to be durable — which is exactly the state whose absence
+  // produced the refusal — so a spec that asserts the answer first can never
+  // reach the window. Send at the moment the product invites it.
+  const composer = page.getByTestId('chat-message-input');
+  await expect(
+    composer,
+    'the composer must be released once the answered run ends',
+  ).toBeEditable({ timeout: 90_000 });
+
+  const followUpToken = `hitl${Date.now().toString(36)}${Math.floor(Math.random() * 46_656).toString(36)}`;
+  const followUpStarted = page.waitForResponse(
+    (r) => START_RE.test(r.url()) && r.request().method() === 'POST',
+    { timeout: 60_000 },
+  );
+  await composer.fill(`autotest echo exactly: ${followUpToken}`);
+  await expect(page.getByTestId('chat-send-button')).toBeEnabled({ timeout: 10_000 });
+  await page.getByTestId('chat-send-button').click();
+
+  // The STATUS, read from the route. A refused send leaves the typed text in
+  // the composer and paints nothing, which on screen is indistinguishable from
+  // one still in flight; and the 422 is stored nowhere, so a transcript
+  // assertion alone would report "no third row yet" and time out on the wrong
+  // thing.
+  const followUpResponse = await followUpStarted;
+  expect(
+    followUpResponse.status(),
+    'the turn AFTER an answered clarification was refused — the conversation is dead once it has been resumed: ' +
+      `${(await followUpResponse.text()).slice(0, 300)}`,
+  ).toBe(200);
+  expect(
+    new URL(followUpResponse.url()).pathname.split('/').pop(),
+    'the follow-up must be started against the conversation the clarification was answered in',
+  ).toBe(conversation.uuid ?? '');
+
+  // ── 8. Both answers, read from the store ───────────────────────────────
+  //
+  // Admitted is not answered. The newest assistant row must quote THIS
+  // question's token, so a follow-up that started and then died fails here
+  // rather than passing on the resumed answer already in the transcript.
   await expectStoredAssistantAnswer(page, projectId, conversationId, {
     timeout: 150_000,
-    message:
-      'the resume was accepted but no reply quoting the answer was ever ' +
-      'stored — the continuation reached the route and not the runtime, or ' +
-      'the answer never reached the model',
-    contains: OPTION_LABEL,
+    message: 'the follow-up turn was admitted but never answered',
+    contains: followUpToken,
   });
 
+  // Polled for the COUNT as well: the pair is written by two statements and a
+  // read that lands between them sees three rows, which would read as "a
+  // message was lost".
+  await expect
+    .poll(async () => (await readStoredTranscript(page, projectId, conversationId)).length, {
+      timeout: 30_000,
+      message: 'the conversation must hold the answered clarification AND the follow-up pair',
+    })
+    .toBe(4);
+
   const transcript = await readStoredTranscript(page, projectId, conversationId);
-  const finalAnswer = transcript.filter((row) => row.role === 'assistant').at(-1);
   expect(
-    finalAnswer?.content ?? '',
-    'the LAST assistant row must be the one quoting the answer — a second, unanswered row after it would mean the resume forked the turn',
+    transcript.map((row) => row.role),
+    'the transcript must read question, answer, question, answer',
+  ).toEqual(['user', 'assistant', 'user', 'assistant']);
+  // The mock's continuation script quotes the substituted tool result
+  // (`MOCK: resumed "User answered: …"`), so "Staging" in the stored row proves
+  // the answer reached the MODEL — not merely that the route accepted a body.
+  // An answer that never reached it would still store a second reply.
+  expect(
+    transcript[1]?.content ?? '',
+    'the reply to the clarification must quote the answered option — the continuation reached the route and not the runtime, or the answer never reached the model',
   ).toContain(OPTION_LABEL);
+  expect(
+    transcript[3]?.content ?? '',
+    'the follow-up answer must answer the FOLLOW-UP question, not repeat the resumed one',
+  ).toContain(followUpToken);
   expect(
     transcript.filter((row) => row.isError).map((row) => row.content.slice(0, 200)),
     'no row may be flagged is_error — a refused turn is stored as an assistant row and renders like an answer',
   ).toEqual([]);
-
-  // The composer must be usable again: a pause the app never released leaves
-  // the conversation dead for the rest of the session.
-  await expect(
-    page.getByTestId('chat-message-input'),
-    'the composer must be released once the answered run ends',
-  ).toBeEditable({ timeout: 90_000 });
 
   // Cleanup is best-effort and deliberately last: a failure above should leave
   // the agent in place for inspection.

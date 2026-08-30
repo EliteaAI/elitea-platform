@@ -75,7 +75,14 @@ SELECT j.resource_project_id,
                'agent.execute.application.v1',
                'agent.execute.adhoc.v1'
            ) THEN 'user'
-       END AS initiator
+       END AS initiator,
+       -- The claimed AGENT execution's own conversation
+       -- (chat_conversations.uuid). COALESCE, not a required column: an index
+       -- ingest claim legitimately joins no agent row, and this same query
+       -- serves both capabilities. A route that authorizes on the conversation
+       -- must therefore require it rather than assume it is populated -- see
+       -- RuntimeContextAuthorization.ConversationID.
+       COALESCE(a.client_stream_id, '') AS conversation_id
 FROM elitea_runtime.execution_claims AS c
 JOIN elitea_runtime.execution_jobs AS j
   ON j.execution_id = c.execution_id AND j.generation = c.generation
@@ -122,6 +129,7 @@ WHERE c.claim_id = $1
 		&authorization.ResourceProjectID,
 		&authorization.ActorID,
 		&authorization.Initiator,
+		&authorization.ConversationID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RuntimeContextAuthorization{}, ErrContentUnauthorized

@@ -8,6 +8,7 @@ import type { Conversation } from '@/entities/conversation';
 import { pinEntity, unpinEntity } from '@/shared/api/generated/social/social';
 
 import type { DateGroupListItem, FolderListItem } from './conversationListState.types';
+import { useLatestRef } from './useLatestRef';
 
 function removeFromDateGroups(setDateGroups: Dispatch<SetStateAction<readonly DateGroupListItem[]>>, conversationId: string): void {
   setDateGroups((prev) =>
@@ -76,7 +77,16 @@ function applyPinState(
   }
 }
 
-/** Keeps `activeConversation`'s own `isPinned` flag in sync with the pinned conversation, when it IS the active one — extracted purely to keep `onPinConversation` under the §3.5 complexity budget. */
+/**
+ * Keeps `activeConversation`'s own `isPinned` flag in sync with the pinned
+ * conversation, when it IS the active one — extracted purely to keep
+ * `onPinConversation` under the §3.5 complexity budget.
+ *
+ * `activeConversation` is passed per CALL (both call sites read
+ * `activeConversationRef.current` at the moment they run) rather than captured
+ * once, and the updater re-checks the id itself, so the write can never land on
+ * a conversation the user selected while the request was in flight.
+ */
 function syncActiveConversationPin(
   activeConversation: Conversation | undefined,
   conversationId: string,
@@ -84,7 +94,7 @@ function syncActiveConversationPin(
   setActiveConversation: Dispatch<SetStateAction<Conversation | undefined>>,
 ): void {
   if (activeConversation?.id !== conversationId) return;
-  setActiveConversation((prev) => (prev === undefined ? prev : { ...prev, isPinned }));
+  setActiveConversation((prev) => (prev === undefined || prev.id !== conversationId ? prev : { ...prev, isPinned }));
 }
 
 export interface UsePinConversationParams {
@@ -151,6 +161,31 @@ export function usePinConversation(params: UsePinConversationParams): UsePinConv
   const { projectId, activeConversation, setActiveConversation, setPinnedConversations, setDateGroups, setFolders, toastError } = params;
   const { mutateAsync: togglePin } = useTogglePinConversation(projectId);
 
+  /**
+   * "Is the conversation I am pinning the one that is OPEN?" is a question
+   * answered when the row's pin button is CLICKED — and again when the request
+   * comes back — never when this callback was built. Read live, exactly the way
+   * `processes/chat/model/useConversationSidebar.ts`'s own
+   * `deleteConversation`/`renameConversation` read `activeConversationRef`
+   * (that module's ref doc block is the contract this follows).
+   *
+   * The captured value was wrong two different ways. (1) WITHIN one invocation:
+   * the rollback below runs AFTER `await togglePin`, so a user who switched
+   * conversations during the request had the failed pin's `isPinned` written
+   * onto whatever they switched TO — the guard compared the id of the
+   * conversation that WAS open, then the updater patched whatever is open now.
+   * (2) ACROSS renders: `onPinConversation` reaches a memoised
+   * `ConversationItem` through `useRenderConversationItem`'s `useCallback([])`
+   * render prop, so a row rendered before its conversation was selected keeps a
+   * closure whose `activeConversation` is `undefined`, and pinning the OPEN
+   * conversation from that row left the open transcript's own pin state behind.
+   *
+   * Reading the ref also takes `activeConversation` out of the dependency array
+   * below, so this handler's identity stops churning on every selection — which
+   * is what let a memoised row hold a pre-selection closure in the first place.
+   */
+  const activeConversationRef = useLatestRef(activeConversation);
+
   const onPinConversation = useCallback(
     async (conversation: Conversation, shouldPin: boolean): Promise<void> => {
       // `exactOptionalPropertyTypes` forbids `isPinned: undefined` directly (an optional property
@@ -158,17 +193,19 @@ export function usePinConversation(params: UsePinConversationParams): UsePinConv
       const { isPinned: _droppedIsPinned, ...unpinnedConversation }: Conversation = conversation;
 
       applyPinState(shouldPin, conversation, unpinnedConversation, setPinnedConversations, setDateGroups, setFolders);
-      syncActiveConversationPin(activeConversation, conversation.id, shouldPin, setActiveConversation);
+      syncActiveConversationPin(activeConversationRef.current, conversation.id, shouldPin, setActiveConversation);
 
       try {
         await togglePin({ entityId: conversation.id, shouldPin });
       } catch {
         applyPinState(!shouldPin, conversation, unpinnedConversation, setPinnedConversations, setDateGroups, setFolders);
-        syncActiveConversationPin(activeConversation, conversation.id, !shouldPin, setActiveConversation);
+        // Re-read: the rollback asks the same question the optimistic apply did,
+        // but a whole request later.
+        syncActiveConversationPin(activeConversationRef.current, conversation.id, !shouldPin, setActiveConversation);
         toastError?.(shouldPin ? 'Failed to pin conversation' : 'Failed to unpin conversation');
       }
     },
-    [activeConversation, setActiveConversation, setPinnedConversations, setDateGroups, setFolders, togglePin, toastError],
+    [activeConversationRef, setActiveConversation, setPinnedConversations, setDateGroups, setFolders, togglePin, toastError],
   );
 
   return { onPinConversation };

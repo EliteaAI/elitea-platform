@@ -270,6 +270,35 @@ func (h *Handler) writeAttachmentBytes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// THE CONVERSATION UUID, NOT ITS NUMERIC ID — and refused here rather than
+	// stored wrong.
+	//
+	// finalizeAttachment keys every object `{this parameter}/{filename}`, and
+	// that key is an AUTHORISATION boundary, not a filing convention: admission
+	// refuses any attachment reference whose name is not prefixed by the
+	// conversation's UUID (internal/application/agentexecution/attachments.go,
+	// currentTurnAttachments — "this file was uploaded to this conversation").
+	// So an object keyed by the numeric id can never ride a turn. Before this
+	// guard the mismatch was silent and expensive: the upload answered 201 with
+	// a filepath, the very next start was refused 400 BEFORE admissions.Submit
+	// ran, and the user lost the question while the bytes sat in the bucket
+	// until retention expired them (the composer really did this — see
+	// resolveUploadConversationId in
+	// apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.helpers.ts).
+	//
+	// A DECIMAL INTEGER IS THE WHOLE TEST, deliberately, rather than "must
+	// parse as a UUID". This route is the only writer of these keys but it is
+	// not the only reader of the parameter — DeleteAttachments derives a key
+	// PREFIX from the same value — and a stricter shape check here would refuse
+	// identifiers that are wrong in some other way with a message about UUIDs
+	// that may not be true. A numeric id is the one wrong value a client
+	// plausibly holds and sends, because it is the identifier every sibling
+	// conversation route accepts.
+	if _, numeric := strconv.ParseUint(conversationID, 10, 64); numeric == nil {
+		apierr.Write(w, apierr.BadRequest("conversation id must be the conversation uuid: a chat attachment is stored as {conversationUUID}/{filename}, and an object keyed by the numeric id cannot be attached to a message"))
+		return
+	}
+
 	// A single request body can carry at most one chunk (bounded at
 	// attachmentMaxChunkBytes) or one whole non-chunked file (bounded at
 	// attachmentMaxFileBytes) — the larger of the two, plus slack for
@@ -467,7 +496,11 @@ func (h *Handler) finalizeAttachment(w http.ResponseWriter, ctx context.Context,
 
 	// Legacy prefixes the stored filename with the conversation's UUID
 	// (f"{conversation.uuid}/{sanitized_filename}"); conversationID here is
-	// already that identifier — chi.URLParam, not a database lookup.
+	// already that identifier — chi.URLParam, not a database lookup — because
+	// writeAttachmentBytes refuses a numeric conversation id outright before
+	// reaching this point. That guard is what makes this sentence true; without
+	// it the claim was merely a hope about the caller, and the composer's own
+	// upload disproved it.
 	key := conversationID + "/" + sanitizeAttachmentFilename(fileName)
 	ref, err := storage.NewObjectRef(projectIDStr, bucketName, key)
 	if err != nil {
