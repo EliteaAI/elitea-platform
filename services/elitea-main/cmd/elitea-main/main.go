@@ -269,6 +269,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var authReadiness health.Checker
 	var principalValidator apimw.PrincipalValidator
 	var forwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
+	// firstLoginPolicy travels OUT of the authEnabled block below, because the
+	// plane that consumes it is composed further down. `initial_global_admins`
+	// used to reach only the browserauth plane, and internal/api/
+	// production_router.go does not mount that plane when single sign-on is
+	// configured, so an SSO-only deployment had no way to name its first
+	// administrator except an INSERT into auth_core__user_role.
+	var firstLoginPolicy v2auth.FirstLoginPolicy
 	authConfigPath, authEnabled, err := configuredAuthConfigPath(os.LookupEnv)
 	if err != nil {
 		return err
@@ -280,6 +287,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		authConfig, loadErr := authcomposition.Load(authConfigPath)
 		if loadErr != nil {
 			return fmt.Errorf("load production Form authentication: %w", loadErr)
+		}
+		// The document is the PRIMARY source, so the list has one meaning on
+		// whichever browser plane ends up mounted.
+		firstLoginPolicy = v2auth.FirstLoginPolicy{
+			InitialGlobalAdmins: authConfig.Identity.InitialGlobalAdmins,
 		}
 		formGraph, err = authcomposition.NewFormGraph(ctx, authConfig, authcomposition.FormGraphDependencies{
 			PostgreSQL:           pool,
@@ -469,13 +481,26 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if appSecretKey == "" {
 			return errors.New("APPLICATION_SECRET_KEY is required when single sign-on is configured")
 		}
+		// A single-sign-on-only deployment has no authentication configuration
+		// document at all, and it is exactly the shape that cannot make an
+		// administrator any other way. Fall back to the environment there, and
+		// only there, so the document stays the single source when it exists.
+		if len(firstLoginPolicy.InitialGlobalAdmins) == 0 {
+			firstLoginPolicy.InitialGlobalAdmins = v2auth.InitialGlobalAdminsFromEnv()
+		}
+		if len(firstLoginPolicy.InitialGlobalAdmins) != 0 {
+			logger.Info("initial global administrators configured for the single sign-on plane",
+				"count", len(firstLoginPolicy.InitialGlobalAdmins))
+		}
 		oidcSessionHandler = v2auth.NewSessionHandler(pool, appSecretKey)
 		oidcOIDCHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, appSecretKey)
 		if err != nil {
 			return fmt.Errorf("initialize OIDC handler: %w", err)
 		}
 		vault := v2secrets.NewHandler(pool)
-		oidcOIDCHandler = oidcOIDCHandler.WithProviderStore(identityProviderStore, vault)
+		oidcOIDCHandler = oidcOIDCHandler.
+			WithProviderStore(identityProviderStore, vault).
+			WithFirstLoginPolicy(firstLoginPolicy)
 		switch {
 		case storedOIDCProvider:
 			logger.Info("OIDC authentication enabled from an authored identity provider")
@@ -493,7 +518,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		oidcSAMLHandler = v2auth.NewSAMLHandler(
 			pool, appSecretKey, identityProviderStore, vault,
 			os.Getenv("COOKIE_SECURE") != "false",
-		)
+		).WithFirstLoginPolicy(firstLoginPolicy)
 		if storedSAMLProvider {
 			logger.Info("SAML authentication enabled from an authored identity provider")
 		}

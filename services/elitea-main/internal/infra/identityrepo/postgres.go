@@ -174,12 +174,36 @@ func applyInitialAdministrationRole(
 	userID int32,
 	command identity.ProvisionCommand,
 ) error {
-	if command.InitialAdministrationMode == "" || command.InitialAdministrationRole == "" {
+	return ApplyInitialAdministrationRole(
+		ctx, queries, userID,
+		command.InitialAdministrationMode, command.InitialAdministrationRole,
+	)
+}
+
+// ApplyInitialAdministrationRole is the single implementation of the
+// `initial_global_admins` grant, shared by the two provisioning planes.
+//
+// It is exported for internal/api/v2/auth, the browser plane that is mounted
+// when single sign-on is configured and that provisions through its own
+// transaction. Duplicating this there would give "who is an initial admin" two
+// definitions, and the second one would drift.
+//
+// The grant is idempotent and one-shot per user: a user who ALREADY holds any
+// role in the administration mode is left exactly as the operator left them, so
+// a demotion is never silently undone by the next login.
+func ApplyInitialAdministrationRole(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	userID int32,
+	mode string,
+	role string,
+) error {
+	if mode == "" || role == "" {
 		return nil
 	}
 	count, err := queries.CountAuthUserRolesInMode(ctx, sqlcgen.CountAuthUserRolesInModeParams{
 		UserID: userID,
-		Mode:   command.InitialAdministrationMode,
+		Mode:   mode,
 	})
 	if err != nil {
 		return fmt.Errorf("identityrepo: count administration roles: %w", err)
@@ -189,8 +213,8 @@ func applyInitialAdministrationRole(
 	}
 	assigned, err := queries.AssignAuthUserRoleByNameAndMode(ctx, sqlcgen.AssignAuthUserRoleByNameAndModeParams{
 		UserID:   userID,
-		RoleName: command.InitialAdministrationRole,
-		Mode:     command.InitialAdministrationMode,
+		RoleName: role,
+		Mode:     mode,
 	})
 	if err != nil {
 		return fmt.Errorf("identityrepo: assign initial administration role: %w", err)

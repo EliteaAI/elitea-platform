@@ -639,6 +639,30 @@ main:
     # Turn it on when your provider always sends the claim.
     OIDC_REQUIRE_EMAIL_VERIFIED: ""
 
+    # --- The first administrator, on a single-sign-on-only deployment -----------
+    # Comma-separated provider references that are granted the administration
+    # super_admin role the first time they sign in
+    # (internal/api/v2/auth/first_login.go).
+    #
+    # This is the ENVIRONMENT fallback. A deployment that carries an
+    # authentication configuration document (ELITEA_AUTH_CONFIG_FILE) states the
+    # same list as `identity.initial_global_admins` there, and that document
+    # wins — one list, one meaning, whichever browser plane ends up mounted.
+    # This variable exists because an SSO-only deployment has no such document,
+    # and it is exactly the shape that otherwise has no way to name its first
+    # administrator except an INSERT into auth_core__user_role.
+    #
+    # An entry is the provider reference, NOT the email address: the OIDC
+    # subject (`sub`) or the SAML NameID. Either spelling of it is accepted —
+    # bare (`8f3c...`) or namespaced as stored (`oidc:8f3c...`, `saml:...`).
+    # The address is deliberately not matched, because an identity provider that
+    # can assert an address would then be able to assert its way into the role.
+    #
+    # The grant is one-shot per account: someone who already holds any
+    # administration-mode role is left as the operator left them, so a demotion
+    # is never undone by the next login. Empty grants nobody.
+    ELITEA_INITIAL_GLOBAL_ADMINS: ""
+
     # Filesystem path to a custom brand pack directory (internal/api/router.go);
     # empty serves the built-in default brand pack. Discovered unwired while
     # empirically verifying S17's env-drift gate — not itself a storage

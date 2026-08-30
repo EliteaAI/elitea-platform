@@ -109,6 +109,10 @@ type SAMLHandler struct {
 	secretKey     string
 	secureCookies bool
 
+	// firstLogin carries the same operator configuration the OIDC handler
+	// holds, for the same reason: both planes provision, so both must apply it.
+	firstLogin FirstLoginPolicy
+
 	providers    IdentityProviderSource
 	secretSource IdentitySecretSource
 
@@ -514,14 +518,30 @@ func (h *SAMLHandler) provisionUser(ctx context.Context, nameID, email, name str
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	userID, err := resolveProvisionedUser(ctx, tx, SAMLProviderRefPrefix+nameID, email, name, nil, false)
+	providerRef := SAMLProviderRefPrefix + nameID
+	userID, err := resolveProvisionedUser(ctx, tx, providerRef, email, name, nil, false)
 	if err != nil {
+		return "", err
+	}
+	if err := applyFirstLoginGrants(ctx, tx, userID, providerRef, h.firstLogin); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	return strconv.Itoa(userID), nil
+}
+
+// WithFirstLoginPolicy applies the deployment's initial-administrator list to
+// this handler. See first_login.go.
+func (h *SAMLHandler) WithFirstLoginPolicy(policy FirstLoginPolicy) *SAMLHandler {
+	if h == nil {
+		return h
+	}
+	h.firstLogin = FirstLoginPolicy{
+		InitialGlobalAdmins: append([]string(nil), policy.InitialGlobalAdmins...),
+	}
+	return h
 }
 
 // writeProvisioningFailure maps the resolution's outcomes to responses, in the

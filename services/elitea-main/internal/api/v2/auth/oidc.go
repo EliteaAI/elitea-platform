@@ -60,6 +60,12 @@ type OIDCHandler struct {
 	secretKey     string
 	secureCookies bool
 
+	// firstLogin is operator configuration applied after an assertion resolves
+	// to an account. Empty unless WithFirstLoginPolicy was applied, in which
+	// case this plane grants no initial administrator; an actor personal
+	// access token is still issued, because that one is not a policy.
+	firstLogin FirstLoginPolicy
+
 	// providers and secretSource are the authored store. Both nil unless
 	// WithProviderStore was applied, in which case only envRuntime is used.
 	providers    IdentityProviderSource
@@ -486,11 +492,26 @@ func (h *OIDCHandler) provisionUser(
 	if err != nil {
 		return "", err
 	}
+	if err := applyFirstLoginGrants(ctx, tx, userID, providerRef, h.firstLogin); err != nil {
+		return "", err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("commit: %w", err)
 	}
 	return strconv.Itoa(userID), nil
+}
+
+// WithFirstLoginPolicy applies the deployment's initial-administrator list to
+// this handler. See first_login.go.
+func (h *OIDCHandler) WithFirstLoginPolicy(policy FirstLoginPolicy) *OIDCHandler {
+	if h == nil {
+		return h
+	}
+	h.firstLogin = FirstLoginPolicy{
+		InitialGlobalAdmins: append([]string(nil), policy.InitialGlobalAdmins...),
+	}
+	return h
 }
 
 // resolveProvisionedUser is provisionUser inside one transaction. The split
