@@ -71,16 +71,26 @@
  *   - **Voice Features** — unavailable, same shape: `VoiceControlButton` and
  *     `VoiceMiniPlayer` are exported from `features/chat-input` and imported by
  *     nothing, and the button hardcodes both flags as module constants.
+ *   - **Analytics** — live, and the seventh section, not one of the reference's
+ *     six. It arrived by MOVING here rather than by closing a gap: it used to
+ *     be a field (`analytics_enabled`) on Configuration's withheld
+ *     `observability` section, which this platform removed rather than ported
+ *     (see `config_schemas.go`'s "Observability, Runtime and Admin Panel are
+ *     GONE too" note) because none of that section's OTHER fields had anywhere
+ *     to go. This one did: it is an ordinary `centry.platform_config` flag,
+ *     read into `GET /elitea_core/platform_settings/…` as `analytics_enabled`
+ *     and enforced server-side on every `/analytics*` route by
+ *     `internal/api/router.go`'s `requireAnalyticsEnabled`.
  *
  * Rendering the one section that is still withheld as a live switch is the
  * failure this unit exists to remove. A feature flag nothing reads is its purest
  * form: unlike an empty table, it leaves the operator believing a platform-wide
  * switch was thrown.
  *
- * FIVE OF THE SIX ARE NOW LIVE, which is worth noting because this page began as
- * the opposite: three of six were withheld, and the count has only ever gone one
- * way. Availability is still declared by the SERVER and rendered here; nothing
- * on this page decides it.
+ * SIX OF THE SEVEN ARE NOW LIVE, which is worth noting because this page began
+ * as the opposite: three of the reference's six were withheld, and the count
+ * has only ever gone one way. Availability is still declared by the SERVER and
+ * rendered here; nothing on this page decides it.
  *
  * ## Authorisation
  *

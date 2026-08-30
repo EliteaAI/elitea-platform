@@ -880,6 +880,34 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		return apimw.RequireResolvedPermissions(
 			coreResolver, platformauth.PermissionModeDefault, permission)
 	}
+	// requireAnalyticsEnabled gates the `/analytics*` HTTP surface on the same
+	// `analytics_enabled` platform_config flag the admin Features page's
+	// Analytics section writes (config_schemas.go's analyticsSection) and
+	// GET /elitea_core/platform_settings/… reads for the Settings > Analytics
+	// tab (eliteacore/platform_flags.go's analyticsFlags).
+	//
+	// This is the server-side half of that switch, in the shape of
+	// eliteacore's requireMCPEnabled: hiding the tab alone would leave every
+	// one of these routes open to a client that kept a URL and never asked the
+	// UI. A load error is read as ENABLED, the same permissive direction every
+	// other flag read in platformconfig takes — a database hiccup here must
+	// not silently take Analytics offline for every deployment.
+	requireAnalyticsEnabled := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			values, err := platformconfig.Load(r.Context(), cfg.Pool, platformconfig.SectionAnalytics)
+			enabled := true
+			if err == nil {
+				enabled = values.Bool(platformconfig.KeyAnalyticsEnabled, true)
+			}
+			if !enabled {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"Analytics is disabled on this deployment"}`))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 	// The configurations handler, built ONCE and mounted twice: on
 	// /api/v2/configurations for the project-scoped compatibility surface, and
 	// on /api/v2/admin/gateway/providers for the platform-wide provider surface
@@ -2297,13 +2325,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				if cfg.AnalyticsRepo != nil {
 					analyticsHandler := v2analytics.NewHandler(cfg.AnalyticsRepo)
 					requireAnalyticsView := projectPermission(v2analytics.ViewPermission)
-					r.With(requireAnalyticsView).Get("/analytics/prompt_lib/{projectID}", analyticsHandler.Usage)
-					r.With(requireAnalyticsView).Get("/analytics_agents/prompt_lib/{projectID}", analyticsHandler.Agents)
-					r.With(requireAnalyticsView).Get("/analytics_agent_detail/prompt_lib/{projectID}", analyticsHandler.Agents)
-					r.With(requireAnalyticsView).Get("/analytics_tools/prompt_lib/{projectID}", analyticsHandler.Tools)
-					r.With(requireAnalyticsView).Get("/analytics_tool_detail/prompt_lib/{projectID}", analyticsHandler.Tools)
-					r.With(requireAnalyticsView).Get("/analytics_users/prompt_lib/{projectID}", analyticsHandler.Users)
-					r.With(requireAnalyticsView).Get("/analytics_user_detail/prompt_lib/{projectID}", analyticsHandler.Users)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics/prompt_lib/{projectID}", analyticsHandler.Usage)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics_agents/prompt_lib/{projectID}", analyticsHandler.Agents)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics_agent_detail/prompt_lib/{projectID}", analyticsHandler.Agents)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics_tools/prompt_lib/{projectID}", analyticsHandler.Tools)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics_tool_detail/prompt_lib/{projectID}", analyticsHandler.Tools)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics_users/prompt_lib/{projectID}", analyticsHandler.Users)
+					r.With(requireAnalyticsView, requireAnalyticsEnabled).Get("/analytics_user_detail/prompt_lib/{projectID}", analyticsHandler.Users)
 				}
 
 				// The eighth analytics endpoint (issue 253), and the only one
@@ -2327,7 +2355,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// on a Go-bootstrapped database is seeded by
 				// migrations/shared/0063_trace_and_cost_read_permissions.sql.
 				costsHandler := v2analytics.NewCostsHandler(cfg.Pool)
-				r.With(projectPermission(v2analytics.ViewPermission)).
+				r.With(projectPermission(v2analytics.ViewPermission), requireAnalyticsEnabled).
 					Get("/analytics_costs/prompt_lib/{projectID}", costsHandler.Costs)
 
 				// Chat execution-step traces (issue 253) — the pin strip under

@@ -519,8 +519,13 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 		// Pylon plugin loading, which the target architecture drops on purpose,
 		// so there was never going to be a consumer; a section withheld forever
 		// is a promise that cannot be kept.
-		"mcp_servers", "observability", "llm_proxy", "runtime",
-		"admin_panel", "auth",
+		//
+		// `observability`, `runtime` and `admin_panel` are gone from this list
+		// for the same reason `advanced` is: they were REMOVED, not ported. See
+		// config_schemas.go's "Observability, Runtime and Admin Panel are GONE
+		// too" note. The one field worth keeping — `analytics_enabled` — moved
+		// to the Features page instead and is covered by the Features suite.
+		"mcp_servers", "llm_proxy", "auth",
 	} {
 		target := "/admin/plugin_config_values/administration/" + section
 		read := configDo(t, router, http.MethodGet, target, nil)
@@ -702,12 +707,20 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	                    are echoed to it by GET /support_assistant/config.
 	//	                    Rendered by apps/elitea-web widgets/support-assistant,
 	//	                    which widgets/app-shell mounts
+	//	analytics         → eliteacore PlatformSettings (analytics_enabled),
+	//	                    read by apps/elitea-web's Settings page to hide its
+	//	                    Analytics tab, AND enforced server-side by
+	//	                    internal/api/router.go's requireAnalyticsEnabled on
+	//	                    every `/analytics*` route. Ported off the withheld
+	//	                    `observability` section rather than newly written —
+	//	                    see config_schemas.go's "Observability, Runtime and
+	//	                    Admin Panel are GONE too" note.
 	want := map[string]bool{
 		"resources": true, "mcp_configuration": true,
 		"agent_publishing": true, "skill_publishing": true,
 		"voice_features": true, "support_assistant": true,
 		"guardrails": true, "dedicated_banner": true,
-		"maintenance": true,
+		"maintenance": true, "analytics": true,
 	}
 	for id := range want {
 		if !available[id] {
@@ -760,8 +773,16 @@ func TestEverySectionDeclaresWhichPageItBelongsTo(t *testing.T) {
 			t.Errorf("section %q is not on the Features page", id)
 		}
 	}
-	if len(features) != 6 {
-		t.Errorf("Features page has %d sections, want the reference's 6", len(features))
+	// `analytics` is the reference's six PLUS one: it did not exist as a
+	// Features section in the reference at all, and arrives here as a field
+	// ported off the withheld Configuration `observability` section (see
+	// config_schemas.go's "Observability, Runtime and Admin Panel are GONE
+	// too" note), not as something the reference ever offered on this page.
+	if !features["analytics"] {
+		t.Error("analytics is not on the Features page")
+	}
+	if len(features) != 7 {
+		t.Errorf("Features page has %d sections, want the reference's 6 plus analytics (7)", len(features))
 	}
 	// `resources` moving is the entanglement #217 recorded and deferred: it put
 	// the section on Configuration because that is where the server's schema had

@@ -38,6 +38,7 @@ const (
 	SectionDedicatedBanner  = "dedicated_banner"
 	SectionMaintenance      = "maintenance"
 	SectionSupportAssistant = "support_assistant"
+	SectionAnalytics        = "analytics"
 )
 
 // Field keys, for the same reason.
@@ -85,6 +86,15 @@ const (
 	KeySupportWelcomeMessage   = "support_welcome_message"
 	KeySupportAssistantName    = "support_assistant_name"
 	KeySupportPlaceholder      = "support_placeholder"
+
+	// KeyAnalyticsEnabled ported from the withheld `observability` section's
+	// `analytics_enabled` field (config_schemas.go's "Observability, Runtime and
+	// Admin Panel are GONE too" note) — the one field on that section that was
+	// never Pylon-plugin-shaped. It gates both the Settings > Analytics tab
+	// (via PlatformSettings, in eliteacore/platform_flags.go) and the
+	// `/analytics*` HTTP surface (internal/api/router.go's
+	// requireAnalyticsEnabled).
+	KeyAnalyticsEnabled = "analytics_enabled"
 )
 
 // Values is one section's stored rows, decoded. A key ABSENT from the map has
