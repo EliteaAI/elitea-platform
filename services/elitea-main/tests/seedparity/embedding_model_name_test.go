@@ -166,10 +166,47 @@ func TestOnlyOneStatementWritesTheEmbeddingModelName(t *testing.T) {
 	if rows == 0 {
 		t.Fatal("no INSERT seeds the 'standalone-embedding' configuration row; the search found nothing, which is not a clean result")
 	}
+
+	// The writer MOVED. seed-llm no longer writes this row with SQL — it goes
+	// through POST/PUT /api/v2/configurations in seed-llm-api.py — so the SQL
+	// writer count is now legitimately zero, while seed-index's INSERT (which
+	// keeps `data`) still seeds the row.
+	//
+	// The invariant #468 is about is unchanged and still worth pinning: exactly
+	// ONE thing decides the embedding model name. Counting only SQL would let a
+	// second API writer appear unnoticed, and counting only the API would let a
+	// re-added `ON CONFLICT … data =` slip back in. So both mechanisms are
+	// counted, and the total must be one.
+	writers += apiEmbeddingModelWriters(t)
+
 	if writers != 1 {
-		t.Errorf("%d statements overwrite `data` on the 'standalone-embedding' configuration row; "+
-			"the seed step that runs last then decides the embedding model name (#468)", writers)
+		t.Errorf("%d writer(s) decide `data` on the 'standalone-embedding' configuration row "+
+			"(SQL statements plus seed-llm-api.py payloads); the step that runs last then decides "+
+			"the embedding model name (#468)", writers)
 	}
+}
+
+// apiEmbeddingModelWriters counts the payloads in seed-llm-api.py that set the
+// embedding row's `data`. The script is the successor to the retired SQL, so a
+// second writer added there is the same defect #468 named, wearing a different
+// mechanism.
+func apiEmbeddingModelWriters(t *testing.T) int {
+	t.Helper()
+
+	path := filepath.Join(repoRoot(t), "deploy", "scripts", "seed-llm-api.py")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed-llm-api.py: %v; the search found nothing, which is not a clean result", err)
+	}
+
+	// A payload that names the row AND carries the model name under `data`.
+	writer := regexp.MustCompile(`(?s)"elitea_title":\s*"standalone-embedding".{0,400}?"data":\s*\{[^}]*"name"`)
+	found := len(writer.FindAllIndex(source, -1))
+	if found == 0 {
+		t.Fatal("no payload in seed-llm-api.py writes the 'standalone-embedding' row's data.name; " +
+			"the search found nothing, which is not a clean result")
+	}
+	return found
 }
 
 // The toolkit holds the name a second time, in elitea_tools.settings. That copy
