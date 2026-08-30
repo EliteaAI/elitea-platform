@@ -167,9 +167,9 @@ styling overrides) — not features. The gaps that matter are these.
 |---|---|---|---|
 | **Agent Evaluation** — suites, datasets, cases, dimensions, runs, scorecards, human scores, import/promote, platform catalog | `widgets/evaluation/` (61 files, own `evaluationApi.js`) | **absent** | **absent** — 21 endpoints under `elitea_core/eval_*`; grep for `eval_suite|eval_dataset|eval_run|eval_dimension|eval_binding` across `services/` returns **0** |
 | **Shared conversation** — public read-only chat at `/shared/chat/:token` | `pages/shared-conversation/` (4 files) | absent | unverified |
-| **Skill Hub** | `features/skill-hub/` (18 files, own `skillHubApi.js`) | absent (`PublicSkillsCatalog.tsx` is a different surface) | unverified |
+| **Skill Hub** — **mostly ported, and it is the Skills tab of the Catalog, not a separate item.** `PublicSkillsCatalog.tsx:1-21` documents itself as a deliberately reduced port, and the Go backend is registered (`router.go:2208`) | — | present | Residual: the `agents_with_skill` consumer (generated client exists, zero call sites) |
 | **NPS survey** | `widgets/nps-survey/` (18 files, own API) | absent | absent |
-| **Elitea Catalog** (`/elitea-catalog`) — supersedes `agents-hub`, which upstream has deleted | `pages/elitea-catalog/` | still ships the superseded `agents-hub` | n/a |
+| **Elitea Catalog** (`/elitea-catalog`) — **`agents-hub` is NOT deleted**: `features/agent-hub/` is intact (21 files) and `/agents-hub` still mounts a `LegacyCatalogRedirect`. Only the page *shell* is new, and it composes the existing Agents tab with the Skills tab | `EliteaCatalog.jsx:7-8`, `ProtectedRoutes.jsx:194` | **S, not L** — a two-tab shell over two bodies that both already exist, plus a redirect | n/a |
 | **Compare versions**, **indexing report**, **edit-entity-with-AI** | `entities/compare-versions`, `entities/indexing-report`, `entities/edit-entity-with-ai` | absent | unverified |
 
 Agent Evaluation is the largest single item in this document, in either surface,
@@ -192,13 +192,14 @@ documentation mismatch, not a missing feature.
 
 | # | Gap | Evidence | Size |
 |---|---|---|---|
-| E1 | **Chat canvas editor is a shell.** CodeMirror host, Mermaid output, markdown-table editor, undo/redo, quick-fix, presence socket and CSV import are all `TODO` placeholders | `features/chat-messages/ui/canvas/CanvasEditor.tsx` (18 TODOs), `Canvas.tsx` (4), `CanvasEditHeader.tsx` | L |
+| E0c | **No socket server exists, and two features need one.** `internal/api/socketio` was deleted with the prototype indexer transport (#126) and was never mounted; nothing serves canvas rooms or eval-run progress. `shared/api/socket/events.ts:474-596` still cites `socketio/server.go` line numbers as evidence — **stale references to a deleted file**, the same class as the 204 the pin refresh re-anchored | `cmd/elitea-main/main.go:1527-1537` | Blocks canvas presence AND the evaluation live-progress feed. Until it lands, two people editing one canvas silently last-write-wins — say so in the UI rather than shipping a lock that is not there |
+| E1 | **Chat canvas editor is a shell, and is not mounted at all.** `ChatWithEditors.hooks.ts:222-246` supplies `onShowCanvasEditor` as a documented no-op and `canvasEditorRef` as permanently `null`, so filling the 18 TODOs alone ships nothing reachable. Slice 0 is composition; slice 1 is re-adding the imperative ref API that `shared/ui/CodeMirrorEditor` deliberately trimmed CodeMirror host, Mermaid output, markdown-table editor, undo/redo, quick-fix, presence socket and CSV import are all `TODO` placeholders | `features/chat-messages/ui/canvas/CanvasEditor.tsx` (18 TODOs), `Canvas.tsx` (4), `CanvasEditHeader.tsx` | L |
 | E2 | **Playback message list** not rendered | `features/chat-messages/ui/playback/PlaybackChatBox.tsx:307` | M |
-| E3 | **Long-term memory settings** = "Coming soon" placard. NOT an unknown: the baseline ships this at `/settings/memory` (`MemoryLongTermMemory`, `MemorySummarization`, `MemoryContextManagement`) — see [elitea-ui-pin-refresh-decisions.md](elitea-ui-pin-refresh-decisions.md) | `features/settings/ui/profile/ProfileLongTermMemory.tsx:27` | M |
+| ~~E3~~ | **STRUCK — done, at parity.** The baseline's own `MemoryLongTermMemory.jsx:18-27` is *also* a "Coming soon" placard, and its import is **commented out** (`MemoryContextManagement.jsx:13`), so nothing renders it upstream. elitea-web already has the route and both real components. This row was wrong twice: first as "needs a backend", then as "the baseline ships it" | `MemoryFormContent.tsx`, `routes/_shell/settings/memory.tsx:19` | Optional one-liner: stop rendering the placard, to match the baseline |
 | E4 | **Custom skill icons** = "coming soon" tooltip | `features/skills/ui/SkillForm.tsx:86` | S |
 | E5 | **Per-word TTS highlight sync** dropped | `features/chat-messages/ui/chat-box/ApplicationAnswer.tsx:18` | S |
 | E6 | **Default version is invisible after setting it.** NOT a 405 gap: the route, handler (`applications/handler.go:1202`) and hook all exist; the 405 applies only to a legacy request shape deliberately not ported. The real gap is that `Get` emits no `meta.default_version_id` and `getVersions` omits `is_default` | `applications/handler.go:122-160` | S (frontend-led) |
-| E7 | **`/artifacts/edit-bucket`** route missing (referenced by the project switcher, never defined) | `src/routes/$projectId.$.tsx` | S |
+| E7 | **Phantom route.** The baseline declares `EditBucket` but has **zero call sites** and never mounts it; its real edit flow navigates to `/artifacts/create-bucket` with the bucket in state. Waive the route. The genuine gap is that elitea-web has **no bucket-edit affordance at all** | `routes.js:76` vs `ProtectedRoutes.jsx:285`, `Buckets.jsx:118-130` | S |
 | E8 | **Support assistant**: attachments, screenshots and mermaid deliberately not ported | `v2/supportassistant/handler.go:51` | M, optional |
 
 ---

@@ -96,14 +96,22 @@ Context-window matching was tried and **rejected**: it scored
 surrounding lines dominated. Line-only similarity with a distinctiveness guard
 is what the numbers above use.
 
-## Correction this forces on the inventory
+## Correction this forces on the inventory — and the correction to THAT
 
-`unported-features-inventory.md` E3 lists long-term memory as "Coming soon
-placard, needs a backend too". That was measured against elitea-web alone. The
-baseline **ships it** at `/settings/memory`, with three components
-(`MemoryLongTermMemory`, `MemorySummarization`, `MemoryContextManagement`). E3
-is therefore an ordinary port gap with a working reference implementation, not
-an unknown. The inventory has been corrected.
+First pass: E3 (long-term memory) was listed as "Coming soon placard, needs a
+backend too", measured against elitea-web alone. Seeing `/settings/memory` and
+three memory components in the baseline, this document claimed the baseline
+**ships it** and E3 was an ordinary port gap.
+
+**That was also wrong.** The baseline's `MemoryLongTermMemory.jsx:18-27` is
+*itself* a "Coming soon" placard, and its import is commented out at
+`MemoryContextManagement.jsx:13` — nothing renders it upstream either.
+elitea-web already has the route and both real components, so E3 is **done and
+at parity**, and is now struck from the inventory.
+
+The lesson is the one this whole exercise keeps teaching: a file's *existence*
+is not evidence that a feature works, any more than a `NOT PORTED` comment is
+evidence that it doesn't. Both times the fix was to open the file and read it.
 
 ## What lands when the decisions are made
 
