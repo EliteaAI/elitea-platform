@@ -562,8 +562,10 @@ main:
     #
     # OFF is a real gap here, unlike the skills flag above. internal/api/
     # router.go serves this path from the toolkits handler in that case, and
-    # that handler answers a static six-loader list that no data backs. A
-    # client reading document_types gets nothing from it. Turn production
+    # that handler REFUSES: 501 with `code: index_types_not_available`. It used
+    # to answer 200 with a static six-loader list that no data backs, which is
+    # worse than the refusal — a client cannot tell an invented catalogue from
+    # a real one, and nothing on the screen looks broken. Turn production
     # authentication on to close the gap.
     ELITEA_INDEX_TYPES_ENABLED: "false"
 

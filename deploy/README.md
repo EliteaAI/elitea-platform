@@ -211,9 +211,23 @@ authentication, which a default install does not build — the same reason
 Turning the skills flag off again is a safe rollback: `internal/api/router.go`
 serves the same path from the skills handler, with the same rows in the same
 published envelope. Turning the index-types flag off is **not** free. The
-toolkits handler answers that path instead, with a static six-loader list that
-no data backs, and `apps/elitea-ui` reads that as an empty file-type
-allow-list. A default install therefore still ships that gap.
+toolkits handler answers that path instead, and it **refuses** — `501` with
+`{"code": "index_types_not_available"}`. It used to answer `200` with a static
+six-loader list that no data backs; the refusal is the honest form of the same
+gap, because a client can see it, and `501` is classified as final by
+`apps/elitea-web` so the screen does not retry it. A default install therefore
+still ships that gap, but no longer disguises it as an answer.
+
+`ELITEA_PROJECT_INFO_ENABLED` behaves the same way when off: the prototype
+`elitea_core` handler answers `501` with
+`{"code": "project_info_not_available"}` rather than `200` with a null
+`icon_meta` and no `teammates_count`. Project-icon SELECTION is unaffected by
+the flag — the `PUT .../project-info` write and the `project_icon` upload,
+listing and delete are served by the `elitea_core` handler in every install,
+and they now write to and read from the object store and the tenant
+`configuration` row for real. Uploaded project icons need an object store
+(`STORAGE_BACKEND` / `STORAGE_CONTAINER`); without one those three routes
+answer `501` `icon_storage_not_configured`.
 
 ### Why `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` stays off
 

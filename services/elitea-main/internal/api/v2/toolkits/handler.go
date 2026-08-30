@@ -797,48 +797,49 @@ func (h *Handler) IndexMetaGet(w http.ResponseWriter, r *http.Request) {
 // They used to be three one-line stubs here that answered `{"ok":true}`/204
 // without touching the database (#180).
 
+// IndexTypes REFUSES. It is reachable only when ELITEA_INDEX_TYPES_ENABLED is
+// off, which is the default.
+//
+// # WHY THERE IS NOTHING TO SERVE HERE
+//
+// This used to be a six-element slice written by hand — file_loader,
+// web_loader, confluence_loader, github_loader, jira_loader, s3_loader — each
+// with an invented display name, an invented description and an invented
+// `supported_extensions` list. Nothing produced those values: no SDK, no
+// snapshot, no database, no configuration. They were a guess at what the real
+// catalogue might contain, served with a 200 and no marker of any kind.
+//
+// The real catalogue is internal/api/v2/indextypes, which answers from the
+// snapshot pinned out of the SDK
+// (elitea_sdk/runtime/langchain/document_loaders/constants.py, materialized as
+// internal/runtimecomposition/current_index_types_snapshot.json). It is a
+// strict superset in content AND a different shape — document/image/code
+// extension maps rather than a loader list — so the guess was not even a
+// subset a client could safely narrow to.
+//
+// A wrong 200 costs more than a refusal here: the caller uses
+// `supported_extensions` to decide which files may be indexed, so an invented
+// list both hides files this deployment could have handled and offers ones it
+// cannot, with nothing on the screen saying the list came from nowhere.
+//
+// When ELITEA_INDEX_TYPES_ENABLED is on, cmd/elitea-main composes
+// indextypes.CurrentIndexTypesRoute and internal/api/production_router.go
+// registers it at this exact path. chi resolves that explicitly registered
+// path ahead of the nested r.Route registration this handler sits behind, so
+// the real route wins and this function is never reached there.
+//
+// 501 with a machine-readable `code`, not 500, for the reason
+// internal/api/v2/analytics/handler.go:64-78 sets out at length: an absent
+// producer is the server's final answer and will be the final answer to the
+// next identical request too, so a client that treats 5xx as transient doubles
+// every request for nothing. apps/elitea-web/src/app/providers/queryClient.ts
+// classifies 501 as final (`isFinalClientAnswer`) and does not retry it.
 func (h *Handler) IndexTypes(w http.ResponseWriter, _ *http.Request) {
-	items := []map[string]any{
-		{
-			"type":                 "file_loader",
-			"name":                 "File Loader",
-			"description":          "Load documents from uploaded files",
-			"supported_extensions": []string{"pdf", "txt", "docx", "xlsx", "csv", "md", "json", "html", "xml", "pptx"},
-		},
-		{
-			"type":                 "web_loader",
-			"name":                 "Web Loader",
-			"description":          "Load documents from web URLs",
-			"supported_extensions": []string{},
-		},
-		{
-			"type":                 "confluence_loader",
-			"name":                 "Confluence Loader",
-			"description":          "Load documents from Confluence spaces",
-			"supported_extensions": []string{},
-		},
-		{
-			"type":                 "github_loader",
-			"name":                 "GitHub Loader",
-			"description":          "Load documents from GitHub repositories",
-			"supported_extensions": []string{},
-		},
-		{
-			"type":                 "jira_loader",
-			"name":                 "Jira Loader",
-			"description":          "Load documents from Jira projects",
-			"supported_extensions": []string{},
-		},
-		{
-			"type":                 "s3_loader",
-			"name":                 "S3 Loader",
-			"description":          "Load documents from S3 buckets",
-			"supported_extensions": []string{},
-		},
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items,
-		"total": len(items),
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": "index types are not available on this deployment",
+		"code":  "index_types_not_available",
+		"detail": "the index-type catalogue is served by the reviewed index-types " +
+			"route, which this deployment has not enabled (ELITEA_INDEX_TYPES_ENABLED)",
 	})
 }
 

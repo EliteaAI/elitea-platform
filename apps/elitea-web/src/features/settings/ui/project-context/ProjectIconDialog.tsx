@@ -29,11 +29,13 @@ import { ProjectIconItem } from './ProjectIconItem';
 import { UserIconItem } from './UserIconItem';
 import { t } from '@/shared/i18n';
 
+/** Both halves: the name alone stores a row the header cannot draw (it renders `icon_meta.url`). */
+export interface SelectedProjectIcon { name: string; url?: string }
 export interface ProjectIconDialogProps {
   open: boolean;
   onClose: () => void;
-  /** Called when the user selects an icon — passes the icon name (null to reset). */
-  onIconSelect?: (iconName: string | null) => void;
+  /** Called when the user selects an icon — null resets to the letter avatar. */
+  onIconSelect?: (icon: SelectedProjectIcon | null) => void;
   projectId: string;
   selectedIcon?: { name?: string; url?: string } | null;
   projectName: string;
@@ -116,8 +118,8 @@ export function ProjectIconDialog({
 
   /* ── icon selection handler ───────────────────────────────────────── */
   const handleSelectIcon = useCallback(
-    (iconName: string | null) => {
-      onIconSelect?.(iconName);
+    (icon: SelectedProjectIcon | null) => {
+      onIconSelect?.(icon);
       onClose();
     },
     [onIconSelect, onClose],
@@ -217,7 +219,7 @@ function DefaultIconsSection({
   selectedIcon?: { name?: string; url?: string } | null;
   defaultIcons: DefaultIcon[];
   loadingDefault: boolean;
-  onSelectIcon: (name: string | null) => void;
+  onSelectIcon: (icon: SelectedProjectIcon | null) => void;
 }) {
   return (
     <Box>
@@ -235,7 +237,7 @@ function DefaultIconsSection({
             <ProjectIconItem
               key={icon.name}
               isSelected={selectedIcon?.name === icon.name}
-              onClick={() => onSelectIcon(icon.name)}
+              onClick={() => onSelectIcon({ name: icon.name, url: icon.url })}
             >
               <IconPlaceholder name={icon.name} url={icon.url} />
             </ProjectIconItem>
@@ -255,7 +257,7 @@ function UploadedIconsSection({
   uploadedIcons: Array<{ name: string; url?: string }>;
   loadingIcons: boolean;
   selectedIcon?: { name?: string; url?: string } | null;
-  onSelectIcon: (name: string | null) => void;
+  onSelectIcon: (icon: SelectedProjectIcon | null) => void;
   onDeleteIcon: (name: string) => Promise<void>;
 }) {
   return (
@@ -273,7 +275,7 @@ function UploadedIconsSection({
           <UserIconItem
             key={icon.name}
             isSelected={selectedIcon?.name === icon.name}
-            onClick={() => onSelectIcon(icon.name)}
+            onClick={() => onSelectIcon({ name: icon.name, url: icon.url })}
             onDelete={() => { void onDeleteIcon(icon.name); }}
           >
             <IconPlaceholder name={icon.name} url={icon.url} />
