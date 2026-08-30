@@ -37,12 +37,16 @@ hand. This is the highest-value bucket: each row blocks a real deployment.
 
 | # | Gap | Evidence | Why it matters |
 |---|---|---|---|
-| A1 | **Worker identity enrolment.** `elitea_runtime.workload_sessions` has **no writer anywhere in the repository** — not a route, not a migration, not the worker. | `standalone-stack.sh:265-300`; grep for `workload_sessions` finds only readers (`repos/workload_sessions.go`, `postgres_content.go`) and the DDL (`shared/0034`) | Empty table → every `ClaimCommand` is refused → **agent execution is dead on any fresh deploy**, with a failure that mimics a claim-fence wedge |
-| A2 | **First global admin under SSO.** `initial_global_admins` is consumed only by `FormGraph`. | `authcomposition/graph.go:402`, `config.go:145` | With OIDC/SAML as the auth plane there is no way to make the first admin except `INSERT INTO auth_core__user_role` |
+| A1 | ~~No writer anywhere~~ **WRONG.** A writer exists and is default-enabled: `deploy/helm/elitea/templates/worker/runtime-session-job.yaml` (pre-install/PreSync hook, added by #598) derives the SPIFFE id from the cert, upserts, and re-verifies with the same three-column conjunction the verifier uses. **My grep filtered to `.go/.sql/.rs` and could not see shell inside a YAML template.** The real gaps are narrower: the session TTL is 90 days with **no renewer** (only another `helm upgrade`), there is no product write path (no revocation, rotation or second worker without SQL), and the externally-hosted-worker topology `guards.yaml:22-28` blesses has no writer at all | `templates/worker/runtime-session-job.yaml:195`, `values.yaml:1966,1986` | A cluster not upgraded for 90 days goes dark with **the exact signature of never having been provisioned** |
+| A2 | **First global admin under SSO.** Conclusion right, **cause wrong**: OIDC *does* consume `initial_global_admins` — but only on the `browserauth` plane, which `production_router.go:103-105` does **not mount** when OIDC is configured ("OIDC wins the browser prefix"). The plane that IS mounted, `internal/api/v2/auth/`, provisions through `resolveProvisionedUser` and assigns no role at all. Note the ref-shape mismatch: v2/auth writes `oidc:`/`saml:`-prefixed refs, the Form plane matches bare ones | `production_router.go:103-105`, `v2/auth/oidc.go:499-522,593-596` | Every runtime-enabled OIDC deployment lands here, since `main.go:1003` refuses the runtime without production auth |
 | A3 | **LLM credential + model catalogue seeding.** The standalone script writes 8 `p_N.configuration` rows directly. | `standalone-stack.sh:457-601, 738-803` | The admin surfaces exist, but the write path they need is behind `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` (see B1). Without it: *"the requested model is not in the project's catalog"* |
+| A7 | **Project icon selection is a silent no-op, end to end.** `CreateProjectIcon` parses the multipart form, **discards it**, and returns a fabricated URL; `DeleteProjectIcon` returns 204 and does nothing; `UpdateProjectInfo` reads only `body["name"]` while the web client PUTs `{icon_meta}` and gets `{"ok":true}`. No writer for the `project_icon` configuration row exists in the Go stack | `v2/eliteacore/handler.go:3575-3596, 238-249` | A third silent-wrong-data bug, on the WRITE side. Turning `ELITEA_PROJECT_INFO_ENABLED` on does not fix it — `icon_meta` stays null forever |
+| A8 | **A new SSO user cannot complete a chat turn until they personally create a PAT.** `LocalIssuer` "never creates, rotates, or stores a PAT" — it re-signs an existing active one. The only writer is the user-driven `POST /api/v2/auth/token/`. With no row the worker's actor-token issuance fails with a message naming a *database stage* | `authsvc/pat_issuer.go:21-22,43-50`, `v2/auth/tokens.go:174` | Needs no psql, so it is not bucket-A — but it is a first-run cliff with a misleading diagnostic, and it blocks the Wave 1.4 gate |
+| A9 | **The runtime Redis server certificate has the wrong SAN for Kubernetes.** `gen-runtime-certs.sh:135` issues `redis-server` with `DNS:runtime-redis` (the *compose* service name), while the chart's Service is `elitea-runtime-redis` and `values-standalone.yaml` dials that name. `values.yaml:2143-2145` even asserts the Service name is "the only SAN on redis-server.crt" — it is not | `deploy/scripts/gen-runtime-certs.sh:135` | **Following values-standalone.yaml's own instructions produces a TLS handshake failure.** One-line fix plus re-minting |
+| A10 | **`values.yaml:2131` references `scripts/mint-elitea-secrets.sh`, which does not exist.** | `deploy/helm/elitea/values.yaml:2131` | Operators are pointed at a script that was never written |
 | A4 | **Artifact bucket must pre-exist.** elitea-main probes the object store at boot and refuses to start. | `deploy/README.md` "What a Kubernetes install does NOT give you" | The migration Job fails and the release aborts, before anything can create it |
-| A5 | **`CREATE DATABASE` (agent-state) and `CREATE EXTENSION vector`.** | same | Covered by the chart's `db-init` hook Job, but needs an administrator DSN supplied out of band. Compose has no equivalent hook |
-| A6 | **No model-cache pre-seed for `pylon-indexer` on Kubernetes.** compose's `model-cache-init` has no chart equivalent. | `deploy/README.md` | First index run downloads the embedding model inside the pod |
+| A5 | **`CREATE DATABASE` (agent-state) and `CREATE EXTENSION vector`.** Already solved on BOTH stacks — `templates/dbInit/job.yaml` (enabled by default, weight -20) and `docker-compose.standalone-full.yml:287-299`. My "compose has no equivalent hook" was wrong | `values.yaml:116-124` | Residual work is a guard for `worker.enabled` + `dbInit.enabled=false`, size S |
+| ~~A6~~ | **STRUCK.** pylon-indexer is deliberately absent from the chart — index ingest is served by the Go runtime plane through the agent worker. There is no template and no chart for it. `deploy/README.md:449-450` is stale text about the legacy compose file | `values.yaml:38-42` | Nothing to build |
 
 **Not a gap, despite appearing in the seed scripts:** PAT rows
 (`POST /api/v2/auth/token/` + the `/settings/tokens` page are both real —
@@ -133,8 +137,13 @@ only renders it):
 
 Missing admin surfaces (new work, not ports):
 
-- **D1. Workload-session enrolment** — the UI for A1. A page that registers a
-  worker identity (identity, producer id, expiry) and revokes it.
+- **D1. Workload-session enrolment** — the UI for A1's *residual* gap (revocation,
+  rotation, a second worker), not for install-time provisioning, which the chart
+  hook already does. The registrar must be a **separate type** from
+  `WorkloadSessionsRepository`, whose doc comment is a load-bearing statement that
+  the verifier exposes no registration path.
+  (Note: the admin SPA lives at `apps/elitea-web/src/pages/admin/`, not under
+  `services/elitea-main/` as stated earlier in this document.)
 - **D2. First-admin bootstrap** — a one-time claim flow, or chart-driven
   promotion, that works on the OIDC plane (A2).
 
@@ -240,7 +249,7 @@ Sequenced by what unblocks the most. Sizes are rough and per-surface.
 | 2.1 | Make the default chart build production authentication, so B1–B4 can be `true` without a CrashLoopBackOff. | L |
 | 2.2 | Flip `ELITEA_PROJECT_INFO_ENABLED` and `ELITEA_INDEX_TYPES_ENABLED`. Both are pure wins; the prototype fallbacks answer 200 with wrong data today. | S |
 | 2.3 | **B2 cutover:** align `apps/elitea-web`'s configuration-write request shape with the mutation routes, then enable `ELITEA_CONFIGURATIONS_MUTATION_ENABLED`. This is what retires A3. | L |
-| 2.4 | Delete `AUTH_DEV_MODE` (ADR-0017) once 2.1 lands. | S |
+| ~~2.4~~ | **STRUCK — already done.** ADR-0017 landed; the middleware has no bypass. What remains at `cmd/elitea-main/main.go:102-104` is a **removal tripwire** that refuses to start on `AUTH_DEV_MODE=true`, so a stale manifest cannot make an operator believe auth is off. Deleting it would make things *less* safe. Confirm it stays | — |
 
 ### Wave 3 — close the honest refusals
 
