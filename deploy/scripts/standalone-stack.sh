@@ -10,7 +10,13 @@
 #   seed-llm     credential the gateway serves completions with, plus the chat
 #                model and the embedding model. Defaults to the offline mock
 #                (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set.
-#                seed-llm OWNS the embedding model name (#468)
+#                seed-llm OWNS the embedding model name (#468).
+#                It writes every row THROUGH THE PRODUCT API
+#                (deploy/scripts/seed-llm-api.py), so it needs elitea-main up
+#                and ELITEA_CONFIGURATIONS_ENABLED on, not just postgres. Two
+#                database calls survive; both are named in
+#                SEED_LLM_SQL_EXCEPTIONS and the subcommand checks its own
+#                command trace against that list before it exits
 #   seed-index   vector store + an indexable toolkit, so the index-start route
 #                and its SSE stream can be driven (#93). It creates the
 #                embedding model row only when no row exists yet, so it can
@@ -175,6 +181,425 @@ resolve_embedding_model() {
   printf '%s' "$name"
 }
 
+# ─── The SQL exception allowlist, and the assertion that enforces it ─────────
+#
+# `seed-llm` used to be six INSERTs into `p_<id>.configuration`. It is now a
+# sequence of calls to the platform's own configuration write route
+# (deploy/scripts/seed-llm-api.py). Two database reads/writes survive, and both
+# are named here.
+#
+# A script that quietly keeps one psql call while calling itself API-driven is
+# exactly the failure this change exists to remove, so the claim is CHECKED
+# rather than stated: the whole subcommand runs under `set -x`, and
+# `assert_seed_llm_sql_exceptions` reads that command trace back and refuses any
+# line that reached psql without naming an exception on this list.
+#
+# The two exceptions, and what blocks each of them:
+#
+#   seed_llm_writer_identities
+#       Which projects to seed, and WHOSE credential writes into each one.
+#       Blocked on two things at once. (a) The gateway resolves a provider
+#       credential from the CALLER's own personal project (#290), so a project
+#       per user has to be seeded, and only the database knows which users have
+#       one. (b) Writing into user X's personal project needs a token that
+#       BELONGS to user X — a project role, not a global admin — and a PAT is
+#       stored as an opaque uuid that only its owner ever saw. There is no API
+#       that hands an operator another user's token, and there should not be.
+#       Set STANDALONE_API_TOKEN to a real operator token to skip the minting
+#       half of this; the project list still comes from here.
+#
+#   seed_llm_toolkit_embedding_repair
+#       Bringing `p_<id>.elitea_tools.settings->>'embedding_model'` back into
+#       step with the embedding row this step just wrote (#468). Blocked
+#       because the toolkit row is not a configuration: no route in
+#       internal/api/v2 writes elitea_tools.settings, and the index resolver
+#       matches a run on the two names being equal. It runs only where
+#       `seed-index` already created the toolkit.
+#
+# Adding a name here is a deliberate act. Read the two entries above and write
+# down what blocks the new one before you add a third.
+SEED_LLM_SQL_EXCEPTIONS="seed_llm_writer_identities seed_llm_toolkit_embedding_repair"
+
+# db_exception runs ONE allowlisted database call.
+#
+# It is the only place `seed-llm` may reach psql. The `-v elitea_sql_exception`
+# variable is what makes the call attributable in the command trace — psql
+# ignores an unreferenced variable, and the assertion below reads it.
+db_exception() {
+  local exception_name="$1"
+  shift
+  # One traced line per invocation, and exactly one. The DEBUG trap records a
+  # function CALL twice — once as the command, once on entering the function —
+  # so counting the call site would double every call. This no-op is in the
+  # body, so it fires once, and assert_seed_llm_sql_exceptions counts it
+  # against the psql commands that must follow.
+  : db_exception_invocation
+  case " ${SEED_LLM_SQL_EXCEPTIONS} " in
+    *" ${exception_name} "*) ;;
+    *)
+      echo "ERROR: '${exception_name}' is not a named SQL exception." >&2
+      echo "       Named exceptions: ${SEED_LLM_SQL_EXCEPTIONS}" >&2
+      echo "       Write the row through the product API, or add the name to" >&2
+      echo "       SEED_LLM_SQL_EXCEPTIONS with the reason that blocks it." >&2
+      exit 1
+      ;;
+  esac
+  $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+    psql -v elitea_sql_exception="${exception_name}" -U elitea -d elitea "$@"
+}
+
+# assert_seed_llm_sql_exceptions reads a command trace and refuses any database
+# call that is not one of the named exceptions above.
+#
+# THIS ASSERTION IS THE DELIVERABLE, not the green line it prints.
+#
+# HOW THE TRACE IS TAKEN, and why not `set -x`
+# A DEBUG trap with `set -T` (functrace), writing $BASH_COMMAND to a file. Three
+# reasons that beat the obvious `set -x` into a redirected stderr:
+#
+#   1. It cannot be suppressed by a redirection. MEASURED on bash 3.2: bash
+#      prints an xtrace line for a command BEFORE applying its redirections, so
+#      `db_exception … 2>/dev/null` traces the CALL and silently suppresses the
+#      trace of everything inside it — including the psql line this assertion
+#      exists to read. "No offending line" would then read as a pass. A DEBUG
+#      trap fires whatever the command's redirections are.
+#   2. It leaves the operator's stderr alone, so a failing seed still prints its
+#      own error where the operator is looking.
+#   3. $BASH_COMMAND is the command BEFORE expansion, so the trace holds
+#      `--api-key "$TARGET_API_KEY"` and never the key itself.
+#
+# WHAT IT REFUSES
+#   * A trace with no line at all. "No psql found" would be a true statement
+#     about an empty file — the "absence reads as correctness" shape this
+#     repository keeps rediscovering. An empty trace fails.
+#   * Any traced command holding `psql` that does not go through db_exception,
+#     which is the only place the literal `elitea_sql_exception=` appears.
+#   * A `db_exception` call naming something outside the allowlist. db_exception
+#     refuses it at runtime too; this is the second lock, on the trace.
+#   * A mismatch between the number of db_exception calls and the number of psql
+#     commands they produced — one is missing, or one arrived from elsewhere.
+assert_seed_llm_sql_exceptions() {
+  local trace_file="$1" traced_lines offender_count exception_name
+  local call_count psql_count
+  traced_lines="$(grep -c . "$trace_file" || true)"
+  if [ -z "$traced_lines" ] || [ "$traced_lines" -eq 0 ]; then
+    echo "ERROR: the command trace holds no traced command, so this assertion" >&2
+    echo "       measured nothing. Tracing did not start." >&2
+    exit 1
+  fi
+  offender_count=0
+  while IFS= read -r traced; do
+    [ -n "$traced" ] || continue
+    case "$traced" in
+      *elitea_sql_exception=*) continue ;;
+    esac
+    echo "ERROR: seed-llm reached psql outside the named exceptions:" >&2
+    echo "         ${traced}" >&2
+    offender_count=$((offender_count + 1))
+  done <<EOF
+$(grep -F 'psql' "$trace_file" || true)
+EOF
+  while IFS= read -r traced; do
+    [ -n "$traced" ] || continue
+    exception_name="$(printf '%s' "$traced" | awk '{print $2}')"
+    case " ${SEED_LLM_SQL_EXCEPTIONS} " in
+      *" ${exception_name} "*) ;;
+      *)
+        echo "ERROR: seed-llm made a database call under the unlisted name" >&2
+        echo "       '${exception_name}': ${traced}" >&2
+        offender_count=$((offender_count + 1))
+        ;;
+    esac
+  done <<EOF
+$(grep -E '^[[:space:]]*db_exception[[:space:]]' "$trace_file" || true)
+EOF
+  # One db_exception call produces exactly one psql command. The DEBUG trap
+  # records both, so the two counts must agree: a shortfall means a call
+  # reached the database without being recorded, and a surplus means a psql
+  # command arrived from somewhere that is not db_exception.
+  call_count="$(grep -cF ': db_exception_invocation' "$trace_file" || true)"
+  psql_count="$(grep -cF 'elitea_sql_exception=' "$trace_file" || true)"
+  if [ "${call_count:-0}" -ne "${psql_count:-0}" ]; then
+    echo "ERROR: ${call_count} allowlisted database call(s) were traced, and" >&2
+    echo "       ${psql_count} psql command(s) were. The two must agree." >&2
+    offender_count=$((offender_count + 1))
+  fi
+  if [ "$offender_count" -ne 0 ]; then
+    echo "ERROR: ${offender_count} database call(s) bypassed the product API." >&2
+    echo "       seed-llm writes configuration rows through" >&2
+    echo "       deploy/scripts/seed-llm-api.py. Only these names may reach the" >&2
+    echo "       database directly: ${SEED_LLM_SQL_EXCEPTIONS}" >&2
+    exit 1
+  fi
+  echo "→ SQL exception check: ${traced_lines} traced command(s), ${call_count} database"
+  echo "  call(s), every one of them named: ${SEED_LLM_SQL_EXCEPTIONS}"
+}
+
+# seed_llm_main is the body of `seed-llm`. It is a function, and not the case
+# arm itself, because the arm runs it inside a traced subshell so that
+# assert_seed_llm_sql_exceptions can read back what it actually ran.
+seed_llm_main() {
+  reject_retired_embedding_var
+  PROVIDER="$(resolve_llm_provider)"
+  case "$PROVIDER" in
+    mock)
+      # `vllm`, not `open_ai`, and that is load-bearing rather than a label:
+      # bifrost only lifts its SSRF guard for the self-hosted classes
+      # (internal/account/account.go:235 — schemas.VLLM and schemas.Ollama),
+      # so a private compose address must be one of them. api_base carries no
+      # /v1: bifrost appends /v1/chat/completions itself. A distinct host also
+      # keeps it clear of the self-referential-origin guard on the platform's
+      # own /llm origin.
+      API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
+      API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
+      ;;
+    vllm)
+      # A REAL self-hosted OpenAI-compatible server (vLLM, Ollama, LM Studio,
+      # TGI…) at an address on the operator's own network. Same credential
+      # class as `mock` and for the same load-bearing reason — bifrost lifts
+      # its SSRF guard only for the self-hosted classes (account.go:235), so a
+      # private address MUST be seeded as `vllm`; an `open_ai` credential
+      # pointing at 192.168.x.x is refused by the dialer whatever the
+      # allowlist says.
+      #
+      # LLM_API_BASE carries NO /v1 — bifrost appends /v1/chat/completions
+      # itself. Passing the /v1 the server's own docs show produces
+      # /v1/v1/chat/completions and a 404 that looks like a routing bug.
+      #
+      # LLM_API_KEY is optional because most self-hosted servers ignore it,
+      # but it cannot be EMPTY: the guard below treats an empty key as
+      # "operator forgot to pass one" and refuses.
+      API_KEY="${LLM_API_KEY:-not-used-by-self-hosted}"; KEY_VAR="LLM_API_KEY"
+      MODEL="${LLM_MODEL:-}"; API_BASE="${LLM_API_BASE:-}"; CRED_TYPE="vllm"
+      if [ -z "$API_BASE" ] || [ -z "$MODEL" ]; then
+        echo "ERROR: LLM_PROVIDER=vllm needs LLM_API_BASE and LLM_MODEL." >&2
+        echo "       e.g. LLM_PROVIDER=vllm LLM_API_BASE=http://192.168.1.10:8000 \\" >&2
+        echo "            LLM_MODEL=Qwen/Qwen3-8B $0 seed-llm" >&2
+        echo "       LLM_API_BASE must NOT end in /v1 — bifrost appends it." >&2
+        exit 1
+      fi
+      case "$API_BASE" in
+        */v1|*/v1/) echo "ERROR: strip the trailing /v1 from LLM_API_BASE ('$API_BASE')." >&2; exit 1 ;;
+      esac
+      ;;
+    open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
+    anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
+    *) echo "ERROR: LLM_PROVIDER must be mock, vllm, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
+  esac
+  # One resolver, shared with `seed-index`. Read the block above resolve_llm_provider.
+  EMBEDDING_MODEL="$(resolve_embedding_model "$PROVIDER")"
+  if [ -z "$API_KEY" ]; then
+    echo "ERROR: \$$KEY_VAR is empty. Usage: $KEY_VAR=... $0 seed-llm" >&2
+    exit 1
+  fi
+  if [ "$PROVIDER" = "mock" ] || [ "$PROVIDER" = "vllm" ]; then
+    # The wire name must carry the provider prefix. bifrost resolves the
+    # provider from the model string alone (ParseModelString) with an EMPTY
+    # default, so a bare `E2E-MOCK-MODEL` reaches core with no provider and
+    # never gets as far as the credential. The chat model row below is
+    # therefore titled `vllm/E2E-MOCK-MODEL`, which is what the model picker
+    # hands to the SDK and what the SDK puts on the wire.
+    #
+    # resolve_embedding_model applies the same prefix to the embedding name.
+    MODEL="vllm/${MODEL#vllm/}"
+  fi
+
+  # ── How this step talks to the platform ───────────────────────────────────
+  #
+  # Through the published edge, exactly as any API client would. The write
+  # route is mounted only when ELITEA_CONFIGURATIONS_ENABLED is true, which
+  # deploy/docker-compose.standalone-full.yml sets; on a Kubernetes install use
+  # deploy/helm/elitea/values-auth-minimal.yaml (or values-standalone.yaml),
+  # which turn on the same flag and the production authentication it requires.
+  API_BASE_URL="${STANDALONE_API_BASE_URL:-http://localhost:${PORT}}"
+  # The deployment's PAT signing key. `certs` writes it here; override it when
+  # the material lives elsewhere (a Kubernetes Secret, another checkout).
+  # Ignored entirely when STANDALONE_API_TOKEN is set.
+  PAT_SIGNING_KEY="${STANDALONE_PAT_SIGNING_KEY:-${REPO_ROOT}/deploy/certs/runtime/auth-pat-signing-key}"
+
+  # ── Exception 1 of 2: whose credential writes into which project ──────────
+  #
+  # Read the SEED_LLM_SQL_EXCEPTIONS block for what blocks this. In short: the
+  # gateway resolves a credential from the CALLER's own personal project
+  # (#290), so every personal project needs its own rows, and writing into
+  # user X's project needs a token that belongs to user X.
+  #
+  # The row is selected on the PERMISSION the write route gates on, not on a
+  # role name: `configurations.configuration.create` resolved in DEFAULT mode
+  # is exactly what middleware.RequireResolvedPermissions asks for. A role
+  # rename cannot silently empty this list.
+  #
+  # Restricted to schemas that actually exist, for the same reason as before: a
+  # project row whose tenant migrations have not run yet would fail rather than
+  # be skipped.
+  SEED_WRITERS="$(db_exception seed_llm_writer_identities -tAc \
+      "SELECT DISTINCT ON (p.id) p.id || ' ' || t.uuid
+         FROM centry.project p
+         JOIN public.auth_core__project_user_role pur ON pur.project_id = p.id
+         JOIN public.auth_core__project_role pr
+           ON pr.id = pur.role_id AND pr.project_id = p.id
+         JOIN public.auth_core__project_role_permission prp
+           ON prp.role_id = pr.id AND prp.project_id = p.id
+          AND prp.permission = 'configurations.configuration.create'
+         JOIN public.auth_core__token t
+           ON t.user_id = pur.user_id AND t.uuid IS NOT NULL
+          AND (t.expires IS NULL OR t.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
+        WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
+                       WHERE nspname = 'p_' || p.id::text)
+        ORDER BY p.id, pur.user_id, t.id" | tr -d '\r')"
+  if [ -z "$SEED_WRITERS" ]; then
+    echo "ERROR: no project has both a tenant schema and a token that may write" >&2
+    echo "       configurations into it. Run:  $0 seed" >&2
+    echo "       (that step provisions the schemas, the roles and the PATs)" >&2
+    exit 1
+  fi
+  if [ ! -r "$PAT_SIGNING_KEY" ] && [ -z "${STANDALONE_API_TOKEN:-}" ]; then
+    echo "ERROR: no PAT signing key at '${PAT_SIGNING_KEY}'." >&2
+    echo "       Run '$0 certs', point STANDALONE_PAT_SIGNING_KEY at the file," >&2
+    echo "       or set STANDALONE_API_TOKEN to a token you minted in the UI." >&2
+    exit 1
+  fi
+
+  TARGET_PROJECTS=""
+  while IFS= read -r writer_row; do
+    [ -n "$writer_row" ] || continue
+    TARGET="$(printf '%s' "$writer_row" | awk '{print $1}')"
+    WRITER_PAT="$(printf '%s' "$writer_row" | awk '{print $2}')"
+    [ -n "$TARGET" ] && [ -n "$WRITER_PAT" ] || continue
+    TARGET_PROJECTS="${TARGET_PROJECTS} ${TARGET}"
+
+    # The mock's key NAMES THE PROJECT (#470).
+    #
+    # The gateway resolves the credential from one project's own rows, and the
+    # key it then sends upstream is the only part of that decision the upstream
+    # can see. The mock records it in its request journal, so a test can assert
+    # WHICH PROJECT the gateway resolved, not merely that a vector came back.
+    # One shared key for every project would make that unknowable.
+    #
+    # The value is not a secret, and the mock ignores it for authentication.
+    # A real provider keeps one key for all projects: the key belongs to the
+    # operator, and this stack gives no project a key of its own.
+    TARGET_API_KEY="$API_KEY"
+    if [ "$PROVIDER" = "mock" ]; then
+      TARGET_API_KEY="mock-key-project-${TARGET}"
+    fi
+
+    # The public-project pair (#458, asserted by #470). TWO extra embedding
+    # rows, in project 1 only, under titles no other project holds — so a
+    # caller in another project can reach them only through the
+    # platform-shared scope. They are a matched pair and the pair is the
+    # point: `standalone-shared-embedding` (shared) must dispatch for any
+    # caller, `standalone-private-embedding` must be invisible to every other
+    # project. One row alone would prove only half, and a gateway that read the
+    # public project with no `shared` predicate would pass the first assertion
+    # and fail the second — a tenant-isolation fault, not a routing one.
+    # deploy/scripts/embedding-path-check.sh asserts both directions.
+    PUBLIC_PAIR=""
+    if [ "$TARGET" = "1" ]; then
+      PUBLIC_PAIR="--public-embedding-pair"
+    fi
+
+    # A token the operator minted in the product wins over re-signing this
+    # deployment's own PAT row. It is only useful where ONE identity holds
+    # `configurations.configuration.create` in every target project, which a
+    # per-user personal project by definition does not — so the minted form
+    # stays the default.
+    SEED_AUTH_ARGS=(--pat-uuid "$WRITER_PAT" --signing-key "$PAT_SIGNING_KEY")
+    if [ -n "${STANDALONE_API_TOKEN:-}" ]; then
+      SEED_AUTH_ARGS=(--token "$STANDALONE_API_TOKEN")
+    fi
+
+    echo "→ Seeding a $PROVIDER credential (type=$CRED_TYPE) + model rows into project ${TARGET} through the API…"
+    python3 "${REPO_ROOT}/deploy/scripts/seed-llm-api.py" \
+      --base-url "$API_BASE_URL" \
+      --project "$TARGET" \
+      "${SEED_AUTH_ARGS[@]}" \
+      --credential-title "standalone-${CRED_TYPE}" \
+      --credential-type "$CRED_TYPE" \
+      --api-key "$TARGET_API_KEY" \
+      --api-base "$API_BASE" \
+      --model "$MODEL" \
+      --embedding-model "$EMBEDDING_MODEL" \
+      $PUBLIC_PAIR
+
+    # ── Exception 2 of 2: the toolkit's copy of the embedding model name ────
+    #
+    # The index plane keeps a SECOND copy of the name, in the toolkit's
+    # settings, and `seed-llm` OWNS the name (#468). The resolver matches an
+    # index run on configuration.data->>'name'
+    # (db/queries/configurations.sql, FindCurrentEmbeddingConfigurations), so a
+    # stale toolkit copy admits the run, makes it durable, and then kills it in
+    # the worker with a 404.
+    #
+    # It is SQL because elitea_tools is not a configuration: no route in
+    # internal/api/v2 writes elitea_tools.settings. The new value is READ OUT
+    # of the row the API just wrote rather than copied from a shell variable,
+    # so the two names cannot disagree — `seed-index` builds the same setting
+    # the same way.
+    if [ -n "$EMBEDDING_MODEL" ]; then
+      db_exception seed_llm_toolkit_embedding_repair -v ON_ERROR_STOP=1 \
+        -v schema="p_${TARGET}" <<'SQL'
+UPDATE :"schema".elitea_tools AS t
+   SET settings = jsonb_set(t.settings, '{embedding_model}', to_jsonb(c.data->>'name'))
+  FROM :"schema".configuration AS c
+ WHERE c.elitea_title = 'standalone-embedding'
+   AND t.name = 'standalone-artifact-index'
+   AND t.settings ? 'embedding_model'
+   AND t.settings->>'embedding_model' IS DISTINCT FROM c.data->>'name';
+SQL
+    fi
+  done <<EOF
+$SEED_WRITERS
+EOF
+
+  echo "→ Seeded projects:${TARGET_PROJECTS}. Model alias: $MODEL"
+
+  # Name BOTH names (#380). A caller sends the catalogue name; the gateway
+  # maps it onto the provider's own name before it dispatches. When the two
+  # disagree the failure is a bare 404 that names only one of them.
+  if [ -n "$EMBEDDING_MODEL" ]; then
+    echo "→ Embedding model: $EMBEDDING_MODEL"
+    echo "   The catalogue stores it as elitea_title 'standalone-embedding'"
+    echo "   with data.name '${EMBEDDING_MODEL}'. A caller may send either name."
+    echo "   The gateway reports the name AFTER it splits the provider prefix,"
+    echo "   so a 404 for '${EMBEDDING_MODEL#*/}' names this same row."
+  else
+    # A self-hosted provider points the credential at a PRIVATE host, and the
+    # gateway refuses private egress unless that exact host:port is on its
+    # allowlist (SSRF guard). Nothing downstream says so: the turn runs, the
+    # agent starts, the model call comes back a bare
+    # `500 … EGRESS_HOST_NOT_ALLOWED`, and the UI shows an empty answer. The
+    # allowlist lives on the GATEWAY's environment, so seeding cannot set it —
+    # but it can say which value is now required, and whether it is missing.
+    if [ "$PROVIDER" = "vllm" ] || [ "$PROVIDER" = "ollama" ]; then
+      EGRESS_NEEDED="$(printf '%s' "$LLM_API_BASE" | sed -E 's#^https?://##; s#/.*$##')"
+      # `ENGINE` is only set inside `check`; derive it the same way here
+      # (the container engine is the first word of the compose command).
+      EGRESS_HAVE="$("${COMPOSE_BIN%% *}" inspect "${PROJECT}-elitea-llm-gateway-1" \
+          --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+          | sed -n 's/^GATEWAY_EGRESS_ALLOWLIST=//p')"
+      case ",${EGRESS_HAVE}," in
+        *",${EGRESS_NEEDED},"*)
+          echo "→ gateway egress already allows '${EGRESS_NEEDED}'." ;;
+        *)
+          echo "   ! the gateway does NOT allow egress to '${EGRESS_NEEDED}' (allowlist: '${EGRESS_HAVE:-<unset>}')."
+          echo "     Every turn will reach the model and come back 500 EGRESS_HOST_NOT_ALLOWED."
+          echo "     Restart the gateway with it allowed:"
+          echo "       GATEWAY_EGRESS_ALLOWLIST=\"${EGRESS_HAVE:-llm-mock:8090},${EGRESS_NEEDED}\" \\"
+          echo "         $0 up          # or: compose up -d --force-recreate elitea-llm-gateway" ;;
+      esac
+    fi
+    echo "→ NO embedding model seeded: provider '$PROVIDER' serves no embeddings API."
+    echo "   The embedding hop will answer 404 and '$0 check' will FAIL."
+    echo "   Set LLM_EMBEDDING_MODEL to a model some provider serves, then"
+    echo "   run '$0 seed-llm' again."
+  fi
+  if [ "$PROVIDER" = "mock" ]; then
+    echo "  (offline mock — no provider key used. Set OPENAI_API_KEY to seed a real one instead.)"
+  fi
+}
+
 case "${1:-}" in
   certs)
     # Two independent trust roots, minted by two scripts: the gateway CA for the
@@ -329,358 +754,65 @@ SQL
     ;;
 
   seed-llm)
-    # The gateway resolves provider credentials from p_{projectID}.configuration
-    # where section='ai_credentials' — a DIFFERENT section from the section='models'
-    # row the E2E seeder writes for the UI's token button, and a different one
-    # again from section='llm'/type='llm_model', which is the CHAT model
-    # catalogue. Seed all three so both the API and the model picker work.
-    # Mock mode (issue #283) is the DEFAULT when no provider key is present, so
+    # The credential the gateway serves completions with, the chat model, the
+    # model-picker row and the embedding model — all written THROUGH THE
+    # PRODUCT'S OWN API (deploy/scripts/seed-llm-api.py), not with INSERT.
+    #
+    # WHAT CHANGED, AND WHY IT IS NOT COSMETIC
+    # This step used to run six INSERTs into `p_<id>.configuration`, each of
+    # them asserting `status_ok = true`. That column is the platform's own
+    # answer to "may a runtime use this row?", reached by expanding the row's
+    # declared references and redeeming its hidden secrets. Writing it by hand
+    # made a fresh install's seed structurally different from a credential a
+    # user saves in the product, and stored `api_key` in a column
+    # migrations/shared/0072 grants the project VIEWER role to read.
+    #
+    # The write route decides `status_ok` inline, in the same request, from the
+    # same admission decision the configuration lifecycle reaches (#457). That
+    # is what ELITEA_CONFIGURATIONS_ENABLED composes — NOT
+    # ELITEA_CONFIGURATIONS_MUTATION_ENABLED, which stays off here and in every
+    # deployment file: it composes a second write route that wins the path from
+    # this one, takes a different request shape, and makes `status_ok`
+    # asynchronous.
+    #
+    # THE ONE BEHAVIOURAL DIFFERENCE, and it is a required one: every model row
+    # now carries a `data.ai_credentials` link to the credential written beside
+    # it. A model row that names no credential is unmanaged — admission declines
+    # to decide, the row is stored with `status_ok = false`, and every reader
+    # ignores it. Measured on a running stack: the same POST with the link
+    # answers `"status_ok":true`, without it `"status_ok":false`.
+    #
+    # THE THREE (now four) SECTIONS are unchanged and still easy to confuse:
+    # `ai_credentials` (what the gateway's Account reads), `llm`/`llm_model`
+    # (the chat catalogue), `models` (what the web model picker reads) and
+    # `embedding` (the embedding route). seed-llm writes all four.
+    #
+    # Mock mode (#283) is still the DEFAULT when no provider key is present, so
     # a fresh stack completes a model turn offline. With OPENAI_API_KEY (or
-    # ANTHROPIC_API_KEY, or an explicit LLM_PROVIDER) set, behaviour is exactly
-    # what it was: the real credential is seeded and the mock is not, so nothing
-    # can quietly answer a request the operator meant to bill to a provider.
-    reject_retired_embedding_var
-    PROVIDER="$(resolve_llm_provider)"
-    case "$PROVIDER" in
-      mock)
-        # `vllm`, not `open_ai`, and that is load-bearing rather than a label:
-        # bifrost only lifts its SSRF guard for the self-hosted classes
-        # (internal/account/account.go:235 — schemas.VLLM and schemas.Ollama),
-        # so a private compose address must be one of them. api_base carries no
-        # /v1: bifrost appends /v1/chat/completions itself. A distinct host also
-        # keeps it clear of the self-referential-origin guard on the platform's
-        # own /llm origin.
-        API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
-        API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
-        ;;
-      vllm)
-        # A REAL self-hosted OpenAI-compatible server (vLLM, Ollama, LM Studio,
-        # TGI…) at an address on the operator's own network. Same credential
-        # class as `mock` and for the same load-bearing reason — bifrost lifts
-        # its SSRF guard only for the self-hosted classes (account.go:235), so a
-        # private address MUST be seeded as `vllm`; an `open_ai` credential
-        # pointing at 192.168.x.x is refused by the dialer whatever the
-        # allowlist says.
-        #
-        # LLM_API_BASE carries NO /v1 — bifrost appends /v1/chat/completions
-        # itself. Passing the /v1 the server's own docs show produces
-        # /v1/v1/chat/completions and a 404 that looks like a routing bug.
-        #
-        # LLM_API_KEY is optional because most self-hosted servers ignore it,
-        # but it cannot be EMPTY: the guard below treats an empty key as
-        # "operator forgot to pass one" and refuses.
-        API_KEY="${LLM_API_KEY:-not-used-by-self-hosted}"; KEY_VAR="LLM_API_KEY"
-        MODEL="${LLM_MODEL:-}"; API_BASE="${LLM_API_BASE:-}"; CRED_TYPE="vllm"
-        if [ -z "$API_BASE" ] || [ -z "$MODEL" ]; then
-          echo "ERROR: LLM_PROVIDER=vllm needs LLM_API_BASE and LLM_MODEL." >&2
-          echo "       e.g. LLM_PROVIDER=vllm LLM_API_BASE=http://192.168.1.10:8000 \\" >&2
-          echo "            LLM_MODEL=Qwen/Qwen3-8B $0 seed-llm" >&2
-          echo "       LLM_API_BASE must NOT end in /v1 — bifrost appends it." >&2
-          exit 1
-        fi
-        case "$API_BASE" in
-          */v1|*/v1/) echo "ERROR: strip the trailing /v1 from LLM_API_BASE ('$API_BASE')." >&2; exit 1 ;;
-        esac
-        ;;
-      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
-      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
-      *) echo "ERROR: LLM_PROVIDER must be mock, vllm, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
-    esac
-    # One resolver, shared with `seed-index`. Read the block above the `case`.
-    EMBEDDING_MODEL="$(resolve_embedding_model "$PROVIDER")"
-    if [ -z "$API_KEY" ]; then
-      echo "ERROR: \$$KEY_VAR is empty. Usage: $KEY_VAR=... $0 seed-llm" >&2
-      exit 1
-    fi
-    if [ "$PROVIDER" = "mock" ] || [ "$PROVIDER" = "vllm" ]; then
-      # The wire name must carry the provider prefix. bifrost resolves the
-      # provider from the model string alone (ParseModelString) with an EMPTY
-      # default, so a bare `E2E-MOCK-MODEL` reaches core with no provider and
-      # never gets as far as the credential. The `llm_model` row below is
-      # therefore titled `vllm/E2E-MOCK-MODEL`, which is what the model picker
-      # hands to the SDK and what the SDK puts on the wire.
-      #
-      # resolve_embedding_model applies the same prefix to the embedding name.
-      MODEL="vllm/${MODEL#vllm/}"
-    fi
-    # A LITERAL api_key deliberately avoids the Fernet vault entirely: vault
-    # Resolve returns any value that is not a {{secret.NAME}} reference verbatim,
-    # so no centry.secrets_key/secrets_data rows and no SECRETS_MASTER_KEY are
-    # needed for local testing.
-    # Project 1 AND every personal project (#290). The gateway resolves the
-    # credential from the CALLER's personal project, not from the project the
-    # conversation lives in, so seeding p_1 alone leaves every agent turn
-    # without a credential even though the model picker lists the model.
-    # Restricted to schemas that actually exist: a project row whose tenant
-    # migrations have not run yet would fail the insert on a missing relation
-    # rather than skip it.
-    TARGET_PROJECTS="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-        psql -U elitea -d elitea -tAc \
-        "SELECT p.id FROM centry.project p
-          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
-            AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
-                         WHERE nspname = 'p_' || p.id::text)
-          ORDER BY p.id" 2>/dev/null | tr -d '\r')"
-    if [ -z "$TARGET_PROJECTS" ]; then
-      echo "ERROR: no tenant schema to seed into. Run: $0 seed" >&2
-      exit 1
-    fi
-    for TARGET in $TARGET_PROJECTS; do
-    # The mock's key NAMES THE PROJECT (issue #470).
+    # ANTHROPIC_API_KEY, or an explicit LLM_PROVIDER) set, the real credential
+    # is seeded and the mock is not, so nothing can quietly answer a request the
+    # operator meant to bill to a provider.
     #
-    # The gateway resolves the credential from one project's own rows, and the
-    # key it then sends upstream is the only part of that decision the upstream
-    # can see. The mock records it in its request journal, so a test can assert
-    # WHICH PROJECT the gateway resolved, not merely that a vector came back.
-    # One shared key for every project would make that unknowable.
-    #
-    # The value is not a secret, and the mock ignores it for authentication. The
-    # `mock-key-` prefix tells the journal to record the value as it is. The
-    # journal records every other credential as a digest.
-    #
-    # A real provider keeps one key for all projects. The key belongs to the
-    # operator, and this stack gives no project a key of its own.
-    TARGET_API_KEY="$API_KEY"
-    if [ "$PROVIDER" = "mock" ]; then
-      TARGET_API_KEY="mock-key-project-${TARGET}"
-    fi
-    echo "→ Seeding a $PROVIDER credential (type=$CRED_TYPE) + model row for project ${TARGET}…"
-    $COMPOSE_BIN $COMPOSE_F exec -T postgres \
-      psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
-        -v provider="$CRED_TYPE" -v apikey="$TARGET_API_KEY" -v model="$MODEL" \
-        -v apibase="$API_BASE" -v pid="$TARGET" -v schema="p_${TARGET}" <<'SQL'
--- Credential the gateway's Account reads (section='ai_credentials'). An empty
--- api_base means "use the provider's default endpoint", which also keeps a
--- cloud credential clear of the self-referential-origin guard. The mock sets it
--- to the compose address of llm-mock, which is why that host has to be named in
--- GATEWAY_EGRESS_ALLOWLIST and why the credential type is `vllm`.
-INSERT INTO :"schema".configuration
-    (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
-VALUES
-    (:pid, 'standalone-' || :'provider', :'provider', 'ai_credentials',
-     jsonb_build_object('api_key', :'apikey', 'api_base', :'apibase'),
-     '{}', false, true, 'user', NOW(), NOW())
-ON CONFLICT (elitea_title) DO UPDATE
-    SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
-        status_ok = true, updated_at = NOW();
-
--- The CHAT model row. elitea_title is the alias the caller passes in the request
--- `model` field; data.name is the wire name used as a fallback id.
---
--- The gateway reads this section for /llm/v1/chat/completions, /completions,
--- /responses and /messages. Keep it to chat models: elitea-main's
--- /configurations/models/{projectId} selects section='llm' for the web chat
--- model picker, so anything seeded here becomes a selectable chat model. An
--- embedding or image model belongs in its OWN section (see `seed-index`); the
--- gateway reads those sections too (addressableModelSections).
---
--- `label` is NOT decoration. repos/models.go's mapCurrentModelCandidate
--- REJECTS an llm-section row whose label is NULL, and the rejection is an
--- error rather than a skip — so one unlabelled row empties the whole model
--- catalog. The agent version freezer resolves every turn's model against that
--- catalog, so a missing label surfaces three layers away as
--- "unsupported_agent_execution: This agent turn requires the current execution
--- path" with nothing pointing at a configuration row.
-INSERT INTO :"schema".configuration
-    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
-VALUES
-    (:pid, :'model', :'model', 'llm_model', 'llm',
-     jsonb_build_object('name', :'model'),
-     '{}', false, true, 'user', NOW(), NOW())
-ON CONFLICT (elitea_title) DO UPDATE
-    SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
-        label = EXCLUDED.label, status_ok = true, updated_at = NOW();
-
--- The row the MODEL PICKER reads. `useListModelsQuery` calls
--- /configurations/configurations/{project}?section=models, which is a THIRD
--- section again — distinct from the `ai_credentials` the gateway resolves and
--- the `llm`/`llm_model` chat catalogue row above.
--- Without it the picker is empty, nothing can be selected, and the send is
--- rejected 400 for a missing model while every backend row is present and
--- correct (#292).
-INSERT INTO :"schema".configuration
-    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
-VALUES
-    (:pid, :'model' || '-picker', :'model', :'provider', 'models',
-     jsonb_build_object('model', :'model', 'api_key', :'apikey', 'api_base', :'apibase'),
-     '{}', false, true, 'user', NOW(), NOW())
-ON CONFLICT (elitea_title) DO UPDATE
-    SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
-        label = EXCLUDED.label, status_ok = true, updated_at = NOW();
-SQL
-
-    # The EMBEDDING model row (#380).
-    #
-    # It is seeded HERE and not only in `seed-index`, because `check` asserts
-    # the embedding hop and the `chat-stream` continuous-integration job runs
-    # `seed-llm` and `check` but never `seed-index`. Seeding it only there left
-    # that job asserting a model no step had written, and the hop answered 404.
-    #
-    # section='embedding' + type='embedding_model' is a FOURTH configuration
-    # section, distinct from the three rows above. The gateway reads it through
-    # `addressableModelSections` (#398), so the row serves POST /llm/v1/embeddings
-    # AND appears in GET /llm/v1/models. That is intended: see DECISIONS.md. The
-    # web model picker reads elitea-main's catalogue and not this route, so the
-    # row never becomes selectable as a chat model.
-    #
-    # `data` may contain ONLY `name` and optionally `ai_credentials` — the
-    # decoder uses DisallowUnknownFields, so any extra key is an invalid
-    # binding (503). `label` must be non-null for the same reason as the chat
-    # model row: repos/models.go REJECTS an unlabelled row with an error rather
-    # than skipping it, emptying the whole catalogue.
-    #
-    # `seed-llm` OWNS the model NAME in this row (#468). This is the ONE
-    # statement in the script that writes `data` for elitea_title
-    # 'standalone-embedding'. `seed-index` writes the same row, but its
-    # conflict action leaves `data` alone, so it cannot overwrite this name.
-    # Read the rule above the `case` before you add a second writer.
-    if [ -n "$EMBEDDING_MODEL" ]; then
-      $COMPOSE_BIN $COMPOSE_F exec -T postgres \
-        psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
-          -v embedding="$EMBEDDING_MODEL" -v pid="$TARGET" -v schema="p_${TARGET}" <<'SQL'
-INSERT INTO :"schema".configuration
-    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
-VALUES
-    (:pid, 'standalone-embedding', 'standalone-embedding', 'embedding_model', 'embedding',
-     jsonb_build_object('name', :'embedding'), '{}', true, true, 'user', NOW(), NOW())
-ON CONFLICT (elitea_title) DO UPDATE
-    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
-        label = EXCLUDED.label, shared = true, status_ok = true, updated_at = NOW();
-
--- The index plane keeps a SECOND copy of the name, in the toolkit's settings.
--- Bring that copy back to the row above whenever `seed-index` already ran.
---
--- The resolver matches an index run on configuration.data->>'name'
--- (db/queries/configurations.sql, FindCurrentEmbeddingConfigurations). A stale
--- toolkit copy therefore admits the run, makes the run durable, and then kills
--- it in the worker with a 404.
---
--- The new value is READ OUT of the row. It is not a copy of the shell
--- variable, so the two names cannot disagree. `seed-index` builds the same
--- setting the same way.
-UPDATE :"schema".elitea_tools AS t
-   SET settings = jsonb_set(t.settings, '{embedding_model}', to_jsonb(c.data->>'name'))
-  FROM :"schema".configuration AS c
- WHERE c.elitea_title = 'standalone-embedding'
-   AND t.name = 'standalone-artifact-index'
-   AND t.settings ? 'embedding_model'
-   AND t.settings->>'embedding_model' IS DISTINCT FROM c.data->>'name';
-SQL
-    fi
-    done
-
-    # Two rows in the PUBLIC PROJECT ONLY (issue #458, asserted by #470).
-    #
-    # Every row above goes into project 1 AND into every personal project, so no
-    # verification step ever needs the platform-shared scope. These two rows
-    # exist in project 1 alone, under titles no other project holds, so a caller
-    # in another project can reach them only through that scope.
-    #
-    # They are a matched PAIR, and the pair is the point:
-    #
-    #   standalone-shared-embedding    shared = true   must be listed and must
-    #                                                  dispatch for any caller
-    #   standalone-private-embedding   shared = false  must be invisible to
-    #                                                  every other project
-    #
-    # One row alone would prove only half. A gateway that read the public
-    # project with no `shared` predicate would pass the first assertion and fail
-    # the second, and that is a tenant-isolation fault, not a routing one.
-    #
-    # data.name is the SAME wire model as the row above, so the upstream call
-    # these two produce is the one the stack can already serve. What differs is
-    # the catalogue title the caller asks for, and therefore the scope the
-    # gateway must read to find it.
-    #
-    # deploy/scripts/embedding-path-check.sh asserts both directions.
-    if [ -n "$EMBEDDING_MODEL" ]; then
-      echo "→ Seeding the public-project embedding pair into project 1…"
-      $COMPOSE_BIN $COMPOSE_F exec -T postgres \
-        psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
-          -v embedding="$EMBEDDING_MODEL" <<'SQL'
-INSERT INTO p_1.configuration
-    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
-VALUES
-    (1, 'standalone-shared-embedding', 'standalone-shared-embedding', 'embedding_model', 'embedding',
-     jsonb_build_object('name', :'embedding'), '{}', true, true, 'user', NOW(), NOW()),
-    (1, 'standalone-private-embedding', 'standalone-private-embedding', 'embedding_model', 'embedding',
-     jsonb_build_object('name', :'embedding'), '{}', false, true, 'user', NOW(), NOW())
-ON CONFLICT (elitea_title) DO UPDATE
-    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
-        label = EXCLUDED.label, shared = EXCLUDED.shared, status_ok = true, updated_at = NOW();
-SQL
-    fi
-
-    echo "→ Seeded. Model alias: $MODEL"
-
-    # A re-seed with a DIFFERENT model name adds a row; it does not replace the
-    # one already there (the upsert keys on the model name). Everything that
-    # resolves "the" chat model takes `ORDER BY id LIMIT 1`, so the FIRST model
-    # ever seeded keeps winning and the re-seed changes nothing a consumer will
-    # read — silently, while this step prints success.
-    #
-    # Printed rather than repaired: a project holding several models is legal and
-    # some checks depend on it, so which one should win is the operator's call,
-    # not this script's. What is not acceptable is not saying so.
-    for CHECK_PROJECT in $TARGET_PROJECTS; do
-      RESOLVED_MODEL="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-          psql -U elitea -d elitea -tAc \
-          "SELECT data->>'name' FROM p_${CHECK_PROJECT}.configuration
-            WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
-            ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
-      if [ -n "$RESOLVED_MODEL" ] && [ "$RESOLVED_MODEL" != "$MODEL" ]; then
-        echo "   ! project ${CHECK_PROJECT} still resolves '${RESOLVED_MODEL}', NOT the model just seeded."
-        echo "     An id-ordered consumer keeps the earlier row. To make '${MODEL}' the one that wins:"
-        echo "       $COMPOSE_BIN $COMPOSE_F exec -T postgres psql -U elitea -d elitea -c \\"
-        echo "         \"DELETE FROM p_${CHECK_PROJECT}.configuration WHERE section='llm' AND type='llm_model' AND data->>'name' <> '${MODEL}'\""
-      fi
-    done
-    # Name BOTH names (#380). A caller sends the catalogue name; the gateway
-    # maps it onto the provider's own name before it dispatches. When the two
-    # disagree the failure is a bare 404 that names only one of them, so print
-    # both here and make the mismatch readable.
-    if [ -n "$EMBEDDING_MODEL" ]; then
-      echo "→ Embedding model: $EMBEDDING_MODEL"
-      echo "   The catalogue stores it as elitea_title 'standalone-embedding'"
-      echo "   with data.name '${EMBEDDING_MODEL}'. A caller may send either name."
-      echo "   The gateway reports the name AFTER it splits the provider prefix,"
-      echo "   so a 404 for '${EMBEDDING_MODEL#*/}' names this same row."
-    else
-      # A self-hosted provider points the credential at a PRIVATE host, and the
-      # gateway refuses private egress unless that exact host:port is on its
-      # allowlist (SSRF guard). Nothing downstream says so: the turn runs, the
-      # agent starts, the model call comes back a bare
-      # `500 … EGRESS_HOST_NOT_ALLOWED`, and the UI shows an empty answer. The
-      # allowlist lives on the GATEWAY's environment, so seeding cannot set it —
-      # but it can say which value is now required, and whether it is missing.
-      if [ "$PROVIDER" = "vllm" ] || [ "$PROVIDER" = "ollama" ]; then
-        EGRESS_NEEDED="$(printf '%s' "$LLM_API_BASE" | sed -E 's#^https?://##; s#/.*$##')"
-        # `ENGINE` is only set inside `check`; derive it the same way here
-        # (the container engine is the first word of the compose command).
-        EGRESS_HAVE="$("${COMPOSE_BIN%% *}" inspect "${PROJECT}-elitea-llm-gateway-1" \
-            --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
-            | sed -n 's/^GATEWAY_EGRESS_ALLOWLIST=//p')"
-        case ",${EGRESS_HAVE}," in
-          *",${EGRESS_NEEDED},"*)
-            echo "→ gateway egress already allows '${EGRESS_NEEDED}'." ;;
-          *)
-            echo "   ! the gateway does NOT allow egress to '${EGRESS_NEEDED}' (allowlist: '${EGRESS_HAVE:-<unset>}')."
-            echo "     Every turn will reach the model and come back 500 EGRESS_HOST_NOT_ALLOWED."
-            echo "     Restart the gateway with it allowed:"
-            echo "       GATEWAY_EGRESS_ALLOWLIST=\"${EGRESS_HAVE:-llm-mock:8090},${EGRESS_NEEDED}\" \\"
-            echo "         $0 up          # or: compose up -d --force-recreate elitea-llm-gateway" ;;
-        esac
-      fi
-      echo "→ NO embedding model seeded: provider '$PROVIDER' serves no embeddings API."
-      echo "   The embedding hop will answer 404 and '$0 check' will FAIL."
-      echo "   Set LLM_EMBEDDING_MODEL to a model some provider serves, then"
-      echo "   run '$0 seed-llm' again."
-    fi
-    if [ "$PROVIDER" = "mock" ]; then
-      echo "  (offline mock — no provider key used. Set OPENAI_API_KEY to seed a real one instead.)"
-    fi
+    # Read SEED_LLM_SQL_EXCEPTIONS above for the two database calls that
+    # survive and what blocks each of them. The command trace of this whole
+    # subcommand is checked against that list before it exits.
+    SEED_LLM_TRACE="$(mktemp "${TMPDIR:-/tmp}/elitea-seed-llm-trace.XXXXXX")"
+    trap 'rm -f "$SEED_LLM_TRACE"' EXIT
+    # `set -T` makes the DEBUG trap fire inside functions, which is where every
+    # database call lives. $BASH_COMMAND is the command BEFORE expansion, so
+    # this file holds no provider key. Read assert_seed_llm_sql_exceptions for
+    # why this rather than `set -x`.
+    set -T
+    trap 'printf "%s\n" "$BASH_COMMAND" >>"$SEED_LLM_TRACE"' DEBUG
+    set +e
+    seed_llm_main
+    seed_llm_status=$?
+    set -e
+    trap - DEBUG
+    set +T
+    assert_seed_llm_sql_exceptions "$SEED_LLM_TRACE"
+    exit "$seed_llm_status"
     ;;
-
   seed-index)
     # Provision the INDEX plane's data (#93 Surface A). The transport half is
     # compose + migrations; this is the three rows without which
