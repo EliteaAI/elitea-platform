@@ -114,14 +114,14 @@ func Validate(m *Manifest, baseline string) []string {
 		// fabricated path or the deletion of an immutable id. The reference is
 		// still required to be non-empty and well-formed above — what is
 		// dropped is only the existence check.
-		resolveEvidence := !(it.Status == "waived" && it.Waiver != nil)
+		retiredItem := it.Status == "waived" && it.Waiver != nil
 		for _, s := range it.Source {
 			mm := sourceRe.FindStringSubmatch(s)
 			if mm == nil {
 				bad("%s: source %q is not apps/elitea-ui/<file>:<line>[-<line>]", id, s)
 				continue
 			}
-			if !resolveEvidence {
+			if retiredItem {
 				continue
 			}
 			rel, lineS, endS := mm[1], mm[2], mm[3]
