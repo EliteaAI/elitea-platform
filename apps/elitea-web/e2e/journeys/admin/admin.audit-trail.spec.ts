@@ -31,6 +31,27 @@ const SEEDED_SECOND_TRACE = 'GET /agents/e2e';
 const SEEDED_LLM_SPAN = 'completion/e2e';
 const SEEDED_ERROR_SPAN = 'search/e2e';
 
+/**
+ * The substring every seeded action carries and no platform-emitted row does.
+ *
+ * `centry.audit_events` is no longer a table only the seeder writes: elitea-main
+ * emits a row for every administrative and security-relevant request
+ * (services/elitea-main/internal/api/middleware/audit.go), so the other admin
+ * journeys running against this stack — user suspend, invite, permission
+ * refusals — land rows in the same `Today` window this page opens on. A count
+ * of ALL rows is therefore no longer a count of the fixture, and asserting one
+ * would make this journey fail on whatever else the suite happened to do first.
+ *
+ * So every count below is taken over rows the SERVER narrowed to the fixture.
+ * The leading slash is what makes the token exclusive: the seeded actions are
+ * `POST /chat/e2e`, `completion/e2e`, `search/e2e`, `GET /agents/e2e`, while the
+ * emitted rows carry `PUT /api/v2/admin/...` actions and the persona address
+ * `e2e-admin@autotest.local` — which a bare `e2e` would match and this does not.
+ * The search filter is server-side (it ILIKEs action/tool_name/user_email/
+ * model_name), so this narrows the query, not the rendered page.
+ */
+const SEEDED_ACTION_TOKEN = '/e2e';
+
 /* ── the day this page is asked about (issue #214) ────────────────────────────
  *
  * This page opens on a `Today` preset — `DEFAULT_PRESET` in
@@ -154,7 +175,26 @@ async function openAuditTrail(page: Page): Promise<{ anchor: AuditFixtureAnchor;
       `${anchor.lastRow}. ${emptyWindowHint}`,
   ).toBeGreaterThanOrEqual(new Date(anchor.lastRow).getTime());
 
+  await scopeToSeededFixture(page);
   return { anchor, emptyWindowHint };
+}
+
+/**
+ * Narrow the page to the seeded rows, server-side, and wait for the answer.
+ *
+ * Applied AFTER the default-window assertions above, so the journey still
+ * proves the page opens on `Today` with the fixture inside it — the search only
+ * removes the rows the platform's own audit emitter writes into that same
+ * window.
+ */
+async function scopeToSeededFixture(page: Page): Promise<void> {
+  const scoped = page.waitForResponse(
+    (r) =>
+      r.url().includes('/elitea_core/audit_traces/administration') &&
+      new URL(r.url()).searchParams.get('search') === SEEDED_ACTION_TOKEN,
+  );
+  await page.getByTestId('admin-audit-search').fill(SEEDED_ACTION_TOKEN);
+  expect((await scoped).status(), 'the scoped trace listing must be authorised server-side').toBe(200);
 }
 
 adminTest('J29: the audit trail lists seeded traces, and expands one into its spans', async ({ page }) => {
