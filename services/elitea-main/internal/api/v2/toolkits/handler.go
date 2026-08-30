@@ -90,6 +90,10 @@ type Handler struct {
 	argumentSchemas     ToolkitArgumentSchemaSource
 	settingsDefinitions ToolkitSettingsDefinitionSource
 	guardrails          GuardrailPolicySource
+	// settingsValidator resolves a credential reference before it is persisted.
+	// Nil restores the pre-#613 behaviour: every save accepted unresolved. See
+	// settings_validation.go.
+	settingsValidator ToolkitSettingsValidator
 }
 
 // Option configures a Handler at construction, matching the pattern
@@ -883,7 +887,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if created, _ := body["type"].(string); h.refuseBlockedToolkitType(w, r, "create_toolkit", created) {
+	createdType, _ := body["type"].(string)
+	if h.refuseBlockedToolkitType(w, r, "create_toolkit", createdType) {
+		return
+	}
+	// The credential gate, between the type refusal and the write, so a refused
+	// save persists nothing. validateToolkitCreate above only checks that a
+	// github body NAMES a `github_configuration` key; this is the only thing on
+	// the write path that resolves what that key points at.
+	if settings, ok := body["settings"].(map[string]any); ok &&
+		h.refuseUnresolvableToolkitSettings(w, r, "create_toolkit", projectID, createdType, settings) {
 		return
 	}
 	body["_author_id"] = userID
@@ -949,8 +962,25 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	// a blocked one, and refusing it would make an existing toolkit of a
 	// newly-blocked type impossible to edit — including impossible to point at
 	// something harmless before deleting it.
-	if updated, _ := body["type"].(string); h.refuseBlockedToolkitType(w, r, "update_toolkit", updated) {
+	updatedType, _ := body["type"].(string)
+	if h.refuseBlockedToolkitType(w, r, "update_toolkit", updatedType) {
 		return
+	}
+	// Only a body that actually REPLACES settings is validated. UpdateToolkit
+	// builds a partial UPDATE (each of `type` and `settings` is independently
+	// optional), so a PATCH that merely renames a toolkit carries no settings —
+	// and validating a nil map as `{}` would refuse renames of a toolkit that is
+	// already broken, which is the one edit most likely to be an attempt to fix
+	// it. The type comes from the body when it restates one and from the stored
+	// row otherwise; a failed read degrades to the unvalidated save rather than
+	// making the toolkit uneditable.
+	if settings, ok := body["settings"].(map[string]any); ok {
+		if updatedType == "" {
+			updatedType = h.storedToolkitType(r.Context(), projectID, toolkitID)
+		}
+		if h.refuseUnresolvableToolkitSettings(w, r, "update_toolkit", projectID, updatedType, settings) {
+			return
+		}
 	}
 	item, err := h.repo.UpdateToolkit(r.Context(), projectID, toolkitID, body)
 	if err != nil {

@@ -8,7 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { EliteaApiError, configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { SocketClientContext } from '@/shared/api/socket/client';
 import { createTestSocketClient } from '@/shared/api/socket/testing';
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
@@ -167,6 +167,72 @@ describe('ToolkitEditor', () => {
 
     expect(await screen.findByText('New MCP')).toBeInTheDocument();
   });
+});
+
+/**
+ * #613 — the server's per-field save refusal reaching the form.
+ *
+ * `CreateToolkitButton`/`SaveToolkitButton` each catch their own rejection into
+ * an `onError` that nothing in this app ever supplied, and `ToolkitForm`'s
+ * `toolkitValidation` channel had no production producer at all, so a refused
+ * save vanished twice over. This exercises both halves through the real editor:
+ * the `deps` wrapper that records the rejection, and the prop that hands it to
+ * the form.
+ *
+ * The OBSERVABLE is the second click. A recorded `settings_errors` entry keyed
+ * to a field becomes a `serverToolErrors` entry, which merges into `hasErrors`,
+ * which is what `CreateToolkitButton` gates on — so a body the server has
+ * already refused is not sent again. Nothing about that works unless every hop
+ * is wired, and it needs no assumption about which field component the form
+ * happens to render for a given schema.
+ *
+ * VERIFIED to discriminate: removing `toolkitValidation={toolkitValidation}`
+ * from `ToolkitEditor.tsx`'s `<ToolkitEditorBody>` fails this test and nothing
+ * else in this file; so does dropping the `depsWithSaveErrors` wrapper.
+ */
+describe('a refused save is not re-issued', () => {
+  it('records the server settings_errors and blocks the second Save', async () => {
+    // `name_required: false` so the form starts with NO local error: this test
+    // is about the SERVER's errors reaching `hasErrors`, and a blank required
+    // name would block the first Save before any request went out.
+    server.use(
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' }, name_required: false } })),
+    );
+    const user = userEvent.setup();
+    // The real transport shape: a rejected `eliteaFetch` throws
+    // `EliteaApiError` carrying `failure.body`, NOT the `.data` the injected
+    // prop type declares. A supplier written to the declared type reads
+    // `undefined` here and this test fails.
+    const createToolkit = vi.fn().mockRejectedValue(
+      new EliteaApiError({
+        kind: 'http',
+        status: 400,
+        url: '/api/v2/elitea_core/tools/prompt_lib/proj-1',
+        body: {
+          valid: false,
+          settings_errors: [
+            {
+              loc: ['settings', 'github_configuration'],
+              msg: 'Your configuration does not match any available configurations.',
+              type: 'value_error',
+              code: 'configuration_not_found',
+            },
+          ],
+        },
+      }),
+    );
+    renderEditor({ isCreating: true, isMCP: false }, { createToolkit });
+
+    await user.click(await screen.findByText('GitHub'));
+    const save = await screen.findByRole('button', { name: /^Create$/i });
+    await waitFor(() => expect(save).not.toBeDisabled());
+
+    await user.click(save);
+    await waitFor(() => expect(createToolkit).toHaveBeenCalledTimes(1));
+
+    await user.click(save);
+    await waitFor(() => expect(createToolkit).toHaveBeenCalledTimes(1));
+  }, 30_000);
 });
 
 /**

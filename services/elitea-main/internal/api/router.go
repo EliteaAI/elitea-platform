@@ -155,6 +155,19 @@ type RouterConfig struct {
 	// Unassigned, the endpoint serves no "$defs", and the web client's toolkit
 	// credential picker and index schedule credential select stay unreachable.
 	ToolkitSettingsDefinitions v2toolkits.ToolkitSettingsDefinitionSource
+	// ToolkitSettingsValidator resolves a toolkit's credential references before
+	// POST /elitea_core/tools/prompt_lib/{projectID} and PUT/PATCH
+	// /elitea_core/tool/prompt_lib/{projectID}/{toolkitID} persist them. It is
+	// injected for the same reason as the two sources above: the resolver is
+	// composed in internal/runtimecomposition, which imports this layer.
+	//
+	// LEFT NIL, BOTH ROUTES BEHAVE EXACTLY AS THEY DID BEFORE — a toolkit can be
+	// saved naming a credential that lives in another project or nowhere at all,
+	// and the reference is first read at chat time, where it kills the turn. The
+	// composition root supplies it only where the Configurations runtime exists
+	// (ELITEA_CONFIGURATIONS_ENABLED), so a default Helm install still takes the
+	// nil path; see cmd/elitea-main/main.go.
+	ToolkitSettingsValidator v2toolkits.ToolkitSettingsValidator
 	// ToolkitRegistry enumerates built-in toolkit types and their tools for
 	// `GET /admin/plugin_config_suggestions/administration/{key}`, which is what
 	// populates the guardrail fields' pickers on the admin Configuration page.
@@ -1856,6 +1869,15 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				toolkitOptions := []v2toolkits.Option{
 					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
 					v2toolkits.WithSettingsDefinitions(cfg.ToolkitSettingsDefinitions),
+				}
+				// Guarded rather than appended unconditionally: an Option that
+				// stored a nil interface would still leave h.settingsValidator
+				// nil, but a caller that later boxes a typed nil pointer here
+				// would not, and the handler's own nil check is the whole
+				// fallback. Keep the nil out of the option list.
+				if cfg.ToolkitSettingsValidator != nil {
+					toolkitOptions = append(toolkitOptions,
+						v2toolkits.WithSettingsValidator(cfg.ToolkitSettingsValidator))
 				}
 				if guardrailPolicies, err := platformconfig.NewGuardrailPolicyAdapter(cfg.Pool); err == nil {
 					toolkitOptions = append(toolkitOptions, v2toolkits.WithGuardrails(guardrailPolicies))

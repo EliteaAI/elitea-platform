@@ -24,43 +24,7 @@ func newCurrentAgentVersionFreezer(
 		configurations.publicProjectID <= 0 {
 		return nil, errors.New("current agent configuration dependencies are required")
 	}
-	builtInSchemas, err := LoadPinnedCurrentToolkitSchemaSnapshot()
-	if err != nil {
-		return nil, fmt.Errorf("load current agent toolkit schema snapshot: %w", err)
-	}
-	schemas, err := NewCurrentCompositeToolkitSchemaCatalog(
-		builtInSchemas,
-		absentCurrentAgentDynamicToolkitSchemas{},
-	)
-	if err != nil {
-		return nil, err
-	}
-	names, err := NewCurrentBuiltInToolkitNameDeriver(builtInSchemas)
-	if err != nil {
-		return nil, err
-	}
-	toolkitRows, err := repos.NewCurrentToolkitsRepository(pool)
-	if err != nil {
-		return nil, fmt.Errorf("construct current agent toolkit repository: %w", err)
-	}
-	nestedToolkits, err := NewCurrentNestedToolkitReaderAdapter(toolkitRows, names)
-	if err != nil {
-		return nil, err
-	}
-	modelVisibility, err := NewCurrentModelVisibilityAdapter(
-		configurations.models,
-		configurations.publicProjectID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	settings, err := configurationapp.NewCurrentToolkitSettingsResolver(
-		schemas,
-		nestedToolkits,
-		configurations.expander,
-		modelVisibility,
-		configurations.unsecreter,
-	)
+	settings, names, err := newCurrentToolkitSettingsGraph(pool, configurations)
 	if err != nil {
 		return nil, err
 	}
@@ -122,3 +86,84 @@ func (adapter currentAgentToolkitNameAdapter) ResolveCurrentAgentToolkitName(
 }
 
 var _ agentexecutionapp.CurrentAgentToolkitNameResolver = currentAgentToolkitNameAdapter{}
+
+// newCurrentToolkitSettingsGraph composes the schema-driven toolkit settings
+// resolver and the name deriver it is built from.
+//
+// It was extracted from newCurrentAgentVersionFreezer above so the toolkit
+// WRITE path can run the identical graph rather than a second, separately
+// maintained copy of it (NewToolkitSettingsValidator below). Index admission
+// composes the same resolver with ONE dependency different — see
+// absentCurrentAgentDynamicToolkitSchemas for what that difference decides.
+func newCurrentToolkitSettingsGraph(
+	pool *pgxpool.Pool,
+	configurations *CurrentConfigurationsRuntime,
+) (*configurationapp.CurrentToolkitSettingsResolver, CurrentToolkitNameDeriver, error) {
+	builtInSchemas, err := LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load current agent toolkit schema snapshot: %w", err)
+	}
+	schemas, err := NewCurrentCompositeToolkitSchemaCatalog(
+		builtInSchemas,
+		absentCurrentAgentDynamicToolkitSchemas{},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	names, err := NewCurrentBuiltInToolkitNameDeriver(builtInSchemas)
+	if err != nil {
+		return nil, nil, err
+	}
+	toolkitRows, err := repos.NewCurrentToolkitsRepository(pool)
+	if err != nil {
+		return nil, nil, fmt.Errorf("construct current agent toolkit repository: %w", err)
+	}
+	nestedToolkits, err := NewCurrentNestedToolkitReaderAdapter(toolkitRows, names)
+	if err != nil {
+		return nil, nil, err
+	}
+	modelVisibility, err := NewCurrentModelVisibilityAdapter(
+		configurations.models,
+		configurations.publicProjectID,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	settings, err := configurationapp.NewCurrentToolkitSettingsResolver(
+		schemas,
+		nestedToolkits,
+		configurations.expander,
+		modelVisibility,
+		configurations.unsecreter,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return settings, names, nil
+}
+
+// NewToolkitSettingsValidator composes the resolver the toolkit CREATE/UPDATE
+// routes run before they persist a credential reference
+// (internal/api/v2/toolkits/settings_validation.go).
+//
+// It is the SAME graph agent-version freezing uses, deliberately: a second
+// composition would be a second answer to "which credentials can this caller
+// see", and the two would drift. In particular it takes the agent variant of
+// the dynamic-schema half, so a toolkit type absent from the pinned SDK
+// snapshot — database, custom, datasource, every *_loader — reports "no schema"
+// rather than a dependency failure, and the write path treats that as nothing
+// to say instead of a refusal.
+//
+// The caller runs it in CurrentToolkitSettingsReferenceMode, which never
+// redeems a secret: the vault is not read, and the returned settings are
+// discarded.
+func (runtime *CurrentConfigurationsRuntime) NewToolkitSettingsValidator(
+	pool *pgxpool.Pool,
+) (*configurationapp.CurrentToolkitSettingsResolver, error) {
+	if pool == nil || runtime == nil || runtime.expander == nil ||
+		runtime.models == nil || runtime.unsecreter == nil || runtime.publicProjectID <= 0 {
+		return nil, errors.New("current toolkit settings validator dependencies are required")
+	}
+	settings, _, err := newCurrentToolkitSettingsGraph(pool, runtime)
+	return settings, err
+}

@@ -6,7 +6,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useNavigate, useParams } from '@tanstack/react-router';
 
-import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps, useToolkitCreate } from '@/features/toolkits';
+import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps, toolkitEditorHooks, useToolkitCreate } from '@/features/toolkits';
 import { t } from '@/shared/i18n';
 
 import { useToolkitCredentialPickerSlot } from './lib/credentialPickerSlots';
@@ -167,6 +167,14 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
   const [isDirty, setIsDirty] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown>(undefined);
+  /**
+   * #613. The server now refuses a save whose credential reference does not
+   * resolve, and answers with per-field `settings_errors`. Without this
+   * supplier the page swallowed that body whole: the catch below turned every
+   * 400 into the one fixed banner string, and `ToolkitForm`'s server-error
+   * channel had no producer anywhere in the app.
+   */
+  const saveValidation = toolkitEditorHooks.useToolkitSaveValidation();
 
   /*
    * #308 — the credential picker, supplied here for the same reason
@@ -194,10 +202,18 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
     setFormValues(updater);
   }, []);
 
-  const handleChangeToolDetail = useCallback((updater: (prev: EditToolDetail | null) => EditToolDetail | null) => {
-    setIsDirty(true);
-    setEditToolDetail(updater);
-  }, []);
+  const handleChangeToolDetail = useCallback(
+    (updater: (prev: EditToolDetail | null) => EditToolDetail | null) => {
+      setIsDirty(true);
+      setEditToolDetail(updater);
+      // The previous refusal described the PREVIOUS settings. Dropping it here
+      // is what re-arms Save: `handleSave` below refuses to re-issue a request
+      // whose recorded refusal is still on screen, so without this the gate
+      // would stay latched shut on an error the user has already fixed.
+      saveValidation.clearSaveErrors();
+    },
+    [saveValidation],
+  );
 
   const handleSetFormField = useCallback((field: string, value: unknown) => {
     setFormValues((prev) => ({ ...prev, [field]: value }));
@@ -211,8 +227,21 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
 
   const handleSave = useCallback(async () => {
     if (projectId === undefined || editToolDetail?.type === undefined) return;
+    // A refusal that is still on screen is not re-submitted: the body has not
+    // changed, so the answer would not either. Any real edit drops it
+    // (handleChangeToolDetail below), which is what re-arms Save.
+    //
+    // DISCLOSED, NOT FIXED HERE: this page still passes no
+    // `onValidationStateChange`, so LOCAL field errors — a blank name on a type
+    // whose schema requires one — do not gate Save the way they do on the other
+    // two save paths (`SaveToolkitButton`/`CreateToolkitButton`). Wiring that
+    // gate makes a nameless create impossible, which is a separate behaviour
+    // change from this one and breaks three existing tests that deliberately
+    // save without a name.
+    if (saveValidation.toolkitValidation.isError) return;
     setIsCreating(true);
     setCreateError(undefined);
+    saveValidation.clearSaveErrors();
     try {
       const name = toolkitNameFromSettings(editToolDetail) ?? (formValues['name'] as string | undefined);
       const description = formValues['description'] as string | undefined;
@@ -241,11 +270,14 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
         void navigate({ to: '/toolkits/$tab/$toolkitId', params: { tab: 'all', toolkitId: id }, replace: true });
       }
     } catch (error) {
-      setCreateError(error);
+      // A refusal that names fields is shown ON those fields; the generic
+      // banner is kept for everything else (a 500, a dropped connection),
+      // where there is no field to point at.
+      setCreateError(saveValidation.reportSaveError(error) ? undefined : error);
     } finally {
       setIsCreating(false);
     }
-  }, [projectId, editToolDetail, formValues, createToolkitMutation, navigate, isMCP, isApplication]);
+  }, [projectId, editToolDetail, formValues, createToolkitMutation, navigate, isMCP, isApplication, saveValidation]);
 
   const title = useMemo(() => resolveCreateTitle(isApplication, isMCP), [isApplication, isMCP]);
 
@@ -291,6 +323,7 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
             hideOperationButtons
             isMCP={isMCP}
             onSave={noopSave}
+            toolkitValidation={saveValidation.toolkitValidation}
             slots={toolkitFormSlots}
           />
         ) : (
