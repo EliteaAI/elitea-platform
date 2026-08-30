@@ -2797,5 +2797,6 @@
   "features.pipelines.graphAdmissionGate.unparseable": "The YAML does not parse, so the runtime cannot read a graph out of it.",
   "pages.pipelines.editPipeline.admissionRefused": "This pipeline was not saved: the runtime would refuse this flow graph.",
   "pages.pipelines.editPipeline.versionGraphInadmissible": "The new version was created, but its flow graph was not copied onto it: the runtime would refuse that graph.",
-  "pages.pipelines.testChat.staleVersion": "Could not switch this chat to the selected version. Replies still run version {{versionId}}."
+  "pages.pipelines.testChat.staleVersion": "Could not switch this chat to the selected version. Replies still run version {{versionId}}.",
+  "entities.projectContext.projectParamsHeader.teammatesUnavailable": "This deployment does not report a teammate count."
 }
