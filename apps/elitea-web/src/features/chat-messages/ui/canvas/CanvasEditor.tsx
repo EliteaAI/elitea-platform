@@ -34,6 +34,7 @@ import { Box, Typography } from '@mui/material';
 import { useCanvasDetailSocket, useCanvasEditSocket, useCanvasErrorSocket, useCanvasSyncSocket } from '@/entities/canvas/api/canvasSocket';
 import type { CodeMirrorEditorHandle } from '@/shared/ui/CodeMirrorEditor';
 import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
+import { MermaidDiagram } from '@/shared/ui/MermaidDiagram';
 
 import { getCanvasCodeExtensions } from './canvasCodeExtensions';
 
@@ -506,7 +507,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
                 boxSizing: 'border-box',
               }}
             >
-              {/* TODO: MermaidDiagramOutput — baseline: <MermaidDiagramOutput code={code} onQuickFix={readOnly ? undefined : handleQuickFix} /> */}
+              {/*
+                Baseline: `<MermaidDiagramOutput code={code} onQuickFix={readOnly ? undefined : handleQuickFix} />`.
+                `shared/ui/MermaidDiagram` is the RENDER half of that component; the
+                `onQuickFix` half (the model round trip that rewrites broken diagram
+                source) is still the unwired `_handleQuickFix` above.
+              */}
+              <MermaidDiagram
+                code={code}
+                data-testid="canvas-mermaid-diagram"
+              />
             </Box>
           </Box>
         ) : codeLanguage === 'markdownTable' ? (

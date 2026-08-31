@@ -2804,5 +2804,19 @@
   "pages.eliteaCatalog.tabSkills": "Skills",
   "pages.eliteaCatalog.title": "Welcome to ELITEA Catalog!",
   "processes.chat.playback.loadError": "This conversation could not be loaded for playback.",
-  "widgets.sidebar.eliteaCatalog": "Catalog"
+  "widgets.sidebar.eliteaCatalog": "Catalog",
+  "shared.mermaid.diagramLabel": "Diagram",
+  "shared.mermaid.error.generic": "Diagram syntax error detected",
+  "shared.mermaid.error.genericHint": "Check the diagram against the Mermaid documentation — common causes are missing arrows, invalid node names, or a wrong diagram type declaration.",
+  "shared.mermaid.error.lexical": "Invalid character or symbol in the diagram",
+  "shared.mermaid.error.lexicalHint": "Remove unsupported special characters.",
+  "shared.mermaid.error.link": "Link syntax error: invalid arrow or connection format",
+  "shared.mermaid.error.linkHint": "Use a supported arrow such as \"-->\" between nodes.",
+  "shared.mermaid.error.node": "Node definition error: invalid node name or id",
+  "shared.mermaid.error.nodeHint": "Node names should use letters, digits and underscores only.",
+  "shared.mermaid.error.parse": "Diagram structure error",
+  "shared.mermaid.error.parseHint": "Check the diagram type declaration and the overall syntax.",
+  "shared.mermaid.error.syntax": "Syntax error: missing semicolon, new line, or unexpected characters",
+  "shared.mermaid.error.syntaxHint": "Check for typos, missing punctuation, or extra characters at the end of lines.",
+  "shared.mermaid.error.withLine": "{{summary}} (line {{line}})"
 }

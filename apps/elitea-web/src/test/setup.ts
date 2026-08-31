@@ -47,6 +47,34 @@ if (!('ResizeObserver' in globalThis)) {
 }
 
 /**
+ * jsdom implements the SVG DOM but none of its GEOMETRY: `getBBox`,
+ * `getComputedTextLength` and `getScreenCTM` are all absent, because jsdom has
+ * no layout engine to answer them. Any component that measures rendered SVG
+ * throws `getBBox is not a function` on mount — `shared/ui/MermaidDiagram` does,
+ * because mermaid measures every label to lay a diagram out.
+ *
+ * Installed here for the same reason as `ResizeObserver` above: this is a
+ * browser API jsdom lacks, not application behaviour, so stubbing it is the
+ * environment's job and not a test's (`elitea/no-vi-mock`, R-M1, bans reaching
+ * for `vi.mock` to paper over it). The numbers are a fixed, non-zero box — real
+ * layout is what a browser gives you, and the `storybook` vitest project runs in
+ * a real Chromium when that matters. What these polyfills buy the `node`
+ * project is the ability to tell "rendered" apart from "threw", which is exactly
+ * what the MermaidDiagram tests assert.
+ */
+const svgProto = globalThis.SVGElement.prototype as unknown as Record<string, unknown>;
+svgProto['getBBox'] ??= function getBBox() {
+  return { x: 0, y: 0, width: 100, height: 20 };
+};
+svgProto['getComputedTextLength'] ??= function getComputedTextLength() {
+  return 100;
+};
+svgProto['getScreenCTM'] ??= function getScreenCTM() {
+  const identity = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  return { ...identity, inverse: () => identity };
+};
+
+/**
  * Global test bootstrap for the `node` (jsdom) vitest project (spec §6.3).
  *
  * Mocks stop at the network boundary (§6.2): the ONLY substitutions a test
