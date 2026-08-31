@@ -63,7 +63,13 @@ function splitRow(row: string): string[] {
   }
   // A row that ends with `|` has already pushed its last cell above; only a
   // row with an unterminated final cell reaches this push.
-  if (current !== '') cells.push(current.trim());
+  // `current.trim()`, not `current`: the fragment after the final pipe is
+  // whitespace on any row written as "| a | b | ", which is ordinary markdown.
+  // Guarding on the untrimmed value pushed that whitespace as a real cell, and
+  // because parseMarkdownTable takes the COLUMN SET from the header line, the
+  // whole table gained a phantom unnamed column that serialisation then wrote
+  // back into the document.
+  if (current.trim() !== '') cells.push(current.trim());
   return cells;
 }
 

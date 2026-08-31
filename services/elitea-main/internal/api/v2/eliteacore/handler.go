@@ -2269,6 +2269,28 @@ func DownloadIcon(store storage.ObjectStore) http.HandlerFunc {
 		// with a browser-sniffable or attacker-chosen Content-Type is
 		// script-executable in the app's own origin.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// nosniff is NOT sufficient on its own, because `.svg` is an allowlisted
+		// icon extension and `image/svg+xml` is a genuine image type that a
+		// browser executes script in when the response is rendered as a
+		// DOCUMENT (top-level navigation, <object>, <embed>). nosniff only
+		// suppresses MIME sniffing, so an uploaded SVG carrying a <script> would
+		// otherwise run in this app's own origin, against the viewer's session
+		// cookies, on a route that is public and unauthenticated by design.
+		//
+		// The upload side cannot close this: neither uploader validates the file
+		// CONTENT, only the client-supplied extension. So it is closed here,
+		// once, for every object this route can ever serve — including the ones
+		// already stored before this header existed.
+		//
+		// `sandbox` with no tokens puts any rendered document in an opaque
+		// origin with scripting disabled; `default-src 'none'` stops it fetching
+		// anything. `Content-Disposition: attachment` makes a direct navigation
+		// download the file instead of rendering it. None of the three affects
+		// <img src>, which is how the product actually consumes these icons:
+		// Content-Disposition is ignored for subresource loads, and an image is
+		// not a document.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+		w.Header().Set("Content-Disposition", "attachment")
 		if contentType := mime.TypeByExtension(safeIconExtension(filename)); contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}

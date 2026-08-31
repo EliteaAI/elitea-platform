@@ -122,6 +122,17 @@ export function useMarkdownTableModel({
   const [snapshot, setSnapshot] = useState<TableSnapshot>(initial.current);
   const [history, setHistory] = useState<readonly TableSnapshot[]>([initial.current]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  // The authoritative index, moved SYNCHRONOUSLY by every history transition.
+  // `historyIndex` alone cannot serve: `commit` truncates the redo tail
+  // relative to the current index, and two commits dispatched in one React
+  // batch both read the pre-batch value from their render closure, so the
+  // second slices away the entry the first appended and undo skips the
+  // intermediate state. Every write goes through `moveHistoryIndex`.
+  const historyIndexRef = useRef(0);
+  const moveHistoryIndex = useCallback((index: number) => {
+    historyIndexRef.current = index;
+    setHistoryIndex(index);
+  }, []);
 
   const [selectedCell, setSelectedCell] = useState<MarkdownTableSelectedCell | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<readonly string[]>([]);
@@ -131,16 +142,16 @@ export function useMarkdownTableModel({
   const commit = useCallback(
     (next: TableSnapshot) => {
       setSnapshot(next);
-      setHistory((prev) => {
-        const kept = prev.slice(0, historyIndex + 1);
-        const appended = [...kept, next];
-        setHistoryIndex(appended.length - 1);
-        return appended;
-      });
+      // Computed OUTSIDE the updater, so the updater stays pure: React invokes
+      // it twice under StrictMode, and the previous version enqueued a
+      // `setHistoryIndex` from inside it on every invocation.
+      const at = historyIndexRef.current + 1;
+      setHistory((prev) => [...prev.slice(0, at), next]);
+      moveHistoryIndex(at);
       onCanUndo?.(true);
       onCanRedo?.(false);
     },
-    [historyIndex, onCanRedo, onCanUndo],
+    [moveHistoryIndex, onCanRedo, onCanUndo],
   );
 
   const updateRow = useCallback(
@@ -232,21 +243,21 @@ export function useMarkdownTableModel({
     const previous = history[historyIndex - 1];
     if (previous === undefined) return;
     setSnapshot(previous);
-    setHistoryIndex(historyIndex - 1);
+    moveHistoryIndex(historyIndex - 1);
     setSelectedCell(null);
     onCanUndo?.(historyIndex - 1 > 0);
     onCanRedo?.(true);
-  }, [history, historyIndex, onCanRedo, onCanUndo]);
+  }, [history, historyIndex, moveHistoryIndex, onCanRedo, onCanUndo]);
 
   const redo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
     const next = history[historyIndex + 1];
     if (next === undefined) return;
     setSnapshot(next);
-    setHistoryIndex(historyIndex + 1);
+    moveHistoryIndex(historyIndex + 1);
     onCanUndo?.(true);
     onCanRedo?.(historyIndex + 1 < history.length - 1);
-  }, [history, historyIndex, onCanRedo, onCanUndo]);
+  }, [history, historyIndex, moveHistoryIndex, onCanRedo, onCanUndo]);
 
   const toggleColumnSelection = useCallback((field: string) => {
     setSelectedRowIds([]);
