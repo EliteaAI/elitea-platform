@@ -182,24 +182,48 @@ def test_the_compatibility_alias_resolves_engine_submodules():
     assert constants.__name__ == "plugin_implementation.constants"
 
 
-def test_out_of_process_execution_is_not_wired_yet():
-    """A named gap, pinned so it cannot be mistaken for working.
+def test_subprocess_workers_resolve_by_their_real_module_name():
+    """The subprocess launch path, fixed after running it.
 
-    ADR-0022 decision 7 keeps heavy work out of process — subprocess workers
-    for compose/dev, Kubernetes Jobs for scale. Neither launch path has been
-    repointed at this package yet: ``k8s_job_manager`` still builds a
-    ``PYTHONPATH`` out of the legacy filesystem layout
+    ``tool_operations`` picks a worker module by trying to import each
+    candidate IN THE PARENT, then hands the winner to a child that inherits
+    only ``sys.path``. ``plugin_implementation.X`` imports fine in the parent —
+    the engine package installs that alias — and is unresolvable in the child,
+    which never imports the engine package. The declared substitution names
+    the real module instead, so the child imports something ``sys.path`` can
+    find, and that import installs the alias for the engine's own absolute
+    imports.
+
+    Diagnosed by running generate_wiki with run_in_subprocess=True and reading
+    the worker log: ``ModuleNotFoundError: No module named
+    'plugin_implementation'``.
+    """
+    source = (SERVICE_ROOT / "src" / "elitea_deepwiki" / "tool_operations.py").read_text(
+        encoding="utf-8"
+    )
+    for worker in (
+        "wiki_subprocess_worker",
+        "ask_subprocess_worker",
+        "deep_research_subprocess_worker",
+    ):
+        assert f'"elitea_deepwiki.engine.{worker}"' in source, worker
+        assert f'"plugin_implementation.{worker}"' not in source, worker
+
+
+def test_the_kubernetes_job_path_is_still_not_repointed():
+    """The remaining half of ADR-0022 decision 7, pinned.
+
+    Subprocess mode works (above). The Kubernetes-Job path does not: it still
+    builds a ``PYTHONPATH`` from the legacy filesystem layout
     (``/data/plugins/deepwiki_plugin``, ``/app/deepwiki_plugin``) and runs
-    ``plugin_implementation/wiki_job_worker.py`` as a file. In this image those
-    paths do not exist, and a fresh worker process never imports
-    ``elitea_deepwiki.engine``, so the compatibility alias above is not
-    installed there either.
+    ``plugin_implementation/wiki_job_worker.py`` as a FILE, neither of which
+    exists in this image. It also still expects the licence-credential init
+    container that ADR-0022 drops, and passes secrets through Job environment
+    variables where the ADR requires projected files.
 
-    This test asserts the *legacy* shape is still what the copy contains — it
-    is a reminder, not an endorsement. When the launch path is repointed, this
-    test fails and should be replaced by one that checks the new entry point.
-    Until then nobody can read the green suite as "out-of-process execution
-    works".
+    This asserts the legacy shape is still what the copy contains — a reminder,
+    not an endorsement. When the Job path is repointed, this test fails and
+    should be replaced by one checking the new entry point.
     """
     source = (ENGINE_DIR / "k8s_job_manager.py").read_text(encoding="utf-8")
     assert "/data/plugins/deepwiki_plugin" in source

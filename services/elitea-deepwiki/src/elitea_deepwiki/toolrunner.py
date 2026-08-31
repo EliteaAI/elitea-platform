@@ -102,7 +102,7 @@ def build_runner(settings) -> ToolRunner:
     if name == "legacy":
         from .legacy_runner import LegacyToolRunner  # noqa: PLC0415
 
-        return LegacyToolRunner()
+        return LegacyToolRunner(settings=settings)
 
     raise ValueError(
         f"ELITEA_DEEPWIKI_RUNNER={name!r} is not a known runner "

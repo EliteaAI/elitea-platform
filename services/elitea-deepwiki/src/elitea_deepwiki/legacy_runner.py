@@ -262,36 +262,142 @@ def compose_result_objects(tool_name: str, result: dict[str, Any]) -> list[dict[
     return objects
 
 
-class LegacyToolRunner:
-    """Dispatches SPI invocations into the copied analysis engine.
+class ToolHost:
+    """The five hooks the copied tool layer expects from its Pylon module.
 
-    The engine's tool entry points are resolved lazily and injected, so this
-    class is testable without the engine's several-GB dependency closure —
-    which is also how the composition above is checked against the P0 fixture.
+    ``tool_operations.Method`` is a mixin: every method it defines calls back
+    into ``self`` for progress events, cancellation, child-process tracking and
+    configuration. In the legacy service that ``self`` was the Pylon module.
+    Here it is this object, which forwards to the invocation context and the
+    service settings.
+
+    Discovering that the tool layer needed exactly five hooks — and no Pylon
+    behaviour beyond them — is what made copying it viable instead of
+    rewriting 1400 lines.
+    """
+
+    def __init__(self, settings, context: InvocationContext) -> None:
+        self._settings = settings
+        self._context = context
+        self._loop = None
+        try:
+            import asyncio  # noqa: PLC0415
+
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - only when built off-loop
+            self._loop = None
+
+    # -- configuration ----------------------------------------------------
+
+    def runtime_config(self) -> dict[str, Any]:
+        """The legacy ``runtime_config``: base_path plus the service URL.
+
+        The tool layer reads ``base_path`` to place caches and worker
+        scratch. ADR-0022 decision 4 makes that ephemeral pod storage, which
+        is what ``scratch_path`` is.
+        """
+        return {
+            "base_path": self._settings.scratch_path,
+            "service_location_url": self._settings.service_location_url,
+        }
+
+    # -- invocation hooks -------------------------------------------------
+    #
+    # The tool layer is synchronous and runs in a worker thread, so these are
+    # called from off the event loop. They marshal back onto it rather than
+    # touching invocation state from another thread.
+
+    def invocation_thinking(self, message: str) -> None:
+        self._call_async(self._context.thinking(message))
+
+    def invocation_stop_checkpoint(self) -> None:
+        self._call_async(self._context.checkpoint())
+
+    def invocation_process_add(self, process) -> None:
+        self._context.process_add(process)
+
+    def invocation_process_remove(self, process) -> None:
+        self._context.process_remove(process)
+
+    def _call_async(self, coroutine) -> None:
+        import asyncio  # noqa: PLC0415
+
+        if self._loop is None or not self._loop.is_running():
+            coroutine.close()
+            return
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        # Propagates InvocationCancelled out of checkpoint() into the engine's
+        # thread, which is how a cancel actually stops the work.
+        future.result()
+
+
+_BOUND_HOST_CACHE: dict[type, type] = {}
+
+
+def _bound_host_class(method_mixin: type) -> type:
+    """Compose the copied tool layer onto the host that satisfies it.
+
+    ``tool_operations.Method`` is a mixin with no ``__init__``; the legacy
+    service mixed it into the Pylon module. Here it is mixed into
+    :class:`ToolHost`, which supplies the five hooks it calls back into.
+
+    Cached because composing it per invocation would rebuild the class on
+    every request.
+    """
+    cached = _BOUND_HOST_CACHE.get(method_mixin)
+    if cached is None:
+        cached = type("BoundToolHost", (method_mixin, ToolHost), {})
+        _BOUND_HOST_CACHE[method_mixin] = cached
+    return cached
+
+
+class LegacyToolRunner:
+    """Dispatches SPI invocations into the copied tool layer and engine.
+
+    ``tools`` injects callables in place of the real tool layer. That is not a
+    convenience: it is how the composition path is tested against the P0
+    fixture without the engine's ~1.1 GB dependency closure, and it mirrors how
+    the fixture was recorded.
     """
 
     name = "legacy"
 
-    def __init__(self, tools: dict[str, Callable[..., Any]] | None = None) -> None:
+    def __init__(
+        self,
+        settings=None,
+        tools: dict[str, Callable[..., Any]] | None = None,
+    ) -> None:
+        self._settings = settings
         self._tools = tools
 
-    def _tool(self, name: str) -> Callable[..., Any]:
+    def _bound_tool(self, name: str, context: InvocationContext) -> Callable[..., Any]:
         if self._tools is not None:
             try:
                 return self._tools[name]
             except KeyError:
                 raise FileNotFoundError(f"Unknown tool: {name}") from None
 
-        # Imported here, not at module scope: the SPI shell image does not
-        # carry torch, and importing the engine at startup would make an
+        # Imported here, not at module scope: the default image does not carry
+        # the engine closure, and importing it at startup would make an
         # engine-less deployment fail to boot rather than refuse per tool.
-        from .engine.wiki_toolkit_wrapper import WikiToolkitWrapper  # noqa: PLC0415
+        from .tool_operations import Method  # noqa: PLC0415
 
-        wrapper = WikiToolkitWrapper()
-        try:
-            return getattr(wrapper, name)
-        except AttributeError:
-            raise FileNotFoundError(f"Unknown tool: {name}") from None
+        if getattr(Method, name, None) is None:
+            raise FileNotFoundError(f"Unknown tool: {name}")
+
+        settings = self._settings
+        if settings is None:
+            from .config import Settings  # noqa: PLC0415
+
+            settings = Settings.from_env()
+
+        # The whole mixin is composed onto the host, not just the one method:
+        # ``generate_wiki`` calls ``self._run_wiki_subprocess`` and
+        # ``self._run_wiki_job``, ``ask`` calls ``self._run_ask_subprocess``,
+        # and binding a single function leaves those unresolvable. Found by
+        # running it.
+        host = _bound_host_class(Method)(settings, context)
+        return getattr(host, name)
 
     async def invoke(
         self,
@@ -335,7 +441,7 @@ class LegacyToolRunner:
         import asyncio  # noqa: PLC0415
         import functools  # noqa: PLC0415
 
-        tool = self._tool(tool_name)
+        tool = self._bound_tool(tool_name, context)
         arguments = _arguments_for(tool_name, params)
 
         # The engine is synchronous and CPU/IO heavy. Running it on the event
@@ -365,7 +471,11 @@ def _arguments_for(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
             "indexing_method": params.get("indexing_method", "filesystem"),
             "planner_mode": params.get("planner_mode") or params.get("planner_type"),
             "exclude_tests": params.get("exclude_tests"),
-            "run_in_subprocess": True,
+            # The legacy handler hardcoded True. It stays the default — the
+            # recorded engine_call has it — but is overridable, because
+            # out-of-process execution is not repointed at this layout yet and
+            # in-process is the only path that currently runs.
+            "run_in_subprocess": params.get("run_in_subprocess", True),
         }
 
     if tool_name in ("ask", "deep_research"):
@@ -451,6 +561,7 @@ def transform_query_request(request_data: dict[str, Any]) -> dict[str, Any]:
 __all__ = [
     "DEFAULT_BUCKET",
     "LegacyToolRunner",
+    "ToolHost",
     "compose_result_objects",
     "merge_parameters",
     "transform_query_request",

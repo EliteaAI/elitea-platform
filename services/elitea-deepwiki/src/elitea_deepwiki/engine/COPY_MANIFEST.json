@@ -413,5 +413,38 @@
       "bytes": 10740,
       "sha256": "c99eba2ece7e19f32da3a11ac0bd54c90f588747f161663836d29ab618f995b3"
     }
+  },
+  "transformed_files": {
+    "methods/tool_operations.py": {
+      "target": "src/elitea_deepwiki/tool_operations.py",
+      "bytes": 60566,
+      "sha256": "5c93c30c0ba393a3400d0b2ba2ff891a70f8d8adbf2621701a963d64b862d136",
+      "substitutions": [
+        {
+          "from": "from pylon.core.tools import log, web",
+          "to": "import logging\n\nlog = logging.getLogger(__name__)"
+        },
+        {
+          "from": "    @web.method()\n",
+          "to": ""
+        },
+        {
+          "from": "from ..plugin_implementation.",
+          "to": "from .engine."
+        },
+        {
+          "from": "\"plugin_implementation.wiki_subprocess_worker\"",
+          "to": "\"elitea_deepwiki.engine.wiki_subprocess_worker\""
+        },
+        {
+          "from": "\"plugin_implementation.ask_subprocess_worker\"",
+          "to": "\"elitea_deepwiki.engine.ask_subprocess_worker\""
+        },
+        {
+          "from": "\"plugin_implementation.deep_research_subprocess_worker\"",
+          "to": "\"elitea_deepwiki.engine.deep_research_subprocess_worker\""
+        }
+      ]
+    }
   }
 }

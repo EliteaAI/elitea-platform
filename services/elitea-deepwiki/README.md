@@ -3,14 +3,14 @@
 The standalone DeepWiki provider service — the ADR-0022 port of the legacy
 `deepwiki_plugin` Pylon module.
 
-**Status: SPI, storage layer and engine are all here; execution is not yet
-wired end to end.** The service serves the whole frozen provider contract. The
-retrieval storage layer (ADR-0022 decision 3) is ported and parity-gated. The
-~90.5k-line analysis engine has been plain-copied and the dispatch adapter is
-in place — but the engine's dependency closure is an optional extra and
-out-of-process execution has not been repointed at the new layout, so a default
-build still refuses every tool. See [Engine](#engine) and
-[What is not wired yet](#what-is-not-wired-yet).
+**Status: it runs.** A real `generate_wiki` has been driven through the frozen
+SPI, into the copied tool layer, out to a subprocess worker and back with the
+frozen artifact set — clone, index, repository analysis, structure planning,
+page generation, composition. See [Running it end to end](#running-it-end-to-end).
+
+The engine's dependency closure stays an optional extra, so a default build
+still refuses every tool and says so in `GET /health`. The Kubernetes-Job path
+is still not repointed. See [What is not wired yet](#what-is-not-wired-yet).
 
 ## What is here
 
@@ -35,6 +35,7 @@ services/elitea-deepwiki/
 │       └── migrate.py   versioned, checksummed migrations
 ├── migrations/          service-owned SQL, applied against the deepwiki DB
 ├── tools/               refresh_engine_copy.py — re-copy and re-digest
+├── e2e/                 the end-to-end harness + a deterministic LLM stub
 ├── tests/
 │   ├── conformance/     replays the P0 SPI fixtures against the real app
 │   ├── engine/          copy digests + the dispatch/composition adapter
@@ -129,26 +130,77 @@ default text and classifies as `service_busy`. Verified against the legacy
 decision 2 freezes the error contract; changing a visible category needs its
 own decision.
 
-## What is not wired yet
+## Running it end to end
 
-The engine is present and dispatchable in-process. Three things stand between
-that and a working `generate_wiki`:
+`e2e/` holds the harness and its own README. It needs the `engine` extra
+(~1.1 GB) and a local git daemon, and is deliberately not in CI. The LLM is a
+local deterministic stub — the pipeline is under test, not the prose.
+
+### What running it found
+
+Nine defects and contract details, none of which were visible from reading:
+
+1. **The tool layer was left behind.** `methods/tool_operations.py` — 1403
+   lines — holds the real `generate_wiki`/`ask`/`deep_research`, the subprocess
+   and Job launchers and the worker-slot accounting. It lives under `methods/`,
+   so it looked like part of the Pylon shim. It needs exactly five hooks from
+   its host, which `ToolHost` supplies.
+2. **Binding one method is not enough.** `generate_wiki` calls
+   `self._run_wiki_subprocess`; the whole mixin has to be composed onto the
+   host, not a single function bound to it.
+3. **`from ..plugin_implementation.` escaped the package** at the new depth
+   (5 sites).
+4. **The subprocess worker module name was unresolvable in the child.** The
+   launcher picks a name by importing it in the *parent*, where the
+   compatibility alias exists; the child has only `sys.path` and no alias.
+   Naming the real module fixes it (3 sites).
+5. **The in-process path requires `openai_api_base` / `openai_api_key`;** the
+   subprocess worker accepts `api_base` / `api_key` too. A caller that sends
+   only the short spelling works out-of-process and fails in-process.
+6. **`embedding_model` must be a string,** despite the descriptor declaring it
+   as `JSON`: the engine passes it straight to `OpenAIEmbeddings(model=...)`.
+7. **`repository` and `active_branch` sit at the toolkit level,** not inside
+   `github_configuration`. The P0 SPI fixture's example request put them
+   inside, which yields `repo_config["repository"] = None` and
+   "GitHub repository not specified" — the example was never a valid request.
+8. **GitHub reads `base_url`; GitLab reads `url`.** Not interchangeable.
+9. **The subprocess workers stream.** They build their LLM with
+   `streaming=True` and fail with "No generations found in stream" against a
+   non-streaming endpoint.
+
+### The finding that matters most
+
+**`run_in_subprocess` is not a performance switch — it changes the result.**
+
+In-process the pipeline completes, but the composed set is a *subset*: no
+`wiki_manifest`, and `repository_context` loses its `{wiki_id}/` prefix. The
+manifest, the wiki id and the registry metadata are built by
+`wiki_subprocess_worker`, not by the in-process wrapper.
+
+So the frozen artifact set decision 2 pins is produced **only** by the
+out-of-process path. The composition fixtures would not catch a regression
+here, because they test the composer *given* a worker result rather than the
+worker itself — which is exactly why this run exists.
+
+## What is not wired yet
 
 1. **The dependency closure is optional.** `pip install -e ".[engine]"`
    installs the 92 pins from the legacy `requirements.txt` (torch,
    transformers, faiss-cpu, tree-sitter grammars). The default image does not
    carry it, which is why the default runner refuses.
-2. **Out-of-process execution is not repointed.** ADR-0022 decision 7 keeps
-   heavy work in subprocesses and Kubernetes Jobs. `k8s_job_manager` still
-   builds a `PYTHONPATH` from the legacy filesystem layout
-   (`/data/plugins/deepwiki_plugin`) and runs
-   `plugin_implementation/wiki_job_worker.py` as a file — paths that do not
-   exist here. A fresh worker process also never imports the engine package,
-   so the compatibility alias is not installed there. A test pins this so the
-   green suite cannot be read as "out-of-process execution works".
+2. **The Kubernetes-Job path is not repointed.** Subprocess mode works; the Job
+   path still builds a `PYTHONPATH` from the legacy filesystem layout
+   (`/data/plugins/deepwiki_plugin`), runs
+   `plugin_implementation/wiki_job_worker.py` as a file, expects the
+   licence-credential init container ADR-0022 drops, and passes secrets through
+   Job environment variables where the ADR requires projected files. A test
+   pins this.
 3. **Credentials and artifacts.** The facade has to pass artifact base URL and
-   token explicitly (decision 6); nothing here derives them any more, which
-   means nothing here can currently fetch or store an artifact either.
+   token explicitly (decision 6); nothing here derives them any more, so
+   nothing here can currently fetch or store a platform artifact.
+4. **Storage.** The engine still writes its own SQLite/FAISS files. The
+   PostgreSQL backend exists and is parity-gated but is not yet the engine's
+   storage layer — that wiring is the next slice.
 
 ## The storage layer
 
@@ -263,12 +315,13 @@ podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
 - [x] **Move the engine** — 101 files, plain copy, digest-guarded, wired behind
       the `ToolRunner` seam with the composition gated by
       `conformance/fixtures/generation/composed_result.json`.
-- [ ] **Repoint out-of-process execution** — a new worker entry point for
-      subprocess and Kubernetes-Job mode, replacing the legacy filesystem
-      `PYTHONPATH`; drop the licence-credential init container; secrets to Jobs
-      via projected files, not environment variables.
-- [ ] **Run the engine end to end** with the `engine` extra installed, against
-      a real repository, and record what breaks.
+- [x] **Run the engine end to end** — done, with the findings above.
+- [ ] **Repoint the Kubernetes-Job path** — a worker entry point replacing the
+      legacy filesystem `PYTHONPATH`; drop the licence-credential init
+      container; secrets to Jobs via projected files, not environment
+      variables.
+- [ ] **Point the engine at the PostgreSQL backend** — it still writes its own
+      per-wiki files; the parity-gated backend is not yet its storage layer.
 - [x] **The storage port** — done for retrieval: the backend interface,
       the PostgreSQL implementation and migration 0001, parity-gated against
       `conformance/fixtures/retrieval/`.

@@ -85,6 +85,8 @@ class Invocation:
     stop_requested: bool = False
     custom_events: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
+    #: Child processes spawned by the tool layer, terminated on cancel.
+    processes: list[Any] = field(default_factory=list)
 
     def is_terminal(self) -> bool:
         return self.status == InvocationStatus.STOPPED
@@ -225,13 +227,52 @@ class InvocationContext:
         await self._manager.store.update(self._invocation)
 
     async def checkpoint(self) -> None:
-        """Cooperative cancellation point (legacy ``invocation_stop_checkpoint``)."""
-        if self._invocation.stop_requested:
-            raise InvocationCancelled(self._invocation.invocation_id)
+        """Cooperative cancellation point (legacy ``invocation_stop_checkpoint``).
+
+        Terminates tracked child processes before raising, as the legacy
+        version did: a cancelled generation must not leave a worker running.
+        """
+        if not self._invocation.stop_requested:
+            return
+        self._terminate_processes()
+        raise InvocationCancelled(self._invocation.invocation_id)
+
+    def _terminate_processes(self) -> None:
+        for process in list(self._invocation.processes):
+            try:
+                if process.poll() is not None:
+                    continue
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except Exception:  # noqa: BLE001 - fall through to kill
+                    process.kill()
+                    try:
+                        process.wait(timeout=1)
+                    except Exception:  # noqa: BLE001 - nothing more to do
+                        pass
+            except Exception:  # noqa: BLE001 - a dead handle is not an error
+                logger.debug("failed to terminate a tracked process", exc_info=True)
 
     @property
     def stop_requested(self) -> bool:
         return self._invocation.stop_requested
+
+    def process_add(self, process) -> None:
+        """Track a child process so cancellation can terminate it.
+
+        The legacy ``invocation_process_add``. The tool layer registers every
+        subprocess worker it spawns; without this, a cancel would set the flag
+        and the child would keep running to completion.
+        """
+        self._invocation.processes.append(process)
+
+    def process_remove(self, process) -> None:
+        """Stop tracking a child process that has exited."""
+        try:
+            self._invocation.processes.remove(process)
+        except ValueError:
+            pass
 
 
 class InvocationManager:
