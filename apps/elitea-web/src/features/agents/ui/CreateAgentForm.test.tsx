@@ -150,6 +150,32 @@ describe('CreateAgentForm', () => {
     expect(screen.queryByText('Be helpful.')).not.toBeInTheDocument();
   });
 
+  it('renders no action row above the editor when no AI-edit slot is supplied', () => {
+    // The wrapper carries its own bottom margin, so rendering it around an empty slot
+    // would leave a permanent gap above the instructions editor. The "Edit with AI"
+    // trigger is absent in every deployment whose backend cannot serve it, which makes
+    // the empty case the common one rather than the exception.
+    renderWithProviders(
+      <CreateAgentForm
+        values={baseValues}
+        onFieldChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('agent-instructions-ai-edit-slot')).not.toBeInTheDocument();
+  });
+
+  it('renders the action row when an AI-edit slot is supplied', () => {
+    renderWithProviders(
+      <CreateAgentForm
+        values={baseValues}
+        onFieldChange={vi.fn()}
+        instructionsAiEditSlot={<button type="button">Edit with AI</button>}
+      />,
+    );
+    expect(screen.getByTestId('agent-instructions-ai-edit-slot')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit with AI' })).toBeInTheDocument();
+  });
+
   it('renders the welcome message input with the current value', () => {
     renderWithProviders(
       <CreateAgentForm

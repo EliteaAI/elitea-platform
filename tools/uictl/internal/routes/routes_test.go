@@ -214,3 +214,80 @@ func TestLoadNewRoutes(t *testing.T) {
 		t.Fatal("expected error for non-array export")
 	}
 }
+
+// nestedSettingsBaseline reproduces the settings subtree shape that arrived
+// with baseline 20b23c42: a nested <Route path="project-context"> parent with
+// its own index and an "edit" child, and an index redirect that points at a
+// tab OTHER than model-configuration.
+func nestedSettingsBaseline(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("src/routes.js", `const RouteDefinitions = {
+  Settings: '/settings',
+  ProjectContext: '/settings/project-context',
+  ProjectContextEdit: '/settings/project-context/edit',
+};
+export default RouteDefinitions;
+`)
+	write("src/[fsd]/app/routes/ProtectedRoutes.jsx", `return (
+  <Routes>
+    <Route path={RouteDefinitions.Settings} element={<Settings />}>
+      <Route index element={<Navigate to="project-general" replace />} />
+      <Route path="project-general" element={<ProjectGeneralPage />} />
+      <Route path="project-context">
+        <Route index element={<ProjectContext />} />
+        <Route path="edit" element={<ProjectContextEdit />} />
+      </Route>
+    </Route>
+  </Routes>
+);
+`)
+	write("src/[fsd]/app/routes/router.jsx", "")
+	return dir
+}
+
+// A nested settings child must be attributed to its PARENT, not flattened onto
+// /settings. Before this, "edit" became "/settings/edit" — a route that does
+// not exist — and the real "/settings/project-context/edit" was reported as
+// declared-but-never-mounted.
+func TestExtractBaseline_NestedSettingsChildKeepsItsParent(t *testing.T) {
+	ext, err := ExtractBaseline(nestedSettingsBaseline(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ext.Mounted["/settings/project-context/edit"] {
+		t.Errorf("nested child not mounted under its parent; got %v", sorted(ext.Mounted))
+	}
+	if ext.Mounted["/settings/edit"] {
+		t.Error(`flattened "/settings/edit" is still produced — the nesting pass did not consume the block`)
+	}
+	if !ext.Mounted["/settings/project-context"] {
+		t.Error("the nested PARENT itself must be mounted (it has an index route)")
+	}
+	if _, declaredOnly := ext.DeclaredOnly["/settings/project-context/edit"]; declaredOnly {
+		t.Error("a mounted nested child must not also be reported as declared-only")
+	}
+}
+
+// The settings index redirect is matched by SHAPE, not by destination: the
+// baseline renamed its landing tab from model-configuration to project-general,
+// and a destination-matching check reported the whole settings index unmounted.
+func TestExtractBaseline_SettingsIndexIsDestinationAgnostic(t *testing.T) {
+	ext, err := ExtractBaseline(nestedSettingsBaseline(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ext.Mounted["/settings (index)"] {
+		t.Errorf("settings index not detected for a non-model-configuration destination; got %v", sorted(ext.Mounted))
+	}
+}

@@ -153,7 +153,10 @@ func (c *GatewayConnectionChecker) ListProviderModels(
 		return ProviderModelListing{}, fmt.Errorf("list provider models: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	llmproxy.SignIdentityHeaders(req.Header, c.identitySecret, connectionCheckProjectIDFrom(ctx), "", "")
+	// No execution id: a connection check is authored by an operator in the
+	// admin UI, not made from a runtime execution. The empty value signs v1,
+	// byte for byte what this call signed before.
+	llmproxy.SignIdentityHeaders(req.Header, c.identitySecret, connectionCheckProjectIDFrom(ctx), "", "", "")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

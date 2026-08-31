@@ -36,6 +36,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/audit"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
@@ -447,6 +448,26 @@ func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
 		apierr.WriteStatus(w, http.StatusNotFound, "user not found")
 		return
 	}
+
+	// Domain meaning for the audit row the middleware is already going to write
+	// for this request (internal/api/middleware/audit.go, DECISION 1). Without
+	// it the trail records "PUT /api/v2/admin/user_suspend/{mode}/{userID}",
+	// which says a suspension happened but not to whom — and "which account was
+	// suspended, and when" is the question this row exists to answer.
+	//
+	// AFTER the update, not before: an annotation on a request that then failed
+	// would describe a suspension that did not happen. The row's `is_error` and
+	// `status_code` still record the failed attempt either way, at route
+	// granularity.
+	action := "user.unsuspend"
+	if *body.Suspended {
+		action = "user.suspend"
+	}
+	audit.Annotate(r.Context(), audit.Annotation{
+		Action:     action,
+		EntityType: "user",
+		EntityID:   audit.ID(int64(userID)),
+	})
 
 	writeJSON(w, http.StatusOK, map[string]any{"id": userID, "suspended": *body.Suspended})
 }

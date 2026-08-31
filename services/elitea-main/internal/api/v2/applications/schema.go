@@ -9,6 +9,13 @@ import (
 // LATEST_VERSION_NAME) and with the repository's own CreateVersion default.
 const defaultVersionName = "base"
 
+// defaultVersionMetaKey is the applications.meta key recording which version is
+// the application's default. application_versions has no is_default column —
+// the fact lives on the owning applications row, and both this package's Get
+// and repos/applications.go's scanVersion derive the per-version flag from it.
+// Kept in step with repos.defaultVersionMetaKey, which writes it.
+const defaultVersionMetaKey = "default_version_id"
+
 // tenantSchema returns the project's tenant schema as a fully quoted
 // PostgreSQL identifier (e.g. `"p_1"`), ready to interpolate with %s, and
 // false when projectID — a raw chi.URLParam — is not a plain decimal id.

@@ -1,11 +1,12 @@
 /**
- * events.ts is GENERATED (scripts/gen-socket-contract.mjs) — these tests
- * assert the generated output's runtime shape and invariants, not
- * generation mechanics (covered by scripts/lib/socket-contract-core.test.mjs).
+ * events.ts is hand-maintained (its generator was retired with the Go
+ * prototype socket.io server it read as a required input, #126) — these
+ * tests are the drift guard that stood in the generator's place: they pin
+ * the 43-event catalogue and every contract's runtime shape.
  */
 import { describe, expect, it } from 'vitest';
 
-import { EVENTS_WITHOUT_SERVER_HANDLER, SOCKET_EVENTS, SOCKET_EVENT_NAMES } from './events';
+import { SOCKET_EVENTS, SOCKET_EVENT_NAMES } from './events';
 
 describe('SOCKET_EVENT_NAMES', () => {
   it('catalogues exactly the 43 events from constants.js:881-936', () => {
@@ -37,8 +38,6 @@ describe('SOCKET_EVENTS registry', () => {
       expect(contract.name).toBe(name);
       expect(['emit', 'receive', 'bidirectional']).toContain(contract.direction);
       expect(contract.evidence.length).toBeGreaterThan(0);
-      expect(typeof contract.hasServerHandler).toBe('boolean');
-      expect(typeof contract.serverEmits).toBe('boolean');
     }
   });
 
@@ -58,31 +57,17 @@ describe('SOCKET_EVENTS registry', () => {
     }
   });
 
-  it('reports exactly 13/43 events with a registered server handler — the documented research finding', () => {
-    const withHandler = SOCKET_EVENT_NAMES.filter((n) => SOCKET_EVENTS[n].hasServerHandler);
-    expect(withHandler).toHaveLength(13);
-    expect([...withHandler].sort()).toEqual(
-      [
-        'chat_predict', 'chat_continue_predict', 'application_continue_message', 'chat_enter_room',
-        'chat_leave_rooms', 'application_predict', 'application_leave_rooms', 'promptlib_predict',
-        'promptlib_leave_rooms', 'chat_canvas_join', 'chat_canvas_leave_rooms', 'chat_canvas_edit',
-        'test_mcp_connection',
-      ].sort(),
-    );
-  });
-
-  it('EVENTS_WITHOUT_SERVER_HANDLER is exactly the complement (30 events)', () => {
-    expect(EVENTS_WITHOUT_SERVER_HANDLER).toHaveLength(30);
-    for (const name of EVENTS_WITHOUT_SERVER_HANDLER) {
-      expect(SOCKET_EVENTS[name].hasServerHandler).toBe(false);
+  it('cites only client-side evidence — no elitea-main path may reappear', () => {
+    // The contract used to carry evidence lines and a `hasServerHandler`
+    // flag derived from services/elitea-main/internal/api/socketio/server.go.
+    // That file was deleted with #126 and the service mounts no socket.io
+    // path at all, so any citation of it is a claim about code that does not
+    // exist. This is the guard that keeps one from being pasted back.
+    for (const name of SOCKET_EVENT_NAMES) {
+      for (const line of SOCKET_EVENTS[name].evidence) {
+        expect(line).not.toContain('services/elitea-main');
+      }
     }
-  });
-
-  it('chat_canvas_editor_joined and chat_canvas_content_change have no registered handler but ARE server-emitted (the documented asymmetry)', () => {
-    expect(SOCKET_EVENTS.chat_canvas_editor_joined.hasServerHandler).toBe(false);
-    expect(SOCKET_EVENTS.chat_canvas_editor_joined.serverEmits).toBe(true);
-    expect(SOCKET_EVENTS.chat_canvas_content_change.hasServerHandler).toBe(false);
-    expect(SOCKET_EVENTS.chat_canvas_content_change.serverEmits).toBe(true);
   });
 });
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/contextsettings"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 
@@ -170,7 +172,7 @@ type Repository interface {
 	Get(ctx context.Context, projectID, conversationID string) (Conversation, error)
 	Create(ctx context.Context, projectID string, conv Conversation) (Conversation, error)
 	Update(ctx context.Context, projectID, conversationID string, conv Conversation) (Conversation, error)
-	Delete(ctx context.Context, projectID, conversationID string) error
+	Delete(ctx context.Context, projectID, conversationID string) ([]AttachmentRef, error)
 	ListMessages(ctx context.Context, projectID, conversationID string, query MessagesQuery) (MessagesListResponse, error)
 	ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
 	ListParticipants(ctx context.Context, projectID, conversationID string) ([]Participant, error)
@@ -186,18 +188,30 @@ type Repository interface {
 	UpdateAttachmentStorage(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	AddAttachments(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	DeleteAttachments(ctx context.Context, projectID, conversationID string) error
-	GetContextAnalytics(ctx context.Context, projectID, conversationID string) (map[string]any, error)
-	UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error
+	GetContextState(ctx context.Context, projectID, conversationID string) (contextsettings.ConversationState, error)
+	UpdateContextStrategy(ctx context.Context, projectID, conversationID string, strategy contextsettings.Strategy) error
 	GetMessageByUUID(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	DeleteMessages(ctx context.Context, projectID, conversationID string) error
 	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (DeleteMessageResult, error)
 }
 
 type Handler struct {
-	repo        Repository
-	pool        any
-	store       storage.ObjectStore
-	attachments AttachmentStore
+	repo         Repository
+	pool         any
+	store        storage.ObjectStore
+	attachments  AttachmentStore
+	userDefaults UserContextDefaults
+}
+
+// UserContextDefaults reads the caller's own context-management defaults —
+// the middle tier of the resolution rule (conversation, then user, then the
+// contract's constants).
+//
+// Declared here rather than imported from internal/infra/db/repos for the same
+// reason AttachmentStore is: this package is imported BY the composition root,
+// so depending on the repository package directly would close an import cycle.
+type UserContextDefaults interface {
+	ContextDefaults(ctx context.Context, userID int64) (contextsettings.UserDefaults, error)
 }
 
 func NewHandler(repo Repository) *Handler {
@@ -224,6 +238,20 @@ func (h *Handler) WithObjectStore(store storage.ObjectStore) *Handler {
 // import (an import cycle).
 func (h *Handler) WithAttachmentStore(store AttachmentStore) *Handler {
 	h.attachments = store
+	return h
+}
+
+// WithUserContextDefaults wires the middle tier of the context-strategy
+// resolution rule.
+//
+// Left nil, the context routes still work and simply skip that tier: a
+// conversation with a stored strategy is unaffected, and one without falls
+// straight through to the contract's constants. That is a degraded answer, not
+// a wrong one, which is why it is an option rather than a constructor
+// argument — a composition with no database pool can build neither this nor
+// the repository behind it.
+func (h *Handler) WithUserContextDefaults(defaults UserContextDefaults) *Handler {
+	h.userDefaults = defaults
 	return h
 }
 
@@ -466,14 +494,53 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// Delete removes a conversation and, with it, the stored bytes of every
+// attachment its messages carried.
+//
+// The byte cleanup is NOT opt-in here, and that is the one place this route
+// deliberately differs from DeleteMessage's `delete_attachment` flag. A message
+// delete leaves the rest of the conversation standing, so keeping the files is
+// a defensible choice a client can make; deleting the conversation removes
+// every row that named them — the groups, the items, the
+// chat_messages_attachment rows — so there is nothing left in the product that
+// could ever show, download or delete those files again. Leaving them was not
+// "keeping" them, it was leaking them until the retention sweeper
+// (internal/runtimecomposition/artifact_retention_sweep.go) happened to expire
+// them.
+//
+// The ORDER is the one Handler.DeleteMessage explains at length: the repository
+// applies its guards, collects the refs inside its transaction and commits, and
+// only then are the bytes touched. Pylon's opposite order destroys files for
+// requests that go on to refuse; the cost of this one — rows gone, bytes not —
+// is bounded, because the objects are still recorded in
+// `elitea_storage.objects` and the sweeper still finds them.
+//
+// KNOWN RESIDUE, stated rather than implied: this collects the attachments
+// reachable from message items. Bytes uploaded into a conversation that were
+// never sent with a message have no item row, so they are not among the refs
+// and still fall to the sweeper. `DeleteAttachments` (the explicit
+// per-conversation attachment route) is the path that sweeps those by key
+// prefix.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 
-	if err := h.repo.Delete(r.Context(), projectID, conversationID); err != nil {
+	attachments, err := h.repo.Delete(r.Context(), projectID, conversationID)
+	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
+
+	if len(attachments) > 0 {
+		if err := h.deleteAttachmentObjects(r.Context(), projectID, attachments); err != nil {
+			// 500, not 204. The conversation rows are already gone, so
+			// answering success would claim a cleanup that did not happen and
+			// nothing would ever retry it.
+			apierr.Write(w, err)
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1191,30 +1258,142 @@ func (h *Handler) deleteStoredAttachments(ctx context.Context, projectIDStr, con
 	return nil
 }
 
-func (h *Handler) GetContextAnalytics(w http.ResponseWriter, r *http.Request) {
+// GetContextStatus serves pylon's ContextStatus for one conversation:
+// `GET /elitea_core/context_analytics/prompt_lib/{projectID}/{conversationID}`.
+//
+// The `max_tokens` it reports is the RESOLVED strategy's, so a conversation
+// that has never been configured reports the budget its owner's Settings >
+// Memory defaults set, not a constant nobody chose.
+//
+// What it does NOT do is invent the token count. See
+// contextsettings.AnalyticsUnavailableReason for what is refused and why.
+func (h *Handler) GetContextStatus(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
-	analytics, err := h.repo.GetContextAnalytics(r.Context(), projectID, conversationID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"token_count": 0, "max_tokens": 128000})
-		return
-	}
-	writeJSON(w, http.StatusOK, analytics)
-}
 
-func (h *Handler) UpdateContextStrategy(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	conversationID := chi.URLParam(r, "conversationID")
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apierr.Write(w, apierr.BadRequest("invalid request body"))
-		return
-	}
-	if err := h.repo.UpdateContextStrategy(r.Context(), projectID, conversationID, body); err != nil {
+	state, err := h.repo.GetContextState(r.Context(), projectID, conversationID)
+	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	strategy := contextsettings.Resolve(state.Strategy, h.contextDefaults(r))
+	writeJSON(w, http.StatusOK, contextsettings.BuildStatus(strategy, state.Analytics, state.MessageGroupsTotal))
+}
+
+// GetContextStrategy serves the resolved strategy itself, so a client can show
+// what applies to a conversation before anything has been written to it.
+//
+// pylon had no such route - its UI only ever saw a strategy in the response to
+// its own PUT, which meant a conversation nobody had configured could not be
+// displayed without writing to it first. The response is the same document the
+// PUT returns under `updated_strategy`.
+func (h *Handler) GetContextStrategy(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	conversationID := chi.URLParam(r, "conversationID")
+
+	state, err := h.repo.GetContextState(r.Context(), projectID, conversationID)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, contextsettings.Resolve(state.Strategy, h.contextDefaults(r)))
+}
+
+// UpdateContextStrategy is pylon's context_strategy PUT
+// (legacy/plugins/elitea_core/api/v2/context_strategy.py), response shape
+// included: the context status, plus `message` and `updated_strategy`.
+//
+// THE MERGE IS THE POINT. The body is a partial update; it is applied over the
+// RESOLVED strategy (conversation, else user defaults, else constants) and the
+// complete result is stored. The previous implementation wrote the raw body
+// into `meta.context_strategy` wholesale, so a form that sent two fields
+// erased the rest - including `summary_llm_settings`.
+func (h *Handler) UpdateContextStrategy(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	conversationID := chi.URLParam(r, "conversationID")
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
+	update, fieldErr := contextsettings.DecodeStrategyUpdate(body)
+	if fieldErr != nil {
+		writeContextFieldError(w, fieldErr)
+		return
+	}
+
+	ctx := r.Context()
+	state, err := h.repo.GetContextState(ctx, projectID, conversationID)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+
+	merged, fieldErr := contextsettings.Resolve(state.Strategy, h.contextDefaults(r)).Apply(update)
+	if fieldErr != nil {
+		writeContextFieldError(w, fieldErr)
+		return
+	}
+
+	if err := h.repo.UpdateContextStrategy(ctx, projectID, conversationID, merged); err != nil {
+		apierr.Write(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, contextStrategyUpdateResponse(merged, state))
+}
+
+// contextStrategyUpdateResponse is pylon's PUT body: the context status with
+// `message` and `updated_strategy` laid on top, one flat object.
+func contextStrategyUpdateResponse(merged contextsettings.Strategy, state contextsettings.ConversationState) map[string]any {
+	response := map[string]any{}
+	// Marshal-then-unmarshal so the status fields keep the JSON names their
+	// struct tags give them, in one place, instead of being spelled a second
+	// time here where they could drift from the served status document.
+	if encoded, err := json.Marshal(contextsettings.BuildStatus(merged, state.Analytics, state.MessageGroupsTotal)); err == nil {
+		_ = json.Unmarshal(encoded, &response)
+	}
+	response["message"] = "Strategy updated successfully"
+	response["updated_strategy"] = merged
+	return response
+}
+
+// contextDefaults reads the CALLER's defaults, never the conversation author's.
+//
+// That is pylon's behaviour and the only one that is safe here: the defaults
+// live on the author record of whoever is asking, and a conversation can be
+// read by any member of its project. Resolving someone else's Settings >
+// Memory preferences would leak them across a shared conversation.
+//
+// A failure is answered with "no defaults" rather than an error: the tier is a
+// convenience, and losing it degrades to the contract's constants.
+func (h *Handler) contextDefaults(r *http.Request) contextsettings.UserDefaults {
+	if h.userDefaults == nil {
+		return contextsettings.UserDefaults{}
+	}
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		return contextsettings.UserDefaults{}
+	}
+	userID, ok := user.OwningUserID()
+	if !ok {
+		return contextsettings.UserDefaults{}
+	}
+	defaults, err := h.userDefaults.ContextDefaults(r.Context(), userID)
+	if err != nil {
+		return contextsettings.UserDefaults{}
+	}
+	return defaults
+}
+
+// writeContextFieldError answers with this API's validation shape, the same
+// `{"error": ..., "field": ...}` body internal/api/v2/configurations writes.
+func writeContextFieldError(w http.ResponseWriter, fieldErr *contextsettings.FieldError) {
+	writeJSON(w, http.StatusBadRequest, struct {
+		Error string `json:"error"`
+		Field string `json:"field"`
+	}{Error: fieldErr.Message, Field: fieldErr.Field})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import PushPinIcon from '@mui/icons-material/PushPin';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
@@ -40,6 +41,8 @@ interface BucketSidebarProps {
   readonly onStorageChange: (id: string) => void;
   readonly onSelect: (bucket: Bucket) => void;
   readonly onCreate: () => void;
+  /** Bucket EDIT — retention, the one mutable property the API exposes. See `pages/artifacts/CreateBucket.tsx`. */
+  readonly onEdit: (bucket: Bucket) => void;
   readonly onPin: (bucket: Bucket) => Promise<unknown>;
   readonly onDelete: (bucket: Bucket) => Promise<unknown>;
 }
@@ -128,6 +131,15 @@ export function BucketSidebar(props: BucketSidebarProps): ReactNode {
                       onClick={() => void props.onPin(bucket).catch(() => undefined)}
                     >
                       {bucket.isPinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title={t('artifacts.buckets.edit', 'Edit bucket')}>
+                    <IconButton
+                      size="small"
+                      aria-label={`Edit ${bucket.name}`}
+                      onClick={() => props.onEdit(bucket)}
+                    >
+                      <EditOutlinedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title={t('artifacts.buckets.delete', 'Delete bucket')}>

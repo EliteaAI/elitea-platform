@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/mcps` renders index redirect",
       "source": [
-        "apps/elitea-ui/src/routes.js:44",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:221"
+        "apps/elitea-ui/src/routes.js:50",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:260"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -38,8 +38,8 @@
       "priority": "must",
       "title": "Route `/mcps/create` renders CreateToolkit (MCP mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:46",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:222"
+        "apps/elitea-ui/src/routes.js:52",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:261"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -67,8 +67,8 @@
       "priority": "must",
       "title": "Route `/mcps/create/:mcpType` renders CreateToolkit (MCP mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:47",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:223"
+        "apps/elitea-ui/src/routes.js:53",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:262"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -96,8 +96,8 @@
       "priority": "must",
       "title": "Route `/mcps/:tab` renders Toolkits (MCP mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:45",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:224"
+        "apps/elitea-ui/src/routes.js:51",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:263"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -125,8 +125,8 @@
       "priority": "must",
       "title": "Route `/mcps/:tab/:mcpId` renders EditToolkit (MCP mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:48",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:225"
+        "apps/elitea-ui/src/routes.js:54",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:264"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -154,8 +154,8 @@
       "priority": "must",
       "title": "Route `/mcp-auth-callback` renders McpAuthPage",
       "source": [
-        "apps/elitea-ui/src/routes.js:70",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:248"
+        "apps/elitea-ui/src/routes.js:78",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:288"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -439,8 +439,8 @@
       "priority": "must",
       "title": "Socket event `mcp_status` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:914",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useGetCurrentToolkitSchemas.hooks.js:40",
+        "apps/elitea-ui/src/common/constants.js:941",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useGetCurrentToolkitSchemas.hooks.js:41",
         "apps/elitea-ui/src/hooks/application/useAgentMCPToolsStatusMonitor.js:73",
         "apps/elitea-ui/src/hooks/chat/useMCPParticipantStatusMonitor.js:24"
       ],
@@ -470,7 +470,7 @@
       "priority": "must",
       "title": "Socket event `test_mcp_connection` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:917",
+        "apps/elitea-ui/src/common/constants.js:944",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:88"
       ],
       "acceptance": [
@@ -499,10 +499,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `mcp_authorization_required`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:166",
+        "apps/elitea-ui/src/common/constants.js:167",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:59",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:188",
-        "apps/elitea-ui/src/components/Chat/hooks.js:909"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:222",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1106"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -614,7 +614,7 @@
       "priority": "should",
       "title": "Copy: hooks/useMcpAuthModal.hooks.js (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthModal.hooks.js:314"
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthModal.hooks.js:309"
       ],
       "acceptance": [
         "GIVEN the mcps screen renders with the default brand in both colour schemes",
@@ -642,8 +642,8 @@
       "priority": "should",
       "title": "Copy: ui/McpAuthStatus.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpAuthStatus.jsx:124",
-        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpAuthStatus.jsx:124"
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpAuthStatus.jsx:140",
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpAuthStatus.jsx:140"
       ],
       "acceptance": [
         "GIVEN the mcps screen renders with the default brand in both colour schemes",
@@ -671,7 +671,7 @@
       "priority": "should",
       "title": "Copy: ui/McpLogInButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpLogInButton.jsx:27"
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpLogInButton.jsx:26"
       ],
       "acceptance": [
         "GIVEN the mcps screen renders with the default brand in both colour schemes",
@@ -755,8 +755,8 @@
       "priority": "should",
       "title": "Copy: modal/McpAuthModal.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpAuthModal.jsx:383",
-        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpAuthModal.jsx:490"
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpAuthModal.jsx:400",
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpAuthModal.jsx:497"
       ],
       "acceptance": [
         "GIVEN the mcps screen renders with the default brand in both colour schemes",
@@ -871,7 +871,7 @@
       "priority": "must",
       "title": "Journey 18: Create MCP with OAuth callback round trip",
       "source": [
-        "apps/elitea-ui/src/routes.js:70",
+        "apps/elitea-ui/src/routes.js:78",
         "apps/elitea-ui/src/api/mcpOAuth.js:7"
       ],
       "acceptance": [
@@ -890,6 +890,64 @@
       "coverage": {
         "file": "e2e/journeys.spec.ts",
         "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-078",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps/:tab/:mcpId/history` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:55",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:265"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps/:tab/:mcpId/history",
+        "THEN the run history for that MCP server is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-078"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-079",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps/:tab/:mcpId/test` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:56",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:266"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps/:tab/:mcpId/test",
+        "THEN the test console for that MCP server is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-079"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
       },
       "waiver": null
     }

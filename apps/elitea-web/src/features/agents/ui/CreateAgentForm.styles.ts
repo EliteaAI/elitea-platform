@@ -61,6 +61,13 @@ export const instructionsContainerSx: SxProps<Theme> = {
   marginTop: '1rem',
 };
 
+/** The Instructions block's own action row — holds the "Edit with AI" trigger above the editor. */
+export const instructionsAiEditSlotSx: SxProps<Theme> = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  marginBottom: '0.5rem',
+};
+
 export const welcomeMessageInputSx: SxProps<Theme> = {
   marginTop: '1rem',
 };

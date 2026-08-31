@@ -35,7 +35,10 @@ import { RouteError, RoutePending } from '../-ui/RouteStatus';
 import { pickParams } from '../-search/params';
 
 export const Route = createFileRoute('/_shell/chat')({
-  validateSearch: pickParams('conversation', 'edited_participant_id', 'message_id', 'name', 'shared_chat'),
+  // `playback` is declared here, not on the child, for the inheritance
+  // reason this file's header states — but it is only ever MEANINGFUL on
+  // `/chat/$conversationId`: there is nothing to replay without one.
+  validateSearch: pickParams('conversation', 'edited_participant_id', 'message_id', 'name', 'shared_chat', 'playback'),
   beforeLoad: requireChatPermission,
   pendingComponent: RoutePending,
   errorComponent: RouteError,

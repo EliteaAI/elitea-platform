@@ -73,10 +73,13 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   // set on the server side, and the same reason: a section changing status has
   // to be written down next to what justifies it.
   //
-  // These five are marked because this platform genuinely cannot serve them
-  // HERE: three are Pylon plugin configuration, and two are authored on their
-  // own surfaces (LLM Governance at /admin/app/governance, Service Descriptors
-  // on its own page).
+  // These two are marked because this platform genuinely cannot serve them
+  // HERE: both are authored on their own surfaces (LLM Governance at
+  // /admin/app/governance, Service Descriptors on its own page). Observability,
+  // Runtime and Admin Panel used to bring the count to five; they were REMOVED
+  // from the schema entirely rather than ported — see config_schemas.go's
+  // "Observability, Runtime and Admin Panel are GONE too" note — so there is no
+  // row left for them to mark.
   // SCOPED to the section list, not the page. The admin NAV RAIL carries its
   // own "Service Descriptors" and "LLM Governance" entries, so an unscoped
   // `getByRole('button', {name: /LLM Governance/})` matches two elements and
@@ -85,14 +88,8 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   const sections = page.getByRole('navigation', { name: 'Configuration sections' });
   const marks = sections.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  await expect(marks).toHaveCount(5);
-  for (const section of [
-    'Observability',
-    'Runtime',
-    'Admin Panel',
-    'LLM Governance',
-    'Service Descriptors',
-  ]) {
+  await expect(marks).toHaveCount(2);
+  for (const section of ['LLM Governance', 'Service Descriptors']) {
     await expect(
       sections.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
       `${section} is still not configurable here`,
@@ -100,7 +97,7 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   }
 
   // And the sections that LEFT that group are not marked. Asserting only the
-  // five above would pass on a build where Banner and Maintenance had silently
+  // two above would pass on a build where Banner and Maintenance had silently
   // reverted to refusing, since the count would still be right if something
   // else had also changed.
   for (const section of ['Banner', 'Maintenance', 'Guardrails', 'LLM Proxy', 'Authentication']) {
@@ -182,19 +179,44 @@ adminTest('J34b: the sections with no backend say so instead of showing a form',
   //
   // Advanced did not leave this list, it left the PAGE: its subject is Pylon
   // plugin loading, which the target architecture removes deliberately, so the
-  // section is gone rather than permanently withheld.
+  // section is gone rather than permanently withheld. Observability, Runtime
+  // and Admin Panel followed it out the door for the same reason — see
+  // config_schemas.go's "Observability, Runtime and Admin Panel are GONE too"
+  // note — so this loop is repointed at the two names that are still genuinely
+  // unavailable: Service Descriptors and LLM Governance, each pointing an
+  // operator at a page of its own.
   //
   // Every name here has to be a section that is STILL unavailable, or this
   // journey asserts a refusal that no longer happens and would pass only by
   // never reaching the click.
-  for (const section of ['Runtime', 'Admin Panel']) {
-    await page.getByRole('button', { name: new RegExp(section) }).click();
+  //
+  // SCOPED to the section list, for the same reason J34's own click is: the
+  // admin NAV RAIL carries its own "Service Descriptors" and "LLM Governance"
+  // entries, so an unscoped `getByRole('button', {name: /LLM Governance/})`
+  // matches two elements and Playwright's strict mode refuses it.
+  //
+  // Each name carries its OWN expected phrase. One shared regex was wrong here:
+  // `/gateway|page of their own/` matched LLM Governance (whose reason names
+  // /admin/gateway/governance) and silently could not match Service
+  // Descriptors, whose reason is about the pylon provider hub and its ADR-0012
+  // successor. A single alternation over two genuinely different reasons is an
+  // assertion that passes for the wrong section.
+  const sections = page.getByRole('navigation', { name: 'Configuration sections' });
+  const stillUnavailable: ReadonlyArray<readonly [string, RegExp]> = [
+    ['Service Descriptors', /provider hub|ADR-0012|no descriptor store/],
+    ['LLM Governance', /gateway/],
+  ];
+  for (const [section, reason] of stillUnavailable) {
+    await sections.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
     // The reason names the system, so an operator can tell "this platform
     // cannot configure that" from "that is configured to its defaults". A form
     // over defaults would say the second when the truth is the first.
-    await expect(notice).toContainText(/Pylon|gateway|page of their own/);
+    //
+    // No "Pylon" alternative any more: neither remaining name is a Pylon
+    // plugin runtime, so that branch has no section left to match.
+    await expect(notice).toContainText(reason);
     await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
   }
 

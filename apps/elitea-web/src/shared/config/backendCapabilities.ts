@@ -1,13 +1,12 @@
 /**
  * Which optional backend surfaces this platform serves.
  *
- * The Go router registers no handler for five endpoints this SPA can build a
+ * The Go router registers no handler for four endpoints this SPA can build a
  * request for, and `api/openapi/v2.yaml` declares none of them either:
  *
  *   POST /elitea_core/generate_application_draft/prompt_lib/{projectId}
  *   POST /elitea_core/generate_project_context_draft/prompt_lib/{projectId}
  *   POST /elitea_core/generate_skill_draft/prompt_lib/{projectId}
- *   POST /elitea_core/predict_llm/prompt_lib/{projectId}
  *   GET  /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{v}/trigger
  *
  * chi answers `404 page not found` for every one of them, in every profile.
@@ -16,30 +15,56 @@
  * call them can therefore never succeed, and the user reads a failure that no
  * setting can repair.
  *
+ * `predict_llm` USED to be the fifth entry on that list. It is now served, but
+ * only in its blocking mode — which is why the single `aiGeneration` flag that
+ * once covered it had to be split (see the three capabilities below).
+ *
  * The ported hooks, modals and API modules STAY. The backend gap is tracked
- * (#192 webhook trigger, #193 scheduled execution, #194 AI draft and predict),
- * and deleting the port would only mean writing it again. This module hides
- * the affordances until the endpoints land. Turn a capability on in the same
- * change that mounts its routes.
+ * (#192 webhook trigger, #193 scheduled execution, #194 AI draft generation).
+ * This module hides the affordances until the endpoints land. Turn a
+ * capability on in the same change that mounts its routes.
  */
 
 /** One optional backend surface. */
-export type BackendCapability = 'aiGeneration' | 'pipelineTriggers';
+export type BackendCapability =
+  | 'aiGeneration'
+  | 'llmPredictBlocking'
+  | 'llmPredictStreaming'
+  | 'pipelineTriggers';
 
 /**
  * What this build serves.
  *
- * `aiGeneration` covers the agent draft, the project-context draft, the skill
- * draft, and `predict_llm`. `predict_llm` has two senders: the skill test run,
- * and the pipeline AI assistant. The assistant is gated inside
- * `features/pipelines/ui/AIAssistantInput.tsx`, the component that owns the
- * trigger, so every call site is covered by one check.
+ * `aiGeneration` covers the three DRAFT endpoints only — the agent draft, the
+ * project-context draft and the skill draft. None is routed.
+ *
+ * The other two both name `POST /elitea_core/predict_llm/prompt_lib/{id}`, and
+ * they are separate flags because the backend serves ONE of its two modes:
+ *
+ *  - `llmPredictBlocking` — `await_task_timeout: 60`. The generated text comes
+ *    back in the HTTP response. Served. Senders: the agent "Edit with AI"
+ *    affordance (`features/agents/model/useAiEditAvailability.ts`) and the
+ *    canvas mermaid quick-fix (`features/chat-messages/model/useMermaidQuickFix.ts`).
+ *  - `llmPredictStreaming` — `await_task_timeout: 0`. The server starts a task
+ *    and streams its output over an `application_predict` socket.io event. That
+ *    transport does not exist in the Go stack at all, so this stays off no
+ *    matter what the route answers. Senders: the pipeline AI assistant
+ *    (`features/pipelines/ui/AIAssistantInput.tsx`,
+ *    `.../settings/SimpleLLMInputItem.tsx`) and the skill test run
+ *    (`pages/skills/EditSkill.tsx` via `features/skills/api/skillsApi.ts`).
+ *
+ * Collapsing these two back into one flag would light up an affordance whose
+ * transport is missing, which is the same "affordance the user cannot repair"
+ * this module exists to prevent.
+ *
  * `pipelineTriggers` covers the webhook and scheduled trigger types, and the
  * trigger read the application-information panel makes. The Chat Message
  * trigger type calls no endpoint and stays available.
  */
 const SERVED: Readonly<Record<BackendCapability, boolean>> = {
   aiGeneration: false,
+  llmPredictBlocking: true,
+  llmPredictStreaming: false,
   pipelineTriggers: false,
 };
 

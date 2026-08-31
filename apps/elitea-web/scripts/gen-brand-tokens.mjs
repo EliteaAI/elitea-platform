@@ -93,6 +93,20 @@ const SYMMETRY_FILLS = [
     reason:
       'light-only in the baseline, but read unconditionally (ApplicationAnswer.jsx:1020, UserMessage.jsx:286). In dark it currently resolves to undefined and the declaration is dropped; "none" is the exact CSS equivalent.',
   },
+  {
+    id: 'background.folder.shadow',
+    scheme: 'dark',
+    value: '0 0 0 rgba(0, 0, 0, 0)',
+    reason:
+      'Appeared at baseline 20b23c42, light-only, and read unconditionally as an interpolated filter argument: `filter: drop-shadow(${folder.shadow})` (entities/folder/ui/FolderItem.jsx:137,143). In dark it resolves to undefined, which makes the whole filter declaration invalid and therefore dropped, so the folder renders with no drop shadow. A transparent zero-offset shadow is the exact rendering equivalent and is valid CSS — "none" is NOT usable here, because drop-shadow() takes a shadow, not the box-shadow keyword.',
+  },
+  {
+    id: 'background.folder.borderGradient',
+    scheme: 'light',
+    value: 'none',
+    reason:
+      'Appeared at baseline 20b23c42, dark-only, and read unconditionally as `background: folder.borderGradient` (entities/folder/ui/FolderItem.jsx:113). In light it resolves to undefined and the declaration is dropped, leaving the element with no background image; "none" is the exact CSS equivalent for a background shorthand.',
+  },
 ];
 
 /**
@@ -340,6 +354,18 @@ function applySymmetryFills(schemes) {
   for (const fill of SYMMETRY_FILLS) {
     if (fill.id in schemes[fill.scheme]) {
       throw new Error(`symmetry fill ${fill.id} is already present in the ${fill.scheme} scheme`);
+    }
+    // A fill supplies the MISSING half of a token the baseline defines in the
+    // other scheme. If the other scheme has not got it either, the fill is
+    // stale — the baseline dropped the token, or the pin moved backwards — and
+    // applying it would invent a token no baseline has. Say so here rather
+    // than letting it surface later as "schemes still asymmetric", which names
+    // the symptom and not the stale table entry.
+    const other = fill.scheme === 'light' ? 'dark' : 'light';
+    if (!(fill.id in schemes[other])) {
+      throw new Error(
+        `stale symmetry fill ${fill.id}: absent from BOTH schemes in this baseline, so there is no asymmetry to fill`,
+      );
     }
     schemes[fill.scheme][fill.id] = fill.value;
   }

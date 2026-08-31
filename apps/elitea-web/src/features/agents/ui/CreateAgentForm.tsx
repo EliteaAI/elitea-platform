@@ -22,6 +22,7 @@ import {
   conversationStartersSx,
   descriptionCharactersLabelSx,
   descriptionWrapperSx,
+  instructionsAiEditSlotSx,
   instructionsContainerSx,
   nameCharactersLabelSx,
   nameContainerSx,
@@ -234,7 +235,37 @@ export interface CreateAgentFormProps {
    * `AgentEditor.tsx`'s `renderLlmModelSelector` is a slot.
    */
   readonly modelSettingsSlot?: ReactNode | undefined;
+  /**
+   * The "Edit with AI" trigger for the Instructions field
+   * (`features/agents`' `EditInstructionsWithAiButton`). Rendered beside the
+   * Instructions block, and omitted entirely when the caller has nothing to
+   * mount — the button gates itself on top of that (see its own doc
+   * comment), so a caller passing it never has to know whether the backend
+   * serves the feature.
+   */
+  readonly instructionsAiEditSlot?: ReactNode | undefined;
   readonly sx?: SxProps<Theme> | undefined;
+}
+
+/**
+ * The Instructions block's action row. The wrapper carries its own bottom margin, so
+ * it must not render at all when the slot is empty -- an empty row would still push
+ * the editor down. That is the common case rather than the exception: the "Edit with
+ * AI" trigger is backed by an endpoint no deployment routes today, so the caller
+ * frequently has nothing to mount here.
+ */
+function InstructionsAiEditRow({ slot }: { readonly slot?: ReactNode | undefined }) {
+  if (!slot) {
+    return null;
+  }
+  return (
+    <Box
+      data-testid="agent-instructions-ai-edit-slot"
+      sx={instructionsAiEditSlotSx}
+    >
+      {slot}
+    </Box>
+  );
 }
 
 export function CreateAgentForm({
@@ -247,6 +278,7 @@ export function CreateAgentForm({
   iconSlot,
   tagsSlot,
   modelSettingsSlot,
+  instructionsAiEditSlot,
   sx,
 }: CreateAgentFormProps): ReactNode {
   const versionDetails = values.version_details;
@@ -323,6 +355,7 @@ export function CreateAgentForm({
       />
       {showInstructions && (
         <Box sx={instructionsContainerSx}>
+          <InstructionsAiEditRow slot={instructionsAiEditSlot} />
           <InstructionsInput
             instructions={versionDetails?.instructions}
             onInstructionsChange={state.onInstructionsChange}

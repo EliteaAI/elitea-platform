@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 adk-anthropic = "=2.0.0"
+adk-runner = { version = "=2.0.0", default-features = false, features = ["context-compaction"] }
 adk-rust = { version = "=2.0.0", default-features = false, features = ["agents", "runner", "sessions", "models", "anthropic", "graph", "tools", "mcp-http"] }
 async-stream = "=0.3.6"
 async-trait = "=0.1.92"

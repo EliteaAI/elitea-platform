@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/contextsettings"
 )
 
 // mockRepo implements conversations.Repository for testing.
@@ -37,8 +39,8 @@ type mockRepo struct {
 	updateAttachmentStorageFn func(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	addAttachmentsFn          func(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	deleteAttachmentsFn       func(ctx context.Context, projectID, conversationID string) error
-	getContextAnalyticsFn     func(ctx context.Context, projectID, conversationID string) (map[string]any, error)
-	updateContextStrategyFn   func(ctx context.Context, projectID, conversationID string, body map[string]any) error
+	getContextStateFn         func(ctx context.Context, projectID, conversationID string) (contextsettings.ConversationState, error)
+	updateContextStrategyFn   func(ctx context.Context, projectID, conversationID string, strategy contextsettings.Strategy) error
 	getMessageByUUIDFn        func(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	deleteMessagesFn          func(ctx context.Context, projectID, conversationID string) error
 	deleteMessageFn           func(ctx context.Context, projectID, groupUID string) error
@@ -55,8 +57,12 @@ type mockRepo struct {
 	// groups had stored, which the handler only acts on when the request asks
 	// for it with `delete_attachment`.
 	deleteMessageAttachments []conversations.AttachmentRef
-	listMessageGroupsFn      func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
-	listParticipantsFn       func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
+	// deleteConversationAttachments is what a conversation delete reports it
+	// removed rows for. The handler acts on it unconditionally — deleting the
+	// conversation leaves nothing that could ever name those files again.
+	deleteConversationAttachments []conversations.AttachmentRef
+	listMessageGroupsFn           func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
+	listParticipantsFn            func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
 }
 
 func (m *mockRepo) List(ctx context.Context, projectID string, page, pageSize int) (conversations.ListResponse, error) {
@@ -75,8 +81,19 @@ func (m *mockRepo) Update(ctx context.Context, projectID, conversationID string,
 	return m.updateFn(ctx, projectID, conversationID, conv)
 }
 
-func (m *mockRepo) Delete(ctx context.Context, projectID, conversationID string) error {
-	return m.deleteFn(ctx, projectID, conversationID)
+// Delete reports the attachments the deleted conversation carried, the way the
+// real repository does. `deleteFn` stays error-only because every existing
+// caller only ever wanted to choose between success and a refusal; a nil
+// `deleteFn` is a plain success, so a test that cares only about the
+// attachments does not have to state one.
+func (m *mockRepo) Delete(ctx context.Context, projectID, conversationID string) ([]conversations.AttachmentRef, error) {
+	if m.deleteFn != nil {
+		if err := m.deleteFn(ctx, projectID, conversationID); err != nil {
+			// Nothing to clean up: the row delete never became a fact.
+			return nil, err
+		}
+	}
+	return m.deleteConversationAttachments, nil
 }
 
 func (m *mockRepo) ListMessages(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
@@ -131,12 +148,15 @@ func (m *mockRepo) DeleteAttachments(ctx context.Context, projectID, conversatio
 	return m.deleteAttachmentsFn(ctx, projectID, conversationID)
 }
 
-func (m *mockRepo) GetContextAnalytics(ctx context.Context, projectID, conversationID string) (map[string]any, error) {
-	return m.getContextAnalyticsFn(ctx, projectID, conversationID)
+func (m *mockRepo) GetContextState(ctx context.Context, projectID, conversationID string) (contextsettings.ConversationState, error) {
+	if m.getContextStateFn == nil {
+		return contextsettings.ConversationState{}, nil
+	}
+	return m.getContextStateFn(ctx, projectID, conversationID)
 }
 
-func (m *mockRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error {
-	return m.updateContextStrategyFn(ctx, projectID, conversationID, body)
+func (m *mockRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, strategy contextsettings.Strategy) error {
+	return m.updateContextStrategyFn(ctx, projectID, conversationID, strategy)
 }
 
 func (m *mockRepo) ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error) {
@@ -208,7 +228,8 @@ func newRouter(h *conversations.Handler) chi.Router {
 		r.Put("/{conversationID}/attachment-storage", h.UpdateAttachmentStorage)
 		r.Post("/{conversationID}/attachments", h.AddAttachments)
 		r.Delete("/{conversationID}/attachments", h.DeleteAttachments)
-		r.Get("/{conversationID}/context-analytics", h.GetContextAnalytics)
+		r.Get("/{conversationID}/context-analytics", h.GetContextStatus)
+		r.Get("/{conversationID}/context-strategy", h.GetContextStrategy)
 		r.Put("/{conversationID}/context-strategy", h.UpdateContextStrategy)
 	})
 	return r
@@ -1279,16 +1300,33 @@ func TestDeleteAttachments_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetContextAnalytics
+// Context status and context strategy
 // ---------------------------------------------------------------------------
 
-func TestGetContextAnalytics_Success(t *testing.T) {
-	repo := &mockRepo{
-		getContextAnalyticsFn: func(_ context.Context, _, _ string) (map[string]any, error) {
-			return map[string]any{"token_count": 42, "max_tokens": 128000}, nil
+// storedStateRepo answers GetContextState with one fixed state.
+func storedStateRepo(state contextsettings.ConversationState) *mockRepo {
+	return &mockRepo{
+		getContextStateFn: func(_ context.Context, _, _ string) (contextsettings.ConversationState, error) {
+			return state, nil
 		},
+		updateContextStrategyFn: func(_ context.Context, _, _ string, _ contextsettings.Strategy) error { return nil },
 	}
-	h := conversations.NewHandler(repo)
+}
+
+func decodeBody(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var result map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return result
+}
+
+// A conversation with no runtime record must not report a token count. The
+// previous implementation answered `message_group_count * 500`, so every
+// conversation showed a fabricated budget usage.
+func TestGetContextStatus_RefusesTheTokenCountItCannotCompute(t *testing.T) {
+	h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{MessageGroupsTotal: 7}))
 	router := newRouter(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/context-analytics", nil)
@@ -1298,68 +1336,187 @@ func TestGetContextAnalytics_Success(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var result map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-		t.Fatal(err)
+	result := decodeBody(t, w)
+	if result["context_analytics_available"] != false {
+		t.Errorf("context_analytics_available = %v, want false", result["context_analytics_available"])
 	}
-	if result["token_count"].(float64) != 42 {
-		t.Errorf("expected token_count=42, got %v", result["token_count"])
+	if result["unavailable_reason"] == "" || result["unavailable_reason"] == nil {
+		t.Error("an unavailable status has to name its reason")
+	}
+	if result["current_tokens"].(float64) != 0 {
+		t.Errorf("current_tokens = %v, want 0 — nothing was measured", result["current_tokens"])
+	}
+	// The transcript size IS knowable, and is not the same field.
+	if result["message_groups_total"].(float64) != 7 {
+		t.Errorf("message_groups_total = %v, want 7", result["message_groups_total"])
+	}
+	if result["message_groups_in_context"].(float64) != 0 {
+		t.Errorf("message_groups_in_context = %v, want 0", result["message_groups_in_context"])
+	}
+	// The budget comes from the resolved strategy, not from a constant.
+	if result["max_tokens"].(float64) != contextsettings.DefaultMaxContextTokens {
+		t.Errorf("max_tokens = %v, want %d", result["max_tokens"], contextsettings.DefaultMaxContextTokens)
 	}
 }
 
-// GetContextAnalytics falls back to defaults on repo error (not an HTTP error).
-func TestGetContextAnalytics_ErrorFallback(t *testing.T) {
-	repo := &mockRepo{
-		getContextAnalyticsFn: func(_ context.Context, _, _ string) (map[string]any, error) {
-			return nil, errRepo
-		},
-	}
-	h := conversations.NewHandler(repo)
+// With a runtime record present the counters are served, and utilization is
+// pylon's 0..1 ratio.
+func TestGetContextStatus_ServesTheRecordedCounters(t *testing.T) {
+	h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{
+		Strategy:  []byte(`{"max_context_tokens": 10000}`),
+		Analytics: []byte(`{"current_context_tokens": 2500, "messages_in_context": 4, "summaries_generated": 2}`),
+	}))
 	router := newRouter(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/context-analytics", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Handler returns 200 with default values even on error.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	result := decodeBody(t, w)
+	if result["context_analytics_available"] != true {
+		t.Fatalf("context_analytics_available = %v, want true", result["context_analytics_available"])
 	}
-	var result map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-		t.Fatal(err)
+	if result["current_tokens"].(float64) != 2500 {
+		t.Errorf("current_tokens = %v, want 2500", result["current_tokens"])
 	}
-	if result["token_count"].(float64) != 0 {
-		t.Errorf("expected default token_count=0, got %v", result["token_count"])
+	if result["utilization"].(float64) != 0.25 {
+		t.Errorf("utilization = %v, want 0.25 (a ratio, not a percentage)", result["utilization"])
+	}
+	if result["summary_count"].(float64) != 2 {
+		t.Errorf("summary_count = %v, want 2", result["summary_count"])
 	}
 }
 
-// ---------------------------------------------------------------------------
-// UpdateContextStrategy
-// ---------------------------------------------------------------------------
+// The strategy read resolves: stored keys win, absent keys fall to the
+// contract's constants rather than to zero values.
+func TestGetContextStrategy_ResolvesAbsentKeysToTheContract(t *testing.T) {
+	h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{
+		Strategy: []byte(`{"max_context_tokens": 8000}`),
+	}))
+	router := newRouter(h)
 
-func TestUpdateContextStrategy_Success(t *testing.T) {
-	repo := &mockRepo{
-		updateContextStrategyFn: func(_ context.Context, _, _ string, _ map[string]any) error { return nil },
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/context-strategy", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	result := decodeBody(t, w)
+	if result["max_context_tokens"].(float64) != 8000 {
+		t.Errorf("max_context_tokens = %v, want the stored 8000", result["max_context_tokens"])
+	}
+	if result["preserve_recent_messages"].(float64) != contextsettings.DefaultPreserveRecentMessages {
+		t.Errorf("preserve_recent_messages = %v, want the default %d",
+			result["preserve_recent_messages"], contextsettings.DefaultPreserveRecentMessages)
+	}
+	if result["enabled"] != true {
+		t.Errorf("enabled = %v, want the default true", result["enabled"])
+	}
+}
+
+// The PUT is a partial update over the resolved strategy. Writing the body
+// straight into the column — what this route used to do — dropped every key
+// the form did not mention.
+func TestUpdateContextStrategy_MergesOntoTheStoredStrategy(t *testing.T) {
+	var written contextsettings.Strategy
+	repo := storedStateRepo(contextsettings.ConversationState{
+		Strategy: []byte(`{"max_context_tokens": 9000, "summary_llm_settings": {"model_name": "gpt-4o-mini", "max_tokens": 500}}`),
+	})
+	repo.updateContextStrategyFn = func(_ context.Context, _, _ string, strategy contextsettings.Strategy) error {
+		written = strategy
+		return nil
 	}
 	h := conversations.NewHandler(repo)
 	router := newRouter(h)
 
-	body, _ := json.Marshal(map[string]any{"strategy": "summarize"})
-	req := httptest.NewRequest(http.MethodPut, "/projects/proj-1/conversations/conv-1/context-strategy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest(http.MethodPut, "/projects/proj-1/conversations/conv-1/context-strategy",
+		bytes.NewBufferString(`{"preserve_recent_messages": 9}`))
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if written.PreserveRecentMessages != 9 {
+		t.Errorf("preserve_recent_messages stored as %d, want the submitted 9", written.PreserveRecentMessages)
+	}
+	if written.MaxContextTokens != 9000 {
+		t.Errorf("max_context_tokens stored as %d, want the untouched 9000", written.MaxContextTokens)
+	}
+	if written.SummaryLLMSettings["model_name"] != "gpt-4o-mini" {
+		t.Errorf("summary_llm_settings was dropped by a request that never mentioned it: %v", written.SummaryLLMSettings)
+	}
+	result := decodeBody(t, w)
+	if result["message"] != "Strategy updated successfully" {
+		t.Errorf("message = %v, want pylon's confirmation string", result["message"])
+	}
+	if _, ok := result["updated_strategy"]; !ok {
+		t.Error("the response has to carry updated_strategy")
+	}
+	if _, ok := result["max_tokens"]; !ok {
+		t.Error("the response has to carry the context status too")
+	}
+}
+
+// Out-of-range values are refused by field name, in this API's validation
+// shape.
+func TestUpdateContextStrategy_RefusesOutOfRangeByField(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		field string
+	}{
+		{"below the token floor", `{"max_context_tokens": 999}`, "max_context_tokens"},
+		{"zero preserved messages", `{"preserve_recent_messages": 0}`, "preserve_recent_messages"},
+		{"more than 99 preserved messages", `{"preserve_recent_messages": 100}`, "preserve_recent_messages"},
+		{"summary budget at least as large as the context",
+			`{"max_context_tokens": 4000, "summary_llm_settings": {"max_tokens": 4000}}`,
+			"summary_llm_settings.max_tokens"},
+		{"summary budget under the floor",
+			`{"summary_llm_settings": {"max_tokens": 10}}`, "summary_llm_settings.max_tokens"},
+		{"wrong type", `{"max_context_tokens": "lots"}`, "max_context_tokens"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{}))
+			router := newRouter(h)
+
+			req := httptest.NewRequest(http.MethodPut,
+				"/projects/proj-1/conversations/conv-1/context-strategy", bytes.NewBufferString(testCase.body))
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			result := decodeBody(t, w)
+			if result["field"] != testCase.field {
+				t.Errorf("field = %v, want %q", result["field"], testCase.field)
+			}
+			if result["error"] == "" || result["error"] == nil {
+				t.Error("a refusal has to say what was wrong")
+			}
+		})
+	}
+}
+
+// An accepted edge value proves the ranges are inclusive where the contract
+// says they are.
+func TestUpdateContextStrategy_AcceptsTheRangeBoundaries(t *testing.T) {
+	h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{}))
+	router := newRouter(h)
+
+	req := httptest.NewRequest(http.MethodPut, "/projects/proj-1/conversations/conv-1/context-strategy",
+		bytes.NewBufferString(`{"max_context_tokens": 1000, "preserve_recent_messages": 99}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 at the inclusive boundaries, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
 func TestUpdateContextStrategy_Error(t *testing.T) {
-	repo := &mockRepo{
-		updateContextStrategyFn: func(_ context.Context, _, _ string, _ map[string]any) error { return errRepo },
-	}
+	repo := storedStateRepo(contextsettings.ConversationState{})
+	repo.updateContextStrategyFn = func(_ context.Context, _, _ string, _ contextsettings.Strategy) error { return errRepo }
 	h := conversations.NewHandler(repo)
 	router := newRouter(h)
 
@@ -1371,6 +1528,114 @@ func TestUpdateContextStrategy_Error(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
+}
+
+// The user-defaults tier: a conversation with no stored strategy resolves to
+// the CALLER's Settings > Memory defaults before it falls back to constants.
+func TestContextStrategy_FallsBackToTheCallersUserDefaults(t *testing.T) {
+	maxTokens := 12000
+	h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{})).
+		WithUserContextDefaults(stubUserDefaults{defaults: contextsettings.UserDefaults{
+			ContextManagement: &contextsettings.ContextManagement{MaxContextTokens: &maxTokens},
+		}})
+	router := newRouter(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/context-strategy", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "7", UserID: "7"}))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	result := decodeBody(t, w)
+	if result["max_context_tokens"].(float64) != 12000 {
+		t.Errorf("max_context_tokens = %v, want the user default 12000", result["max_context_tokens"])
+	}
+}
+
+// A stored per-conversation value beats the user default — the outer tier of
+// the resolution rule.
+func TestContextStrategy_ConversationBeatsUserDefaults(t *testing.T) {
+	maxTokens := 12000
+	h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{
+		Strategy: []byte(`{"max_context_tokens": 3000}`),
+	})).WithUserContextDefaults(stubUserDefaults{defaults: contextsettings.UserDefaults{
+		ContextManagement: &contextsettings.ContextManagement{MaxContextTokens: &maxTokens},
+	}})
+	router := newRouter(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/context-strategy", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "7", UserID: "7"}))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	result := decodeBody(t, w)
+	if result["max_context_tokens"].(float64) != 3000 {
+		t.Errorf("max_context_tokens = %v, want the conversation's own 3000", result["max_context_tokens"])
+	}
+}
+
+// The wire, not just the struct: a conversation with no summary model must
+// serve `"summary_llm_settings":null`. The Rust runtime refuses a non-null
+// value (it names a second model whose credential the claim does not carry),
+// and `{}` is a non-null value.
+func TestContextStrategy_ServesANullSummaryModelNotAnEmptyObject(t *testing.T) {
+	for name, stored := range map[string][]byte{
+		"nothing stored":     nil,
+		"an empty object":    []byte(`{"summary_llm_settings": {}}`),
+		"cleared by a write": []byte(`{"summary_llm_settings": null}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := conversations.NewHandler(storedStateRepo(contextsettings.ConversationState{Strategy: stored}))
+			router := newRouter(h)
+
+			req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/context-strategy", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			body := w.Body.String()
+			if !strings.Contains(body, `"summary_llm_settings":null`) {
+				t.Fatalf("response does not carry a null summary_llm_settings: %s", body)
+			}
+			if strings.Contains(body, `"summary_llm_settings":{}`) {
+				t.Fatalf("response carries an EMPTY OBJECT summary_llm_settings, which the runtime "+
+					"refuses with UnsupportedCapability: %s", body)
+			}
+		})
+	}
+}
+
+// And the same on the write path's echo, which is what a client re-submits.
+func TestUpdateContextStrategy_StoresANullSummaryModelNotAnEmptyObject(t *testing.T) {
+	var written contextsettings.Strategy
+	repo := storedStateRepo(contextsettings.ConversationState{})
+	repo.updateContextStrategyFn = func(_ context.Context, _, _ string, strategy contextsettings.Strategy) error {
+		written = strategy
+		return nil
+	}
+	h := conversations.NewHandler(repo)
+	router := newRouter(h)
+
+	req := httptest.NewRequest(http.MethodPut, "/projects/proj-1/conversations/conv-1/context-strategy",
+		bytes.NewBufferString(`{"summary_llm_settings": {}}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if written.SummaryLLMSettings != nil {
+		t.Fatalf("stored SummaryLLMSettings is %#v, want nil", written.SummaryLLMSettings)
+	}
+	if strings.Contains(w.Body.String(), `"summary_llm_settings":{}`) {
+		t.Fatalf("the echoed strategy carries an empty object: %s", w.Body.String())
+	}
+}
+
+type stubUserDefaults struct {
+	defaults contextsettings.UserDefaults
+}
+
+func (s stubUserDefaults) ContextDefaults(_ context.Context, _ int64) (contextsettings.UserDefaults, error) {
+	return s.defaults, nil
 }
 
 // ---------------------------------------------------------------------------

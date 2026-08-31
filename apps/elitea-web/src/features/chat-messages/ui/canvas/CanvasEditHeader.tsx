@@ -15,7 +15,10 @@ const IconButtonAny = IconButton as React.ComponentType<
 
 import Tooltip from '@mui/material/Tooltip';
 
+
 import { CANVAS_LANGUAGE_OPTIONS } from './canvasLanguageOptions';
+import { CanvasTableControls } from './table/CanvasTableControls';
+import type { CanvasEditHeaderTable } from './table/canvasTableTypes';
 
 /** Action callbacks grouped to stay within §3.5 prop budget. */
 export interface CanvasEditHeaderActions {
@@ -30,17 +33,6 @@ export interface CanvasEditHeaderActions {
 }
 
 /** Table-editing actions grouped to stay within §3.5 prop budget. */
-export interface CanvasEditHeaderTable {
-  readonly isTableEditing?: boolean | undefined;
-  readonly hasSelectedRowsColumns?: {
-    readonly hasSelectedRows: boolean;
-    readonly hasSelectedColumns: boolean;
-  } | undefined;
-  readonly onClickAddColumn?: (() => void) | undefined;
-  readonly onClickAddRow?: (() => void) | undefined;
-  readonly onDeleteSelectedRowsOrColumns?: (() => void) | undefined;
-  readonly onImportTableData?: ((data: Record<string, unknown>) => void) | undefined;
-}
 
 /** Language select config grouped to stay within §3.5 prop budget. */
 export interface CanvasEditHeaderLangSelect {
@@ -74,7 +66,8 @@ export interface CanvasEditHeaderProps {
  * Matches the baseline `CanvasEditHeader.jsx` layout:
  * - Left: close button + title (truncated with ellipsis)
  * - Right: undo, redo, copy, regenerate (whole-message), delete (whole-message),
- *   language select, and table-editing buttons (conditional on `isTableEditing`)
+ *   language select, and the table-editing cluster (`./table/CanvasTableControls`,
+ *   which renders nothing unless `table.isTableEditing`)
  * - Action buttons are disabled when `disabledAll` is true
  */
 export function CanvasEditHeader({
@@ -99,14 +92,6 @@ export function CanvasEditHeader({
 
   const onClose = topLevelOnClose ?? actionsOnClose;
 
-  const {
-    isTableEditing,
-    hasSelectedRowsColumns,
-    onClickAddColumn,
-    onClickAddRow,
-    onDeleteSelectedRowsOrColumns,
-    onImportTableData,
-  } = table ?? {};
 
   const {
     showLangSelect,
@@ -114,13 +99,6 @@ export function CanvasEditHeader({
     language = 'text',
     disableLanguageSelect,
   } = langSelect ?? {};
-
-  const disableDeleteTableRowsCols = useMemo(
-    () =>
-      disabledAll ||
-      (!hasSelectedRowsColumns?.hasSelectedRows && !hasSelectedRowsColumns?.hasSelectedColumns),
-    [disabledAll, hasSelectedRowsColumns?.hasSelectedColumns, hasSelectedRowsColumns?.hasSelectedRows],
-  );
 
   // Normalize language name for display (baseline: cpp → c++, js → javascript, ts → typescript)
   const finalLanguage = useMemo(
@@ -163,7 +141,14 @@ export function CanvasEditHeader({
         }}
       >
         {onClose && (
-          <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClose}>
+          <IconButtonAny
+            variant="elitea"
+            color="tertiary"
+            size="small"
+            onClick={onClose}
+            data-testid="canvas-edit-close"
+            aria-label="Close editor"
+          >
             ✕
           </IconButtonAny>
         )}
@@ -200,7 +185,9 @@ export function CanvasEditHeader({
                 color="tertiary"
                 size="small"
                 onClick={onUndo}
+                data-testid="canvas-edit-undo"
                 disabled={disableUndo || disabledAll}
+                aria-label="Undo"
               >
                 ↩
               </IconButtonAny>
@@ -217,7 +204,9 @@ export function CanvasEditHeader({
                 color="tertiary"
                 size="small"
                 onClick={onRedo}
+                data-testid="canvas-edit-redo"
                 disabled={disableRedo || disabledAll}
+                aria-label="Redo"
               >
                 ↪
               </IconButtonAny>
@@ -229,7 +218,14 @@ export function CanvasEditHeader({
         {onCopy && (
           <Tooltip title="Copy" placement="top">
             <span>
-              <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onCopy}>
+              <IconButtonAny
+                variant="elitea"
+                color="tertiary"
+                size="small"
+                onClick={onCopy}
+                data-testid="canvas-edit-copy"
+                aria-label="Copy"
+              >
                 📋
               </IconButtonAny>
             </span>
@@ -246,6 +242,7 @@ export function CanvasEditHeader({
                 size="small"
                 onClick={onRegenerate}
                 disabled={disabledAll}
+                aria-label="Regenerate"
               >
                 🔄
               </IconButtonAny>
@@ -263,6 +260,7 @@ export function CanvasEditHeader({
                 size="small"
                 onClick={onDelete}
                 disabled={disabledAll}
+                aria-label="Delete the message"
               >
                 🗑
               </IconButtonAny>
@@ -298,83 +296,13 @@ export function CanvasEditHeader({
           </Box>
         )}
 
-        {/* Table editing: delete selection */}
-        {isTableEditing && onDeleteSelectedRowsOrColumns && (
-          <Tooltip
-            title={
-              hasSelectedRowsColumns?.hasSelectedRows
-                ? 'Delete selected rows'
-                : hasSelectedRowsColumns?.hasSelectedColumns
-                  ? 'Delete selected columns'
-                  : ''
-            }
-            placement="top"
-          >
-            <span>
-              <IconButtonAny
-                variant="elitea"
-                color="tertiary"
-                size="small"
-                onClick={onDeleteSelectedRowsOrColumns}
-                disabled={disableDeleteTableRowsCols}
-              >
-                ✕
-              </IconButtonAny>
-            </span>
-          </Tooltip>
-        )}
-
-        {/* Table editing: add column */}
-        {isTableEditing && onClickAddColumn && (
-          <Tooltip title="Add column" placement="top">
-            <span>
-              <IconButtonAny
-                variant="elitea"
-                color="tertiary"
-                size="small"
-                onClick={onClickAddColumn}
-                disabled={disabledAll}
-              >
-                +C
-              </IconButtonAny>
-            </span>
-          </Tooltip>
-        )}
-
-        {/* Table editing: add row */}
-        {isTableEditing && onClickAddRow && (
-          <Tooltip title="Add row" placement="top">
-            <span>
-              <IconButtonAny
-                variant="elitea"
-                color="tertiary"
-                size="small"
-                onClick={onClickAddRow}
-                disabled={disabledAll}
-              >
-                +R
-              </IconButtonAny>
-            </span>
-          </Tooltip>
-        )}
-
-        {/* Table editing: import table data */}
-        {isTableEditing && onImportTableData && (
-          <IconButtonAny
-            variant="elitea"
-            color="tertiary"
-            size="small"
-            onClick={() => {
-              // TODO: file picker → parse CSV/TSV → onImportTableData(parsed)
-              // Baseline: <ImportTableButton onImported={onImportTableData} disabled={disabledAll} />
-            }}
-            disabled={disabledAll}
-            aria-label="Import table data"
-          >
-            📥
-          </IconButtonAny>
-        )}
+        <CanvasTableControls
+          table={table}
+          disabledAll={disabledAll === true}
+        />
       </Box>
     </Box>
   );
 }
+
+export type { CanvasEditHeaderTable } from './table/canvasTableTypes';

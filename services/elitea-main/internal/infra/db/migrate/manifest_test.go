@@ -186,7 +186,99 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It stores NO request or response content, including no upstream error
 	// text: the failure column is a classification the gateway assigns, so
 	// there is no column a prompt fragment can reach.
-	require.EqualValues(t, 99, Head(shared))
+	// 100: shared/0100_gateway_request_log_execution_id.sql, which gives the
+	// request log an AGENT dimension: the runtime execution id the request was
+	// made from, signed into the identity tuple at the edge under signature
+	// version v2 so it cannot be attached by a caller.
+	//
+	// It is an EXECUTION id and not an agent id on purpose. Resolving it to an
+	// agent happens at READ time, because elitea_runtime.execution_jobs carries
+	// resource_project_id AND projection_project_id and they can differ —
+	// writing an agent id onto the log would have had to pick one of those two
+	// project meanings and bake it in, importing the exact ambiguity 0099 was
+	// built to keep out.
+	//
+	// THERE IS NO BACKFILL AND THERE CANNOT BE ONE: nothing on a row written
+	// before this file identifies an agent. The read side reports availability
+	// and omits the breakdown rather than answering "0 agent runs" for a window
+	// it cannot speak for.
+	// 101: shared/0101_gateway_usage_event_execution_id.sql, the same column on
+	// the billing ledger, so per-agent SPEND is answerable and not only
+	// per-agent volume — the log has no cost column, deliberately, so that
+	// there is one money path and not two.
+	//
+	// A separate file from 0100 because the two tables have separate WRITERS
+	// (the gateway in process; the scheduler's write-back consumer) and
+	// therefore separate deployment risk — and because a migration's checksum
+	// is immutable once applied, so a combined file could never be split later.
+	//
+	// 102: shared/0102_skill_icon_permissions.sql, the four default-mode grants
+	// the skill icon route family is gated on. A separate file rather than four
+	// more rows in 0068 because a migration is checksum-immutable once it has
+	// run, and it is not optional: 0063's header records that gating a route on
+	// a permission nothing grants is 403-for-everyone, which reads as a broken
+	// page rather than as a missing grant. It grants centrally AND delivers the
+	// same four strings to the projects that carry their own permission rows,
+	// because the central set is discarded wholesale for those callers — see
+	// shared/0090's header and migrations/project_override_reconciliation_test.go.
+	//
+	// RENUMBERED from 0100 at merge. It and the two gateway files above were
+	// authored in parallel and each correctly claimed the next free number at
+	// the time; only the merge can see the collision. The number belongs to
+	// whichever lands first.
+	//
+	// 103: shared/0103_shared_chat_links.sql, the store behind "share a
+	// conversation by link". It is SHARED rather than tenant even though every
+	// other chat object is tenant-scoped, because the anonymous view is handed
+	// a token and nothing else: resolving it against per-project schemas would
+	// mean either scanning every `p_%` schema on each anonymous request, or
+	// encoding the project into the token so a caller could steer which schema
+	// is queried. One central table keyed on the token settles both, and the
+	// project id is a column the reader takes from the resolved row.
+	//
+	// It stores SHA-256 of the token, never the token, so a database dump is
+	// not a set of live links; and expires_at is NOT NULL, so a link with no
+	// end of life is unrepresentable rather than merely un-offered.
+	//
+	// RENUMBERED from 0100 at merge, for the same reason 0102 was: three
+	// streams authored a 0100 in parallel and each was correct at the time.
+	//
+	// 104: shared/0104_evaluation_dimension_permissions.sql, the four
+	// default-mode grants the evaluation dimension library needs. It is the
+	// RBAC half of the first Agent Evaluation slice; the table itself is
+	// tenant/0130, because a dimension is one project's authored content and
+	// these four strings are central role grants.
+	//
+	// It is the first file in this corpus to seed a permission the pylon
+	// catalogue does not declare, and it says why in its own header: Agent
+	// Evaluation is not in the plugin corpus this repository carries, so the
+	// names come from the product's own UI constants rather than from a
+	// `check_api` transcription, and the routes therefore gate through
+	// exported constants instead of router.go's `projectPermission` helper.
+	// The grant gate (router_permission_grant_gate_test.go) still binds; only
+	// the pylon-provenance assertion, which would be false, does not.
+	//
+	// RENUMBERED from 0100 at merge — the FOURTH stream to claim that
+	// number, each correct when it was written. Only the merge sees it.
+	//
+	// 105: shared/0105_predict_llm_permission.sql, the single default-mode
+	// grant behind POST /elitea_core/predict_llm/prompt_lib/{projectID} (#194).
+	// Nothing in this corpus granted `models.applications.predict.post` before
+	// it, so the route it gates would have shipped registered and
+	// 403-for-everyone.
+	//
+	// It is the first grant file here whose default-mode split reaches VIEWER,
+	// and that is not a widening invented for the port: legacy's own
+	// predict_llm.py declares recommended_roles viewer=True in DEFAULT_MODE and
+	// viewer=False in ADMINISTRATION_MODE, and testdata/postgres/legacy-rbac-matrix.json
+	// carries the same asymmetry. Only the default mode is delivered, because
+	// only the default-mode route exists.
+	//
+	// Like 0102 and 0104 it grants centrally AND delivers the same string to
+	// the projects that carry their own permission rows, because the central
+	// set is discarded wholesale for those callers — see shared/0090's header
+	// and migrations/project_override_reconciliation_test.go.
+	require.EqualValues(t, 105, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
@@ -229,7 +321,16 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// never touched, and GetMessageByUUID's unconditional LEFT JOIN would have
 	// done the same for every message read once its GET was bound, which the
 	// same session did.
-	require.EqualValues(t, 129, Head(tenant))
+	//
+	// 130: tenant/0130_eval_dimensions.sql, the evaluation dimension library —
+	// the FIRST and, for now, the ONLY Agent Evaluation table. The baseline UI
+	// spans 19 `eval_*` path families; the library is the one with no
+	// orchestrator, judge model or code sandbox behind it, so it is the one
+	// that can ship correct while the run engine is unbuilt. `eval_suites`,
+	// `eval_bindings`, `eval_datasets`, `eval_dataset_cases`, `eval_runs`,
+	// `eval_results` and `eval_human_scores` are deliberately absent and must
+	// arrive with the code that reads them.
+	require.EqualValues(t, 130, Head(tenant))
 
 	// The agentstate scope is this branch's, and it is counted separately: the
 	// native runtime's ADK sessions and graph checkpoints live in their own

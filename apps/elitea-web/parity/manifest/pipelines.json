@@ -10,7 +10,7 @@
       "title": "Route `/pipelines` renders index redirect",
       "source": [
         "apps/elitea-ui/src/routes.js:19",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:201"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:234"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -39,7 +39,7 @@
       "title": "Route `/pipelines/create` renders CreatePipeline",
       "source": [
         "apps/elitea-ui/src/routes.js:21",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:202"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:235"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -68,7 +68,7 @@
       "title": "Route `/pipelines/:tab` renders Pipelines",
       "source": [
         "apps/elitea-ui/src/routes.js:20",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:203"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:236"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -97,7 +97,7 @@
       "title": "Route `/pipelines/:tab/:agentId` renders EditPipeline",
       "source": [
         "apps/elitea-ui/src/routes.js:22",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:204"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:237"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -126,7 +126,7 @@
       "title": "Route `/pipelines/:tab/:agentId/:version` renders EditPipeline (version child)",
       "source": [
         "apps/elitea-ui/src/routes.js:22",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:321-326"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -154,7 +154,7 @@
       "priority": "must",
       "title": "Query param `isFromCreation` on /pipelines/:tab",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/EditPipeline.jsx:34"
+        "apps/elitea-ui/src/pages/Pipelines/EditPipeline.jsx:35"
       ],
       "acceptance": [
         "GIVEN the application is at /pipelines/:tab",
@@ -183,7 +183,7 @@
       "priority": "must",
       "title": "Query param `isFromCreation` on /pipelines/:tab/:agentId",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/EditPipeline.jsx:34"
+        "apps/elitea-ui/src/pages/Pipelines/EditPipeline.jsx:35"
       ],
       "acceptance": [
         "GIVEN the application is at /pipelines/:tab/:agentId",
@@ -392,11 +392,11 @@
       "priority": "must",
       "title": "Action on pipelines: update pipeline trigger via onClick/onSubmit/onValueChange",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:299",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:332",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:344",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:352",
-        "apps/elitea-ui/src/api/applications.js:865"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:321",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:356",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:368",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:376",
+        "apps/elitea-ui/src/api/applications.js:886"
       ],
       "acceptance": [
         "GIVEN the pipelines screen is displayed with the relevant entity available",
@@ -683,8 +683,7 @@
       "priority": "should",
       "title": "Copy: ui/FlowEditor.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/FlowEditor.jsx:518",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/FlowEditor.jsx:621"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/FlowEditor.jsx:518"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -712,8 +711,8 @@
       "priority": "should",
       "title": "Copy: nodes/AgentNode.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/AgentNode.jsx:114",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/AgentNode.jsx:135"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/AgentNode.jsx:121",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/AgentNode.jsx:144"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -741,8 +740,8 @@
       "priority": "should",
       "title": "Copy: BaseNode/NodeCardHeader.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseNode/NodeCardHeader.jsx:210",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseNode/NodeCardHeader.jsx:313"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseNode/NodeCardHeader.jsx:209",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseNode/NodeCardHeader.jsx:312"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -770,7 +769,7 @@
       "priority": "should",
       "title": "Copy: nodes/BaseToolNode.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseToolNode.jsx:169"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseToolNode.jsx:190"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -798,8 +797,8 @@
       "priority": "should",
       "title": "Copy: nodes/CodeNode.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/CodeNode.jsx:83",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/CodeNode.jsx:89"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/CodeNode.jsx:96",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/CodeNode.jsx:103"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -884,8 +883,8 @@
       "priority": "should",
       "title": "Copy: DecisionNode/NormalDecisionNode.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/NormalDecisionNode.jsx:94",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/NormalDecisionNode.jsx:121"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/NormalDecisionNode.jsx:95",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/NormalDecisionNode.jsx:124"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -913,7 +912,7 @@
       "priority": "should",
       "title": "Copy: nodes/DefaultNode.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DefaultNode.jsx:178"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DefaultNode.jsx:190"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1086,7 +1085,7 @@
       "title": "Copy: nodes/HITLNode.jsx (9 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/HITLNode.jsx:26",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/HITLNode.jsx:280"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/HITLNode.jsx:286"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1114,8 +1113,8 @@
       "priority": "should",
       "title": "Copy: nodes/LLMNode.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/LLMNode.jsx:88",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/LLMNode.jsx:94"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/LLMNode.jsx:108",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/LLMNode.jsx:115"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1143,7 +1142,7 @@
       "priority": "should",
       "title": "Copy: nodes/PrinterNode.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/PrinterNode.jsx:100"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/PrinterNode.jsx:115"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1172,7 +1171,7 @@
       "title": "Copy: nodes/RouterNode.jsx (5 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/RouterNode.jsx:125",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/RouterNode.jsx:175"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/RouterNode.jsx:178"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1201,7 +1200,7 @@
       "title": "Copy: nodes/StateModifierNode.jsx (4 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/StateModifierNode.jsx:78",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/StateModifierNode.jsx:105"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/StateModifierNode.jsx:108"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1285,7 +1284,7 @@
       "priority": "should",
       "title": "Copy: select/RouteSelect.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/select/RouteSelect.jsx:71"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/select/RouteSelect.jsx:79"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1313,8 +1312,8 @@
       "priority": "should",
       "title": "Copy: settings/CommonInterruptSettings.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CommonInterruptSettings.jsx:69",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CommonInterruptSettings.jsx:165"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CommonInterruptSettings.jsx:85",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CommonInterruptSettings.jsx:199"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1342,7 +1341,7 @@
       "priority": "should",
       "title": "Copy: settings/ConnectionDropdown.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/ConnectionDropdown.jsx:219"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/ConnectionDropdown.jsx:220"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1370,8 +1369,8 @@
       "priority": "should",
       "title": "Copy: settings/CustomNodeInput.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CustomNodeInput.jsx:131",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CustomNodeInput.jsx:245"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CustomNodeInput.jsx:132",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CustomNodeInput.jsx:247"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1400,7 +1399,7 @@
       "title": "Copy: InputMappings/InputMappingItem.jsx (6 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/InputMappings/InputMappingItem.jsx:15",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/InputMappings/InputMappingItem.jsx:355"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/InputMappings/InputMappingItem.jsx:247"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1428,8 +1427,7 @@
       "priority": "should",
       "title": "Copy: settings/PipelineScheduleModal.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineScheduleModal.jsx:49",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineScheduleModal.jsx:122"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineScheduleModal.jsx:5"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1458,7 +1456,7 @@
       "title": "Copy: settings/PipelineWebhookModal.jsx (17 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineWebhookModal.jsx:15",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineWebhookModal.jsx:356"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineWebhookModal.jsx:371"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1486,8 +1484,7 @@
       "priority": "should",
       "title": "Copy: settings/SimpleLLMInputItem.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/SimpleLLMInputItem.jsx:55",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/SimpleLLMInputItem.jsx:218"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/SimpleLLMInputItem.jsx:125"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1515,8 +1512,8 @@
       "priority": "should",
       "title": "Copy: settings/TriggerTypeSelector.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:39",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:325"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:40",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:349"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1544,8 +1541,7 @@
       "priority": "should",
       "title": "Copy: settings/VariablesMapping.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/VariablesMapping.jsx:17",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/VariablesMapping.jsx:164"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/VariablesMapping.jsx:9"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1573,8 +1569,7 @@
       "priority": "should",
       "title": "Copy: state/RunStateDialog.jsx (9 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/RunStateDialog.jsx:89",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/RunStateDialog.jsx:411"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/RunStateDialog.jsx:301"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1602,7 +1597,7 @@
       "priority": "should",
       "title": "Copy: state/StateDrawer.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateDrawer.jsx:111"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateDrawer.jsx:110"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1630,7 +1625,7 @@
       "priority": "should",
       "title": "Copy: state/StateTypeSelector.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateTypeSelector.jsx:57"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateTypeSelector.jsx:58"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1687,7 +1682,7 @@
       "priority": "should",
       "title": "Copy: state/StateVariableItem.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableItem.jsx:200"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableItem.jsx:207"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1715,7 +1710,7 @@
       "priority": "should",
       "title": "Copy: state/StateVariableList.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableList.jsx:215"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableList.jsx:216"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1743,8 +1738,8 @@
       "priority": "should",
       "title": "Copy: state/StateVariableTable.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableTable.jsx:121",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableTable.jsx:300"
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableTable.jsx:120",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableTable.jsx:299"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1773,7 +1768,7 @@
       "title": "Copy: Components/AddNodeMenu.jsx (2 strings)",
       "source": [
         "apps/elitea-ui/src/pages/Pipelines/Components/AddNodeMenu.jsx:71",
-        "apps/elitea-ui/src/pages/Pipelines/Components/AddNodeMenu.jsx:80"
+        "apps/elitea-ui/src/pages/Pipelines/Components/AddNodeMenu.jsx:81"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1801,7 +1796,7 @@
       "priority": "should",
       "title": "Copy: Components/ConfigurationTab.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/Components/ConfigurationTab.jsx:289"
+        "apps/elitea-ui/src/pages/Pipelines/Components/ConfigurationTab.jsx:328"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1829,8 +1824,8 @@
       "priority": "should",
       "title": "Copy: Components/EditorPanel.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/Components/EditorPanel.jsx:232",
-        "apps/elitea-ui/src/pages/Pipelines/Components/EditorPanel.jsx:266"
+        "apps/elitea-ui/src/pages/Pipelines/Components/EditorPanel.jsx:233",
+        "apps/elitea-ui/src/pages/Pipelines/Components/EditorPanel.jsx:267"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1886,8 +1881,7 @@
       "priority": "should",
       "title": "Copy: Pipelines/Latest.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/Latest.jsx:16",
-        "apps/elitea-ui/src/pages/Pipelines/Latest.jsx:23"
+        "apps/elitea-ui/src/pages/Pipelines/Latest.jsx:24"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1915,8 +1909,7 @@
       "priority": "should",
       "title": "Copy: Pipelines/MyLiked.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/MyLiked.jsx:16",
-        "apps/elitea-ui/src/pages/Pipelines/MyLiked.jsx:23"
+        "apps/elitea-ui/src/pages/Pipelines/MyLiked.jsx:24"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -1973,8 +1966,8 @@
       "priority": "should",
       "title": "Copy: Pipelines/PrivatePipelinesList.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/PrivatePipelinesList.jsx:24",
-        "apps/elitea-ui/src/pages/Pipelines/PrivatePipelinesList.jsx:98"
+        "apps/elitea-ui/src/pages/Pipelines/PrivatePipelinesList.jsx:38",
+        "apps/elitea-ui/src/pages/Pipelines/PrivatePipelinesList.jsx:148"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",
@@ -2002,8 +1995,7 @@
       "priority": "should",
       "title": "Copy: Pipelines/Trending.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Pipelines/Trending.jsx:16",
-        "apps/elitea-ui/src/pages/Pipelines/Trending.jsx:23"
+        "apps/elitea-ui/src/pages/Pipelines/Trending.jsx:24"
       ],
       "acceptance": [
         "GIVEN the pipelines screen renders with the default brand in both colour schemes",

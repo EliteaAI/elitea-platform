@@ -10,10 +10,21 @@
  * **DEVIATIONS:**
  *  1. Redux `useSelector` for the user → the `activeConversation` is passed
  *     as a prop (the playback hook already enriches it with user context).
- *  2. `ChatMessageList` and `ChatBoxContainer`/`ChatBodyContainer` → the
- *     playback box renders a `<Box>` with the message list inline; the
- *     actual `ChatMessageList` component is a shared widget (C3 unit's
- *     scope, not C4).
+ *  2. `ChatBoxContainer`/`ChatBodyContainer` are not ported — the playback
+ *     box renders a plain scrolling `<Box>` around the list. The list
+ *     itself is the real `ChatMessageList` (see below); only the two
+ *     container chrome components remain unported.
+ *
+ * ── The message list ─────────────────────────────────────────────────────
+ * This file used to render inline placeholder boxes ("Placeholder for
+ * actual message rendering") on the grounds that `ChatMessageList` was
+ * another unit's scope. That blocker is stale — `ui/chat-box/
+ * ChatMessageList.tsx` exists next door in this same feature — so the real
+ * list is rendered instead. Playback passes NO action callbacks: copy,
+ * delete, regenerate, edit and TTS are all live-conversation gestures, and
+ * a replay of a historical transcript has nothing to mutate. `isStreaming`
+ * is likewise never set: the "thinking" beat playback fakes is per-message
+ * (`isLoading` on the row being revealed), not a live stream.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 
@@ -23,6 +34,10 @@ import { PlaybackToolBar } from './PlaybackToolBar';
 
 import type { ConversationWire } from '@/entities/conversation/api/conversationApi';
 
+import { t } from '@/shared/i18n';
+
+import { ChatMessageList } from '../chat-box/ChatMessageList';
+import type { ChatMessage } from '../../lib/convertMessagesToChatHistory';
 import { useLoadPlaybackMessages } from '../../model/useLoadPlaybackMessages';
 
 /** The playback mode message shape — each entry is either a chat message or a boundary marker (`isStart`/`isEnd`). */
@@ -36,6 +51,44 @@ export interface PlaybackChatMessage {
   readonly isStart?: boolean;
   readonly isEnd?: boolean;
   readonly created_at?: number;
+}
+
+/**
+ * A playback entry rendered as a `ChatMessageList` row.
+ *
+ * The two shapes that reach `messageList` DISAGREE on spelling, and both are
+ * real: `conversation.chat_history` arrives straight off the wire
+ * (`content`/`message_items`/`created_at`), while `useLoadPlaybackMessages`
+ * returns rows already through `convertMessagesToChatHistory`
+ * (`content`/`messageItems`/`createdAt`) — and this component splices the
+ * second kind into the first kind's array. Reading only one spelling is why
+ * this must be an adapter and not a cast: a lazily-loaded page's attachments
+ * would silently vanish, or a wire row's would.
+ *
+ * The boundary sentinels (`{isStart}`/`{isEnd}`) never reach here — `onForward`
+ * only ever pushes real messages into `messageList` — but a row with no `role`
+ * still degrades to `assistant`, which is what `ChatMessageList` treats as
+ * "not the reader's own message" and therefore the read-only branch.
+ */
+export function toChatMessage(entry: PlaybackChatMessage, index: number): ChatMessage {
+  const loose = entry as PlaybackChatMessage & {
+    readonly messageItems?: readonly unknown[];
+    readonly createdAt?: string;
+    readonly avatar?: string;
+    readonly userId?: string;
+  };
+  const createdAt = loose.createdAt ?? (entry.created_at !== undefined ? new Date(entry.created_at).toISOString() : '');
+  return {
+    id: String(entry.id ?? `playback-${String(index)}`),
+    role: entry.role ?? 'assistant',
+    name: entry.name ?? '',
+    content: entry.content ?? '',
+    createdAt,
+    ...(loose.avatar !== undefined ? { avatar: loose.avatar } : {}),
+    ...(loose.userId !== undefined ? { userId: loose.userId } : {}),
+    messageItems: (loose.messageItems ?? entry.message_items ?? []) as ChatMessage['messageItems'],
+    ...(entry.isLoading !== undefined ? { isLoading: entry.isLoading } : {}),
+  };
 }
 
 export interface PlaybackChatBoxProps {
@@ -304,24 +357,19 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
             flexDirection: 'column',
           }}
         >
-          {/* TODO: ChatMessageList component (C3 unit) renders the actual messages */}
-          {messageList.map((msg, i) => (
-            <Box key={msg.id ?? i} sx={{ padding: '0.5rem' }}>
-              {/* Placeholder for actual message rendering */}
-              {msg.content && (
-                <Box
-                  sx={{
-                    padding: '0.75rem',
-                    borderRadius: '0.5rem',
-                    backgroundColor: msg.role === 'user' ? 'action.selected' : 'action.hover',
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
-                  {msg.isLoading ? 'Thinking...' : msg.content}
-                </Box>
-              )}
-            </Box>
-          ))}
+          <ChatMessageList
+            chatHistory={messageList.map(toChatMessage)}
+            {...(projectId !== undefined ? { projectId: String(projectId) } : {})}
+            // Playback starts on the `{isStart}` sentinel with an empty
+            // window, so the list's own "No messages yet" default would
+            // claim the conversation is empty when it merely has not been
+            // stepped into yet.
+            emptyState={
+              <span data-testid="playback-empty-state">
+                {t('features.chatMessages.playback.notStarted', 'Press forward to replay this conversation.')}
+              </span>
+            }
+          />
           <div ref={messagesEndRef} />
         </Box>
 

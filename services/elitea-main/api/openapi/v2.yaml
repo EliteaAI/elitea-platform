@@ -1113,6 +1113,110 @@ components:
           type: boolean
           description: The configuration's type is not registered in this build.
 
+    PredictLLMMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          description: >
+            One of system, user or assistant. A history entry missing either
+            field is dropped rather than forwarded, so one stray client entry
+            cannot fail an otherwise complete turn
+            (internal/api/v2/predict/handler.go buildMessages).
+        content: { type: string }
+
+    PredictLLMSettings:
+      type: object
+      description: >
+        The model settings that take effect. Fields legacy accepted and this
+        handler deliberately ignores are listed and documented as ignored
+        rather than dropped from the schema, so a client sending them is not
+        misled into thinking they apply.
+      properties:
+        model_name:
+          type: string
+          description: >
+            The model to use. When empty, the gateway answers with its own
+            model-resolution error; this service never guesses a model.
+        temperature: { type: number }
+        max_tokens: { type: integer }
+        reasoning_effort:
+          type: string
+          description: One of low, medium or high, for reasoning models.
+        model_project_id:
+          type: integer
+          description: >
+            IGNORED. The model is resolved against the project in the path,
+            which is the only project the caller's membership was checked
+            against; honouring this field would let a caller spend another
+            project's provider credentials.
+        integration_uid:
+          type: string
+          description: IGNORED. The gateway resolves the credential itself.
+
+    PredictLLMRequest:
+      type: object
+      required: [user_input]
+      properties:
+        user_input:
+          type: string
+          description: The message to send. Required and non-blank.
+        instructions:
+          type: string
+          description: Optional system message, placed before the history.
+        chat_history:
+          type: array
+          items:
+            $ref: '#/components/schemas/PredictLLMMessage'
+        llm_settings:
+          $ref: '#/components/schemas/PredictLLMSettings'
+        await_task_timeout:
+          type: integer
+          description: >
+            This request's deadline in seconds, clamped to 5..180. Absent, zero
+            or negative takes the 60 second default. It does NOT select an
+            asynchronous mode here; see the operation description.
+        return_chat_history:
+          type: boolean
+          description: >
+            When true, the response repeats the full turn list with the
+            assistant reply appended.
+
+    PredictLLMResponse:
+      type: object
+      required: [content, messages]
+      properties:
+        content:
+          type: string
+          description: >
+            The generated text. Never empty on a 200: a completion with no
+            content is reported as 502, not as a successful empty answer.
+        messages:
+          type: array
+          description: The same text in message form, one assistant entry.
+          items:
+            $ref: '#/components/schemas/PredictLLMMessage'
+        chat_history:
+          type: array
+          description: Present only when the request set return_chat_history.
+          items:
+            $ref: '#/components/schemas/PredictLLMMessage'
+
+    PredictLLMUnavailableResponse:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: Human-readable message naming the missing configuration.
+        code:
+          type: string
+          description: >
+            Always llm_gateway_not_configured. A machine-readable code distinct
+            from any upstream failure, so an operator can tell an unconfigured
+            deployment from a broken one.
+
     LlmSettings:
       type: object
       properties:
@@ -4749,6 +4853,56 @@ components:
         NOTE(W2): internal/api/v2/eliteacore/handler.go:167-188.
 
     # ---- Social ---------------------------------------------------------
+    MemoryContextManagement:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        max_context_tokens:
+          type: integer
+          minimum: 1000
+        preserve_recent_messages:
+          type: integer
+          minimum: 1
+          maximum: 99
+        enable_context_editing: { type: boolean }
+      description: >
+        The user's default context-management settings, stored in
+        centry.social_users.default_context_management (jsonb) and edited by
+        Settings > Memory. Every property is optional: absent means "the user
+        has no opinion", which resolves to the platform default, and is a
+        different answer from an explicit false or zero. Ranges are enforced on
+        write (internal/domain/contextsettings); an out-of-range value is
+        refused with {"error", "field"}. `enable_context_editing` is not in
+        pylon's ContextManagementModel but IS read out of the same dict by
+        set_context_strategy, and the Memory page has always sent it.
+
+    MemorySummarization:
+      type: object
+      properties:
+        enable_summarization: { type: boolean }
+        summary_instructions: { type: string }
+        summary_model_name: { type: string }
+        summary_model_project_id: { type: integer }
+        summary_trigger_ratio:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1
+        min_messages_for_summary:
+          type: integer
+          minimum: 1
+        target_summary_tokens:
+          type: integer
+          minimum: 100
+      description: >
+        The user's default summarization settings, stored in
+        centry.social_users.default_summarization (jsonb) and edited by
+        Settings > Memory. pylon's SummarizationModel, field for field. Three
+        of these flatten into a conversation's
+        `context_strategy.summary_llm_settings` when one is resolved:
+        summary_model_name -> model_name, summary_model_project_id ->
+        model_project_id, target_summary_tokens -> max_tokens.
+
     SocialAuthorProfile:
       type: object
       required: [id, name, email, avatar, description, personal_project_id]
@@ -4775,6 +4929,10 @@ components:
             `any` zero value omitted via `omitempty`, handler.go:48). Channel-B
             fixture recommended (M1).
           description: Arbitrary user-defined personalization payload.
+        default_context_management:
+          $ref: '#/components/schemas/MemoryContextManagement'
+        default_summarization:
+          $ref: '#/components/schemas/MemorySummarization'
       description: >
         NOTE(W2): AuthorResponse struct (internal/api/v2/social/handler.go:41-49),
         served by GetAuthor (:51-123). All string fields except
@@ -4798,13 +4956,23 @@ components:
             (internal/api/v2/social/handler.go:159, jsonVal helper at
             :442-448).
           description: Arbitrary user-defined personalization payload.
+        default_context_management:
+          $ref: '#/components/schemas/MemoryContextManagement'
+        default_summarization:
+          $ref: '#/components/schemas/MemorySummarization'
       description: >
         NOTE(W2): decoded into map[string]any
-        (internal/api/v2/social/handler.go:137-141); only
-        name/description/avatar/personalization are read (strVal/jsonVal
-        helpers, :156-159, 435-448) — every property is optional, and any
-        other body key is silently ignored. A missing name/description/avatar
-        upserts as an empty string.
+        (internal/api/v2/social/handler.go, UpdateAuthor); every property is
+        optional, and any key not listed here is silently ignored. A missing
+        name/description/avatar upserts as an empty string, and a missing
+        personalization stores JSON null — but a missing
+        default_context_management or default_summarization KEEPS whatever is
+        stored, because Settings > AI Personality and Settings > Memory are two
+        pages saving one record and the personality page sends no context
+        settings at all. Either block may also arrive nested inside
+        personalization, which is where apps/elitea-web put them while this
+        endpoint still dropped every other top-level key; the top-level
+        placement wins, and a nested one is rewritten into the columns.
 
     CurrentAvatarResponse:
       type: object
@@ -6951,6 +7119,76 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500': { $ref: '#/components/responses/500' }
+
+  # ==========================================================================
+  # PREDICT — one stateless LLM turn
+  # ==========================================================================
+  /elitea_core/predict_llm/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: predictLLM
+      summary: Send one message straight to a model, with no agent and no tools
+      description: |
+        Runs a single stateless completion: no agent, no tools, no version id
+        and no conversation. The turn is composed of the optional
+        `instructions` as a system message, then `chat_history`, then
+        `user_input` last, and is performed by the LLM gateway
+        (services/elitea-llm-gateway), which resolves the project's provider
+        credentials and model definitions itself.
+
+        BLOCKING ONLY. Legacy's handler had a second, asynchronous mode
+        (`await_task_timeout: 0`) that answered with a task id and delivered
+        the tokens over a socket.io event. That mode is not part of this
+        contract and no field selects it: every accepted request is answered
+        synchronously with the generated text in the response body.
+        `await_task_timeout` is honoured only as this request's deadline in
+        seconds, clamped to 5..180, defaulting to 60.
+
+        NOTE(W2): internal/api/v2/predict/handler.go PredictLLM — responds
+        `{"content", "messages"}`, plus `chat_history` when the request asks
+        for it.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PredictLLMRequest'
+      responses:
+        '200':
+          description: The completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictLLMResponse'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '413':
+          description: The request body is above the 4 MiB bound.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: >
+            The LLM gateway is configured and did not complete the request.
+            Distinct from 503, which means no gateway is configured at all.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >
+            No completion backend is composed because LLM_GATEWAY_URL is empty.
+            The route is still registered on purpose, so an unconfigured
+            deployment is distinguishable from a missing route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictLLMUnavailableResponse'
 
   # ==========================================================================
   # APPLICATIONS — list / create

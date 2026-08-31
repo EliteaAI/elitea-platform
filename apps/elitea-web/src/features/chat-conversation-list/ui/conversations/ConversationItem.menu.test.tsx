@@ -38,6 +38,7 @@ function params(conversation: ConversationWithOwnerMeta, currentUserId: string |
     onEdit: vi.fn(),
     onMakePublic: vi.fn(),
     onShare: vi.fn(),
+    onShareByLink: vi.fn(),
     onPlayback: vi.fn(),
     onPin: vi.fn(),
   };

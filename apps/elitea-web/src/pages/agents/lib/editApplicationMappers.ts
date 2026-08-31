@@ -54,7 +54,7 @@ export function toVersionSummaries(versions: readonly ApplicationVersionSummary[
  * `EditApplicationVersionOption` is declared here rather than imported from
  * `features/agents` because that slice's curated public API (§3.3, ≤20
  * symbols) is full and this page does not need a second slot spent on a
- * four-field record: TypeScript checks the two structurally at the
+ * five-field record: TypeScript checks the two structurally at the
  * `<AgentVersionControls versions={…}/>` call site in `EditApplication.tsx`,
  * so any drift in `AgentPipelineVersionOption` fails the build there rather
  * than passing silently.
@@ -64,6 +64,26 @@ export interface EditApplicationVersionOption {
   readonly name: string;
   readonly created_at?: string | undefined;
   readonly status?: string | undefined;
+  readonly is_default?: boolean | undefined;
+}
+
+/**
+ * `versions[].is_default`, read off the wire rather than off the generated
+ * type.
+ *
+ * The Go handler emits it (`applications/handler.go`'s `getVersions`, derived
+ * from `applications.meta.default_version_id`), but
+ * `ApplicationVersionSummary` is generated from `api/openapi/v2.yaml`, which
+ * another stream owns — editing that spec ripples through two codegens and
+ * several pinned gates — so the field is on the response before it is on the
+ * type. A narrow, single-purpose read here is the honest way to say that:
+ * it names exactly which key is being trusted, and `=== true` means a wire
+ * that stops sending it degrades to "not the default" rather than to a
+ * truthiness accident. Delete this helper and read `version.is_default`
+ * directly once the schema carries it.
+ */
+function readIsDefault(version: ApplicationVersionSummary): boolean {
+  return (version as { readonly is_default?: unknown }).is_default === true;
 }
 
 export function toVersionOptions(
@@ -81,6 +101,7 @@ export function toVersionOptions(
     name: version.name,
     created_at: version.created_at,
     status: version.status,
+    is_default: readIsDefault(version),
   }));
 }
 

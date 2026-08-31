@@ -141,8 +141,8 @@ describe('AgentVersionControls — set default version', () => {
     await waitFor(() => expect(requests).toHaveLength(1));
     expect(requests[0]).toContain('/9/42/2');
 
-    // The server reports no default back on any documented response (see the
-    // component's disclosed gap), so the menu must show the one just set.
+    // The options this render was given carry no `is_default`, so the only
+    // thing that can mark a default here is the write that just succeeded.
     await waitFor(() => expect(queryByTestId('agent-version-set-default-name')).not.toBeInTheDocument());
     await user.click(getByTestId('version-selector-trigger'));
     expect(getByTestId('agent-version-default-marker')).toBeInTheDocument();
@@ -165,6 +165,75 @@ describe('AgentVersionControls — set default version', () => {
     await user.click(getByRole('button', { name: /^cancel$/i }));
     await user.click(getByTestId('version-selector-trigger'));
     expect(queryByTestId('agent-version-default-marker')).not.toBeInTheDocument();
+  });
+
+  // The read half of #147. `versions[].is_default` comes from the Go handler's
+  // `getVersions`, derived from `applications.meta.default_version_id`. Before
+  // it existed the component could only know a default it had set ITSELF, so a
+  // reload showed no default at all — and the "Set as default" item stayed
+  // enabled on the version that already was one.
+  it('marks the default the SERVER reports, with no interaction and no prior write', async () => {
+    const { getByTestId, getAllByRole } = renderControls({
+      activeVersionId: 1,
+      versions: [
+        { id: 1, name: 'base', created_at: '2026-01-01T12:00:00Z', is_default: false },
+        { id: 2, name: 'v1', created_at: '2026-02-01T12:00:00Z', is_default: true },
+      ],
+    });
+
+    await userEvent.click(getByTestId('version-selector-trigger'));
+
+    expect(getByTestId('agent-version-default-marker')).toBeInTheDocument();
+    // On the RIGHT row: the marker is rendered inside its version's menu item,
+    // so a component that marked the first row would still pass a bare
+    // "is it in the document" assertion.
+    const markedRow = getAllByRole('menuitem').find((item) =>
+      item.querySelector('[data-testid="agent-version-default-marker"]') !== null,
+    );
+    expect(markedRow?.textContent).toContain('v1');
+  });
+
+  // A list with no flagged version means "no default recorded", which is a
+  // different answer from "this list cannot say" — both render no marker, and
+  // neither may invent one.
+  it('marks nothing when no version carries the flag', async () => {
+    const { getByTestId, queryByTestId } = renderControls({
+      versions: [
+        { id: 1, name: 'base', created_at: '2026-01-01T12:00:00Z', is_default: false },
+        { id: 2, name: 'v1', created_at: '2026-02-01T12:00:00Z' },
+      ],
+    });
+
+    await userEvent.click(getByTestId('version-selector-trigger'));
+    expect(queryByTestId('agent-version-default-marker')).not.toBeInTheDocument();
+  });
+
+  // The remembered id is an OVERRIDE, not a second source of truth: in the
+  // window between a successful PATCH and the next detail fetch, the flag this
+  // render was given is stale by exactly the write that just happened.
+  it('prefers the default it just set over the stale flag it was rendered with', async () => {
+    const user = userEvent.setup();
+    server.use(http.patch(SET_DEFAULT_ROUTE, () => HttpResponse.json({ ok: true }, { status: 200 })));
+    const { getByTestId, getByRole, getAllByRole, queryByTestId } = renderControls({
+      activeVersionId: 1,
+      versions: [
+        { id: 1, name: 'base', created_at: '2026-01-01T12:00:00Z', is_default: false },
+        { id: 2, name: 'v1', created_at: '2026-02-01T12:00:00Z', is_default: true },
+      ],
+    });
+
+    await user.click(getByTestId('version-selector-trigger'));
+    await user.click(getByTestId('agent-version-set-default'));
+    await user.click(getByRole('button', { name: /set as a default/i }));
+    // The dialog closing is the signal the write succeeded — it is left open
+    // on refusal, which is what the sibling refusal test pins.
+    await waitFor(() => expect(queryByTestId('agent-version-set-default-name')).not.toBeInTheDocument());
+
+    await user.click(getByTestId('version-selector-trigger'));
+    const markedRow = getAllByRole('menuitem').find((item) =>
+      item.querySelector('[data-testid="agent-version-default-marker"]') !== null,
+    );
+    expect(markedRow?.textContent).toContain('base');
   });
 
   it('offers no set-default item to a read-only viewer, and none before the project id resolves', async () => {

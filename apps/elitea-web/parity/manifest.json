@@ -3,24 +3,24 @@
   "version": 1,
   "generatedFrom": {
     "repo": "apps/elitea-ui",
-    "commit": "a55f36cfb5ecb3834bb00bbc8d9cd9a1393168af",
-    "date": "2026-07-26"
+    "commit": "20b23c425c6f4c1522f0614e5e6ed5a8333e44db",
+    "date": "2026-08-28"
   },
   "shards": [
     {
       "path": "manifest/shell.json",
       "domain": "shell",
-      "items": 377
+      "items": 382
     },
     {
       "path": "manifest/chat.json",
       "domain": "chat",
-      "items": 214
+      "items": 215
     },
     {
       "path": "manifest/agents.json",
       "domain": "agents",
-      "items": 156
+      "items": 157
     },
     {
       "path": "manifest/pipelines.json",
@@ -35,12 +35,12 @@
     {
       "path": "manifest/toolkits.json",
       "domain": "toolkits",
-      "items": 76
+      "items": 78
     },
     {
       "path": "manifest/mcps.json",
       "domain": "mcps",
-      "items": 31
+      "items": 33
     },
     {
       "path": "manifest/apps.json",
@@ -60,7 +60,7 @@
     {
       "path": "manifest/indexes.json",
       "domain": "indexes",
-      "items": 26
+      "items": 30
     },
     {
       "path": "manifest/secrets.json",
@@ -85,7 +85,7 @@
     {
       "path": "manifest/analytics.json",
       "domain": "analytics",
-      "items": 21
+      "items": 22
     },
     {
       "path": "manifest/public.json",

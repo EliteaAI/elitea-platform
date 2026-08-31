@@ -21,7 +21,9 @@
 #
 #   deploy/certs/runtime/
 #     runtime-ca.{crt,key}            trust root for everything below
-#     redis-server.{crt,key}          served by runtime-redis (SAN: runtime-redis)
+#     redis-server.{crt,key}          served by runtime-redis (SAN: runtime-redis,
+#                                      elitea-runtime-redis — the compose and
+#                                      Kubernetes Service names)
 #     control-server.{crt,key}        elitea-main control gRPC   :9443
 #     output-server.{crt,key}         elitea-main output gRPC    :9444
 #     content-server.{crt,key}        elitea-main content HTTPS  :9445
@@ -129,10 +131,15 @@ issue_server() {
     -extfile <(printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\n' "$sans") 2>/dev/null
 }
 
-# go-redis derives ServerName from the rediss:// hostname, so the Redis cert must
-# cover the compose service name. `localhost` is here so the ACL/stream bootstrap
-# can also talk to it from inside the container over 127.0.0.1.
-issue_server redis-server   runtime-redis "DNS:runtime-redis,DNS:localhost,IP:127.0.0.1"
+# go-redis derives ServerName from the rediss:// hostname, so the Redis cert
+# must cover every hostname a consumer dials it by. `runtime-redis` is the
+# compose service name; `elitea-runtime-redis` is the Kubernetes Service name
+# (deploy/helm/elitea/templates/runtimeRedis/_helpers.tpl, values.yaml
+# runtimeRedis.service.name) that every rediss:// URL in values-standalone.yaml
+# dials — both must be present so the same cert material serves both stacks.
+# `localhost` is here so the ACL/stream bootstrap can also talk to it from
+# inside the container over 127.0.0.1.
+issue_server redis-server   runtime-redis "DNS:runtime-redis,DNS:elitea-runtime-redis,DNS:localhost,IP:127.0.0.1"
 # The three private listeners all live in the elitea-main container; the worker
 # dials them as elitea-main:9443/9444/9445.
 issue_server control-server elitea-main   "DNS:elitea-main"

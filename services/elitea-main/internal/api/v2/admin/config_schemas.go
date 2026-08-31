@@ -27,21 +27,6 @@ package admin
 import "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 
 const (
-	// pylonPluginConfigUnavailable covers every section whose fields address a
-	// key inside a Pylon plugin's YAML config and are read by that plugin at
-	// load time — MCP server definitions, tracing switches, the indexer worker's
-	// runtime flags, the auth provider.
-	//
-	// `guardrails` used to be the first name on that list and no longer is. Its
-	// fields address `toolkit_security.*` in the same way, but the reason a
-	// section is withheld was never "the path looks like a plugin's" — it is
-	// "nothing here reads the values". This platform now reads them: see
-	// guardrailsSection() for the four consumers.
-	pylonPluginConfigUnavailable = "these settings configure Pylon plugin runtimes: the reference page collects them " +
-		"from plugin heartbeats and saves them by shipping patched plugin YAML back over the Arbiter bus. This " +
-		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
-		"would have no effect. Use the Pylon admin panel while the hybrid deployment is running."
-
 	// extraUIConfigUnavailable used to cover the `extra_ui_config.*` sections
 	// other than `resources` — settings the legacy UI received by injecting
 	// elitea_core's `extra_ui_config` into the page, withheld here for the
@@ -201,6 +186,42 @@ const (
 // the matrix — the catalogue is the union of granted and declared — so no
 // existing grant is invalidated; the name simply stops being one this service
 // declares a gate for.
+//
+// ## Observability, Runtime and Admin Panel are GONE too, for the same reason
+//
+// All three carried the generic "these settings configure Pylon plugin
+// runtimes" reason, and in every one of the three that reason was permanent
+// rather than a gap this platform intended to close:
+//
+//   - `observability` held two fields. `tracing_enabled` is owned by each
+//     process's own environment (OTEL_SDK_DISABLED / OTEL_EXPORTER_OTLP_ENDPOINT,
+//     read independently by four separate binaries —
+//     libs/go/observability/observability.go), so a single DB row can never
+//     govern it without becoming a second, disagreeing source of truth.
+//     `audit_trail_enabled` toggled a writer that does not exist:
+//     centry.audit_events has only readers in this repo — see the "READ-ONLY
+//     from this service. Never emitted today." note on
+//     internal/api/generated/api.gen.go's audit fields. There was nothing this
+//     platform could ever wire either field to.
+//   - `runtime` held ten fields across three owners, none of them this page.
+//     `ai_project_id` is read from the environment independently by elitea-main
+//     AND by the LLM gateway (services/elitea-llm-gateway/internal/config —
+//     a SEPARATE PROCESS that cannot see a DB row this service writes).
+//     `ai_project_allowed_domains` is deployment-mounted YAML read once at
+//     startup (internal/authcomposition/config.go). The four
+//     `*_scheduling_{enabled,cron}` fields are centry.schedule rows the admin
+//     "Schedules & Tasks" page already edits
+//     (internal/api/v2/scheduling/schedules.go). The rest belong to
+//     pylon-indexer's mounted YAML. A save on this page could reach none of
+//     them.
+//   - `admin_panel` declared zero fields — the same subject as Advanced above,
+//     with nothing even to describe.
+//
+// The one field worth keeping, `analytics_enabled`, was never actually
+// Pylon-plugin-shaped: it is a `centry.platform_config` flag of exactly the
+// same kind as `mcp_in_menu` or the voice-feature switches, and this platform
+// already has the whole chain to serve it. It now lives on the Features page —
+// see analyticsSection() below and platformconfig.KeyAnalyticsEnabled.
 
 func configSections() []map[string]any {
 	return []map[string]any{
@@ -209,11 +230,8 @@ func configSections() []map[string]any {
 		agentPublishingSection(),
 		skillPublishingSection(),
 		mcpServersSection(),
-		observabilitySection(),
 		llmProxySection(),
 		governanceSection(),
-		runtimeSection(),
-		adminPanelSection(),
 		authSection(),
 		resourcesSection(),
 		dedicatedBannerSection(),
@@ -221,6 +239,7 @@ func configSections() []map[string]any {
 		voiceFeaturesSection(),
 		serviceDescriptorsSection(),
 		maintenanceSection(),
+		analyticsSection(),
 	}
 }
 
@@ -246,8 +265,8 @@ func serviceDescriptorsSection() map[string]any {
 
 // guardrailsSection — the platform-wide toolkit security policy. LIVE.
 //
-// Every field here is read, and the reason the section carried
-// `pylonPluginConfigUnavailable` until now was that none of them were. The four
+// Every field here is read, and the reason the section carried an
+// unavailable_reason until now was that none of them were. The four
 // consumers, in the order an operator meets them:
 //
 //   - the toolkit TYPE catalogue (`/toolkits`, `/toolkit_types`,
@@ -550,8 +569,9 @@ func skillPublishingSection() map[string]any {
 // mcpServersUnavailable sends this section's caller to the surface that really
 // holds the catalogue.
 //
-// This section used to carry pylonPluginConfigUnavailable, and that WAS true of
-// it: the values addressed the indexer_worker plugin descriptor, collected over
+// This section used to carry the generic "these settings configure Pylon
+// plugin runtimes" reason, and that WAS true of it: the values addressed the
+// indexer_worker plugin descriptor, collected over
 // the Arbiter bus, and nothing here read them. It is no longer the whole truth,
 // because the catalogue itself now exists — shared migration 0094,
 // `internal/mcpregistry` and the three routes in mcp_prebuilt.go — so a reader
@@ -605,44 +625,40 @@ func mcpServersSection() map[string]any {
 	}
 }
 
-func observabilitySection() map[string]any {
+// analyticsSection — the Features page's Analytics visibility switch. LIVE.
+//
+// This used to be a field on the withheld `observability` section
+// (`analytics.enabled`), which meant it inherited that section's blanket
+// "Pylon plugin runtime" refusal even though it was never plugin-shaped: it is
+// a `centry.platform_config` row of exactly the same kind as `mcp_in_menu` or
+// the voice-feature switches. It moves here because this platform has the
+// whole chain for that kind of flag already —
+// internal/platformconfig.KeyAnalyticsEnabled, the reader in
+// internal/api/v2/eliteacore/platform_flags.go marshalled into
+// GET /elitea_core/platform_settings/…, and apps/elitea-web's Settings page
+// hides its Analytics tab on the same answer.
+//
+// It is also ENFORCED, not just hidden: `internal/api/router.go` gates the
+// `/analytics*` and `/analytics_costs` routes on the same flag through
+// requireAnalyticsEnabled, the same shape as MCP's requireMCPEnabled. A hidden
+// tab over an open endpoint would be no gate at all.
+func analyticsSection() map[string]any {
 	return map[string]any{
-		"id":                 "observability",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "Observability",
-		"description":        "Manage distributed tracing and audit trail settings across all pylons.",
-		"order":              3,
-		"icon":               "monitoring",
+		"id":          "analytics",
+		"page":        configPageFeatures,
+		"title":       "Analytics",
+		"description": "Control whether the Analytics tab is visible in project Settings.",
+		"order":       16,
+		"icon":        "monitoring",
 		"fields": []map[string]any{
 			{
-				"key":              "tracing_enabled",
-				"type":             "boolean",
-				"title":            "Tracing",
-				"description":      "Master switch to enable or disable all distributed tracing.",
-				"path":             "enabled",
-				"section":          "observability",
-				"default":          true,
-				"requires_restart": true,
-			},
-			{
-				"key":              "audit_trail_enabled",
-				"type":             "boolean",
-				"title":            "Audit Trail",
-				"description":      "Enable audit trail that persists user actions and agent tool calls to the database.",
-				"path":             "audit_trail.enabled",
-				"section":          "observability",
-				"default":          true,
-				"requires_restart": true,
-			},
-			{
-				"key":              "analytics_enabled",
-				"type":             "boolean",
-				"title":            "Show Analytics",
-				"description":      "Controls whether the Analytics tab is visible in project Settings. When disabled, the Analytics page is hidden for all users.",
-				"path":             "analytics.enabled",
-				"section":          "observability",
-				"default":          true,
-				"requires_restart": true,
+				"key":         "analytics_enabled",
+				"type":        "boolean",
+				"title":       "Show Analytics",
+				"description": "Controls whether the Analytics tab is visible in project Settings. When disabled, the Analytics page is hidden for all users and the analytics endpoints refuse.",
+				"path":        "analytics.enabled",
+				"section":     "analytics",
+				"default":     true,
 			},
 		},
 	}
@@ -651,9 +667,10 @@ func observabilitySection() map[string]any {
 // llmProxyUnavailable explains why the ordinary plugin-config form cannot
 // serve this section.
 //
-// It is a different sentence from pylonPluginConfigUnavailable on purpose. That
-// reason says "these values address a Pylon plugin descriptor and nothing here
-// reads them", which was true of the LiteLLM section this replaces and is not
+// It is a different sentence from the generic "these settings configure Pylon
+// plugin runtimes" reason on purpose. That reason says "these values address a
+// Pylon plugin descriptor and nothing here reads them", which was true of the
+// LiteLLM section this replaces and is not
 // true of anything on this one: every value the LLM Proxy section shows is read,
 // and most of it is read on the billed request path. The reason it is not a form
 // is narrower — the surface is three unrelated shapes (a live status report, a
@@ -946,125 +963,6 @@ func governanceSection() map[string]any {
 				"action_task": "validate_cel",
 			},
 		},
-	}
-}
-
-func runtimeSection() map[string]any {
-	return map[string]any{
-		"id":                 "runtime",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "Runtime",
-		"description":        "Configure indexer worker runtime behavior, task processing, and development settings.",
-		"order":              5,
-		"icon":               "settings",
-		"fields": []map[string]any{
-			{
-				"key":              "ai_project_id",
-				"type":             "integer",
-				"title":            "Public Project ID",
-				"description":      "Database ID of the public (Agent Studio) project. Set during initial platform setup.",
-				"path":             "ai_project_id",
-				"section":          "runtime",
-				"default":          1,
-				"requires_restart": true,
-			},
-			{
-				"key":         "ai_project_allowed_domains",
-				"type":        "string",
-				"title":       "Allowed Email Domains",
-				"description": "Comma-separated email domains auto-added to the public project on first login. Use * for all domains.",
-				"path":        "ai_project_allowed_domains",
-				"section":     "runtime",
-				"default":     "centry.user",
-			},
-			{
-				"key":         "pipeline_scheduling_enabled",
-				"type":        "boolean",
-				"title":       "Pipeline Scheduling Enabled",
-				"description": "Master switch for the per-tick check that triggers scheduled pipeline runs.",
-				"path":        "scheduler.pipeline_scheduling.enabled",
-				"section":     "runtime",
-				"default":     true,
-			},
-			{
-				"key":          "pipeline_scheduling_cron",
-				"type":         "string",
-				"title":        "Pipeline Scheduling Cron",
-				"description":  "How often the pipeline scheduling tick fires. Standard 5-field cron expression.",
-				"path":         "scheduler.pipeline_scheduling.cron",
-				"section":      "runtime",
-				"default":      "* * * * *",
-				"visible_when": map[string]any{"field": "pipeline_scheduling_enabled", "value": true},
-			},
-			{
-				"key":         "index_scheduling_enabled",
-				"type":        "boolean",
-				"title":       "Index Scheduling Enabled",
-				"description": "Master switch for the per-tick check that triggers scheduled toolkit index re-builds.",
-				"path":        "scheduler.index_scheduling.enabled",
-				"section":     "runtime",
-				"default":     true,
-			},
-			{
-				"key":          "index_scheduling_cron",
-				"type":         "string",
-				"title":        "Index Scheduling Cron",
-				"description":  "How often the index scheduling tick fires. Standard 5-field cron expression.",
-				"path":         "scheduler.index_scheduling.cron",
-				"section":      "runtime",
-				"default":      "* * * * *",
-				"visible_when": map[string]any{"field": "index_scheduling_enabled", "value": true},
-			},
-			{
-				"key":         "reload_enabled",
-				"type":        "boolean",
-				"title":       "Plugin Hot Reload",
-				"description": "Allows reloading individual plugins on the fly without a full service restart. Useful during development or when applying plugin updates. Keep disabled in production.",
-				"path":        "reload_enabled",
-				"section":     "runtime",
-				"default":     false,
-			},
-			{
-				"key":         "task_queue_debug",
-				"type":        "boolean",
-				"title":       "Task Queue Debug",
-				"description": "Turns on verbose logging for background task processing.",
-				"path":        "task_queue_debug",
-				"section":     "runtime",
-				"default":     false,
-			},
-			{
-				"key":              "indexer_tasks_enabled",
-				"type":             "boolean",
-				"title":            "Indexer Tasks",
-				"description":      "Controls whether this worker processes background jobs such as datasource indexing, embedding generation, and scheduled tasks.",
-				"path":             "indexer_tasks_enabled",
-				"section":          "runtime",
-				"default":          true,
-				"requires_restart": true,
-			},
-			{
-				"key":         "sdk_dev_reload",
-				"type":        "boolean",
-				"title":       "SDK Hot Reload",
-				"description": "When enabled, the SDK is reloaded from disk on every agent run instead of using cached modules.",
-				"path":        "sdk_dev_reload",
-				"section":     "runtime",
-				"default":     false,
-			},
-		},
-	}
-}
-
-func adminPanelSection() map[string]any {
-	return map[string]any{
-		"id":                 "admin_panel",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "Admin Panel",
-		"description":        "Manage admin panel plugin availability and reload capabilities.",
-		"order":              6,
-		"icon":               "admin_panel_settings",
-		"fields":             []map[string]any{},
 	}
 }
 

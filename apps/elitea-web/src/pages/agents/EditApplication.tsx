@@ -7,11 +7,10 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
-import { AgentTagEditor, AgentVersionControls, CreateAgentForm } from '@/features/agents';
+import { AgentVersionControls } from '@/features/agents';
 import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
-import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { applicationDetailDisplayName, toVersionSummaries } from './lib/editApplicationMappers';
@@ -25,8 +24,10 @@ import { useEditApplicationVersionFields } from './lib/useEditApplicationVersion
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditApplicationActions } from './ui/EditApplicationActions';
+import { EditApplicationAiEditSlot } from './ui/EditApplicationAiEditSlot';
+import { EditApplicationConfigurationPanel } from './ui/EditApplicationConfigurationPanel';
+import { EditApplicationEditorTabs } from './ui/EditApplicationEditorTabs';
 import { EditApplicationSaveBar } from './ui/EditApplicationSaveBar';
-import { EditApplicationToolsPanel } from './ui/EditApplicationToolsPanel';
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
 const tabBarSx: SxProps<Theme> = {
@@ -347,48 +348,38 @@ export function EditApplication(): ReactNode {
               {t('pages.agents.editApplication.saveError', 'Failed to save your changes.')}
             </Typography>
           )}
-          <Box data-testid="edit-application-configuration-tab-panel">
-            <CreateAgentForm
-              values={editor.values}
-              onFieldChange={editor.onFieldChange}
-              disabled={isEditorDisabled}
-              /* #345 — the tag control. It reaches the wire through
-                 `toVersionSaveBody`'s `tags`, which `UpdateVersion` now
-                 writes as association rows. */
-              tagsSlot={
-                <AgentTagEditor
-                  projectId={projectId}
-                  value={versionFields.fields.tags}
-                  onChange={versionFields.setTags}
-                />
-              }
-              modelSettingsSlot={
-                <AgentModelSettings
-                  projectId={projectId}
-                  value={editor.values.version_details.llm_settings}
-                  onChange={handleModelSettingsChange}
-                  disabled={isEditorDisabled}
-                />
-              }
-            />
-            {/*
-             * #307 — tool attach/detach, the last of the "correctly-wired
-             * components with no mount point". See
-             * `./ui/EditApplicationToolsPanel.tsx` for what this page owns
-             * and `features/agents`' `AgentToolsPanel` for the composition
-             * itself. Both writes hit the server immediately (the
-             * `entity_tool_mapping` relation endpoint), independently of
-             * this page's Save button.
-             */}
-            <EditApplicationToolsPanel
-              projectId={projectId}
-              applicationId={applicationId}
-              activeVersion={activeVersion}
-              versionFields={versionFields}
-              isDirty={isDirty}
-              isReadOnly={isReadOnlyView}
-            />
-          </Box>
+          {/*
+           * The Evaluation tab — the dimension library — mounted BESIDE the
+           * configuration panel, which is where the baseline puts it
+           * (`EditApplication.jsx:103-113`). It gets no route of its own:
+           * an agent's evaluation criteria are a property of the agent being
+           * edited, and reaching them should not mean leaving the editor.
+           * See `./ui/EditApplicationEditorTabs.tsx` for why only the Library
+           * sub-view exists.
+           *
+           * The configuration panel moved to its own file in the same change,
+           * unaltered — two panels do not fit under the §3.5 400-line budget.
+           */}
+          <EditApplicationEditorTabs
+            projectId={projectId}
+            applicationId={applicationId}
+            configurationPanel={
+              <EditApplicationConfigurationPanel
+                projectId={projectId}
+                applicationId={applicationId}
+                activeVersion={activeVersion}
+                editor={editor}
+                versionFields={versionFields}
+                isEditorDisabled={isEditorDisabled}
+                isDirty={isDirty}
+                isReadOnly={isReadOnlyView}
+                onModelSettingsChange={handleModelSettingsChange}
+                instructionsAiEditSlot={
+                  <EditApplicationAiEditSlot editor={editor} projectId={projectId} disabled={isEditorDisabled} />
+                }
+              />
+            }
+          />
         </Box>
       </Box>
     </FormProvider>

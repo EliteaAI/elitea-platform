@@ -26,14 +26,18 @@ import (
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
+	predictapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/sharedchat"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
@@ -269,6 +273,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var authReadiness health.Checker
 	var principalValidator apimw.PrincipalValidator
 	var forwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
+	// firstLoginPolicy travels OUT of the authEnabled block below, because the
+	// plane that consumes it is composed further down. `initial_global_admins`
+	// used to reach only the browserauth plane, and internal/api/
+	// production_router.go does not mount that plane when single sign-on is
+	// configured, so an SSO-only deployment had no way to name its first
+	// administrator except an INSERT into auth_core__user_role.
+	var firstLoginPolicy v2auth.FirstLoginPolicy
 	authConfigPath, authEnabled, err := configuredAuthConfigPath(os.LookupEnv)
 	if err != nil {
 		return err
@@ -280,6 +291,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		authConfig, loadErr := authcomposition.Load(authConfigPath)
 		if loadErr != nil {
 			return fmt.Errorf("load production Form authentication: %w", loadErr)
+		}
+		// The document is the PRIMARY source, so the list has one meaning on
+		// whichever browser plane ends up mounted.
+		firstLoginPolicy = v2auth.FirstLoginPolicy{
+			InitialGlobalAdmins: authConfig.Identity.InitialGlobalAdmins,
 		}
 		formGraph, err = authcomposition.NewFormGraph(ctx, authConfig, authcomposition.FormGraphDependencies{
 			PostgreSQL:           pool,
@@ -469,13 +485,26 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if appSecretKey == "" {
 			return errors.New("APPLICATION_SECRET_KEY is required when single sign-on is configured")
 		}
+		// A single-sign-on-only deployment has no authentication configuration
+		// document at all, and it is exactly the shape that cannot make an
+		// administrator any other way. Fall back to the environment there, and
+		// only there, so the document stays the single source when it exists.
+		if len(firstLoginPolicy.InitialGlobalAdmins) == 0 {
+			firstLoginPolicy.InitialGlobalAdmins = v2auth.InitialGlobalAdminsFromEnv()
+		}
+		if len(firstLoginPolicy.InitialGlobalAdmins) != 0 {
+			logger.Info("initial global administrators configured for the single sign-on plane",
+				"count", len(firstLoginPolicy.InitialGlobalAdmins))
+		}
 		oidcSessionHandler = v2auth.NewSessionHandler(pool, appSecretKey)
 		oidcOIDCHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, appSecretKey)
 		if err != nil {
 			return fmt.Errorf("initialize OIDC handler: %w", err)
 		}
 		vault := v2secrets.NewHandler(pool)
-		oidcOIDCHandler = oidcOIDCHandler.WithProviderStore(identityProviderStore, vault)
+		oidcOIDCHandler = oidcOIDCHandler.
+			WithProviderStore(identityProviderStore, vault).
+			WithFirstLoginPolicy(firstLoginPolicy)
 		switch {
 		case storedOIDCProvider:
 			logger.Info("OIDC authentication enabled from an authored identity provider")
@@ -493,7 +522,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		oidcSAMLHandler = v2auth.NewSAMLHandler(
 			pool, appSecretKey, identityProviderStore, vault,
 			os.Getenv("COOKIE_SECURE") != "false",
-		)
+		).WithFirstLoginPolicy(firstLoginPolicy)
 		if storedSAMLProvider {
 			logger.Info("SAML authentication enabled from an authored identity provider")
 		}
@@ -1016,6 +1045,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// would then wire a use case whose first call panics — the typed-nil trap
 	// this service has already been bitten by on /healthz.
 	var supportAssistantStart v2support.StartUseCase
+	// The MCP server's half of the same wiring, assigned under the same guard
+	// and for the same typed-nil reason. `tools/call` runs an agent through the
+	// SAME use case; left nil it keeps answering the refusal it always has.
+	var mcpAgentStart v2mcp.AgentStartUseCase
 	var currentAgentCancel http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
@@ -1138,6 +1171,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		if publicRoutes.AgentStart != nil {
 			supportAssistantStart = publicRoutes.AgentStart
+			mcpAgentStart = publicRoutes.AgentStart
 			currentAgentStart, err = agentexecutionapi.NewCurrentApplicationStartRoute(
 				publicRoutes.AgentStart,
 				apimw.AuthConfig{
@@ -1295,6 +1329,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// receiver instead of reporting "not available".
 		configConnectionChecker = checker
 		slog.Info("configurations check-connection client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	}
+
+	// #194: POST /elitea_core/predict_llm/prompt_lib/{projectID} runs one
+	// stateless LLM turn through the same gateway hop, configured from the
+	// same four variables. A nil completer is a supported state — the route is
+	// still registered and answers 503 naming LLM_GATEWAY_URL — but it must be
+	// left as a nil INTERFACE, not a boxed nil pointer, or the handler's
+	// `completer == nil` check is false and it calls a method on a nil
+	// receiver instead of reporting "not configured".
+	var predictCompleter predictapi.Completer
+	if completer, completerErr := predictapi.NewGatewayCompleterFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+		os.Getenv("GATEWAY_IDENTITY_SECRET"),
+	); completerErr != nil {
+		return fmt.Errorf("compose predict_llm completion client: %w", completerErr)
+	} else if completer != nil {
+		predictCompleter = completer
+		slog.Info("predict_llm completion client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	} else {
+		slog.Warn("predict_llm completion client disabled: LLM_GATEWAY_URL is empty; " +
+			"the route stays registered and answers 503")
 	}
 
 	// The admin LLM Proxy section reads the gateway's own enforcement status.
@@ -1479,6 +1537,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// project, and giving it its own executor is how the two would drift
 		// apart on tracing, budgets and cancellation.
 		SupportAssistantStart:      supportAssistantStart,
+		MCPAgentStart:              mcpAgentStart,
 		CurrentAgentCancel:         currentAgentCancel,
 		CurrentIndexCancel:         currentIndexCancel,
 		CurrentIndexMeta:           currentIndexMeta,
@@ -1492,6 +1551,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProxy:               gatewayProxy,
 		GatewayProjectResolver:     gatewayProjectResolver,
 		ConfigConnectionChecker:    configConnectionChecker,
+		PredictCompleter:           predictCompleter,
 		GatewayStatus:              gatewayStatus,
 		ConfigProviderAdmission:    configProviderAdmission,
 		ConfigStoredResolver:       configStoredResolver,
@@ -1506,11 +1566,25 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// lines — and had zero callers, so router.go dropped their route groups
 		// and the endpoints 404'd in every deployment. Counted at the gates:
 		// conversations 23 routes, skills 12, analytics 7, folders 6, tags 3.
-		ConvsRepo:     conversationsRepository(pool),
-		SkillsRepo:    skillsRepository(pool),
-		FoldersRepo:   foldersRepository(pool),
-		TagsRepo:      tagsRepository(pool),
-		AnalyticsRepo: analyticsRepository(pool),
+		ConvsRepo: conversationsRepository(pool),
+		// Share a conversation by link. One repository satisfies both
+		// interfaces — the central link table and the per-project transcript
+		// read — but they are two FIELDS because they are two tenancies and
+		// two mount points (one authenticated group, one anonymous pair), and
+		// a single field would make it impossible to register the anonymous
+		// routes without also claiming a transcript reader.
+		SharedChatStore:      sharedChatLinksRepository(pool),
+		SharedChatTranscript: sharedChatTranscriptRepository(pool),
+		SkillsRepo:           skillsRepository(pool),
+		FoldersRepo:          foldersRepository(pool),
+		TagsRepo:             tagsRepository(pool),
+		AnalyticsRepo:        analyticsRepository(pool),
+		// The Agent Evaluation dimension library. Wired here, at the
+		// composition root, in the SAME change as the routes and the RBAC
+		// grant: a handler written and never composed is the shape #597
+		// records — both halves correct, the wiring the defect, and 2475 green
+		// unit tests unable to see it.
+		EvalDimensionsRepo: evalDimensionsRepository(pool),
 		// WebhookRepo is the sixth instance of the same defect, and it hid one
 		// step deeper than the other five. Its gate mounts a subrouter —
 		// `r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(...).Routes())`
@@ -1585,6 +1659,25 @@ func conversationsRepository(pool *pgxpool.Pool) v2convs.Repository {
 	return dbrepos.NewConversationsRepo(pool)
 }
 
+// sharedChatLinksRepository and sharedChatTranscriptRepository return the same
+// concrete repository under its two interfaces. Both return a TYPED NIL-safe
+// untyped nil when the pool is absent: a typed nil in an interface field is not
+// `== nil`, so router.go's gate would register the routes over a repository
+// whose every method panics — the typed-nil trap the gateway's /healthz hit.
+func sharedChatLinksRepository(pool *pgxpool.Pool) sharedchat.Store {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewSharedChatLinksRepo(pool)
+}
+
+func sharedChatTranscriptRepository(pool *pgxpool.Pool) sharedchat.TranscriptStore {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewSharedChatLinksRepo(pool)
+}
+
 func skillsRepository(pool *pgxpool.Pool) v2skills.Repository {
 	if pool == nil {
 		return nil
@@ -1604,6 +1697,13 @@ func webhooksRepository(pool *pgxpool.Pool) webhook.Repository {
 		return nil
 	}
 	return dbrepos.NewWebhooksRepo(pool)
+}
+
+func evalDimensionsRepository(pool *pgxpool.Pool) v2evaluation.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewEvalDimensionsRepo(pool)
 }
 
 func tagsRepository(pool *pgxpool.Pool) v2tags.Repository {

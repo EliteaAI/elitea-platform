@@ -120,8 +120,13 @@ export function computeIsSelectedProjectPublic(selectedProjectId: string | undef
   return isPublicProject(selectedProjectId, config.config.vite_public_project_id);
 }
 
-/** SidebarBody's `selectedItem` useMemo — which nav item (if any) matches the current pathname. `/agents-hub` deliberately matches nothing (old app: explicit early return for `RouteDefinitions.AgentHub`). */
+/**
+ * SidebarBody's `selectedItem` useMemo — which nav item (if any) matches the
+ * current pathname. `/agents-hub` and `/elitea-catalog` deliberately match
+ * nothing (old app: explicit early return for both, `SidebarBody.jsx:85`);
+ * the catalogue has its own pill in the footer, not a nav row.
+ */
 export function selectedNavItem(pathname: string, items: readonly NavItem[]): NavItemValue | undefined {
-  if (pathname === '/agents-hub') return undefined;
+  if (pathname === '/agents-hub' || pathname === '/elitea-catalog') return undefined;
   return items.find((item) => pathname.startsWith(item.url))?.value;
 }

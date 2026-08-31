@@ -22,6 +22,8 @@ pub(crate) mod variables;
 #[cfg(test)]
 mod assembly_tests;
 #[cfg(test)]
+mod context_management_tests;
+#[cfg(test)]
 mod direct_hitl_tests;
 #[cfg(test)]
 mod events_tests;

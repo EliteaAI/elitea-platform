@@ -25,8 +25,7 @@
  * carries an `unavailable_reason` or none, and the value endpoints answer 501
  * with that same string. This page renders what it is told; it does not decide.
  *
- *   - **Observability, LiteLLM, Runtime, Admin Panel** — Pylon plugin
- *     configuration. Unavailable, with the reason.
+ *   - **LLM Proxy** — Pylon plugin configuration. Unavailable, with the reason.
  *   - **Guardrails** — live, and the first section that left the list above. Its
  *     fields address `toolkit_security.*` like a plugin's, but the test was
  *     never "the path looks like a plugin's": it is "does anything here read
@@ -65,6 +64,15 @@
  *     is coming; this was the one section that could never keep it, and a
  *     permanent row saying "not available here" spends an operator's attention
  *     on a control that will never exist.
+ *   - **Observability, Runtime, Admin Panel** — GONE too, and for the same
+ *     reason as Advanced: every field in the three addressed a per-process
+ *     environment variable, a deployment-mounted YAML file, or a table this
+ *     service already exposes through its own admin surface (Schedules &
+ *     Tasks) — nowhere this page's save could ever reach. The server's
+ *     `config_schemas.go` records the per-field detail. The one field worth
+ *     keeping, `analytics_enabled`, moved to the Features page instead — see
+ *     `./Features.tsx`'s Analytics section — because it was a genuine
+ *     `centry.platform_config` flag, not a plugin descriptor.
  *   - **Service Descriptors** — a page of its own in this port, not yet done.
  *
  * ## What is left unavailable here is accurate

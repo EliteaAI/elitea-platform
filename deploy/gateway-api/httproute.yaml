@@ -91,13 +91,6 @@ spec:
         - path:
             type: Exact
             value: /auth
-        # Parity with the traefik edge. This service registers no socket.io
-        # handler today, and internal/api/main_public_rules.go still keeps the
-        # public rule for the path. Forwarding it costs one 404 from chi
-        # instead of one from the Gateway, and it stops the two edges diverging.
-        - path:
-            type: PathPrefix
-            value: /socket.io
         # The liveness endpoint. `/readyz` and `/startupz` are deliberately
         # absent: their bodies name each dependency's state, and no caller
         # reaches them through an edge. The probes reach the pod directly.
@@ -179,6 +172,12 @@ spec:
               - X-Elitea-Project-Id
               - X-Elitea-User-Id
               - X-Elitea-Tenant-Id
+              # The runtime execution a /llm call was made from. Legitimate from
+              # the runtime worker, which does not pass this edge; never from a
+              # browser. elitea-main re-signs whatever survives into the v2
+              # identity tuple, so a value left here would attribute the call to
+              # an agent the caller chose.
+              - X-Elitea-Execution-Id
       backendRefs:
         - name: elitea-main
           port: 8080

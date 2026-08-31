@@ -546,6 +546,14 @@ func (h *Handler) buildContext(w http.ResponseWriter, r *http.Request, detach bo
 		if id.tenantID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, id.tenantID)
 		}
+		// The runtime execution this call was made from. It rides the context
+		// with the rest of the identity rather than being re-read from the
+		// headers at the billing site, because the billing path is reached from
+		// a detached context (stream_drain) and from a goroutine, where the
+		// request is long gone.
+		if id.executionID != "" {
+			ctx.SetValue(contextKeyExecutionID, id.executionID)
+		}
 	}
 	return ctx, sc, true
 }

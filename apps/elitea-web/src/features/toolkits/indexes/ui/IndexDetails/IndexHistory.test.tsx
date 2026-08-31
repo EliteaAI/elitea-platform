@@ -53,3 +53,56 @@ describe('IndexHistory', () => {
     expect(useIndexesStore.getState().selectedHistoryItem).toEqual(history[1]);
   });
 });
+
+/**
+ * The report pane. Its data is already on every history row (the index_meta
+ * `metadata` map is copied verbatim out of PgVector), so this is a render of
+ * data the tab was previously throwing away.
+ */
+describe('IndexHistory indexing report', () => {
+  it('shows the selected run\'s outcome breakdown, and follows the selection', async () => {
+    const user = userEvent.setup();
+    const runs: IndexHistoryItem[] = [
+      { state: 'created', updated_on: 1_700_000_000, conversation_id: 'c1', indexed: 5 },
+      {
+        state: 'partly_indexed',
+        updated_on: 1_700_100_000,
+        conversation_id: 'c2',
+        indexed: 9,
+        skipped: { documents_skipped: { filtered_count: 2, filtered: ['x.md'] } },
+      },
+    ];
+    const { getByText, getByTestId, queryByText } = renderWithTheme(<IndexHistory history={runs} />);
+    // Mounted selection is the LAST row.
+    expect(getByTestId('indexing-report-summary')).toBeInTheDocument();
+    expect(getByText(/2 documents skipped/)).toBeInTheDocument();
+
+    // Click by the row's EVENT label — the date column is formatted in the
+    // runner's local timezone, so asserting on it would be machine-dependent.
+    await user.click(getByText('Created'));
+    expect(queryByText(/2 documents skipped/)).toBeNull();
+    expect(getByText(/5 documents indexed/)).toBeInTheDocument();
+  });
+
+  it('surfaces the run error exactly once — the legacy path folds it into the report already', () => {
+    const runs: IndexHistoryItem[] = [
+      { state: 'failed', updated_on: 1_700_000_000, conversation_id: 'c1', indexed: 0, error: 'the source went away' },
+    ];
+    const { getAllByText } = renderWithTheme(<IndexHistory history={runs} />);
+    expect(getAllByText('the source went away')).toHaveLength(1);
+  });
+
+  it('shows a stored error above a canonical report that lists none of its own', () => {
+    const runs: IndexHistoryItem[] = [
+      {
+        state: 'partly_indexed',
+        updated_on: 1_700_000_000,
+        conversation_id: 'c1',
+        error: 'the source went away',
+        report: { status: 'partly_indexed', totals: { indexed: 1 }, categories: [{ kind: 'indexed', count: 1, groups: [] }] },
+      },
+    ];
+    const { getAllByText } = renderWithTheme(<IndexHistory history={runs} />);
+    expect(getAllByText('the source went away')).toHaveLength(1);
+  });
+});

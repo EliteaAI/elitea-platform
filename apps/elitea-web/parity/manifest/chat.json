@@ -10,7 +10,7 @@
       "title": "Route `/chat` renders ChatWrapper",
       "source": [
         "apps/elitea-ui/src/routes.js:6",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:164"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:197"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -39,7 +39,7 @@
       "title": "Route `/chat/:conversationId` renders ChatWrapper",
       "source": [
         "apps/elitea-ui/src/routes.js:7",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:165"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:198"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -125,7 +125,7 @@
       "priority": "must",
       "title": "Query param `edited_participant_id` on /chat (spec QP-007)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:81",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:82",
         "apps/elitea-ui/src/hooks/chat/useAgentEditorUrlSync.js:57",
         "apps/elitea-ui/src/hooks/chat/useAgentEditorUrlSync.js:67",
         "apps/elitea-ui/src/hooks/chat/useAgentEditorUrlSync.js:94",
@@ -159,7 +159,7 @@
       "priority": "must",
       "title": "Query param `edited_participant_id` on /chat/:conversationId (spec QP-007)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:81",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:82",
         "apps/elitea-ui/src/hooks/chat/useAgentEditorUrlSync.js:57",
         "apps/elitea-ui/src/hooks/chat/useAgentEditorUrlSync.js:67",
         "apps/elitea-ui/src/hooks/chat/useAgentEditorUrlSync.js:94",
@@ -193,7 +193,7 @@
       "priority": "must",
       "title": "Query param `message_id` on /chat",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1088"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:915"
       ],
       "acceptance": [
         "GIVEN the application is at /chat",
@@ -222,7 +222,7 @@
       "priority": "must",
       "title": "Query param `message_id` on /chat/:conversationId",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1088"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:915"
       ],
       "acceptance": [
         "GIVEN the application is at /chat/:conversationId",
@@ -309,8 +309,8 @@
       "priority": "must",
       "title": "Query param `shared_chat` on /chat",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:648",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:157"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:454",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:171"
       ],
       "acceptance": [
         "GIVEN the application is at /chat",
@@ -339,8 +339,8 @@
       "priority": "must",
       "title": "Query param `shared_chat` on /chat/:conversationId",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:648",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:157"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:454",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:171"
       ],
       "acceptance": [
         "GIVEN the application is at /chat/:conversationId",
@@ -369,7 +369,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/messages/prompt_lib/{projectId}/{conversationId} (messageList)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:24-74"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:24-81"
       ],
       "acceptance": [
         "GIVEN the user performs the message list operation",
@@ -397,7 +397,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/message/prompt_lib/{projectId}/{id} (deleteMessageFromConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:75-87"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:83-95"
       ],
       "acceptance": [
         "GIVEN the user performs the delete message from conversation operation",
@@ -425,7 +425,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/messages/prompt_lib/{projectId}/{conversationId} (deleteAllMessagesFromConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:88-99"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:96-107"
       ],
       "acceptance": [
         "GIVEN the user performs the delete all messages from conversation operation",
@@ -453,7 +453,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/conversations/prompt_lib/{projectId} (conversationCreate)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:100-109"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:108-117"
       ],
       "acceptance": [
         "GIVEN the user performs the conversation create operation",
@@ -481,7 +481,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/conversation/prompt_lib/{projectId}/{id} (conversationEdit)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:110-123"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:118-131"
       ],
       "acceptance": [
         "GIVEN the user performs the conversation edit operation",
@@ -509,7 +509,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/participants/prompt_lib/{projectId}/{id} (addParticipantIntoConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:124-137"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:132-145"
       ],
       "acceptance": [
         "GIVEN the user performs the add participant into conversation operation",
@@ -537,7 +537,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/participant/prompt_lib/{projectId}/{conversationId}/{id} (deleteParticipantFromConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:138-149"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:146-157"
       ],
       "acceptance": [
         "GIVEN the user performs the delete participant from conversation operation",
@@ -565,7 +565,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/entity_settings/prompt_lib/{projectId}/{conversationId}/{participantId} (updateParticipantSettings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:150-170"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:158-178"
       ],
       "acceptance": [
         "GIVEN the user performs the update participant settings operation",
@@ -593,7 +593,7 @@
       "priority": "must",
       "title": "Endpoint PATCH /elitea_core/entity_settings/prompt_lib/{projectId}/{conversationId} (updateParticipantLlmSettings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:171-184"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:179-192"
       ],
       "acceptance": [
         "GIVEN the user performs the update participant llm settings operation",
@@ -621,7 +621,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/conversation/prompt_lib/{projectId}/{id} (deleteConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:185-193"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:193-201"
       ],
       "acceptance": [
         "GIVEN the user performs the delete conversation operation",
@@ -649,7 +649,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/task/prompt_lib/{projectId}/{messageGroupUuid} (stopChatTask)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:194-203"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:202-211"
       ],
       "acceptance": [
         "GIVEN the user performs the stop chat task operation",
@@ -677,7 +677,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/conversation/prompt_lib/{projectId}/{id} (conversationDetails)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:204-235"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:230-261"
       ],
       "acceptance": [
         "GIVEN the user performs the conversation details operation",
@@ -705,7 +705,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/regenerate/prompt_lib/{projectId}/{id} (regenerate)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:236-245"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:262-271"
       ],
       "acceptance": [
         "GIVEN the user performs the regenerate operation",
@@ -733,7 +733,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/select_conversation/prompt_lib/{projectId}/{conversationId} (selectConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:246-262"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:272-288"
       ],
       "acceptance": [
         "GIVEN the user performs the select conversation operation",
@@ -761,7 +761,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/select_conversation/prompt_lib/{projectId} (unselectConversation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:263-278"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:289-304"
       ],
       "acceptance": [
         "GIVEN the user performs the unselect conversation operation",
@@ -789,7 +789,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/canvases/prompt_lib/{projectId} (createCanvas)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:279-302"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:305-328"
       ],
       "acceptance": [
         "GIVEN the user performs the create canvas operation",
@@ -817,7 +817,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/canvas/prompt_lib/{projectId}/{canvasUUID} (editCanvas)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:303-316"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:329-342"
       ],
       "acceptance": [
         "GIVEN the user performs the edit canvas operation",
@@ -845,7 +845,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/context_analytics/prompt_lib/{projectId}/{conversationId} (getContextStatus)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:317-326"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:343-352"
       ],
       "acceptance": [
         "GIVEN the user performs the get context status operation",
@@ -873,7 +873,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/context_strategy/prompt_lib/{projectId}/{conversationId} (updateContextStrategy)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:327-340"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:353-366"
       ],
       "acceptance": [
         "GIVEN the user performs the update context strategy operation",
@@ -901,7 +901,7 @@
       "priority": "must",
       "title": "Endpoint POST /context_manager/optimize_context/{projectId}/{conversationId} (optimizeContext)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:341-354"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:367-380"
       ],
       "acceptance": [
         "GIVEN the user performs the optimize context operation",
@@ -929,7 +929,7 @@
       "priority": "must",
       "title": "Endpoint GET /context_manager/analytics/{projectId}/{conversationId} (getContextAnalytics)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:355-364"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:381-385"
       ],
       "acceptance": [
         "GIVEN the user performs the get context analytics operation",
@@ -957,7 +957,7 @@
       "priority": "must",
       "title": "Endpoint POST /context_manager/summaries/{projectId}/{conversationId} (generateSummary)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:365-378"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:391-404"
       ],
       "acceptance": [
         "GIVEN the user performs the generate summary operation",
@@ -985,7 +985,7 @@
       "priority": "must",
       "title": "Endpoint GET /context_manager/summaries/{projectId}/{conversationId} (getConversationSummaries)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:379-406"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:405-432"
       ],
       "acceptance": [
         "GIVEN the user performs the get conversation summaries operation",
@@ -1013,7 +1013,7 @@
       "priority": "must",
       "title": "Endpoint PUT /context_manager/summary/{projectId}/{conversationId}/{summaryId} (updateSummary)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:407-420"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:433-446"
       ],
       "acceptance": [
         "GIVEN the user performs the update summary operation",
@@ -1041,7 +1041,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /context_manager/summary/{projectId}/{conversationId}/{summaryId} (deleteSummary)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:421-432"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:447-458"
       ],
       "acceptance": [
         "GIVEN the user performs the delete summary operation",
@@ -1069,7 +1069,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/canvas/prompt_lib/{projectId}/{id} (canvasDetails)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:433-456"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:459-482"
       ],
       "acceptance": [
         "GIVEN the user performs the canvas details operation",
@@ -1097,7 +1097,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/attachment_storage/prompt_lib/{projectId}/{conversationId} (setAttachmentStorage)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:457-469"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:483-495"
       ],
       "acceptance": [
         "GIVEN the user performs the set attachment storage operation",
@@ -1125,7 +1125,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/attachments/prompt_lib/{projectId}/{conversationId} (uploadAttachments)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:470-490"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:496-516"
       ],
       "acceptance": [
         "GIVEN the user performs the upload attachments operation",
@@ -1153,7 +1153,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/attachments/prompt_lib/{projectId}/{conversationId} (removeAttachments)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:491-516"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:517-543"
       ],
       "acceptance": [
         "GIVEN the user performs the remove attachments operation",
@@ -1405,7 +1405,7 @@
       "priority": "must",
       "title": "Non-REST transport: axios at upload.js:117 [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/slices/upload.js:117"
+        "apps/elitea-ui/src/slices/upload.js:121"
       ],
       "acceptance": [
         "GIVEN the feature served by this transport is used",
@@ -1433,8 +1433,8 @@
       "priority": "must",
       "title": "Socket event `socket_validation_error` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:882",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1527"
+        "apps/elitea-ui/src/common/constants.js:909",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1748"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes socket_validation_error",
@@ -1462,10 +1462,10 @@
       "priority": "must",
       "title": "Socket event `chat_predict` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:883",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:207",
-        "apps/elitea-ui/src/components/Chat/hooks.js:239",
-        "apps/elitea-ui/src/components/Chat/hooks.js:496"
+        "apps/elitea-ui/src/common/constants.js:910",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:253",
+        "apps/elitea-ui/src/components/Chat/hooks.js:276",
+        "apps/elitea-ui/src/components/Chat/hooks.js:601"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_predict",
@@ -1493,8 +1493,8 @@
       "priority": "must",
       "title": "Socket event `chat_continue_predict` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:884",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:174"
+        "apps/elitea-ui/src/common/constants.js:911",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:209"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_continue_predict",
@@ -1522,7 +1522,7 @@
       "priority": "must",
       "title": "Socket event `application_continue_message` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:885"
+        "apps/elitea-ui/src/common/constants.js:912"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes application_continue_message",
@@ -1550,10 +1550,10 @@
       "priority": "must",
       "title": "Socket event `chat_enter_room` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:886",
-        "apps/elitea-ui/src/[fsd]/features/agent/lib/hooks/useApplicationChat.hooks.js:114",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:95",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:208"
+        "apps/elitea-ui/src/common/constants.js:913",
+        "apps/elitea-ui/src/[fsd]/features/agent/lib/hooks/useApplicationChat.hooks.js:119",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:100",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:254"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_enter_room",
@@ -1581,10 +1581,10 @@
       "priority": "must",
       "title": "Socket event `chat_leave_rooms` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:887",
-        "apps/elitea-ui/src/[fsd]/features/agent/lib/hooks/useApplicationChat.hooks.js:115",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:96",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:209"
+        "apps/elitea-ui/src/common/constants.js:914",
+        "apps/elitea-ui/src/[fsd]/features/agent/lib/hooks/useApplicationChat.hooks.js:120",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:101",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:255"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_leave_rooms",
@@ -1612,8 +1612,8 @@
       "priority": "must",
       "title": "Socket event `chat_participant_delete` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:888",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1596"
+        "apps/elitea-ui/src/common/constants.js:915",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1817"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_participant_delete",
@@ -1641,8 +1641,8 @@
       "priority": "must",
       "title": "Socket event `chat_message_delete` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:889",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1566"
+        "apps/elitea-ui/src/common/constants.js:916",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1787"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_message_delete",
@@ -1670,8 +1670,8 @@
       "priority": "must",
       "title": "Socket event `chat_message_delete_all` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:890",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1581"
+        "apps/elitea-ui/src/common/constants.js:917",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1802"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_message_delete_all",
@@ -1699,8 +1699,8 @@
       "priority": "must",
       "title": "Socket event `chat_message_sync` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:891",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1551"
+        "apps/elitea-ui/src/common/constants.js:918",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1772"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_message_sync",
@@ -1728,8 +1728,8 @@
       "priority": "must",
       "title": "Socket event `chat_participant_update` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:892",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1610"
+        "apps/elitea-ui/src/common/constants.js:919",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1831"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_participant_update",
@@ -1757,8 +1757,8 @@
       "priority": "must",
       "title": "Socket event `chat_conversation_name_updated` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:893",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1624"
+        "apps/elitea-ui/src/common/constants.js:920",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1845"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_conversation_name_updated",
@@ -1786,9 +1786,9 @@
       "priority": "must",
       "title": "Socket event `application_predict` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:894",
+        "apps/elitea-ui/src/common/constants.js:921",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:208",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:261"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:292"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes application_predict",
@@ -1816,7 +1816,7 @@
       "priority": "must",
       "title": "Socket event `application_leave_rooms` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:895"
+        "apps/elitea-ui/src/common/constants.js:922"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes application_leave_rooms",
@@ -1844,7 +1844,7 @@
       "priority": "must",
       "title": "Socket event `promptlib_predict` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:896"
+        "apps/elitea-ui/src/common/constants.js:923"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes promptlib_predict",
@@ -1872,7 +1872,7 @@
       "priority": "must",
       "title": "Socket event `promptlib_leave_rooms` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:897"
+        "apps/elitea-ui/src/common/constants.js:924"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes promptlib_leave_rooms",
@@ -1900,7 +1900,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_join` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:901",
+        "apps/elitea-ui/src/common/constants.js:928",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:13"
       ],
       "acceptance": [
@@ -1929,7 +1929,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_leave_rooms` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:902",
+        "apps/elitea-ui/src/common/constants.js:929",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:26"
       ],
       "acceptance": [
@@ -1958,7 +1958,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_edit` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:903",
+        "apps/elitea-ui/src/common/constants.js:930",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:39"
       ],
       "acceptance": [
@@ -1987,7 +1987,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_sync` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:905",
+        "apps/elitea-ui/src/common/constants.js:932",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:63"
       ],
       "acceptance": [
@@ -2016,7 +2016,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_error` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:906",
+        "apps/elitea-ui/src/common/constants.js:933",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:88"
       ],
       "acceptance": [
@@ -2045,7 +2045,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_detail` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:907",
+        "apps/elitea-ui/src/common/constants.js:934",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:115"
       ],
       "acceptance": [
@@ -2074,7 +2074,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_editor_joined` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:908",
+        "apps/elitea-ui/src/common/constants.js:935",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:141"
       ],
       "acceptance": [
@@ -2103,7 +2103,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_editors_change` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:909",
+        "apps/elitea-ui/src/common/constants.js:936",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:167"
       ],
       "acceptance": [
@@ -2132,7 +2132,7 @@
       "priority": "must",
       "title": "Socket event `chat_canvas_content_change` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:910",
+        "apps/elitea-ui/src/common/constants.js:937",
         "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:193"
       ],
       "acceptance": [
@@ -2161,8 +2161,8 @@
       "priority": "must",
       "title": "Socket event `chat_predict_attachment` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:911",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1478"
+        "apps/elitea-ui/src/common/constants.js:938",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1687"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes chat_predict_attachment",
@@ -2190,7 +2190,7 @@
       "priority": "must",
       "title": "Socket event `asr_start` (emit)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:920",
+        "apps/elitea-ui/src/common/constants.js:947",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:215"
       ],
       "acceptance": [
@@ -2219,7 +2219,7 @@
       "priority": "must",
       "title": "Socket event `asr_audio_chunk` (emit)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:921",
+        "apps/elitea-ui/src/common/constants.js:948",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:202"
       ],
       "acceptance": [
@@ -2248,7 +2248,7 @@
       "priority": "must",
       "title": "Socket event `asr_stop` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:922",
+        "apps/elitea-ui/src/common/constants.js:949",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:251",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:261"
       ],
@@ -2278,7 +2278,7 @@
       "priority": "must",
       "title": "Socket event `asr_transcript_delta` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:923",
+        "apps/elitea-ui/src/common/constants.js:950",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:140",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:147"
       ],
@@ -2308,7 +2308,7 @@
       "priority": "must",
       "title": "Socket event `asr_transcript_done` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:924",
+        "apps/elitea-ui/src/common/constants.js:951",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:141",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:148"
       ],
@@ -2338,7 +2338,7 @@
       "priority": "must",
       "title": "Socket event `asr_error` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:925",
+        "apps/elitea-ui/src/common/constants.js:952",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:144",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:151"
       ],
@@ -2368,7 +2368,7 @@
       "priority": "must",
       "title": "Socket event `asr_speech_started` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:926",
+        "apps/elitea-ui/src/common/constants.js:953",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:142",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:149"
       ],
@@ -2398,7 +2398,7 @@
       "priority": "must",
       "title": "Socket event `asr_vad_flush` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:927",
+        "apps/elitea-ui/src/common/constants.js:954",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:143",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:150"
       ],
@@ -2428,7 +2428,7 @@
       "priority": "must",
       "title": "Socket event `tts_start` (emit)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:930",
+        "apps/elitea-ui/src/common/constants.js:957",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:465"
       ],
       "acceptance": [
@@ -2457,7 +2457,7 @@
       "priority": "must",
       "title": "Socket event `tts_stop` (emit)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:931",
+        "apps/elitea-ui/src/common/constants.js:958",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:446",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:525"
       ],
@@ -2487,7 +2487,7 @@
       "priority": "must",
       "title": "Socket event `tts_next` (catalogued)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:932"
+        "apps/elitea-ui/src/common/constants.js:959"
       ],
       "acceptance": [
         "GIVEN an active socket connection on a screen that consumes tts_next",
@@ -2515,7 +2515,7 @@
       "priority": "must",
       "title": "Socket event `tts_audio_chunk` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:933",
+        "apps/elitea-ui/src/common/constants.js:960",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:635",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:640"
       ],
@@ -2545,7 +2545,7 @@
       "priority": "must",
       "title": "Socket event `tts_done` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:934",
+        "apps/elitea-ui/src/common/constants.js:961",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:636",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:641"
       ],
@@ -2575,7 +2575,7 @@
       "priority": "must",
       "title": "Socket event `tts_error` (receive)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:935",
+        "apps/elitea-ui/src/common/constants.js:962",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:637",
         "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:642"
       ],
@@ -2605,9 +2605,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_start`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:158",
-        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:68",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1286"
+        "apps/elitea-ui/src/common/constants.js:159",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:68"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2635,10 +2634,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_response`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:159",
+        "apps/elitea-ui/src/common/constants.js:160",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:13",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:179",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:233"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:248"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2666,10 +2665,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_exception`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:160",
+        "apps/elitea-ui/src/common/constants.js:161",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:23",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:356",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:279"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:297"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2697,10 +2696,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_tool_start`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:161",
+        "apps/elitea-ui/src/common/constants.js:162",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:114",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:133",
-        "apps/elitea-ui/src/components/Chat/hooks.js:670"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:155",
+        "apps/elitea-ui/src/components/Chat/hooks.js:806"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2728,10 +2727,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_tool_end`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:162",
+        "apps/elitea-ui/src/common/constants.js:163",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:12",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:140",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:179"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:200"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2759,10 +2758,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_tool_error`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:163",
+        "apps/elitea-ui/src/common/constants.js:164",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:21",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:326",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:257"
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:276"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2790,8 +2789,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_requires_confirmation`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:164",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1011"
+        "apps/elitea-ui/src/common/constants.js:165",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1137"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2819,9 +2818,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_hitl_interrupt`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:165",
+        "apps/elitea-ui/src/common/constants.js:166",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:177",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1036"
+        "apps/elitea-ui/src/components/Chat/hooks.js:1162"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2849,10 +2848,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_llm_start`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:167",
+        "apps/elitea-ui/src/common/constants.js:168",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:86",
-        "apps/elitea-ui/src/components/Chat/hooks.js:669",
-        "apps/elitea-ui/src/components/Chat/hooks.js:686"
+        "apps/elitea-ui/src/components/Chat/hooks.js:805",
+        "apps/elitea-ui/src/components/Chat/hooks.js:825"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2880,10 +2879,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_llm_chunk`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:168",
+        "apps/elitea-ui/src/common/constants.js:169",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:170",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:229",
-        "apps/elitea-ui/src/components/Chat/hooks.js:509"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:244",
+        "apps/elitea-ui/src/components/Chat/hooks.js:617"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2911,10 +2910,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_llm_end`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:169",
+        "apps/elitea-ui/src/common/constants.js:170",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:188",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:104",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:237"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:252"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2942,8 +2941,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_on_function_tool_node`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:170",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1370"
+        "apps/elitea-ui/src/common/constants.js:171",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1570"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -2971,8 +2970,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_on_tool_node`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:171",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1371"
+        "apps/elitea-ui/src/common/constants.js:172",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1571"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3000,9 +2999,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_on_transitional_edge`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:172",
+        "apps/elitea-ui/src/common/constants.js:173",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:192",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1372"
+        "apps/elitea-ui/src/components/Chat/hooks.js:1572"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3030,9 +3029,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_on_conditional_edge`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:173",
+        "apps/elitea-ui/src/common/constants.js:174",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:282",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1375"
+        "apps/elitea-ui/src/components/Chat/hooks.js:1575"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3060,9 +3059,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_on_decision_edge`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:174",
+        "apps/elitea-ui/src/common/constants.js:175",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:304",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1374"
+        "apps/elitea-ui/src/components/Chat/hooks.js:1574"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3090,8 +3089,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `references`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:175",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1214"
+        "apps/elitea-ui/src/common/constants.js:176",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1389"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3119,10 +3118,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `chunk`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:176",
+        "apps/elitea-ui/src/common/constants.js:177",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:168",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:227",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:212"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:242",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:232"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3150,10 +3149,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `AIMessageChunk`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:177",
+        "apps/elitea-ui/src/common/constants.js:178",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:169",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:228",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:213"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:243",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:233"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3181,8 +3180,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `chat_user_message`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:178",
-        "apps/elitea-ui/src/components/Chat/hooks.js:466"
+        "apps/elitea-ui/src/common/constants.js:179",
+        "apps/elitea-ui/src/components/Chat/hooks.js:546"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3210,10 +3209,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `start_task`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:179",
+        "apps/elitea-ui/src/common/constants.js:180",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:165",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:69",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:225"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:240"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3241,8 +3240,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `freeform`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:180",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1284"
+        "apps/elitea-ui/src/common/constants.js:181",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1474"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3270,10 +3269,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `error`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:181",
+        "apps/elitea-ui/src/common/constants.js:182",
         "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:22",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:192",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:247"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:278"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3301,10 +3300,10 @@
       "priority": "must",
       "title": "Streaming payload discriminant `llm_error`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:182",
+        "apps/elitea-ui/src/common/constants.js:183",
         "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/hooks/useAIContentGenerationStreaming.hooks.js:193",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:248",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1268"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:279",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1456"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3332,9 +3331,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `pipeline_finish`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:183",
+        "apps/elitea-ui/src/common/constants.js:184",
         "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parseRunsByEvent.helpers.js:164",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1373"
+        "apps/elitea-ui/src/components/Chat/hooks.js:1573"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3362,9 +3361,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_thinking_step`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:184",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:210",
-        "apps/elitea-ui/src/components/Chat/hooks.js:821"
+        "apps/elitea-ui/src/common/constants.js:185",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:230",
+        "apps/elitea-ui/src/components/Chat/hooks.js:995"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3392,9 +3391,9 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_thinking_step_update`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:185",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:209",
-        "apps/elitea-ui/src/components/Chat/hooks.js:805"
+        "apps/elitea-ui/src/common/constants.js:186",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexChat.helpers.js:229",
+        "apps/elitea-ui/src/components/Chat/hooks.js:968"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3422,8 +3421,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `chat_predict_summary_started`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:186",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1378"
+        "apps/elitea-ui/src/common/constants.js:187",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1578"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3451,8 +3450,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `chat_predict_summary_finished`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:187",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1433"
+        "apps/elitea-ui/src/common/constants.js:188",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1634"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3480,8 +3479,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `swarm_child_message`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:189",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1306"
+        "apps/elitea-ui/src/common/constants.js:195",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1506"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3509,8 +3508,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_swarm_agent_start`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:190",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1447"
+        "apps/elitea-ui/src/common/constants.js:196",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1656"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3538,8 +3537,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_swarm_agent_response`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:191",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1448"
+        "apps/elitea-ui/src/common/constants.js:197",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1657"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3567,8 +3566,8 @@
       "priority": "must",
       "title": "Streaming payload discriminant `agent_swarm_handoff`",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:192",
-        "apps/elitea-ui/src/components/Chat/hooks.js:1449"
+        "apps/elitea-ui/src/common/constants.js:198",
+        "apps/elitea-ui/src/components/Chat/hooks.js:1658"
       ],
       "acceptance": [
         "GIVEN a streaming run is in progress",
@@ -3596,8 +3595,8 @@
       "priority": "must",
       "title": "Permission `models.applications.tool.update` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:590",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:21"
+        "apps/elitea-ui/src/common/constants.js:615",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:16"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.tool.update",
@@ -3625,7 +3624,7 @@
       "priority": "must",
       "title": "Permission `models.chat.conversations.list` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:523"
+        "apps/elitea-ui/src/common/constants.js:536"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.chat.conversations.list",
@@ -3653,12 +3652,12 @@
       "priority": "must",
       "title": "Permission `models.chat.folders.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:531",
+        "apps/elitea-ui/src/common/constants.js:544",
         "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/lib/hooks/useCreateFolder.hooks.js:33",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:205",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:319",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:329",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:533"
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:219",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:365",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:379",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:611"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.chat.folders.create",
@@ -3686,8 +3685,8 @@
       "priority": "must",
       "title": "Permission `models.chat.folders.delete` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:533",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:97"
+        "apps/elitea-ui/src/common/constants.js:546",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:136"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.chat.folders.delete",
@@ -3715,7 +3714,7 @@
       "priority": "must",
       "title": "Permission `models.chat.folders.get` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:530",
+        "apps/elitea-ui/src/common/constants.js:543",
         "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/lib/hooks/useQueryFoldersList.hooks.js:69",
         "apps/elitea-ui/src/pages/NewChat/index.jsx:22",
         "apps/elitea-ui/src/pages/NewChat/index.jsx:28"
@@ -3746,12 +3745,12 @@
       "priority": "must",
       "title": "Permission `models.chat.folders.update` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:532",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:206",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:343",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:353",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:372",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:108"
+        "apps/elitea-ui/src/common/constants.js:545",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:220",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:393",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:404",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:431",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:115"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.chat.folders.update",
@@ -3779,8 +3778,8 @@
       "priority": "must",
       "title": "Action on chat: add participant into conversation via onAdd",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1650",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:124"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1450",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:132"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -3808,10 +3807,10 @@
       "priority": "must",
       "title": "Action on chat: conversation create via onCancelCreateConversation/onCreateConversation",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1388",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1389",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1455",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:100"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1240",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1241",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1299",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:108"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -3839,11 +3838,11 @@
       "priority": "must",
       "title": "Action on chat: conversation edit via onEditConversation/onMoveToFolderConversation/onMoveToNewFolderConversation/onSend/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2198",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2236",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1381",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1399",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:110"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2899",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2939",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1231",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1251",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:118"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -3871,9 +3870,9 @@
       "priority": "must",
       "title": "Action on chat: create canvas via onCloseCanvas/onCloseCanvasEditor",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1404",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1616",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:279"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1257",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1409",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:305"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -3901,8 +3900,8 @@
       "priority": "must",
       "title": "Action on chat: delete conversation via onDeleteConversation",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1382",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:185"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1232",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:193"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -3930,7 +3929,7 @@
       "priority": "must",
       "title": "Action on chat: delete folder via onDeleteFolder",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1395",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1247",
         "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/api/conversationList.api.js:118"
       ],
       "acceptance": [
@@ -3959,8 +3958,8 @@
       "priority": "must",
       "title": "Action on chat: edit canvas via onChangeLanguage",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/CanvasEditor.jsx:551",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:303"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CanvasEditor.jsx:551",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:329"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -3988,10 +3987,10 @@
       "priority": "must",
       "title": "Action on chat: folder create via onCancelCreateFolder/onCreateFolder/onMoveToFolderConversation/onMoveToNewFolderConversation",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1393",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1394",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1399",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1400",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1245",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1246",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1251",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1252",
         "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/api/conversationList.api.js:22"
       ],
       "acceptance": [
@@ -4020,8 +4019,8 @@
       "priority": "must",
       "title": "Action on chat: folder pin update via onEditFolder/onPinFolder",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1397",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1398",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1249",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1250",
         "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/api/conversationList.api.js:127"
       ],
       "acceptance": [
@@ -4050,9 +4049,9 @@
       "priority": "must",
       "title": "Action on chat: folder update via onEditFolder/onPinFolder/onReorderFolders",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1397",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1398",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1408",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1249",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1250",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1261",
         "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/api/conversationList.api.js:100"
       ],
       "acceptance": [
@@ -4081,9 +4080,9 @@
       "priority": "must",
       "title": "Action on chat: regenerate via onRegenerateAnswer/onSubmitEditedMessage",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2110",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2116",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:236"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2800",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2806",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:262"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4111,8 +4110,8 @@
       "priority": "must",
       "title": "Action on chat: remove attachments via onRemoveAttachment",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2123",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:491"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2814",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:517"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4140,11 +4139,11 @@
       "priority": "must",
       "title": "Action on chat: select conversation via onCancelCreateConversation/onClose/onConfirm/onCreateConversation",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1388",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1389",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1455",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1696",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:246"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1240",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1241",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1299",
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1476",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:272"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4172,8 +4171,8 @@
       "priority": "must",
       "title": "Action on chat: socket chat_canvas_edit via onChange",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/CanvasEditor.jsx:619",
-        "apps/elitea-ui/src/common/constants.js:903"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CanvasEditor.jsx:619",
+        "apps/elitea-ui/src/common/constants.js:930"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4201,10 +4200,10 @@
       "priority": "must",
       "title": "Action on chat: socket chat_continue_predict via onContinueMcpExecution/onContinueTokenLimitExecution/onHitlResume",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2111",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2112",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2113",
-        "apps/elitea-ui/src/common/constants.js:884"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2801",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2802",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2803",
+        "apps/elitea-ui/src/common/constants.js:911"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4232,8 +4231,8 @@
       "priority": "must",
       "title": "Action on chat: socket chat_predict via onSend",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:912",
-        "apps/elitea-ui/src/common/constants.js:883"
+        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:945",
+        "apps/elitea-ui/src/common/constants.js:910"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4261,8 +4260,8 @@
       "priority": "must",
       "title": "Action on chat: socket tts_start via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:115",
-        "apps/elitea-ui/src/common/constants.js:930"
+        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:125",
+        "apps/elitea-ui/src/common/constants.js:957"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4290,8 +4289,8 @@
       "priority": "must",
       "title": "Action on chat: socket tts_stop via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:115",
-        "apps/elitea-ui/src/common/constants.js:931"
+        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:125",
+        "apps/elitea-ui/src/common/constants.js:958"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4319,10 +4318,10 @@
       "priority": "must",
       "title": "Action on chat: stop chat task via onContinueMcpExecution/onContinueTokenLimitExecution/onHitlResume",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2111",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2112",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2113",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:194"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2801",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2802",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2803",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:202"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4350,8 +4349,8 @@
       "priority": "must",
       "title": "Action on chat: toggle pin item via onPinConversation",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1387",
-        "apps/elitea-ui/src/api/social.js:158"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1239",
+        "apps/elitea-ui/src/api/social.js:146"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4381,7 +4380,7 @@
       "source": [
         "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-modal/AttachmentSettingsModal.jsx:221",
         "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-modal/AttachmentSettingsModal.jsx:312",
-        "apps/elitea-ui/src/pages/NewChat/components/CreateToolkitButton.jsx:76",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CreateToolkitButton.jsx:81",
         "apps/elitea-ui/src/api/toolkits.js:146"
       ],
       "acceptance": [
@@ -4410,8 +4409,8 @@
       "priority": "must",
       "title": "Action on chat: unselect conversation via onDeleteConversation",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1382",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:263"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1232",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:289"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4439,8 +4438,8 @@
       "priority": "must",
       "title": "Action on chat: update application version via onAdd",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1650",
-        "apps/elitea-ui/src/api/applications.js:469"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1450",
+        "apps/elitea-ui/src/api/applications.js:490"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4468,10 +4467,10 @@
       "priority": "must",
       "title": "Action on chat: update participant llm settings via onSelectModel/onSend/onSetLLMSettings",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2217",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2236",
-        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:912",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:171"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2918",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2939",
+        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:945",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:179"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4499,10 +4498,7 @@
       "priority": "must",
       "title": "Action on chat: update participant settings via onConversationLlmOverride/onPipelineSaved/onToolkitUpdated",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1549",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1570",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1588",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:150"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:158"
       ],
       "acceptance": [
         "GIVEN the chat screen is displayed with the relevant entity available",
@@ -4530,8 +4526,8 @@
       "priority": "should",
       "title": "Copy: conversations/ConversationItem.jsx (15 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:168",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:384"
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:296",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/ConversationItem.jsx:426"
       ],
       "acceptance": [
         "GIVEN the chat-conversation-list screen renders with the default brand in both colour schemes",
@@ -4559,8 +4555,8 @@
       "priority": "should",
       "title": "Copy: conversations/Conversations.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:334",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:741"
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:384",
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/conversations/Conversations.jsx:821"
       ],
       "acceptance": [
         "GIVEN the chat-conversation-list screen renders with the default brand in both colour schemes",
@@ -4616,8 +4612,7 @@
       "priority": "should",
       "title": "Copy: folders/FolderItem.jsx (6 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:86",
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:127"
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/folders/FolderItem.jsx:125"
       ],
       "acceptance": [
         "GIVEN the chat-conversation-list screen renders with the default brand in both colour schemes",
@@ -4645,7 +4640,7 @@
       "priority": "should",
       "title": "Copy: groups/GroupedConversations.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/groups/GroupedConversations.jsx:84"
+        "apps/elitea-ui/src/[fsd]/features/chat/conversation-list/ui/groups/GroupedConversations.jsx:85"
       ],
       "acceptance": [
         "GIVEN the chat-conversation-list screen renders with the default brand in both colour schemes",
@@ -4730,8 +4725,8 @@
       "priority": "should",
       "title": "Copy: ExpandedParticipants/ParticipantItem.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:409",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:409"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:411",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx:411"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4759,8 +4754,8 @@
       "priority": "should",
       "title": "Copy: ExpandedParticipants/ParticipantWarning.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantWarning.jsx:55",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantWarning.jsx:100"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantWarning.jsx:57",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantWarning.jsx:102"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4788,8 +4783,7 @@
       "priority": "should",
       "title": "Copy: ParticipantActions/DeleteParticipantButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ParticipantActions/DeleteParticipantButton.jsx:63",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ParticipantActions/DeleteParticipantButton.jsx:64"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ParticipantActions/DeleteParticipantButton.jsx:70"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4817,7 +4811,7 @@
       "priority": "should",
       "title": "Copy: ui/Participants.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/Participants.jsx:63"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/Participants.jsx:62"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4845,7 +4839,7 @@
       "priority": "should",
       "title": "Copy: UsersParticipantDropdown/DropdownFooter.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/UsersParticipantDropdown/DropdownFooter.jsx:67"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/UsersParticipantDropdown/DropdownFooter.jsx:68"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4873,7 +4867,7 @@
       "priority": "should",
       "title": "Copy: UsersParticipantDropdown/index.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/UsersParticipantDropdown/index.jsx:128"
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/UsersParticipantDropdown/index.jsx:132"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4930,8 +4924,8 @@
       "priority": "should",
       "title": "Copy: chat-box/ApplicationAnswer.jsx (11 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ApplicationAnswer.jsx:484",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ApplicationAnswer.jsx:873"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ApplicationAnswer.jsx:581",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ApplicationAnswer.jsx:1018"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4959,7 +4953,7 @@
       "priority": "should",
       "title": "Copy: chat-box/ChatBox.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:2269"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:108"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -4987,8 +4981,8 @@
       "priority": "should",
       "title": "Copy: chat-box/UserMessage.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/UserMessage.jsx:111",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/UserMessage.jsx:267"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/UserMessage.jsx:148",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/UserMessage.jsx:333"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5016,8 +5010,8 @@
       "priority": "should",
       "title": "Copy: chat-button/AttachmentButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/AttachmentButton.jsx:202",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/AttachmentButton.jsx:229"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/AttachmentButton.jsx:203",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/AttachmentButton.jsx:231"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5074,8 +5068,8 @@
       "priority": "should",
       "title": "Copy: chat-button/ClearChatButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/ClearChatButton.jsx:13",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/ClearChatButton.jsx:19"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/ClearChatButton.jsx:14",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/ClearChatButton.jsx:20"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5100,16 +5094,15 @@
       "id": "COPY-089",
       "domain": "chat",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: chat-button/PlusChatButton.jsx (16 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatButton.jsx:43",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatButton.jsx:390"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatButton.jsx:418"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 16 strings from this component (for example \"Internal Tools\") appear verbatim",
+        "THEN all 16 strings from this component (for example \"Modules\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -5123,7 +5116,12 @@
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Baseline vocabulary rename at 20b23c42 (\"Internal Tools\" -> \"Modules\"), confirmed deliberate. The item still requires verbatim copy parity; the string it names has changed.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "copy string \"Internal Tools\""
+      }
     },
     {
       "id": "COPY-090",
@@ -5132,8 +5130,8 @@
       "priority": "should",
       "title": "Copy: chat-button/PlusChatSubmenu.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatSubmenu.jsx:156",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatSubmenu.jsx:182"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatSubmenu.jsx:160",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-button/PlusChatSubmenu.jsx:186"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5219,8 +5217,7 @@
       "priority": "should",
       "title": "Copy: chat-continue/ChatContinue.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-continue/ChatContinue.jsx:69",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-continue/ChatContinue.jsx:80"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-continue/ChatContinue.jsx:170"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5248,8 +5245,8 @@
       "priority": "should",
       "title": "Copy: chat-hitl-actions/BlockWithCommentControl.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/BlockWithCommentControl.jsx:79",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/BlockWithCommentControl.jsx:116"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/BlockWithCommentControl.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/BlockWithCommentControl.jsx:118"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5277,8 +5274,8 @@
       "priority": "should",
       "title": "Copy: chat-hitl-actions/ChatHitlActions.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/ChatHitlActions.jsx:58",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/ChatHitlActions.jsx:221"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/ChatHitlActions.jsx:81",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/ChatHitlActions.jsx:163"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5306,8 +5303,8 @@
       "priority": "should",
       "title": "Copy: chat-hitl-actions/EditControl.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/EditControl.jsx:79",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/EditControl.jsx:116"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/EditControl.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-hitl-actions/EditControl.jsx:117"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5336,7 +5333,7 @@
       "title": "Copy: chat-input/AgentEditorPanel.jsx (9 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/AgentEditorPanel.jsx:116",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/AgentEditorPanel.jsx:303"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/AgentEditorPanel.jsx:307"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5394,7 +5391,7 @@
       "title": "Copy: chat-input/VersionSelector.jsx (4 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/VersionSelector.jsx:90",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/VersionSelector.jsx:116"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/VersionSelector.jsx:117"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5422,8 +5419,8 @@
       "priority": "should",
       "title": "Copy: chat-modal/AddNewUserModal.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-modal/AddNewUserModal.jsx:99",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-modal/AddNewUserModal.jsx:135"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-modal/AddNewUserModal.jsx:98",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-modal/AddNewUserModal.jsx:149"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5480,8 +5477,7 @@
       "priority": "should",
       "title": "Copy: error-trace/ErrorTrace.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/error-trace/ErrorTrace.jsx:42",
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/error-trace/ErrorTrace.jsx:77"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/error-trace/ErrorTrace.jsx:86"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5509,7 +5505,7 @@
       "priority": "should",
       "title": "Copy: slash-suggestion-list/ToolList.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/slash-suggestion-list/ToolList.jsx:29"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/slash-suggestion-list/ToolList.jsx:30"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5537,7 +5533,7 @@
       "priority": "should",
       "title": "Copy: user-mention-list/UserMentionList.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/ui/user-mention-list/UserMentionList.jsx:91"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/user-mention-list/UserMentionList.jsx:56"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5591,15 +5587,15 @@
       "id": "COPY-106",
       "domain": "chat",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: constants/voice.constants.js (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/constants/voice.constants.js:10"
+        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/constants/voice.constants.js:1"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 1 strings from this component (for example \"Mute\") appear verbatim",
+        "THEN all 1 strings from this component (for example \"0%\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -5613,7 +5609,12 @@
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Baseline vocabulary rename at 20b23c42 (\"Mute\" -> \"0%\"), confirmed deliberate. The item still requires verbatim copy parity; the string it names has changed.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "copy string \"Mute\""
+      }
     },
     {
       "id": "COPY-107",
@@ -5622,8 +5623,8 @@
       "priority": "should",
       "title": "Copy: ui/VoiceConfigControls.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:62",
-        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:117"
+        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:68",
+        "apps/elitea-ui/src/[fsd]/features/chat/voice-config/ui/VoiceConfigControls.jsx:127"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5708,8 +5709,8 @@
       "priority": "should",
       "title": "Copy: NewChat/CanvasEditHeader.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/CanvasEditHeader.jsx:168",
-        "apps/elitea-ui/src/pages/NewChat/CanvasEditHeader.jsx:266"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CanvasEditHeader.jsx:170",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CanvasEditHeader.jsx:268"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5737,7 +5738,7 @@
       "priority": "should",
       "title": "Copy: NewChat/CanvasEditor.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/CanvasEditor.jsx:577"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CanvasEditor.jsx:577"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5765,7 +5766,7 @@
       "priority": "should",
       "title": "Copy: components/BaseEditor.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/components/BaseEditor.jsx:131"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/BaseEditor.jsx:144"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5793,7 +5794,7 @@
       "priority": "should",
       "title": "Copy: components/CreateToolkitButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/components/CreateToolkitButton.jsx:78"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/CreateToolkitButton.jsx:84"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5821,7 +5822,7 @@
       "priority": "should",
       "title": "Copy: components/EditorHeader.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/components/EditorHeader.jsx:78"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/EditorHeader.jsx:99"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5849,7 +5850,7 @@
       "priority": "should",
       "title": "Copy: components/LLMModelSelectorWrapper.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/components/LLMModelSelectorWrapper.jsx:94"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/LLMModelSelectorWrapper.jsx:95"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5877,8 +5878,7 @@
       "priority": "should",
       "title": "Copy: NewChat/NewChat.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1640",
-        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1689"
+        "apps/elitea-ui/src/pages/NewChat/NewChat.jsx:1478"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5906,8 +5906,8 @@
       "priority": "should",
       "title": "Copy: NewChat/NewConversationView.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:876",
-        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:910"
+        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:902",
+        "apps/elitea-ui/src/pages/NewChat/NewConversationView.jsx:943"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5935,8 +5935,8 @@
       "priority": "should",
       "title": "Copy: NewChat/PipelineEditor.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/PipelineEditor.jsx:481",
-        "apps/elitea-ui/src/pages/NewChat/PipelineEditor.jsx:554"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/PipelineEditor.jsx:485",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/PipelineEditor.jsx:563"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5964,7 +5964,7 @@
       "priority": "should",
       "title": "Copy: Recommendations/NewParticipantCard.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/Recommendations/NewParticipantCard.jsx:107"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/recommendations/NewParticipantCard.jsx:108"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -5992,7 +5992,7 @@
       "priority": "should",
       "title": "Copy: Recommendations/NewParticipantList.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/Recommendations/NewParticipantList.jsx:112"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/recommendations/NewParticipantList.jsx:119"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -6020,8 +6020,8 @@
       "priority": "should",
       "title": "Copy: NewChat/ToolkitEditor.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/NewChat/ToolkitEditor.jsx:313",
-        "apps/elitea-ui/src/pages/NewChat/ToolkitEditor.jsx:313"
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/ToolkitEditor.jsx:333",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/editors/ToolkitEditor.jsx:333"
       ],
       "acceptance": [
         "GIVEN the chat screen renders with the default brand in both colour schemes",
@@ -6049,9 +6049,9 @@
       "priority": "must",
       "title": "Journey 8: Create conversation, send message, stream tokens, stop",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:100",
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:194",
-        "apps/elitea-ui/src/common/constants.js:883"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:108",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:202",
+        "apps/elitea-ui/src/common/constants.js:910"
       ],
       "acceptance": [
         "GIVEN the chat screen",
@@ -6079,7 +6079,7 @@
       "priority": "must",
       "title": "Journey 9: Regenerate a response",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:236"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:262"
       ],
       "acceptance": [
         "GIVEN a conversation with a completed assistant response",
@@ -6136,7 +6136,7 @@
       "priority": "must",
       "title": "Journey 11: Server-side conversation rename live-updates",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:893"
+        "apps/elitea-ui/src/common/constants.js:920"
       ],
       "acceptance": [
         "GIVEN an open unnamed conversation",
@@ -6164,7 +6164,7 @@
       "priority": "must",
       "title": "Journey 12: Attach a small file to a chat message",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:470"
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:496"
       ],
       "acceptance": [
         "GIVEN the chat composer",
@@ -6220,7 +6220,7 @@
       "priority": "waived",
       "title": "Journey 26: Socket disconnect indicator and room rejoin (waived — mechanism retired, replaced by the SSE reconnect journey)",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:886"
+        "apps/elitea-ui/src/common/constants.js:913"
       ],
       "acceptance": [
         "GIVEN an open conversation with a live socket",
@@ -6245,6 +6245,34 @@
         "date": "2026-08-09",
         "replacesBehaviour": "Live-push stream drop and automatic reconnect over SSE: GIVEN the sidebar subscribes to GET /api/v2/notifications/events/prompt_lib/{projectID}, WHEN the connection is dropped at the transport level, THEN the browser re-opens the stream on its own (EventSource retry, no reload and no application code) AND the re-opened stream is a real text/event-stream from elitea-main that replays its notifications_ready handshake. Covered by J26.1 and J26.3 in e2e/journeys/chat/chat.attachments.spec.ts; the socket-connection indicator is still asserted there against its real state."
       }
+    },
+    {
+      "id": "ROUTE-086",
+      "domain": "chat",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/shared/chat/:token` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:80"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /shared/chat/:token",
+        "THEN the shared read-only conversation for that token is displayed at that URL",
+        "AND an unknown or revoked token does not expose any conversation"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-086"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
     }
   ]
 }

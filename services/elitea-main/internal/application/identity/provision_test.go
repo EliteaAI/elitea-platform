@@ -44,8 +44,8 @@ func TestProvisionDerivesCurrentBaselineCommand(t *testing.T) {
 			initialGlobalAdmins:  []string{"Admin"},
 			wantEmail:            "user@example.com",
 			wantName:             "Ada Lovelace",
-			wantInitialAdminMode: initialAdministrationMode,
-			wantInitialAdminRole: initialAdministrationRole,
+			wantInitialAdminMode: InitialAdministrationMode,
+			wantInitialAdminRole: InitialAdministrationRole,
 		},
 		{
 			name: "fallback email and display name",
@@ -243,7 +243,7 @@ func TestProvisioningPolicyIsCopiedAtServiceConstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repository.command.InitialAdministrationRole != initialAdministrationRole {
+	if repository.command.InitialAdministrationRole != InitialAdministrationRole {
 		t.Fatalf("initial role = %q, policy was mutated through caller slice", repository.command.InitialAdministrationRole)
 	}
 	roles := repository.command.ProjectEnrollment.AdditionalGlobalAdminRoles

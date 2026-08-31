@@ -289,3 +289,60 @@ func TestArtifactIconUploadRejectsNonImageExtensionAndDownloadSetsNosniff(t *tes
 		t.Fatalf("Content-Type = %q, want a non-HTML type", ct)
 	}
 }
+
+// An SVG is an ALLOWLISTED icon extension and neither uploader inspects file
+// content, so this upload succeeds by design and the stored bytes really do
+// carry a <script>. The extension allowlist is therefore NOT what stops this
+// one — image/svg+xml is a genuine image type that a browser executes script
+// in when the response is rendered as a document, and nosniff only suppresses
+// sniffing. What stops it is the response being unrenderable as a document:
+// `sandbox` (no tokens) disables scripting in an opaque origin, and
+// `Content-Disposition: attachment` makes a direct navigation download it.
+//
+// Pinned because it is a security control with no other guard: the route is
+// public and unauthenticated by design, and a header silently dropped in a
+// later edit produces no test failure and no visible symptom.
+func TestArtifactIconDownloadNeutralisesAnUploadedSvgCarryingScript(t *testing.T) {
+	store := newFakeIconObjectStore()
+	h := eliteacore.NewHandler(nil, eliteacore.WithObjectStore(store))
+
+	payload := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.cookie)</script></svg>`)
+	uploadRec := httptest.NewRecorder()
+	h.UploadIcon(uploadRec, iconUploadRequest(t, "1", "evil.svg", payload))
+	assertStatus(t, uploadRec, http.StatusOK)
+
+	iconURL, _ := decodeObj(t, uploadRec)["url"].(string)
+	if !strings.HasSuffix(iconURL, ".svg") {
+		t.Fatalf("icon URL = %q, want the .svg to be stored as-is — this test is meaningless otherwise", iconURL)
+	}
+	filename := strings.TrimPrefix(iconURL, "/icons/1/")
+
+	downloadRec := httptest.NewRecorder()
+	eliteacore.DownloadIcon(store).ServeHTTP(downloadRec,
+		newRequest(http.MethodGet, "/", map[string]string{"projectID": "1", "filename": filename}, nil))
+	assertStatus(t, downloadRec, http.StatusOK)
+
+	// The served bytes are the attacker's, and the type is the executable one.
+	// Both are stated so that a future reader can see the headers below are
+	// carrying the whole defence.
+	if !bytes.Contains(downloadRec.Body.Bytes(), []byte("<script>")) {
+		t.Fatalf("stored body no longer carries the script; this test no longer covers what it claims")
+	}
+	if ct := downloadRec.Header().Get("Content-Type"); !strings.Contains(ct, "svg") {
+		t.Fatalf("Content-Type = %q, want the image/svg+xml this defence assumes", ct)
+	}
+
+	csp := downloadRec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "sandbox") {
+		t.Fatalf("Content-Security-Policy = %q, want a sandbox directive — without it a navigated SVG runs script in this origin", csp)
+	}
+	if !strings.Contains(csp, "default-src 'none'") {
+		t.Fatalf("Content-Security-Policy = %q, want default-src 'none'", csp)
+	}
+	if got := downloadRec.Header().Get("Content-Disposition"); got != "attachment" {
+		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	}
+	if got := downloadRec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}

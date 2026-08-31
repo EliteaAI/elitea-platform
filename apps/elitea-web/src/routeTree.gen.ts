@@ -15,6 +15,7 @@ import { Route as ProjectIdSplatRouteImport } from './routes/$projectId.$'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as ShellAgentsHubRouteImport } from './routes/_shell/agents-hub'
 import { Route as ShellChatRouteImport } from './routes/_shell/chat'
+import { Route as ShellEliteaCatalogRouteImport } from './routes/_shell/elitea-catalog'
 import { Route as ShellHelpCenterRouteImport } from './routes/_shell/help-center'
 import { Route as ShellMcpAuthCallbackRouteImport } from './routes/_shell/mcp-auth-callback'
 import { Route as ShellModeSwitchRouteImport } from './routes/_shell/mode-switch'
@@ -62,6 +63,7 @@ import { Route as ShellToolkitsIndexRouteImport } from './routes/_shell/toolkits
 import { Route as ShellToolkitsTabRouteImport } from './routes/_shell/toolkits/$tab'
 import { Route as ShellToolkitsCreateRouteImport } from './routes/_shell/toolkits/create'
 import { Route as ShellUserPublicTabRouteImport } from './routes/_shell/user-public/$tab'
+import { Route as SharedChatTokenRouteImport } from './routes/shared.chat.$token'
 import { Route as ShellAgentsTabAgentIdRouteImport } from './routes/_shell/agents/$tab.$agentId'
 import { Route as ShellAppsTabAppIdRouteImport } from './routes/_shell/apps/$tab.$appId'
 import { Route as ShellAppsCreateAppTypeRouteImport } from './routes/_shell/apps/create.$appType'
@@ -113,6 +115,11 @@ const ShellAgentsHubRoute = ShellAgentsHubRouteImport.update({
 const ShellChatRoute = ShellChatRouteImport.update({
   id: '/chat',
   path: '/chat',
+  getParentRoute: () => ShellRouteRoute,
+} as any)
+const ShellEliteaCatalogRoute = ShellEliteaCatalogRouteImport.update({
+  id: '/elitea-catalog',
+  path: '/elitea-catalog',
   getParentRoute: () => ShellRouteRoute,
 } as any)
 const ShellHelpCenterRoute = ShellHelpCenterRouteImport.update({
@@ -361,6 +368,11 @@ const ShellUserPublicTabRoute = ShellUserPublicTabRouteImport.update({
   path: '/user-public/$tab',
   getParentRoute: () => ShellRouteRoute,
 } as any)
+const SharedChatTokenRoute = SharedChatTokenRouteImport.update({
+  id: '/shared/chat/$token',
+  path: '/shared/chat/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShellAgentsTabAgentIdRoute = ShellAgentsTabAgentIdRouteImport.update({
   id: '/$agentId',
   path: '/$agentId',
@@ -501,6 +513,7 @@ export interface FileRoutesByFullPath {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/agents-hub': typeof ShellAgentsHubRoute
   '/chat': typeof ShellChatRouteWithChildren
+  '/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/help-center': typeof ShellHelpCenterRoute
   '/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
   '/mode-switch': typeof ShellModeSwitchRoute
@@ -538,6 +551,7 @@ export interface FileRoutesByFullPath {
   '/toolkits/$tab': typeof ShellToolkitsTabRouteWithChildren
   '/toolkits/create': typeof ShellToolkitsCreateRouteWithChildren
   '/user-public/$tab': typeof ShellUserPublicTabRoute
+  '/shared/chat/$token': typeof SharedChatTokenRoute
   '/agents/': typeof ShellAgentsIndexRoute
   '/apps/': typeof ShellAppsIndexRoute
   '/artifacts/': typeof ShellArtifactsIndexRoute
@@ -576,6 +590,7 @@ export interface FileRoutesByTo {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/agents-hub': typeof ShellAgentsHubRoute
   '/chat': typeof ShellChatRouteWithChildren
+  '/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/help-center': typeof ShellHelpCenterRoute
   '/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
   '/mode-switch': typeof ShellModeSwitchRoute
@@ -614,6 +629,7 @@ export interface FileRoutesByTo {
   '/toolkits/$tab': typeof ShellToolkitsTabRouteWithChildren
   '/toolkits/create': typeof ShellToolkitsCreateRouteWithChildren
   '/user-public/$tab': typeof ShellUserPublicTabRoute
+  '/shared/chat/$token': typeof SharedChatTokenRoute
   '/agents': typeof ShellAgentsIndexRoute
   '/apps': typeof ShellAppsIndexRoute
   '/artifacts': typeof ShellArtifactsIndexRoute
@@ -655,6 +671,7 @@ export interface FileRoutesById {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/_shell/agents-hub': typeof ShellAgentsHubRoute
   '/_shell/chat': typeof ShellChatRouteWithChildren
+  '/_shell/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/_shell/help-center': typeof ShellHelpCenterRoute
   '/_shell/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
   '/_shell/mode-switch': typeof ShellModeSwitchRoute
@@ -693,6 +710,7 @@ export interface FileRoutesById {
   '/_shell/toolkits/$tab': typeof ShellToolkitsTabRouteWithChildren
   '/_shell/toolkits/create': typeof ShellToolkitsCreateRouteWithChildren
   '/_shell/user-public/$tab': typeof ShellUserPublicTabRoute
+  '/shared/chat/$token': typeof SharedChatTokenRoute
   '/_shell/agents/': typeof ShellAgentsIndexRoute
   '/_shell/apps/': typeof ShellAppsIndexRoute
   '/_shell/artifacts/': typeof ShellArtifactsIndexRoute
@@ -735,6 +753,7 @@ export interface FileRouteTypes {
     | '/$projectId/$'
     | '/agents-hub'
     | '/chat'
+    | '/elitea-catalog'
     | '/help-center'
     | '/mcp-auth-callback'
     | '/mode-switch'
@@ -772,6 +791,7 @@ export interface FileRouteTypes {
     | '/toolkits/$tab'
     | '/toolkits/create'
     | '/user-public/$tab'
+    | '/shared/chat/$token'
     | '/agents/'
     | '/apps/'
     | '/artifacts/'
@@ -810,6 +830,7 @@ export interface FileRouteTypes {
     | '/$projectId/$'
     | '/agents-hub'
     | '/chat'
+    | '/elitea-catalog'
     | '/help-center'
     | '/mcp-auth-callback'
     | '/mode-switch'
@@ -848,6 +869,7 @@ export interface FileRouteTypes {
     | '/toolkits/$tab'
     | '/toolkits/create'
     | '/user-public/$tab'
+    | '/shared/chat/$token'
     | '/agents'
     | '/apps'
     | '/artifacts'
@@ -888,6 +910,7 @@ export interface FileRouteTypes {
     | '/$projectId/$'
     | '/_shell/agents-hub'
     | '/_shell/chat'
+    | '/_shell/elitea-catalog'
     | '/_shell/help-center'
     | '/_shell/mcp-auth-callback'
     | '/_shell/mode-switch'
@@ -926,6 +949,7 @@ export interface FileRouteTypes {
     | '/_shell/toolkits/$tab'
     | '/_shell/toolkits/create'
     | '/_shell/user-public/$tab'
+    | '/shared/chat/$token'
     | '/_shell/agents/'
     | '/_shell/apps/'
     | '/_shell/artifacts/'
@@ -964,6 +988,7 @@ export interface RootRouteChildren {
   ShellRouteRoute: typeof ShellRouteRouteWithChildren
   AuthCallbackRoute: typeof AuthCallbackRoute
   ProjectIdSplatRoute: typeof ProjectIdSplatRoute
+  SharedChatTokenRoute: typeof SharedChatTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -1008,6 +1033,13 @@ declare module '@tanstack/react-router' {
       path: '/chat'
       fullPath: '/chat'
       preLoaderRoute: typeof ShellChatRouteImport
+      parentRoute: typeof ShellRouteRoute
+    }
+    '/_shell/elitea-catalog': {
+      id: '/_shell/elitea-catalog'
+      path: '/elitea-catalog'
+      fullPath: '/elitea-catalog'
+      preLoaderRoute: typeof ShellEliteaCatalogRouteImport
       parentRoute: typeof ShellRouteRoute
     }
     '/_shell/help-center': {
@@ -1338,6 +1370,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/user-public/$tab'
       preLoaderRoute: typeof ShellUserPublicTabRouteImport
       parentRoute: typeof ShellRouteRoute
+    }
+    '/shared/chat/$token': {
+      id: '/shared/chat/$token'
+      path: '/shared/chat/$token'
+      fullPath: '/shared/chat/$token'
+      preLoaderRoute: typeof SharedChatTokenRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_shell/agents/$tab/$agentId': {
       id: '/_shell/agents/$tab/$agentId'
@@ -1783,6 +1822,7 @@ interface ShellRouteRouteChildren {
   ShellSettingsRouteRoute: typeof ShellSettingsRouteRouteWithChildren
   ShellAgentsHubRoute: typeof ShellAgentsHubRoute
   ShellChatRoute: typeof ShellChatRouteWithChildren
+  ShellEliteaCatalogRoute: typeof ShellEliteaCatalogRoute
   ShellHelpCenterRoute: typeof ShellHelpCenterRoute
   ShellMcpAuthCallbackRoute: typeof ShellMcpAuthCallbackRoute
   ShellModeSwitchRoute: typeof ShellModeSwitchRoute
@@ -1823,6 +1863,7 @@ const ShellRouteRouteChildren: ShellRouteRouteChildren = {
   ShellSettingsRouteRoute: ShellSettingsRouteRouteWithChildren,
   ShellAgentsHubRoute: ShellAgentsHubRoute,
   ShellChatRoute: ShellChatRouteWithChildren,
+  ShellEliteaCatalogRoute: ShellEliteaCatalogRoute,
   ShellHelpCenterRoute: ShellHelpCenterRoute,
   ShellMcpAuthCallbackRoute: ShellMcpAuthCallbackRoute,
   ShellModeSwitchRoute: ShellModeSwitchRoute,
@@ -1870,6 +1911,7 @@ const rootRouteChildren: RootRouteChildren = {
   ShellRouteRoute: ShellRouteRouteWithChildren,
   AuthCallbackRoute: AuthCallbackRoute,
   ProjectIdSplatRoute: ProjectIdSplatRoute,
+  SharedChatTokenRoute: SharedChatTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

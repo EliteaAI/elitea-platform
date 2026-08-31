@@ -74,7 +74,17 @@ const (
 	minManifestEndpoints = 170
 	// maxAllowlistEntries pins the committed size of the allowlist. The number
 	// may only go down. A new undocumented endpoint must fail the gate.
-	maxAllowlistEntries = 94
+	//
+	// 94 -> 93 when issue #194 routed and described
+	// POST /elitea_core/predict_llm/prompt_lib/{project_id}. That path carries
+	// THREE manifest ids (pipelines.generateContentStreaming,
+	// agents.generateContentBlocking, chatMessages.generateContentBlocking),
+	// all with a null operationId, so one spec operation covers all three by
+	// path. Only the first was ever on the allowlist — the other two were
+	// failing this gate outright, because the allowlist was already AT its cap
+	// and could not take them. Describing the endpoint was the only sanctioned
+	// way out, and it needed the route to exist first.
+	maxAllowlistEntries = 93
 )
 
 // buildFullSurfaceConfig returns a RouterConfig for the real production

@@ -469,6 +469,19 @@ func identityProjectFromCtx(ctx context.Context) string {
 	return bifrostCtxString(ctx, schemas.BifrostContextKeyVirtualKey)
 }
 
+// contextKeyExecutionID carries the runtime execution id set by newContext
+// from the X-Elitea-Execution-Id header.
+//
+// A gateway-local key rather than a Bifrost one: Bifrost has no notion of an
+// Elitea execution, and the value is never handed to a provider.
+const contextKeyExecutionID schemas.BifrostContextKey = "elitea-execution-id"
+
+// identityExecutionFromCtx extracts the runtime execution id, empty when the
+// request was not made from one.
+func identityExecutionFromCtx(ctx context.Context) string {
+	return bifrostCtxString(ctx, contextKeyExecutionID)
+}
+
 // identityUserFromCtx extracts the member ID string set on the BifrostContext
 // by newContext from the X-Elitea-User-Id header. elitea-main has forwarded
 // that header since the llmproxy identity path was written; until issue #321
@@ -722,6 +735,10 @@ func (h *Handler) updateUsageUnits(
 		// scheduler, minutes later or more, so a column default would date the
 		// request to whenever the consumer got to it.
 		OccurredAtUnix: now.Unix(),
+		// The runtime execution this request was made from, so the ledger can be
+		// grouped by agent the same way the request log can. Empty for every
+		// caller that is not a runtime execution, which is most of them.
+		ExecutionID: identityExecutionFromCtx(ctx),
 	}
 
 	if h.spawnBillingGoroutine(bp, pid, userIDStr, periodStart, periodEnd, actualCost.TotalNanoUSD, dims) {
@@ -776,6 +793,7 @@ func (h *Handler) updateUsageDirect(
 		Provider:       provider,
 		Model:          model,
 		OccurredAtUnix: now.Unix(),
+		ExecutionID:    identityExecutionFromCtx(ctx),
 	}
 
 	if h.spawnBillingGoroutine(bp, pid, userIDStr, periodStart, periodEnd, costNano, dims) {

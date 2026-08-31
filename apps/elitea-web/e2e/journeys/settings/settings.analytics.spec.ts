@@ -212,13 +212,22 @@ test('J24: settings: analytics renders the live backend\'s own usage figures', a
 });
 
 /* ────────────────────────────────────────────────────────────────────────
- * J24a — the two tabs that still have NO data source must say so, and must
- * say it in a way a client can act on.
+ * J24a — the tab that still has NO data source must say so, and must say it in
+ * a way a client can act on.
  *
- * `analytics_agents` and `analytics_tools` have no producer: the gateway
- * request log carries no agent or toolkit dimension, and the alternatives
- * (elitea_runtime.execution_jobs, p_<id>.chat_message_trace_step) each carry a
- * modelling fork documented in
+ * ONLY `analytics_tools` now. `analytics_agents` gained its producer: shared
+ * migration 0100 put an execution_id on gateway.llm_request_logs, signed into
+ * the identity header, and the agent is resolved at read time. It answers 200.
+ *
+ * Its 200 is NOT the fallback-body failure this suite exists to catch, and the
+ * difference is the shape: when the window predates the migration the response
+ * carries `agent_dimension_available: false` and NO `items` key at all, so a
+ * client cannot map over a fabricated empty list and read "no agent ran" for a
+ * month in which agents ran constantly. That is asserted below.
+ *
+ * `analytics_tools` still has no producer: nothing records a tool call made
+ * outside a chat turn, so a table built from p_<id>.chat_message_trace_step
+ * would under-report by an unknown factor — worse than the refusal. See
  * services/elitea-main/internal/infra/db/repos/analytics.go's header.
  *
  * The STATUS is the point. Answered 500, a permanent refusal is
@@ -230,7 +239,29 @@ test('J24a: the tabs with no data source refuse finally, and the UI says which',
   await page.goto(BASE_URL + '/app/settings/analytics');
   await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
 
-  for (const tab of ['Agents', 'Tools'] as const) {
+  // The Agents tab now HAS a producer. Assert the shape that keeps its 200
+  // honest: the availability flag, and the absence of `items` when it is false.
+  const agentsPath = `${API_BASE}/elitea_core/analytics_agents/prompt_lib/${DEFAULT_PROJECT_ID}`;
+  const agentsResp = await page.request.get(agentsPath);
+  expect(agentsResp.status(), `${agentsPath} answers now that it has a producer`).toBe(200);
+  const agents = (await agentsResp.json()) as Record<string, unknown>;
+  expect(
+    agents,
+    `${agentsPath} must state whether the dimension is available`,
+  ).toHaveProperty('agent_dimension_available');
+  expect(
+    agents,
+    'both call figures travel either way — the per-agent rows are not a partition of the overview total',
+  ).toHaveProperty('attributed_llm_calls');
+  if (agents['agent_dimension_available'] === false) {
+    // `not.toHaveProperty`, not `'items' in agents`: R-A6 bans hand-rolled
+    // shape sniffing, and the matcher says the same thing more directly — an
+    // unavailable dimension must OMIT items, never answer [], which would
+    // report "no agent ran" for a window in which agents ran constantly.
+    expect(agents).not.toHaveProperty('items');
+  }
+
+  for (const tab of ['Tools'] as const) {
     const path = `${API_BASE}/elitea_core/analytics_${tab.toLowerCase()}/prompt_lib/${DEFAULT_PROJECT_ID}`;
     const resp = await page.request.get(path);
     expect(resp.status(), `${path} must refuse with a FINAL status`).toBe(501);

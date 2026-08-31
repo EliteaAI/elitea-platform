@@ -332,6 +332,69 @@ jobs:
             -schema-location "$CRD_SCHEMAS" \
             /tmp/elitea-main-standalone.yaml
 
+      # The auth-minimal capability set. It is the combination NO other pass
+      # renders: production authentication and the Configurations write path ON
+      # with the runtime plane OFF, plus a runtimeRedis that no worker reads.
+      #
+      # That combination is exactly the one templates/guards.yaml could grow an
+      # edge against by accident — worker->runtime and worker->runtimeRedis are
+      # guarded, runtimeRedis->runtime deliberately is not — so a guard added
+      # without this pass would break the cheapest supported install with every
+      # other gate in this file still green.
+      - name: helm template + kubeconform (auth-minimal capability values)
+        if: matrix.chart == 'elitea'
+        run: |
+          helm template ci-release deploy/helm/elitea \
+            -f deploy/helm/elitea/values-auth-minimal.yaml \
+            --set-string 'llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1' \
+            --set-string 'llmGateway.egressPosture=public-unrestricted' \
+            > /tmp/elitea-main-auth-minimal.yaml
+          kubeconform -strict -summary -verbose \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
+            -schema-location "$CRD_SCHEMAS" \
+            /tmp/elitea-main-auth-minimal.yaml
+
+      # A values file this job never renders is a shipped install shape nothing
+      # checks — the same "absence reads as correctness" hole the two chart
+      # coverage steps in the lint job exist for. `helm lint` does not read
+      # these files at all, so it stays green for every one of them.
+      #
+      # This reads the file names out of THIS workflow, so adding a
+      # values-*.yaml beside the chart fails here until somebody either renders
+      # it or writes down why it cannot be rendered.
+      - name: Every values file is rendered by some pass
+        if: matrix.chart == 'elitea'
+        run: |
+          # values files deliberately not rendered here, with the reason.
+          # Empty today: all three are rendered by a pass in this job.
+          excluded=""
+          rendered="$(grep -oE 'deploy/helm/elitea/values-[a-z0-9-]+\.yaml' \
+                        .github/workflows/helm-lint.yml | sort -u | tr '\n' ' ')"
+          if [ -z "$rendered" ]; then
+            echo "::error::read no values file name out of this workflow — this check measured nothing"
+            exit 1
+          fi
+          found=0
+          missing=""
+          for file in deploy/helm/elitea/values-*.yaml; do
+            [ -f "$file" ] || continue
+            found=$((found + 1))
+            case " $rendered $excluded " in
+              *" $file "*) ;;
+              *) missing="$missing $file" ;;
+            esac
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no file matched deploy/helm/elitea/values-*.yaml — this check measured nothing"
+            exit 1
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::these values files are rendered by no pass in this job:$missing"
+            exit 1
+          fi
+          echo "values coverage: $found file(s), all rendered or excluded on purpose"
+
       # Toggled-off/on paths (HPA, PVC, optional Services and probes, hook Jobs)
       # render zero objects in the default pass, so a break in them is invisible
       # there.

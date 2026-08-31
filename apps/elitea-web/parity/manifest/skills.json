@@ -10,7 +10,7 @@
       "title": "Route `/skills` renders index redirect",
       "source": [
         "apps/elitea-ui/src/routes.js:14",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:174"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:207"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -39,7 +39,7 @@
       "title": "Route `/skills/create` renders CreateSkill",
       "source": [
         "apps/elitea-ui/src/routes.js:16",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:176"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:209"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -68,7 +68,7 @@
       "title": "Route `/skills/:tab` renders Skills",
       "source": [
         "apps/elitea-ui/src/routes.js:15",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:184"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:217"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -97,7 +97,7 @@
       "title": "Route `/skills/:tab/:skillId` renders EditSkill",
       "source": [
         "apps/elitea-ui/src/routes.js:17",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:192"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:225"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -126,7 +126,7 @@
       "title": "Route `/skills/:tab/:skillId/:version` renders EditSkill (version child)",
       "source": [
         "apps/elitea-ui/src/routes.js:17",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:321-326"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -154,7 +154,7 @@
       "priority": "must",
       "title": "Query param `newSkillId` on /skills/:tab",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:84",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:83",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:74"
       ],
       "acceptance": [
@@ -184,7 +184,7 @@
       "priority": "must",
       "title": "Query param `newSkillId` on /skills/:tab/:skillId",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:84",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:83",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:74"
       ],
       "acceptance": [
@@ -214,9 +214,9 @@
       "priority": "must",
       "title": "Query param `return_url` on /skills/:tab",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:80",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:109",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:79",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:107",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:163",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:68"
       ],
       "acceptance": [
@@ -246,9 +246,9 @@
       "priority": "must",
       "title": "Query param `return_url` on /skills/:tab/:skillId",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:80",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:109",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:79",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:107",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:163",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:68"
       ],
       "acceptance": [
@@ -278,8 +278,8 @@
       "priority": "must",
       "title": "Query param `source_application_id` on /skills/:tab",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:81",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:163",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:69"
       ],
       "acceptance": [
@@ -309,8 +309,8 @@
       "priority": "must",
       "title": "Query param `source_application_id` on /skills/:tab/:skillId",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:81",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:163",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:69"
       ],
       "acceptance": [
@@ -368,7 +368,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/skills/prompt_lib/{projectId} (skillList)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:59-101"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:63-116"
       ],
       "acceptance": [
         "GIVEN the user performs the skill list operation",
@@ -396,7 +396,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/skills/prompt_lib/{projectId} (totalSkills)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:102-112"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:106-135"
       ],
       "acceptance": [
         "GIVEN the user performs the total skills operation",
@@ -424,7 +424,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/skills/prompt_lib/{projectId} (skillCreate)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:113-131"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:117-158"
       ],
       "acceptance": [
         "GIVEN the user performs the skill create operation",
@@ -452,7 +452,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/skill/prompt_lib/{projectId}/{skillId} (skillDetails)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:132-154"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:136-184"
       ],
       "acceptance": [
         "GIVEN the user performs the skill details operation",
@@ -480,7 +480,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/skill/prompt_lib/{projectId}/{skillId} (skillCreateVersion)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:155-180"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:159-207"
       ],
       "acceptance": [
         "GIVEN the user performs the skill create version operation",
@@ -508,7 +508,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/skill/prompt_lib/{projectId}/{skillId} (skillUpdate)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:181-203"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:185-243"
       ],
       "acceptance": [
         "GIVEN the user performs the skill update operation",
@@ -536,7 +536,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/skill/prompt_lib/{projectId}/{skillId} (deleteSkill)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:204-239"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:208-283"
       ],
       "acceptance": [
         "GIVEN the user performs the delete skill operation",
@@ -564,7 +564,7 @@
       "priority": "must",
       "title": "Endpoint PATCH /elitea_core/skill_default_version/prompt_lib/{projectId}/{skillId} (setSkillDefaultVersion)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:241-256"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:245-294"
       ],
       "acceptance": [
         "GIVEN the user performs the set skill default version operation",
@@ -592,7 +592,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/skill_export/prompt_lib/{projectId}/{skillId} (skillExportMd)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:258-279"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:262-320"
       ],
       "acceptance": [
         "GIVEN the user performs the skill export md operation",
@@ -620,7 +620,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/skill_import/prompt_lib/{projectId} (skillImport)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:282-305"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:297-346"
       ],
       "acceptance": [
         "GIVEN the user performs the skill import operation",
@@ -648,7 +648,7 @@
       "priority": "must",
       "title": "Endpoint PATCH /elitea_core/skill/prompt_lib/{projectId}/{skillId} (updateSkillRelation)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:308-331"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:323-362"
       ],
       "acceptance": [
         "GIVEN the user performs the update skill relation operation",
@@ -676,7 +676,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/application_skills/prompt_lib/{projectId}/{appVersionId} (getApplicationSkills)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:333-338"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:348-393"
       ],
       "acceptance": [
         "GIVEN the user performs the get application skills operation",
@@ -704,7 +704,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/upload_skill_icon/prompt_lib/{projectId} (getSkillIcons)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:340-378"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:355-419"
       ],
       "acceptance": [
         "GIVEN the user performs the get skill icons operation",
@@ -732,7 +732,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core{/upload_skill_icon/prompt_lib/{projectId}/{versionId}|/upload_skill_icon/prompt_lib/{projectId}} (uploadSkillIcon) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:379-404"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:394-463"
       ],
       "acceptance": [
         "GIVEN the user performs the upload skill icon operation",
@@ -760,7 +760,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/upload_skill_icon/prompt_lib/{projectId}/{versionId} (replaceSkillIcon)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:405-448"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:420-515"
       ],
       "acceptance": [
         "GIVEN the user performs the replace skill icon operation",
@@ -788,7 +788,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/upload_skill_icon/prompt_lib/{projectId}/{name} (deleteSkillIcon)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:449-486"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:516-554"
       ],
       "acceptance": [
         "GIVEN the user performs the delete skill icon operation",
@@ -844,7 +844,7 @@
       "priority": "must",
       "title": "Route guard SkillsGuard",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/SkillsGuard.jsx:13-21"
+        "apps/elitea-ui/src/[fsd]/app/routes/SkillsGuard.jsx:10"
       ],
       "acceptance": [
         "GIVEN the guard condition for SkillsGuard applies",
@@ -872,9 +872,9 @@
       "priority": "must",
       "title": "Action on skills: generate content streaming via onRegenerateAnswer/onSend/onSubmitEditedMessage",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:475",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:476",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:488",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:506",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:507",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:526",
         "apps/elitea-ui/src/api/llm.js:6"
       ],
       "acceptance": [
@@ -932,8 +932,8 @@
       "priority": "must",
       "title": "Action on skills: set skill default version via onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/skills/EditSkill.jsx:267",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:241"
+        "apps/elitea-ui/src/[fsd]/pages/skills/EditSkill.jsx:287",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:245"
       ],
       "acceptance": [
         "GIVEN the skills screen is displayed with the relevant entity available",
@@ -961,9 +961,9 @@
       "priority": "must",
       "title": "Action on skills: skill create via onApprove/onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:130",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:128",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:109",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:113"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:117"
       ],
       "acceptance": [
         "GIVEN the skills screen is displayed with the relevant entity available",
@@ -991,8 +991,8 @@
       "priority": "must",
       "title": "Action on skills: skill create version via onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:98",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:155"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:107",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:159"
       ],
       "acceptance": [
         "GIVEN the skills screen is displayed with the relevant entity available",
@@ -1023,7 +1023,7 @@
         "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:37",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:49",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:50",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:282"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:297"
       ],
       "acceptance": [
         "GIVEN the skills screen is displayed with the relevant entity available",
@@ -1051,8 +1051,8 @@
       "priority": "must",
       "title": "Action on skills: skill update via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillButton.jsx:40",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:181"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillButton.jsx:41",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:185"
       ],
       "acceptance": [
         "GIVEN the skills screen is displayed with the relevant entity available",
@@ -1080,7 +1080,7 @@
       "priority": "must",
       "title": "Action on skills: stop llm task via onStopGeneration",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:490",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:528",
         "apps/elitea-ui/src/api/llm.js:29"
       ],
       "acceptance": [
@@ -1109,9 +1109,9 @@
       "priority": "must",
       "title": "Action on skills: update skill relation via onClick/onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:140",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:121",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:308"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:130",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:127",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:323"
       ],
       "acceptance": [
         "GIVEN the skills screen is displayed with the relevant entity available",
@@ -1139,7 +1139,7 @@
       "priority": "should",
       "title": "Copy: ui/ApplicationSkills.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/ApplicationSkills.jsx:70"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/ApplicationSkills.jsx:78"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1167,8 +1167,8 @@
       "priority": "should",
       "title": "Copy: ui/CreateSkillTabBar.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:132",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:137"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:130",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:135"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1225,7 +1225,7 @@
       "title": "Copy: generate-skill-modal/GenerateSkillReviewForm.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillReviewForm.jsx:33",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillReviewForm.jsx:66"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillReviewForm.jsx:79"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1253,7 +1253,7 @@
       "priority": "should",
       "title": "Copy: import/SkillImportButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:32"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:31"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1282,7 +1282,7 @@
       "title": "Copy: import/SkillImportModal.jsx (7 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportModal.jsx:39",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportModal.jsx:102"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportModal.jsx:107"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1310,8 +1310,8 @@
       "priority": "should",
       "title": "Copy: ui/PrivateSkillsList.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsList.jsx:72",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsList.jsx:73"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsList.jsx:119",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsList.jsx:120"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1339,8 +1339,8 @@
       "priority": "should",
       "title": "Copy: ui/PrivateSkillsListEmptyState.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsListEmptyState.jsx:10",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsListEmptyState.jsx:11"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsListEmptyState.jsx:11",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsListEmptyState.jsx:12"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1368,7 +1368,7 @@
       "priority": "should",
       "title": "Copy: ui/SaveSkillButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillButton.jsx:42"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillButton.jsx:43"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1396,8 +1396,8 @@
       "priority": "should",
       "title": "Copy: ui/SaveSkillVersionButton.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:85",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:93"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:97",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:105"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1426,7 +1426,7 @@
       "title": "Copy: form/CreateSkillForm.jsx (8 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-details/form/CreateSkillForm.jsx:56",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-details/form/CreateSkillForm.jsx:303"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-details/form/CreateSkillForm.jsx:316"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1510,7 +1510,7 @@
       "priority": "should",
       "title": "Copy: skill-test-panel/SkillTestPanel.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:487"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:525"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1538,8 +1538,7 @@
       "priority": "should",
       "title": "Copy: ui/SkillCard.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:51",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:134"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:131"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1567,8 +1566,8 @@
       "priority": "should",
       "title": "Copy: ui/SkillControls.jsx (10 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillControls.jsx:67",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillControls.jsx:188"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillControls.jsx:92",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillControls.jsx:229"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1596,8 +1595,8 @@
       "priority": "should",
       "title": "Copy: ui/SkillInformation.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillInformation.jsx:15",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillInformation.jsx:30"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillInformation.jsx:26",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillInformation.jsx:41"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1625,8 +1624,8 @@
       "priority": "should",
       "title": "Copy: ui/SkillMenu.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:180",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:199"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:194",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:214"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1654,8 +1653,8 @@
       "priority": "should",
       "title": "Copy: ui/SkillRowAction.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillRowAction.jsx:102",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillRowAction.jsx:124"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillRowAction.jsx:113",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillRowAction.jsx:147"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",
@@ -1683,8 +1682,8 @@
       "priority": "should",
       "title": "Copy: ui/SkillVersionSelector.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:102",
-        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:111"
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:103",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:116"
       ],
       "acceptance": [
         "GIVEN the skills screen renders with the default brand in both colour schemes",

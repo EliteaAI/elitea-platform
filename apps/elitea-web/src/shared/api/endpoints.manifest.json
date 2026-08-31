@@ -1090,6 +1090,7 @@
             "responseSchema": "ConfigurationTypeDescriptor[]",
             "fixture": null,
             "usedBy": [
+                "features/agents",
                 "features/credentials",
                 "features/pipelines"
             ]
@@ -1103,8 +1104,10 @@
             "responseSchema": "ConfigurationPageWire",
             "fixture": null,
             "usedBy": [
+                "features/agents",
                 "features/credentials",
-                "features/pipelines"
+                "features/pipelines",
+                "features/chat-messages"
             ]
         },
         {
@@ -1240,7 +1243,8 @@
             "fixture": null,
             "usedBy": [
                 "features/credentials",
-                "features/chat-input"
+                "features/chat-input",
+                "features/chat-messages"
             ]
         },
         {
@@ -1425,10 +1429,22 @@
             "usedBy": []
         },
         {
+            "id": "agents.generateContentBlocking",
+            "method": "POST",
+            "path": "/elitea_core/predict_llm/prompt_lib/{projectId}",
+            "operationId": "predictLLM",
+            "source": "handwritten",
+            "responseSchema": "GenerateContentBlockingResult",
+            "fixture": null,
+            "usedBy": [
+                "features/agents"
+            ]
+        },
+        {
             "id": "pipelines.generateContentStreaming",
             "method": "POST",
             "path": "/elitea_core/predict_llm/prompt_lib/{projectId}",
-            "operationId": null,
+            "operationId": "predictLLM",
             "source": "handwritten",
             "responseSchema": "GenerateContentStreamingResult",
             "fixture": null,
@@ -2161,6 +2177,19 @@
             "fixture": null,
             "usedBy": [
                 "features/credentials"
+            ]
+        },
+        {
+            "$comment": "Blocking-mode sibling of pipelines.generateContentStreaming / agents.generateContentBlocking on the SAME path: await_task_timeout 60 instead of 0, so the generated text comes back in this HTTP response rather than over the application_predict socket event. Called by the canvas mermaid quick-fix (features/chat-messages/api/canvasQuickFix.ts). ROUTED: elitea-main serves the blocking mode by calling the LLM gateway directly. The STREAMING sibling is still unserved — the Go stack has no application_predict socket channel — which is why shared/config/backendCapabilities.ts splits this path into llmPredictBlocking (this entry) and llmPredictStreaming (pipelines.generateContentStreaming).",
+            "id": "chatMessages.generateContentBlocking",
+            "method": "POST",
+            "path": "/elitea_core/predict_llm/prompt_lib/{projectId}",
+            "operationId": "predictLLM",
+            "source": "handwritten",
+            "responseSchema": "QuickFixPredictResult",
+            "fixture": null,
+            "usedBy": [
+                "features/chat-messages"
             ]
         }
     ]

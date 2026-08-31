@@ -285,8 +285,11 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 		//
 		// A DEFAULT install still leaves the flag off, because the capability
 		// needs production authentication that install does not build. The
-		// toolkits handler answers the path there, and it answers the prototype
-		// six-loader list — see values.yaml for what that costs.
+		// toolkits handler answers the path there, and it now REFUSES — 501
+		// with `code: index_types_not_available`. It used to answer 200 with a
+		// prototype six-loader list whose names and `supported_extensions`
+		// nothing produced, which is a claim rather than a blank; the refusal
+		// is the honest OFF state, and it does not change the flag's default.
 		// ELITEA_APPLICATION_SKILLS_ENABLED was listed here, with the same
 		// conflict: the route it composes answered {skills, max_skills} and
 		// elitea-web reads the SkillsList envelope. #395 removed the conflict

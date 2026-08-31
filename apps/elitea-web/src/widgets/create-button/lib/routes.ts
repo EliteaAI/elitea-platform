@@ -53,6 +53,7 @@ export const CREATE_ROUTES = {
   settingsAnalytics: '/settings/analytics',
   onboarding: '/onboarding',
   agentsHub: '/agents-hub',
+  eliteaCatalog: '/elitea-catalog',
   helpCenter: '/help-center',
 } as const;
 

@@ -108,10 +108,20 @@ func Validate(m *Manifest, baseline string) []string {
 		if len(it.Source) == 0 {
 			bad("%s: source is empty — an item with no evidence is rejected", id)
 		}
+		// A WAIVED item records behaviour the baseline has RETIRED, so its
+		// evidence names code the pinned baseline no longer contains. Demanding
+		// that it resolve is self-contradictory: it would force either a
+		// fabricated path or the deletion of an immutable id. The reference is
+		// still required to be non-empty and well-formed above — what is
+		// dropped is only the existence check.
+		retiredItem := it.Status == "waived" && it.Waiver != nil
 		for _, s := range it.Source {
 			mm := sourceRe.FindStringSubmatch(s)
 			if mm == nil {
 				bad("%s: source %q is not apps/elitea-ui/<file>:<line>[-<line>]", id, s)
+				continue
+			}
+			if retiredItem {
 				continue
 			}
 			rel, lineS, endS := mm[1], mm[2], mm[3]

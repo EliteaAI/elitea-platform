@@ -30,24 +30,25 @@ import { applicationErrorMessage } from '../lib/errorMessage';
  *  - Success writes `applications.meta.default_version_id` and answers
  *    `{"ok": true}`.
  *
- * **`staleTime: 0` is load-bearing, not decoration.** The generated client
- * models this PATCH as a QUERY, so it goes through `queryClient.fetchQuery`,
- * and the app's own client sets `staleTime: 30_000`
- * (`app/providers/queryClient.ts:101`). Without the override, setting the
- * default to version A, then to B, then back to A inside 30 seconds would
- * replay A's cache entry and send NO second request, while still reporting
- * success.
+ * **`staleTime: 0` is load-bearing, not decoration, and it has nothing to do
+ * with reading the default back.** The generated client models this PATCH as
+ * a QUERY, so it goes through `queryClient.fetchQuery`, and the app's own
+ * client sets `staleTime: 30_000` (`app/providers/queryClient.ts:101`).
+ * Without the override, setting the default to version A, then to B, then
+ * back to A inside 30 seconds would replay A's cache entry and send NO second
+ * request, while still reporting success. That is a property of how this
+ * mutation is modelled; do not remove it.
  *
  * **No toast, no cache surgery, no navigation** — same caller-owns-
  * orchestration posture as `useDeleteVersion`/`useSaveNewVersion`. The
- * baseline patches its RTK-Query detail cache to record the new default
- * because it can: its detail response carries `meta.default_version_id`. The
- * Go `Get` handler does NOT emit `meta` at all
- * (`applications/handler.go:121-152` builds the response map by hand from
- * seven keys), and `ApplicationDetail`/`ApplicationVersionSummary` carry no
- * `is_default` either, so there is nothing here to invalidate: the caller
- * remembers the id it just set. See `AgentVersionControls` for what that
- * costs on screen.
+ * baseline patches its RTK-Query detail cache to record the new default; here
+ * the caller keeps the id it just set as a short-lived override until the
+ * detail is re-fetched. That override is now only an override: `GET
+ * /application/...` does report the default back — `meta.default_version_id`
+ * on the application and `is_default` on each `versions[]` entry
+ * (`applications/handler.go`'s `Get`/`getVersions`) — so a reload shows the
+ * right version without this hook having to invalidate anything. See
+ * `AgentVersionControls`.
  */
 export interface UseSetDefaultVersionInput {
   readonly projectId: string;

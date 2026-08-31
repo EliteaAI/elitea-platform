@@ -16,6 +16,12 @@
  *   PlaybackChatBox.tsx: use-effects waived (4/3)
  *   chat-messages/index.ts: slice-public-api waived (53/20)
  *   interactive-tours/index.ts: slice-public-api waived (38/20)
+ *   skills/index.ts: slice-public-api waived (22/20) — the barrel was CURATED
+ *     first, from 29 down to the 22 symbols outside modules actually import
+ *     (the icon dialog, its list query and its upload/delete mutations came
+ *     off, being the slice's own wiring). The residual two are real consumers,
+ *     so the waiver records a debt to re-home them rather than hiding an
+ *     un-curated barrel.
  *   useInteractiveTourController.hooks.ts: hook-deps waived (12/8)
  *
  * Deliberately NOT implemented here (recorded, not forgotten):
@@ -42,6 +48,7 @@ export const BUDGET_WAIVERS = Object.freeze({
   'src/features/chat-messages/ui/playback/PlaybackChatBox.tsx': ['use-effects'],
   'src/features/chat-messages/index.ts': ['slice-public-api'],
   'src/features/interactive-tours/index.ts': ['slice-public-api'],
+  'src/features/skills/index.ts': ['slice-public-api'],
   'src/features/interactive-tours/lib/hooks/useInteractiveTourController.hooks.ts': ['hook-deps'],
 });
 
@@ -61,10 +68,13 @@ export const DEFAULT_LIMITS = Object.freeze({
 });
 
 const TEST_FILE_RE = /(\.test\.|\.spec\.|\.stories\.)|(^|\/)__tests__\/|(^|\/)__mocks__\/|(^|\/)src\/test\//;
-// [S5] scripts/gen-socket-contract.mjs's two outputs (spec §5.5) — same
-// "generated-code conventions apply" treatment as src/shared/api/generated/
-// above, added because the spec names them events.ts/messages.ts verbatim
-// (not a .gen.ts suffix), so the existing patterns don't reach them.
+// [S5] the socket contract's two catalogue files (spec §5.5). They were
+// generated until #126 deleted the Go socket.io server their generator read;
+// they are hand-maintained now and keep the exemption for the reason that did
+// not change — each is one flat enumeration (43 events / 34 discriminants)
+// with its evidence, not logic a file-length budget says anything useful
+// about. The spec names them events.ts/messages.ts verbatim (not a .gen.ts
+// suffix), so the existing patterns don't reach them.
 const GENERATED_FILE_RE = /(^|\/)src\/shared\/api\/generated\/|\.gen\.tsx?$|\.d\.ts$|(^|\/)src\/shared\/api\/socket\/(events|messages)\.ts$/;
 const SLICE_INDEX_RE = /(^|\/)src\/(features|entities|widgets|processes)\/[^/]+\/index\.tsx?$/;
 const HOOK_WITH_DEPS_RE = /^use[A-Z]|^use(Effect|LayoutEffect|InsertionEffect|Memo|Callback|ImperativeHandle)$/;

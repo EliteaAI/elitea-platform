@@ -187,6 +187,33 @@
     // the identical "no current caller needs the type by name, only the
     // grouped prop" shape.
     "src/features/toolkits/ui/ConfigurationTab.tsx",
+    // Canvas + playback: exposed by MOUNTING, not introduced by it.
+    //
+    // `features/chat-messages/index.ts` now exports `CanvasEditor` and
+    // `PlaybackChatBox`, which are really rendered (`processes/chat/ui/
+    // ChatWithEditors.tsx` and `.../ChatPlayback.tsx`). That made these
+    // three sibling files reachable for the first time, so knip started
+    // reporting their OTHER exports — the "once ANY export in a file is
+    // reachable, knip flags the file's remaining exports" cascade this
+    // config's own header describes. None of them is newly-written dead
+    // code; all three predate this change.
+    //
+    //  - `Canvas.tsx`'s `Canvas` component (the read-only, in-message canvas
+    //    card) genuinely has no caller. Mounting it belongs with the canvas
+    //    work this pass deliberately did NOT take — mermaid rendering, the
+    //    markdown-table editor and quick-fix are all still unported (see
+    //    `CanvasEditor.tsx`'s remaining TODOs), and a card whose Open action
+    //    leads to a half-built editor is worse than no card. `CanvasProps`/
+    //    `CodeBlockInfo`/`CanvasEditPayload` are that component's own
+    //    contract.
+    //  - `CanvasEditHeader.tsx`'s three prop-group interfaces and
+    //    `PlaybackToolBar.tsx`'s `PlaybackToolBarAttachment` are the §3.5
+    //    "group props into option objects" shapes their own callers build
+    //    inline — the same structural-only situation as every
+    //    `ConfigurationTab.tsx` entry above.
+    "src/features/chat-messages/ui/canvas/Canvas.tsx",
+    "src/features/chat-messages/ui/canvas/CanvasEditHeader.tsx",
+    "src/features/chat-messages/ui/playback/PlaybackToolBar.tsx",
     // Unit C1 ("entities/conversation extension"): same "public surface
     // awaiting a Wave-2 consumer" gap as everything else in this list.
     // `entities/conversation/index.ts`'s own §3.5 20-export budget left no

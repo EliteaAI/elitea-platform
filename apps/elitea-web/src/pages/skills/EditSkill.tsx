@@ -17,8 +17,11 @@ import {
   SkillEditorToolbar,
   SkillForm,
   SkillPublishControls,
+  useBindSkillIconMutation,
   useSkill,
   useSkillMutations,
+  type SkillIconControl,
+  type SkillIconMeta,
   type SkillRecord,
   type SkillVersion,
   type SkillWriteInput,
@@ -52,6 +55,36 @@ export function toSkillForm(skill: SkillRecord | undefined): SkillWriteInput {
 
 export function skillVersionKey(version: SkillVersion): string {
   return String(version.id ?? version.name);
+}
+
+/**
+ * The icon a skill currently wears, read from the shape the API writes:
+ * `version_details.meta.icon_meta`. It is the same path the old app's own
+ * optimistic update patches, so a change here and a change there disagree
+ * loudly rather than silently.
+ */
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+export function toSkillIconMeta(skill: SkillRecord | undefined): SkillIconMeta | null {
+  const version = skill?.version_details ?? skill?.versions?.[0];
+  const iconMeta = version?.meta?.['icon_meta'] as { name?: unknown; url?: unknown } | undefined;
+  const name = nonEmptyString(iconMeta?.name);
+  const url = nonEmptyString(iconMeta?.url);
+  // A reset writes `{}` (or an empty name/url pair); either way there is no
+  // icon, and returning a half-filled meta would draw a broken image.
+  return name !== undefined && url !== undefined ? { name, url } : null;
+}
+
+/** The version id an icon binds to: the one on screen, else the skill's default. */
+export function skillIconVersionId(
+  skill: SkillRecord | undefined,
+  routeVersion: string | undefined,
+): string | undefined {
+  if (routeVersion !== undefined && /^[0-9]+$/.test(routeVersion)) return routeVersion;
+  const id = skill?.version_details?.id ?? skill?.versions?.[0]?.id;
+  return id === undefined ? undefined : String(id);
 }
 
 function downloadMarkdown(content: string, filename: string): void {
@@ -134,6 +167,27 @@ function SkillEditorHeader(props: SkillEditorHeaderProps): ReactNode {
   );
 }
 
+/**
+ * buildSkillIconControl returns the icon binding, or `undefined` when there is
+ * nothing to bind to — no project, or a skill whose version id is not known
+ * yet. `undefined` is what disables the control and explains why.
+ */
+function buildSkillIconControl(args: {
+  readonly projectId: string | undefined;
+  readonly versionId: string | undefined;
+  readonly iconMeta: SkillIconMeta | null;
+  readonly bind: (versionId: string, iconMeta: SkillIconMeta | null) => void;
+}): SkillIconControl | undefined {
+  const { projectId, versionId } = args;
+  if (!projectId || !versionId) return undefined;
+  return {
+    projectId,
+    versionId,
+    iconMeta: args.iconMeta,
+    onIconChange: (iconMeta) => { args.bind(versionId, iconMeta); },
+  };
+}
+
 export function EditSkill(): ReactNode {
   const navigate = useNavigate();
   const params = useParams({ strict: false }) as EditSkillParams;
@@ -148,14 +202,33 @@ export function EditSkill(): ReactNode {
   const [versionName, setVersionName] = useState('');
   const [error, setError] = useState<string>();
   const permissions = usePermissionSet(projectId);
+  const bindIcon = useBindSkillIconMutation(projectId ?? '');
 
   useEffect(() => setValue(initialValue), [initialValue]);
 
+  // The icon is NOT part of the form's dirty state: it is persisted by its own
+  // route the moment it is chosen, exactly as the baseline does. Folding it
+  // into `value` would make picking an icon look like an unsaved edit and then
+  // save it a second time through a route that does not carry it.
+  const iconControl = buildSkillIconControl({
+    projectId,
+    versionId: skillIconVersionId(detail.data, params.version),
+    iconMeta: toSkillIconMeta(detail.data),
+    bind: (versionId, iconMeta) => {
+      void bindIcon
+        .mutateAsync({ versionId, iconMeta })
+        .then(() => detail.refetch())
+        .catch(() => setError(t('skills.edit.iconError', 'Failed to update the skill icon.')));
+    },
+  });
 
 
-  // The test run POSTs `predict_llm`, which no router mounts, so the pane
-  // stays hidden — see `shared/config/backendCapabilities`.
-  const canTestSkill = hasBackendCapability('aiGeneration');
+
+  // The test run POSTs `predict_llm` in its STREAMING mode
+  // (`await_task_timeout: 0`, output over an `application_predict` socket
+  // event). The route is served now, but that socket transport is not, so the
+  // pane stays hidden — see `shared/config/backendCapabilities`.
+  const canTestSkill = hasBackendCapability('llmPredictStreaming');
 
   const isDirty = JSON.stringify(value) !== JSON.stringify(initialValue);
   const versions = detail.data?.versions ?? [];
@@ -233,6 +306,7 @@ export function EditSkill(): ReactNode {
             onChange={setValue}
             disabled={mutations.update.isPending}
             showErrors={showErrors}
+            icon={iconControl}
           />
         </Box>
         {projectId && canTestSkill && (

@@ -31,6 +31,15 @@
  */
 export { CreateAgentForm } from './ui/CreateAgentForm';
 
+/**
+ * The "Edit with AI" trigger for an agent's Instructions field. Exported as
+ * ONE symbol (the button; its modal, gate hook and diff renderer stay
+ * intra-slice) because the button gates itself — a page mounts it
+ * unconditionally and it renders nothing where the backend cannot serve it.
+ * See its own doc comment for the three gate conditions.
+ */
+export { EditInstructionsWithAiButton } from './ui/ai-edit/EditInstructionsWithAiButton';
+
 export { VersionReplacementModal } from './ui/VersionReplacementModal';
 
 /**

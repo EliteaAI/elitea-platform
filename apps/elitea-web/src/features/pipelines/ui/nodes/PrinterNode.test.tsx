@@ -31,7 +31,7 @@ beforeAll(() => {
 beforeEach(() => {
   // The AI Assistant triggers are hidden while `predict_llm` is unmounted —
   // see `shared/config/backendCapabilities`.
-  setBackendCapabilityForTests('aiGeneration', true);
+  setBackendCapabilityForTests('llmPredictStreaming', true);
 });
 
 afterEach(() => {

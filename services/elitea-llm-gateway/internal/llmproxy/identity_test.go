@@ -69,7 +69,7 @@ func TestVerifySignature_WrongSecretRejected(t *testing.T) {
 func TestCanonical_VersionPrefixedAndNewlineSeparated(t *testing.T) {
 	id := identity{projectID: "1", userID: "2", tenantID: "3"}
 	want := "v1\n1\n2\n3"
-	if got := id.canonical(); got != want {
+	if got := id.canonical(signatureVersionV1); got != want {
 		t.Errorf("canonical() = %q, want %q", got, want)
 	}
 }
@@ -78,7 +78,7 @@ func TestCanonical_FieldConcatenationIsUnambiguous(t *testing.T) {
 	// project "1" + user "2" must not collide with project "12" + user "".
 	a := identity{projectID: "1", userID: "2"}
 	b := identity{projectID: "12", userID: ""}
-	if a.canonical() == b.canonical() {
+	if a.canonical(signatureVersionV1) == b.canonical(signatureVersionV1) {
 		t.Error("newline separation must disambiguate field boundaries")
 	}
 }

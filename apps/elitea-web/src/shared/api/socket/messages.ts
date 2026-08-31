@@ -1,19 +1,13 @@
 /**
- * AUTO-GENERATED — DO NOT EDIT BY HAND.
+ * The 34 `SocketMessageType` discriminants a streamed socket message can
+ * carry, and their payload schemas.
  *
- * Produced by `node scripts/gen-socket-contract.mjs` (unit S5, spec §5.5)
- * from:
- *   - apps/elitea-ui/src/common/constants.js (sioEvents / SocketMessageType)
- *   - services/elitea-main/internal/api/socketio/server.go (registered
- *     `client.On(...)` handlers — the ONLY source for `hasServerHandler`)
- *   - scripts/lib/socket-contract-render.mjs (hand-authored payload-shape
- *     catalogue — see that file's header for why payload TYPES cannot be
- *     mechanically derived from either source)
- *
- * Regenerate with: node scripts/gen-socket-contract.mjs
- * Re-running with unchanged inputs reproduces this file byte-for-byte.
+ * MAINTAINED BY HAND, for the reason events.ts's header gives: the generator
+ * that produced this file required the Go prototype socket.io server as an
+ * input, and #126 deleted it. Evidence below is the CLIENT side only —
+ * apps/elitea-ui/src/common/constants.js and the call sites that read each
+ * discriminant. messages.test.ts holds the file to its shape.
  */
-
 import { z } from 'zod';
 
 /** Shared `response_metadata` shape — see events.ts for the full rationale (permissive by evidence, not by default). */

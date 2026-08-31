@@ -1,0 +1,245 @@
+# values-auth-minimal.yaml — the SMALLEST renderable install that can seed LLM
+# credentials and the model catalogue THROUGH THE PRODUCT'S OWN API.
+#
+# WHAT PROBLEM THIS FILE SOLVES
+# The last step of a fresh install that still required hand-written SQL was
+# seeding a provider credential and a model row: `deploy/scripts/standalone-stack.sh
+# seed-llm` INSERTed straight into `p_{id}.configuration`. That is not a
+# deployment gap, it is a CAPABILITY gap — the write route that stores those
+# rows exists, and no Kubernetes install could turn it on.
+#
+# It could not be turned on because ELITEA_CONFIGURATIONS_ENABLED refuses to
+# compose without "production authentication"
+# (cmd/elitea-main/main.go: "ELITEA_CONFIGURATIONS_ENABLED requires production
+# authentication"), and production authentication in this codebase means the
+# FormGraph + principal validator + forwarded-identity verifier triple, which
+# cmd/elitea-main assigns ONLY inside `if authEnabled {` — that is, only when
+# ELITEA_AUTH_CONFIG_FILE names an authentication configuration document.
+#
+# Read that carefully, because it is the surprising part: an OIDC-only install,
+# however real its SSO, builds NO FormGraph and therefore cannot enable this
+# capability. internal/authcomposition/config.go accepts `provider.kind: form`
+# and refuses every other value. The Form provider here is a STRUCTURAL
+# requirement of the composition root, not a login path anyone has to use —
+# cmd/elitea-main composes the OIDC session plane beside it, and the browser
+# keeps logging in exactly as before.
+#
+# values-standalone.yaml already proves the whole capability set. It also turns
+# on the RUNTIME PLANE, which needs a second Secret of certificates and signing
+# keys, a worker, and a dispatch bus with consumer groups. An operator who only
+# wants to stop writing SQL should not have to stand all of that up.
+#
+# WHAT THIS FILE IS
+# authConfig + runtimeRedis, and NO runtime plane. templates/guards.yaml ties
+# the worker to the runtime plane and to runtimeRedis; it does NOT tie
+# runtimeRedis to the runtime plane. So this shape renders, and it is the
+# cheapest one that composes the Configurations write path.
+#
+# It is ADDITIVE. It changes no default: values.yaml still ships every
+# capability flag "false", and an install that does not pass this file is
+# exactly what it was.
+#
+# WHAT YOU GET
+#   * POST/PUT /api/v2/configurations/configurations/{projectID} — the
+#     compatibility write path. It stores the row, seals the credential into the
+#     project vault, and writes `status_ok` INLINE from the same admission
+#     decision the configuration lifecycle reaches (#457). status_ok is what the
+#     LLM gateway requires; a row without it is stored and never dispatched.
+#   * The eight configuration and model-catalogue read routes beside it.
+#
+# WHAT YOU DO NOT GET, on purpose
+#   * Agent execution, the execution-events stream and index ingest. Those are
+#     the runtime plane: use values-standalone.yaml.
+#   * ELITEA_CONFIGURATIONS_MUTATION_ENABLED. It is deliberately absent, which
+#     leaves values.yaml's "false" in force. Turning it on composes a SECOND
+#     write route that WINS the path from the compatibility route, takes a
+#     different request shape from the one apps/elitea-web sends, and makes
+#     status_ok asynchronous — and _helpers.tpl then refuses the manifest
+#     anyway, because that flag also requires runtime.enabled=true.
+#
+# HOW TO USE IT
+#   helm install elitea deploy/helm/elitea \
+#     -f deploy/helm/elitea/values-auth-minimal.yaml \
+#     --set-string main.env.DATABASE_URL=... \
+#     --set-string main.env.REDIS_URL=... \
+#     --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://your-host/llm/v1 \
+#     --set-string llmGateway.egressPosture=public-unrestricted
+#
+# The two llmGateway settings are a PRE-EXISTING guard of the gateway component
+# (#467/#473): the chart refuses to render until an operator states both
+# postures. They are not specific to this file.
+#
+# THE TWO SECRETS THIS FILE ASSUMES
+# Both are the same ones values-standalone.yaml documents at length — read that
+# file for the reasoning behind every field of the document below.
+#
+#   1. elitea-main-auth-material — the five files
+#      internal/authcomposition/material.go opens through
+#      internal/security/securefile. An init container copies them out of the
+#      Secret into a memory-backed emptyDir at mode 0600, owned by the pod's own
+#      user, because a `secret:` volume is a symlink farm and securefile refuses
+#      a path that resolves through a symlink.
+#
+#        kubectl create secret generic elitea-main-auth-material \
+#          --from-file=deploy/certs/runtime/redis-auth-password \
+#          --from-file=deploy/certs/runtime/runtime-ca.crt \
+#          --from-file=deploy/certs/runtime/auth-attempt-key \
+#          --from-file=deploy/certs/runtime/auth-pat-signing-key \
+#          --from-file=deploy/certs/runtime/auth-form-users.json
+#
+#      Generate them with deploy/scripts/gen-runtime-certs.sh.
+#
+#   2. elitea-runtime-redis-material — the TLS Redis below. Keys:
+#      runtime-ca.crt, redis-server.crt, redis-server.key, redis-users.acl,
+#      redis-bootstrap-password. Mint them with scripts/mint-elitea-secrets.sh.
+#
+# WHY A TLS REDIS IS NOT OPTIONAL HERE
+# internal/authcomposition/config.go:469 accepts a `rediss://` URL only, with an
+# ACL username, no password in the URL, and path `/0`. The session store of the
+# Form provider is that Redis. There is no cleartext configuration of it.
+main:
+  fileConfig:
+    authConfig:
+      enabled: true
+
+      material:
+        mountPath: /run/elitea-auth
+        secretName: elitea-main-auth-material
+
+      document:
+        schema_version: elitea.auth.form.v1
+
+        # NOT the browser's origin. TrustedProxyResolver.Resolve refuses a
+        # forward-auth call whose X-Forwarded-Proto and X-Forwarded-Host do not
+        # equal this origin's scheme and host. Name the edge that makes the
+        # forward-auth call.
+        #
+        # internal/authcomposition/config.go:365-377 also requires it to be
+        # https, with NO path and NO query. A trailing "/" is a path and is
+        # refused.
+        public_origin: https://elitea-platform-edge
+
+        # The pod network. A non-empty list is mandatory.
+        trusted_proxy_cidrs:
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+
+        redirects:
+          direct_access_denied: /app/
+          main_access_denied: /app/
+          default_login: /app/
+          default_logout: /app/
+
+        cookie:
+          # Separate from the OIDC session cookie. The two stores must not
+          # collapse onto one name.
+          name: elitea_browser_auth
+          same_site: lax
+          lifetime_seconds: 86400
+
+        redis:
+          topology: single_primary_endpoint
+          # The runtimeRedis instance this file enables below, under its own ACL
+          # user and key prefix. go-redis takes the password from password_file,
+          # so the URL carries a username and no password by contract.
+          url: rediss://auth@elitea-runtime-redis:6380/0
+          password_file: /run/elitea-auth/redis-auth-password
+          ca_file: /run/elitea-auth/runtime-ca.crt
+          key_prefix: "elitea-auth-minimal:"
+          attempt_key_file: /run/elitea-auth/auth-attempt-key
+
+        credentials:
+          pat_signing_key_file: /run/elitea-auth/auth-pat-signing-key
+          # Authorization Bearer and Basic are mandatory built-ins. They are not
+          # configured here.
+          credential_headers: []
+
+        mappers:
+          contract: elitea.auth_mappers.tracked.v1
+
+        authorization:
+          # Empty on purpose. api.CurrentMainRoutePublicRules() supplies the
+          # audited route-owned rules at composition time.
+          main_configured_public_rules: []
+
+        identity:
+          # Empty on purpose. A non-empty list enrolls global admins at startup.
+          #
+          # Worth knowing before you seed: the PROJECT-scoped configuration
+          # write path this file exists for needs
+          # `configurations.configuration.create` in the target project, which
+          # the admin and editor project roles hold. It does NOT need a global
+          # admin. The platform-wide provider and model surfaces under
+          # /api/v2/admin/gateway/ do, so name your operator here if you intend
+          # to publish PLATFORM credentials rather than project ones.
+          initial_global_admins: []
+
+        provider:
+          kind: form
+          form:
+            users_json_file: /run/elitea-auth/auth-form-users.json
+
+  env:
+    # Endpoints the chart cannot guess. Override both at install time.
+    DATABASE_URL: ""
+    REDIS_URL: ""
+
+    # --- The capability this whole file exists to enable ------------------------
+    # Eight configuration and model-catalogue routes, and — the point here — the
+    # write path that stores a provider credential and a model row, seals the
+    # credential into the project vault, and decides `status_ok` in the same
+    # request (#457).
+    #
+    # Before this flag, a fresh install could only get those rows in by hand,
+    # with `INSERT INTO p_{id}.configuration ... status_ok = true`. That
+    # bypassed the vault (so the api_key sat in a column migrations/shared/0072
+    # grants the project VIEWER role to read) and it asserted `status_ok` rather
+    # than deciding it.
+    ELITEA_CONFIGURATIONS_ENABLED: "true"
+
+    # REQUIRED whenever the flag above is true, and validated:
+    # cmd/elitea-main/configurations_config.go refuses an absent, non-numeric or
+    # non-positive value at start-up.
+    #
+    # It must also name a project that EXISTS. This is the public project, whose
+    # shared configurations merge into every other project's option lookups; the
+    # model catalogue lists that project's configurations and PROPAGATES the
+    # failure, so a missing id fails every lookup rather than yielding an empty
+    # set.
+    #
+    # "1" is the project migrations/001_initial.sql creates. If you point this
+    # elsewhere, set the SAME value in this chart's `llmGateway:` block, where
+    # the key has the same name — the gateway reads the public project to serve
+    # shared models (#316), and two different values mean the gateway serves a
+    # different model set from the one the UI offers.
+    ELITEA_AI_PROJECT_ID: "1"
+
+    # Circular-routing guard at upsert time (#467).
+    # internal/api/v2/configurations/selfref.go appends "/llm" itself, so a
+    # single-domain deployment needs nothing else: a credential whose api_base
+    # points back at this origin is refused with SELF_REFERENTIAL_CREDENTIAL
+    # instead of being stored and looping on first use. Set it to the real
+    # public base URL of your deployment.
+    DEPLOYMENT_URL: "https://elitea.example.com"
+
+# The TLS Redis. It is here because the Form session store above has no other
+# shape, NOT because the runtime plane is on — it is off.
+#
+# templates/guards.yaml ties worker -> main.runtime and worker -> runtimeRedis.
+# Neither edge runs from runtimeRedis to main.runtime, which is what makes this
+# file's combination a renderable one.
+runtimeRedis:
+  enabled: true
+
+  # The consumer-group bootstrap Job. OFF here: it creates the groups for the
+  # DISPATCH streams, and this install composes no dispatch plane and runs no
+  # worker to read them. Turn it on together with main.runtime.enabled.
+  bootstrap:
+    enabled: false
+
+# No agent worker. It would be refused anyway: guards.yaml requires
+# main.runtime.enabled=true beside it, and this file deliberately leaves the
+# runtime plane at the values.yaml default of false.
+worker:
+  enabled: false

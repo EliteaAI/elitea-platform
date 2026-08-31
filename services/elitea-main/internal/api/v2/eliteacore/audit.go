@@ -67,8 +67,13 @@ func auditReadFailed(w http.ResponseWriter, what string) {
 
 // auditSpan is one `centry.audit_events` row, with exactly the fields audit.py
 // serialises. Every column here exists in the table — verified against
-// legacy/plugins/tracing/models/audit_event.py, which owns the write path, and
-// against a live database.
+// legacy/plugins/tracing/models/audit_event.py, which owned the write path in
+// the legacy runtime, and against a live database.
+//
+// The write path in THIS service is internal/audit + internal/api/middleware/
+// audit.go. Until that landed nothing in the Go product wrote this table, so
+// every route in this file read an empty table in every real deployment and the
+// empty state was indistinguishable from "nothing happened".
 type auditSpan struct {
 	ID           int64      `json:"id"`
 	Timestamp    *time.Time `json:"timestamp"`

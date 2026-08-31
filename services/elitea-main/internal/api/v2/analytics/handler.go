@@ -16,7 +16,7 @@ import (
 
 type Repository interface {
 	GetUsageSummary(ctx context.Context, params analytics.QueryParams) (analytics.UsageSummary, error)
-	GetAgentAnalytics(ctx context.Context, params analytics.QueryParams) ([]analytics.AgentAnalytics, error)
+	GetAgentAnalytics(ctx context.Context, params analytics.QueryParams) (analytics.AgentBreakdown, error)
 	GetToolAnalytics(ctx context.Context, params analytics.QueryParams) ([]analytics.ToolAnalytics, error)
 	// GetUserActivity also reports whether it had to cut the list. See the
 	// repository's cap constants for why a silent cut is worse here than
@@ -198,29 +198,81 @@ func (h *Handler) Usage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// Agents and Tools have no data source. They go through the repository like
-// every other read and fail with it — they used to answer before the repository
-// was even consulted, with an eight-field all-zero `kpis` block that no query
-// produced.
+// Agents is the Agents tab: which agents ran in the window and how they behaved.
+//
+// # `items` is ABSENT, not empty, when the dimension is unavailable
+//
+// gateway.llm_request_logs gained its execution_id column in shared migration
+// 0100, and nothing on a row written before it identifies an agent — the log
+// records the model a request addressed, never what composed it. A backfill is
+// impossible rather than merely unwritten, so a window that predates the
+// migration has no agent data at all.
+//
+// Emitting `items: []` for that window would say "no agent ran", which for a
+// month in which agents ran constantly is a false measurement served with a 200
+// — the fallback-body failure this codebase keeps meeting. So the flag decides
+// the SHAPE: with agent_dimension_available false there is no items key for a
+// client to map over, and the tab has to render the absence.
+//
+// The precedent is usageDimensions.Available
+// (internal/api/v2/budgets/usage_dimensions.go), which omits its dimensional
+// block for a deployment upgraded mid-period rather than zero-filling it.
+//
+// attributed_llm_calls / unattributed_llm_calls travel either way, because the
+// per-agent rows are NOT a partition of the overview's llm_calls tile: most
+// /llm traffic is not made from a runtime execution, so without both figures an
+// operator is reconciling a breakdown against a total it never summed to.
 func (h *Handler) Agents(w http.ResponseWriter, r *http.Request) {
-	agents, err := h.repo.GetAgentAnalytics(r.Context(), h.parseParams(r))
+	breakdown, err := h.repo.GetAgentAnalytics(r.Context(), h.parseParams(r))
 	if err != nil {
 		writeRepoFailure(w, err)
 		return
 	}
 
-	// Detail view expects { entity_name, users, tools, daily_usage }
-	// List view expects { items: [...] }
+	body := map[string]any{
+		"agent_dimension_available": breakdown.Available,
+		"attributed_llm_calls":      breakdown.AttributedCalls,
+		"unattributed_llm_calls":    breakdown.UnattributedCalls,
+	}
+	if breakdown.Available {
+		body["items"] = nonNil(breakdown.Agents)
+		body["truncated"] = breakdown.Truncated
+	}
+
+	// The DETAIL view is still a stub, and it is now a stub for ONE reason
+	// rather than two. Its shape is { entity_name, users, tools, daily_usage },
+	// and `tools` is the dimension this platform still has no producer for —
+	// see GetToolAnalytics. Rather than answer with four empty lists, which
+	// would report an agent that did nothing, the detail branch reports the
+	// same availability flag: the agent half is answerable and the tool half is
+	// not, and the two must not render alike.
 	if r.URL.Query().Get("application_id") != "" || r.URL.Query().Get("agent_id") != "" {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"entity_name": "",
-			"users":       []any{},
-			"tools":       []any{},
-			"daily_usage": []any{},
+			"agent_dimension_available": breakdown.Available,
+			"tool_dimension_available":  false,
+			"entity_name":               agentName(breakdown, r),
+			"daily_usage":               []any{},
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": nonNil(agents)})
+	writeJSON(w, http.StatusOK, body)
+}
+
+// agentName resolves the requested agent's display name out of the breakdown
+// the list read already produced, so the detail header does not need a second
+// query. Empty when the agent made no request in the window, which is a true
+// statement about it rather than a missing lookup.
+func agentName(breakdown analytics.AgentBreakdown, r *http.Request) string {
+	wanted := r.URL.Query().Get("application_id")
+	if wanted == "" {
+		wanted = r.URL.Query().Get("agent_id")
+	}
+	for _, agent := range breakdown.Agents {
+		if agent.ApplicationID == wanted {
+			return agent.Name
+		}
+	}
+	return ""
 }
 
 func (h *Handler) Tools(w http.ResponseWriter, r *http.Request) {

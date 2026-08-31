@@ -5,24 +5,27 @@
  * and both save it with `PUT /social/author`. Baseline:
  * `EliteaUI/src/[fsd]/features/settings/lib/helpers/profile.helpers.js:17-95`.
  *
- * Two deliberate differences from that baseline, both forced by THIS backend:
+ * Two things about this backend shape the module:
  *
- *  1. `default_context_management` / `default_summarization` are nested INSIDE
- *     `personalization`, not sent as sibling top-level keys.
- *     `UpdateAuthor` (services/elitea-main/internal/api/v2/social/handler.go)
- *     decodes the body into `map[string]any` and reads only
- *     `name`/`description`/`avatar`/`personalization`; every other top-level
- *     key is silently dropped. `GET` likewise returns only `personalization`.
- *     Same reasoning — and same wire shape — as the sibling
- *     `lib/profile/profileUtils.ts`, which this file cannot simply reuse
- *     because that model has no per-persona instructions map and no
- *     context-editing flag.
+ *  1. `default_context_management` / `default_summarization` are TOP-LEVEL
+ *     keys, their own two jsonb columns on centry.social_users
+ *     (`MemoryContextManagement` / `MemorySummarization` in the generated
+ *     model). They used to be nested inside `personalization` here, because
+ *     `UpdateAuthor` read only `name`/`description`/`avatar`/
+ *     `personalization` and silently dropped every other top-level key —
+ *     nesting them was the only way anything survived the round trip. The
+ *     handler now reads and writes the columns, so the nesting is gone; it is
+ *     still ACCEPTED on the wire, so a client that has not shipped yet keeps
+ *     working, and `serializeSettingsProfile` still reads it as a fallback for
+ *     a profile last written that way.
  *  2. The PUT REPLACES the whole `personalization` blob (the upsert's
- *     `personalization = EXCLUDED.personalization`). A payload built from one
- *     page's fields alone would therefore wipe the other page's settings — and
+ *     `personalization = EXCLUDED.personalization`), and
  *     `name`/`description`/`avatar` are upserted from the body too, so
  *     omitting them blanks the stored avatar/description. `buildAuthorUpdate`
- *     below carries all of it forward.
+ *     below carries all of it forward. The two memory blocks are the
+ *     exception: the handler KEEPS the stored value when the body does not
+ *     mention them, which is what lets Settings › AI Personality save without
+ *     carrying Settings › Memory's fields.
  */
 import { DEFAULT_CONTEXT_STRATEGY } from '@/features/settings/lib/profile/context-budget/constants';
 
@@ -62,6 +65,10 @@ export interface AuthorProfile {
   description?: string;
   avatar?: string;
   personalization?: unknown;
+  /** Absent for an account that has never saved Settings › Memory. */
+  default_context_management?: Record<string, unknown>;
+  /** Absent for an account that has never saved Settings › Memory. */
+  default_summarization?: Record<string, unknown>;
 }
 
 interface Personalization {
@@ -75,6 +82,27 @@ function readPersonalization(author: AuthorProfile | undefined): Personalization
   const raw = author?.personalization;
   if (raw === null || typeof raw !== 'object') return {};
   return raw;
+}
+
+/**
+ * Reads one memory block, preferring the top-level column over the
+ * personalization-nested copy an older client may have left behind.
+ *
+ * The fallback is not decoration: a profile last saved before this app stopped
+ * nesting them carries the values ONLY in `personalization`, and dropping the
+ * fallback would show that user the platform defaults as if they had never
+ * configured anything. Their next save lifts the block into the column.
+ */
+function readMemoryBlock(
+  author: AuthorProfile | undefined,
+  personalization: Personalization,
+  key: 'default_context_management' | 'default_summarization',
+): Record<string, unknown> {
+  const top = author?.[key];
+  if (top !== null && typeof top === 'object') return top;
+  const nested = personalization[key];
+  if (nested !== null && typeof nested === 'object') return nested;
+  return {};
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -118,8 +146,8 @@ export function serializeSettingsProfile(
   fallbackProjectId?: string,
 ): SettingsProfileFormValues {
   const p = readPersonalization(author);
-  const cm = p.default_context_management ?? {};
-  const s = p.default_summarization ?? {};
+  const cm = readMemoryBlock(author, p, 'default_context_management');
+  const s = readMemoryBlock(author, p, 'default_summarization');
 
   return {
     persona: asString(p.persona, DEFAULT_PERSONA),
@@ -135,16 +163,32 @@ export function serializeSettingsProfile(
   };
 }
 
-/** Formik values → the `personalization` blob (both pages' fields, one object). */
+/** Formik values → the `personalization` blob (the AI Personality page's fields). */
 export function deserializeSettingsProfile(values: SettingsProfileFormValues): Record<string, unknown> {
-  const s = values.summary_llm_settings;
   return {
     persona: values.persona,
     personality_instructions: values.personality_instructions,
+  };
+}
+
+/**
+ * Formik values → the two top-level memory blocks.
+ *
+ * A field the user has cleared is `''` (`handleConvertToNumberChange`), and an
+ * empty string is not a number. It is OMITTED rather than sent: the blocks are
+ * a defaults document, where "not set" is a real answer, and the server reads
+ * an absent key as exactly that.
+ */
+export function deserializeMemoryBlocks(values: SettingsProfileFormValues): {
+  default_context_management: Record<string, unknown>;
+  default_summarization: Record<string, unknown>;
+} {
+  const s = values.summary_llm_settings;
+  return {
     default_context_management: {
       enabled: values.context_enabled,
-      max_context_tokens: values.max_context_tokens,
-      preserve_recent_messages: values.preserve_recent_messages,
+      ...numberField('max_context_tokens', values.max_context_tokens),
+      ...numberField('preserve_recent_messages', values.preserve_recent_messages),
       enable_context_editing: values.enable_context_editing,
     },
     default_summarization: {
@@ -152,9 +196,13 @@ export function deserializeSettingsProfile(values: SettingsProfileFormValues): R
       summary_instructions: s.instructions,
       summary_model_name: s.model_name,
       summary_model_project_id: s.model_project_id,
-      target_summary_tokens: s.max_tokens,
+      ...numberField('target_summary_tokens', s.max_tokens),
     },
   };
+}
+
+function numberField(name: string, value: NumericFieldValue): Record<string, number> {
+  return value === '' ? {} : { [name]: value };
 }
 
 /**
@@ -165,14 +213,30 @@ export function deserializeSettingsProfile(values: SettingsProfileFormValues): R
 export function buildAuthorUpdate(
   author: AuthorProfile | undefined,
   values: SettingsProfileFormValues,
-): { name?: string; description?: string; avatar?: string; personalization: Record<string, unknown> } {
+): {
+  name?: string;
+  description?: string;
+  avatar?: string;
+  personalization: Record<string, unknown>;
+  default_context_management: Record<string, unknown>;
+  default_summarization: Record<string, unknown>;
+} {
+  const { default_context_management: nestedContext, default_summarization: nestedSummary, ...personalization } =
+    readPersonalization(author);
+  // `nestedContext`/`nestedSummary` are destructured out, not spread back in:
+  // the blocks now travel at the top level, and leaving a stale nested copy in
+  // `personalization` would give the same setting two homes that drift apart.
+  void nestedContext;
+  void nestedSummary;
+
   return {
     ...(author?.name === undefined ? {} : { name: author.name }),
     ...(author?.description === undefined ? {} : { description: author.description }),
     ...(author?.avatar === undefined ? {} : { avatar: author.avatar }),
     personalization: {
-      ...readPersonalization(author),
+      ...personalization,
       ...deserializeSettingsProfile(values),
     },
+    ...deserializeMemoryBlocks(values),
   };
 }

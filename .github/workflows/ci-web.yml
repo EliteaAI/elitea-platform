@@ -468,13 +468,15 @@ jobs:
     # src/shared/brand/color.ts (which imports nothing). Installing would add a
     # minute to a gate that renders three files.
     #
-    # gen-socket-contract.mjs is the FOURTH generator #490 names and is
-    # deliberately absent. Its server-side input,
+    # gen-socket-contract.mjs was the FOURTH generator #490 names. It is now
+    # GONE, not merely absent from this job. Its server-side input,
     # services/elitea-main/internal/api/socketio/server.go, was deleted with
     # the prototype indexer transport (commit f12b59f8, issue #126), so the
-    # generator exits 2 on a missing file before it renders anything. A job
-    # here would be red for a reason that is not drift. Restoring that
-    # generator's input is tracked on #490 itself.
+    # generator exited 2 on a missing file before it rendered anything and
+    # its --check drift guard could not run at all. Its two outputs,
+    # src/shared/api/socket/{events,messages}.ts, are hand-maintained source
+    # now; their own unit tests are the drift guard in its place. A drift job
+    # here would have nothing left to compare.
     steps:
       - uses: actions/checkout@v7
         with:

@@ -134,7 +134,7 @@ const toolsListTarget = "/api/v2/elitea_core/tools_list/"
 // field the SDK reads is compared against the value that was stored.
 func TestToolsListServesTheStoredServerAndItsTools(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 
 	storeServer(t, pool, 1, "mcp_github",
 		tool("get_issue", "Read one issue", "issue_id"),
@@ -182,7 +182,7 @@ func TestToolsListServesTheStoredServerAndItsTools(t *testing.T) {
 // hardcoded listing passes the test above and fails this one.
 func TestToolsListFollowsTheStoredRows(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 	ctx := context.Background()
 
 	storeServer(t, pool, 1, "mcp_github",
@@ -216,7 +216,7 @@ func TestToolsListFollowsTheStoredRows(t *testing.T) {
 // not `null`: the SDK iterates the body, and `null` is not iterable.
 func TestToolsListReturnsAnEmptyArrayForAProjectWithNoServer(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 
 	recorder := do(t, router, http.MethodGet, toolsListTarget+homeProject, "")
 	if recorder.Code != http.StatusOK {
@@ -232,7 +232,7 @@ func TestToolsListReturnsAnEmptyArrayForAProjectWithNoServer(t *testing.T) {
 // caller that actually exists gets a 404.
 func TestToolsListServesBothModeShapes(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 	storeServer(t, pool, 1, "mcp_github", tool("get_issue", "Read one issue"))
 
 	for _, target := range []string{
@@ -251,7 +251,7 @@ func TestToolsListServesBothModeShapes(t *testing.T) {
 // predicate is exactly the kind of thing that gets dropped.
 func TestToolsListDoesNotServeAnotherProjectsServers(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 
 	storeServer(t, pool, 2, "mcp_other_project", tool("secret_tool", "Not for project 1"))
 
@@ -315,7 +315,7 @@ func seedPersonalProject(t *testing.T, pool *pgxpool.Pool, userID int64) int64 {
 // personal-only server appears, and a colliding name serves the personal tools.
 func TestToolsListUnionsThePersonalProjectAndPersonalWinsACollision(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 
 	personalProject := seedPersonalProject(t, pool, callerUserID)
 	if personalProject == 1 {
@@ -338,7 +338,7 @@ func TestToolsListUnionsThePersonalProjectAndPersonalWinsACollision(t *testing.T
 	}
 
 	// Another user must not receive those personal servers.
-	otherRouter := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID+1)
+	otherRouter := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID+1)
 	otherServers := listServers(t, otherRouter, toolsListTarget+homeProject)
 	for _, server := range otherServers {
 		if server["name"] == "mcp_private" {
@@ -463,7 +463,7 @@ func TestMCPSyncToolsStoresTheToolsAndToolsListServesThem(t *testing.T) {
 	}
 
 	// And the listing a worker reads serves exactly those rows.
-	listRouter := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	listRouter := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 	names := serverToolNames(t, findServer(t,
 		listServers(t, listRouter, toolsListTarget+homeProject), "mcp_confluence"))
 	if len(names) != 2 || names[0] != "create_page" || names[1] != "search" {
@@ -576,7 +576,7 @@ func TestFailedDiscoveryKeepsTheStoredToolSet(t *testing.T) {
 // A project segment that is not a positive integer must never reach a query.
 func TestToolsListRejectsANonNumericProject(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID)
 
 	for _, project := range []string{"0", "-1", "abc"} {
 		recorder := do(t, router, http.MethodGet, toolsListTarget+project, "")
@@ -594,7 +594,7 @@ func TestToolsListReadsTheCallerFromTheRequestContext(t *testing.T) {
 	storeServer(t, pool, personalProject, "mcp_private", tool("private_tool", "Personal only"))
 
 	withCaller := listServers(t,
-		newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID),
+		newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil), callerUserID),
 		toolsListTarget+homeProject)
 	if len(withCaller) != 1 || withCaller[0]["name"] != "mcp_private" {
 		t.Fatalf("with the owning caller: %v, want the personal server", serverNames(withCaller))
@@ -602,7 +602,7 @@ func TestToolsListReadsTheCallerFromTheRequestContext(t *testing.T) {
 
 	anonymous := chi.NewRouter()
 	anonymous.Get("/api/v2/elitea_core/tools_list/{projectID}",
-		mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)).ToolsList)
+		mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), nil, nil).ToolsList)
 	withoutCaller := listServers(t, anonymous, toolsListTarget+homeProject)
 	if len(withoutCaller) != 0 {
 		t.Fatalf("with no caller in the context: %v, want an empty listing", serverNames(withoutCaller))

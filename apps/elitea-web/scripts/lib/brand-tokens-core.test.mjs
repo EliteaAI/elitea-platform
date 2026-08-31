@@ -181,3 +181,29 @@ describe('renderTypeLiteral', () => {
     expect(renderTypeLiteral({})).toBe('{\n\n}');
   });
 });
+
+describe('evalPaletteModule injection vs self-declaration', () => {
+  // Baseline 20b23c42 stopped importing `white` from darkPalette and declared
+  // its own. Injecting on top emitted two `const white` in one Function body:
+  // "SyntaxError: Identifier 'white' has already been declared". The injection
+  // is a fallback for what the module imports, so the module's own declaration
+  // must win.
+  it('skips an injected name the module declares itself', () => {
+    const source = 'const white = "#FFFFFF";\nconst p = { a: white };\nexport default p;';
+    const { palette } = evalPaletteModule(source, { white: '#000000' });
+    expect(palette.a).toBe('#FFFFFF');
+  });
+
+  it('still injects a name the module imports and does not declare', () => {
+    const source = 'import { white } from "./darkPalette";\nconst p = { a: white };\nexport default p;';
+    const { palette } = evalPaletteModule(source, { white: '#000000' });
+    expect(palette.a).toBe('#000000');
+  });
+
+  it('does not confuse a longer identifier with the injected prefix', () => {
+    const source = 'const white2 = "#EEE";\nconst p = { a: white, b: white2 };\nexport default p;';
+    const { palette } = evalPaletteModule(source, { white: '#000000' });
+    expect(palette.a).toBe('#000000');
+    expect(palette.b).toBe('#EEE');
+  });
+});

@@ -38,12 +38,13 @@ func NewStore(db execer) *Store {
 // insertColumns is the column list, declared once so the placeholder count and
 // the argument order cannot drift from it.
 const insertColumns = `(occurred_at, project_id, user_id, route, method, status,
-	duration_ms, provider, model, streaming, error_code, prompt_tokens, completion_tokens)`
+	duration_ms, provider, model, streaming, error_code, prompt_tokens, completion_tokens,
+	execution_id)`
 
 // columnsPerRow MUST equal the number of columns above. A mismatch would bind
 // each row's values into the wrong columns — which for this table means a
 // status landing in duration_ms and every latency reading as nonsense.
-const columnsPerRow = 13
+const columnsPerRow = 14
 
 // WriteBatch inserts every record in one statement.
 func (s *Store) WriteBatch(ctx context.Context, records []Record) error {
@@ -75,6 +76,11 @@ func (s *Store) WriteBatch(ctx context.Context, records []Record) error {
 			truncate(record.ErrorCode, 64),
 			record.PromptToks,
 			record.OutputToks,
+			// NULL rather than '' for a request that came from no execution.
+			// The agent breakdown counts rows it can attribute, and an empty
+			// string is a value that groups — it would become a nameless agent
+			// carrying every un-attributed request in the project.
+			nullableExecutionID(record.ExecutionID),
 		)
 	}
 
@@ -137,4 +143,16 @@ func truncate(value string, limit int) string {
 		return value
 	}
 	return value[:limit]
+}
+
+// nullableExecutionID renders an absent execution id as SQL NULL.
+//
+// The column is nullable for the same reason project_id and user_id are: "this
+// request came from no execution" is a different claim from "it came from an
+// execution whose id is the empty string", and only NULL says the first one.
+func nullableExecutionID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return truncate(value, 128)
 }

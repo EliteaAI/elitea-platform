@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/settings/users` renders Users",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:327",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:377",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:330"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -38,8 +38,8 @@
       "priority": "must",
       "title": "Query param `inviteUsers` on /settings/users (spec QP-002)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:34",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:43"
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:39",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:48"
       ],
       "acceptance": [
         "GIVEN the application is at /settings/users",
@@ -68,9 +68,9 @@
       "priority": "must",
       "title": "Permission `configuration.users.users.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:559",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:195",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:83",
+        "apps/elitea-ui/src/common/constants.js:583",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:201",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:85",
         "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/CreateEntityButton.jsx:57"
       ],
       "acceptance": [
@@ -99,9 +99,9 @@
       "priority": "must",
       "title": "Permission `configuration.users.users.delete` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:560",
-        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:157",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:222"
+        "apps/elitea-ui/src/common/constants.js:584",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:158",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:235"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.users.users.delete",
@@ -129,9 +129,9 @@
       "priority": "must",
       "title": "Permission `configuration.users.users.edit` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:558",
+        "apps/elitea-ui/src/common/constants.js:582",
         "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:150",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:211"
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:219"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.users.users.edit",
@@ -159,12 +159,12 @@
       "priority": "must",
       "title": "Permission `configuration.users.users.view` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:557",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ParticipantsWrapper.jsx:39",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:54",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:69",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:196",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:235"
+        "apps/elitea-ui/src/common/constants.js:581",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ParticipantsWrapper.jsx:38",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:59",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:74",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:202",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:249"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include configuration.users.users.view",
@@ -192,7 +192,7 @@
       "priority": "must",
       "title": "Action on settings-users: user create via onConfirm",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:267",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:281",
         "apps/elitea-ui/src/api/admin.js:97"
       ],
       "acceptance": [
@@ -221,8 +221,8 @@
       "priority": "should",
       "title": "Copy: settings/Users.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:194",
-        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:263"
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:199",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:277"
       ],
       "acceptance": [
         "GIVEN the settings-users screen renders with the default brand in both colour schemes",
@@ -250,7 +250,7 @@
       "priority": "must",
       "title": "Journey 22: Settings: invite user and change role",
       "source": [
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:327",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:377",
         "apps/elitea-ui/src/api/admin.js:97",
         "apps/elitea-ui/src/api/admin.js:107"
       ],

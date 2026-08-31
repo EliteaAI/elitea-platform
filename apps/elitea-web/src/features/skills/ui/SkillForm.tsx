@@ -14,6 +14,7 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { CharacterCounter } from '@/shared/ui/CharacterCounter';
 import { Markdown } from '@/shared/ui/Markdown';
 
+import type { SkillIconMeta } from '../api/skillIconApi';
 import {
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_INSTRUCTIONS_MAX_LENGTH,
@@ -21,6 +22,20 @@ import {
   validateSkill,
 } from '../lib/skillValidation';
 import type { SkillWriteInput } from '../model/types';
+import { SkillIconDialog } from './SkillIconDialog';
+
+/**
+ * The icon control's binding. Absent means the skill has no version to bind an
+ * icon TO — a skill being created, or the AI-generation preview — and the
+ * button then says so instead of opening a picker that could not save.
+ */
+export interface SkillIconControl {
+  readonly projectId: string;
+  /** The skill VERSION the icon binds to; the PUT addresses it by id. */
+  readonly versionId: string;
+  readonly iconMeta: SkillIconMeta | null;
+  readonly onIconChange: (iconMeta: SkillIconMeta | null) => void;
+}
 
 export interface SkillFormProps {
   readonly value: SkillWriteInput;
@@ -28,6 +43,7 @@ export interface SkillFormProps {
   readonly disabled?: boolean;
   readonly showErrors?: boolean;
   readonly onGenerate?: () => void;
+  readonly icon?: SkillIconControl | undefined;
 }
 
 type FieldName = 'name' | 'description' | 'instructions';
@@ -62,12 +78,77 @@ function SkillFormHeader({ disabled, onGenerate }: SkillFormHeaderProps): ReactN
   );
 }
 
+/**
+ * SkillIconButton — the control that was disabled behind a "coming soon"
+ * tooltip until the `/upload_skill_icon` route family existed. It is enabled
+ * exactly when there is a version to bind an icon to; the create form still
+ * has none, and it says why rather than opening a picker whose save would 404.
+ */
+function SkillIconButton({
+  icon,
+  disabled,
+  skillName,
+}: {
+  readonly icon: SkillIconControl | undefined;
+  readonly disabled: boolean;
+  readonly skillName: string;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+
+  const button = (
+    <BaseBtn
+      variant="secondary"
+      startIcon={
+        icon?.iconMeta?.url ? (
+          <Box
+            component="img"
+            src={icon.iconMeta.url}
+            alt=""
+            sx={iconPreviewSx}
+          />
+        ) : (
+          <ImageOutlinedIcon />
+        )
+      }
+      disabled={disabled || icon === undefined}
+      onClick={() => { setOpen(true); }}
+      data-testid="skill-icon-button"
+    >
+      {t('skills.form.icon', 'Icon')}
+    </BaseBtn>
+  );
+
+  if (icon === undefined) {
+    return (
+      <Tooltip title={t('skills.form.iconNeedsSave', 'Save the skill first to give it a custom icon.')}>
+        <span>{button}</span>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <>
+      {button}
+      <SkillIconDialog
+        open={open}
+        onClose={() => { setOpen(false); }}
+        projectId={icon.projectId}
+        versionId={icon.versionId}
+        skillName={skillName}
+        selectedIcon={icon.iconMeta}
+        onIconSelect={icon.onIconChange}
+      />
+    </>
+  );
+}
+
 export function SkillForm({
   value,
   onChange,
   disabled = false,
   showErrors = false,
   onGenerate,
+  icon,
 }: SkillFormProps): ReactNode {
   const [preview, setPreview] = useState(false);
   const errors = useMemo(() => validateSkill(value), [value]);
@@ -83,17 +164,11 @@ export function SkillForm({
         onGenerate={onGenerate}
       />
       <Box sx={nameRowSx}>
-        <Tooltip title={t('skills.form.iconUnavailable', 'Custom skill icons are coming soon.')}>
-          <span>
-            <BaseBtn
-              variant="secondary"
-              startIcon={<ImageOutlinedIcon />}
-              disabled
-            >
-              {t('skills.form.icon', 'Icon')}
-            </BaseBtn>
-          </span>
-        </Tooltip>
+        <SkillIconButton
+          icon={icon}
+          disabled={disabled}
+          skillName={value.name}
+        />
         <TextField
           fullWidth
           required
@@ -189,6 +264,12 @@ export function SkillForm({
   );
 }
 
+const iconPreviewSx: SxProps<Theme> = {
+  width: '1.25rem',
+  height: '1.25rem',
+  borderRadius: 'var(--el-shape-radiusPill, 9999px)',
+  objectFit: 'cover',
+};
 const containerSx: SxProps<Theme> = (theme: Theme) => ({
   display: 'flex',
   flexDirection: 'column',

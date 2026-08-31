@@ -14,10 +14,17 @@ import (
 )
 
 const (
-	fallbackEmailDomain       = "centry.user"
-	initialAdministrationMode = "administration"
-	initialAdministrationRole = "super_admin"
-	projectViewerRole         = "viewer"
+	fallbackEmailDomain = "centry.user"
+	projectViewerRole   = "viewer"
+
+	// InitialAdministrationMode / InitialAdministrationRole name the single
+	// grant `initial_global_admins` confers. They are exported because a
+	// SECOND provisioning plane needs them: internal/api/v2/auth is the
+	// browser plane that is actually mounted when single sign-on is
+	// configured (internal/api/production_router.go resolves /forward-auth to
+	// one owner), and it must confer the same grant, not a lookalike.
+	InitialAdministrationMode = "administration"
+	InitialAdministrationRole = "super_admin"
 
 	// These conservative bounds keep IdP-controlled writes finite. They must be
 	// revalidated against sanitized identity and IdP-claim maxima before mount.
@@ -194,14 +201,37 @@ func deriveCommand(assertion VerifiedAssertion, policy ProvisioningPolicy) Provi
 		Name:              name,
 		ProjectEnrollment: deriveProjectEnrollment(email, policy.ProjectEnrollment),
 	}
-	for _, providerReference := range policy.InitialGlobalAdmins {
-		if providerReference == assertion.ProviderReference {
-			command.InitialAdministrationMode = initialAdministrationMode
-			command.InitialAdministrationRole = initialAdministrationRole
-			break
-		}
+	if IsInitialGlobalAdmin(policy.InitialGlobalAdmins, assertion.ProviderReference) {
+		command.InitialAdministrationMode = InitialAdministrationMode
+		command.InitialAdministrationRole = InitialAdministrationRole
 	}
 	return command
+}
+
+// IsInitialGlobalAdmin is the ONE definition of "this login is a configured
+// initial global administrator". Both provisioning planes ask it, so the list
+// cannot come to mean two different things on the two of them.
+//
+// The comparison is on the provider reference and is EXACT. It is deliberately
+// not on the email claim: an identity provider that can assert an address would
+// otherwise be able to assert its way into the administration role, which is
+// the takeover class internal/api/v2/auth/oidc.go refuses by construction.
+//
+// The reference passed here must be the BARE one — the raw subject, with no
+// `oidc:` / `saml:` namespace prefix. The v2/auth plane stores prefixed
+// references and strips the prefix before asking; see
+// internal/api/v2/auth/first_login.go for why both spellings are accepted in
+// the configuration file but only one is compared here.
+func IsInitialGlobalAdmin(admins []string, providerReference string) bool {
+	if providerReference == "" {
+		return false
+	}
+	for _, admin := range admins {
+		if admin == providerReference {
+			return true
+		}
+	}
+	return false
 }
 
 func lowerLikePython(value string) string {

@@ -9,8 +9,7 @@
       "priority": "must",
       "title": "Route `/agents-hub` renders AgentHub",
       "source": [
-        "apps/elitea-ui/src/routes.js:75",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:161"
+        "apps/elitea-ui/src/routes.js:86"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -39,7 +38,7 @@
       "title": "Route `/agents` renders index redirect",
       "source": [
         "apps/elitea-ui/src/routes.js:9",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:168"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:201"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -68,7 +67,7 @@
       "title": "Route `/agents/create` renders CreateApplication",
       "source": [
         "apps/elitea-ui/src/routes.js:11",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:169"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:202"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -97,7 +96,7 @@
       "title": "Route `/agents/:tab` renders Applications",
       "source": [
         "apps/elitea-ui/src/routes.js:10",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:170"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:203"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -126,7 +125,7 @@
       "title": "Route `/agents/:tab/:agentId` renders EditApplication",
       "source": [
         "apps/elitea-ui/src/routes.js:12",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:171"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:204"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -155,7 +154,7 @@
       "title": "Route `/agents/:tab/:agentId/:version` renders EditApplication (version child)",
       "source": [
         "apps/elitea-ui/src/routes.js:12",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:321-326"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -184,7 +183,7 @@
       "title": "Query param `destTab` on /agents/:tab (spec QP-006)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:324"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:354"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -214,7 +213,7 @@
       "title": "Query param `destTab` on /agents/:tab/:agentId (spec QP-006)",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:324"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:354"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -243,8 +242,8 @@
       "priority": "must",
       "title": "Query param `edited_participant_id` on /agents/:tab (spec QP-007)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:312",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:314"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:342",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:344"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -273,8 +272,8 @@
       "priority": "must",
       "title": "Query param `edited_participant_id` on /agents/:tab/:agentId (spec QP-007)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:312",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:314"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:342",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:344"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -303,7 +302,7 @@
       "priority": "must",
       "title": "Query param `isFromCreation` on /agents/:tab",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:30"
+        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:32"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -332,7 +331,7 @@
       "priority": "must",
       "title": "Query param `isFromCreation` on /agents/:tab/:agentId",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:30"
+        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:32"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -361,9 +360,9 @@
       "priority": "must",
       "title": "Query param `mcp` on /agents/:tab",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:218",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:317",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:326"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:248",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:347",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:347"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -392,9 +391,9 @@
       "priority": "must",
       "title": "Query param `mcp` on /agents/:tab/:agentId",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:218",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:317",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:326"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:248",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:347",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:347"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -423,9 +422,9 @@
       "priority": "must",
       "title": "Query param `newToolkitId` on /agents/:tab",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:192",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:200",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:217"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:222",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:222",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:247"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -454,9 +453,9 @@
       "priority": "must",
       "title": "Query param `newToolkitId` on /agents/:tab/:agentId",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:192",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:200",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:217"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:222",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:222",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:247"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -485,7 +484,7 @@
       "priority": "must",
       "title": "Query param `return_url` on /agents/:tab [write-only URL contract]",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:361"
       ],
       "acceptance": [
         "GIVEN the feature that generates links carrying the return_url parameter",
@@ -513,7 +512,7 @@
       "priority": "must",
       "title": "Query param `return_url` on /agents/:tab/:agentId [write-only URL contract]",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:361"
       ],
       "acceptance": [
         "GIVEN the feature that generates links carrying the return_url parameter",
@@ -541,8 +540,8 @@
       "priority": "must",
       "title": "Query param `sort_by` on /agents/:tab",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34",
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:100"
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:32",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:32"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -571,8 +570,8 @@
       "priority": "must",
       "title": "Query param `sort_by` on /agents/:tab/:agentId",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34",
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:100"
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:32",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:32"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -601,8 +600,8 @@
       "priority": "must",
       "title": "Query param `sort_order` on /agents/:tab",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:36",
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:102"
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -631,8 +630,8 @@
       "priority": "must",
       "title": "Query param `sort_order` on /agents/:tab/:agentId",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:36",
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:102"
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -661,7 +660,7 @@
       "priority": "must",
       "title": "Query param `source_application_id` on /agents/:tab [write-only URL contract]",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:361"
       ],
       "acceptance": [
         "GIVEN the feature that generates links carrying the source_application_id parameter",
@@ -689,7 +688,7 @@
       "priority": "must",
       "title": "Query param `source_application_id` on /agents/:tab/:agentId [write-only URL contract]",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:361"
       ],
       "acceptance": [
         "GIVEN the feature that generates links carrying the source_application_id parameter",
@@ -718,9 +717,9 @@
       "title": "Query param `viewMode` on /agents/:tab",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:61",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:226",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:231"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:69",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:225",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:230"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab",
@@ -750,9 +749,9 @@
       "title": "Query param `viewMode` on /agents/:tab/:agentId",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:61",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:226",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:231"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:69",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:225",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:230"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -781,7 +780,7 @@
       "priority": "must",
       "title": "Query param `history_run_id` on /agents/:tab/:agentId (spec QP-006)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:30"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:88"
       ],
       "acceptance": [
         "GIVEN the application is at /agents/:tab/:agentId",
@@ -810,7 +809,7 @@
       "priority": "must",
       "title": "Query param `history_run_id` on /pipelines/:tab/:agentId (History tab) (spec QP-006)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:30"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:88"
       ],
       "acceptance": [
         "GIVEN the application is at /pipelines/:tab/:agentId (History tab)",
@@ -895,7 +894,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/conversations/prompt_lib/{projectId} (getRunHistoryList)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:15-37"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:17-38"
       ],
       "acceptance": [
         "GIVEN the user performs the get run history list operation",
@@ -923,7 +922,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/conversation/prompt_lib/{projectId}/{conversationId} (getRunHistoryDetails)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:38-46"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:39-47"
       ],
       "acceptance": [
         "GIVEN the user performs the get run history details operation",
@@ -951,7 +950,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/conversation/prompt_lib/{projectId}/{historyId} (deleteRunHistoryItem)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:47-56"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:48-57"
       ],
       "acceptance": [
         "GIVEN the user performs the delete run history item operation",
@@ -979,7 +978,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/agent_categories/prompt_lib/{projectId} (getAgentCategories)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/api/agentCategoriesApi.js:13-18"
+        "apps/elitea-ui/src/[fsd]/entities/version/api/agentCategoriesApi.js:13-18"
       ],
       "acceptance": [
         "GIVEN the user performs the get agent categories operation",
@@ -1203,7 +1202,7 @@
       "priority": "must",
       "title": "Endpoint POST /social/like/prompt_lib/{PUBLIC_PROJECT_ID}/application/{applicationId} (likeApplication)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:186-194"
+        "apps/elitea-ui/src/api/applications.js:186-203"
       ],
       "acceptance": [
         "GIVEN the user performs the like application operation",
@@ -1315,7 +1314,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/application/prompt_lib/{projectId}/{applicationId} (deleteApplication)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:264-285"
+        "apps/elitea-ui/src/api/applications.js:264-294"
       ],
       "acceptance": [
         "GIVEN the user performs the delete application operation",
@@ -1399,7 +1398,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/unpublish/prompt_lib/{projectId}/{versionId} (unpublishApplication)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:310-324"
+        "apps/elitea-ui/src/api/applications.js:310-334"
       ],
       "acceptance": [
         "GIVEN the user performs the unpublish application operation",
@@ -1427,7 +1426,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/publish_validate/prompt_lib/{projectId}/{versionId} (validateForPublish)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:325-334"
+        "apps/elitea-ui/src/api/applications.js:325-346"
       ],
       "acceptance": [
         "GIVEN the user performs the validate for publish operation",
@@ -1572,7 +1571,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/public_application/prompt_lib/{applicationId} (publicApplicationDetails)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:422-448"
+        "apps/elitea-ui/src/api/applications.js:422-457"
       ],
       "acceptance": [
         "GIVEN the user performs the public application details operation",
@@ -1628,7 +1627,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/versions/prompt_lib/{projectId}/{applicationId} (saveApplicationNewVersion)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:458-468"
+        "apps/elitea-ui/src/api/applications.js:458-483"
       ],
       "acceptance": [
         "GIVEN the user performs the save application new version operation",
@@ -1656,7 +1655,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId} (updateApplicationVersion)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:469-502"
+        "apps/elitea-ui/src/api/applications.js:490-523"
       ],
       "acceptance": [
         "GIVEN the user performs the update application version operation",
@@ -1684,7 +1683,7 @@
       "priority": "must",
       "title": "Endpoint PATCH /elitea_core/default_version/prompt_lib/{projectId}/{applicationId}/{versionId} (setApplicationDefaultVersion) — router-aligned shape (waiver W-009)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:503-522"
+        "apps/elitea-ui/src/api/applications.js:524-543"
       ],
       "acceptance": [
         "GIVEN the user sets an application version as the default",
@@ -1713,7 +1712,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId}{?replacement_version_id={replacementVersionId}|} (deleteApplicationVersion) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:523-540"
+        "apps/elitea-ui/src/api/applications.js:544-561"
       ],
       "acceptance": [
         "GIVEN the user performs the delete application version operation",
@@ -1741,7 +1740,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/check_version_in_use/prompt_lib/{projectId}/{applicationId}/{versionId} (checkVersionInUse)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:541-553"
+        "apps/elitea-ui/src/api/applications.js:562-574"
       ],
       "acceptance": [
         "GIVEN the user performs the check version in use operation",
@@ -1769,7 +1768,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/batch_replace_version/prompt_lib/{projectId}/{oldVersionId}/{newVersionId}{?delete_old=true|?delete_old=false} (batchReplaceVersionReferences) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:554-571"
+        "apps/elitea-ui/src/api/applications.js:575-592"
       ],
       "acceptance": [
         "GIVEN the user performs the batch replace version references operation",
@@ -1797,7 +1796,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/export_import/prompt_lib/{projectId}/{id}{expr} (applicationExport) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:572-587"
+        "apps/elitea-ui/src/api/applications.js:593-608"
       ],
       "acceptance": [
         "GIVEN the user performs the application export operation",
@@ -1825,7 +1824,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/export_import/prompt_lib/{projectId}/{id}?{params} (applicationExportMd)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:589-611"
+        "apps/elitea-ui/src/api/applications.js:610-632"
       ],
       "acceptance": [
         "GIVEN the user performs the application export md operation",
@@ -1853,7 +1852,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core{/upload_icon/prompt_lib/{projectId}/{versionId}|/upload_icon/prompt_lib/{projectId}} (uploadApplicationIcon) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:612-637"
+        "apps/elitea-ui/src/api/applications.js:633-658"
       ],
       "acceptance": [
         "GIVEN the user performs the upload application icon operation",
@@ -1881,7 +1880,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/upload_icon/prompt_lib/{projectId}/{versionId} (replaceApplicationIcon)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:638-679"
+        "apps/elitea-ui/src/api/applications.js:659-691"
       ],
       "acceptance": [
         "GIVEN the user performs the replace application icon operation",
@@ -1909,7 +1908,7 @@
       "priority": "must",
       "title": "Endpoint DELETE /elitea_core/upload_icon/prompt_lib/{projectId}/{name} (deleteApplicationIcon)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:680-716"
+        "apps/elitea-ui/src/api/applications.js:701-737"
       ],
       "acceptance": [
         "GIVEN the user performs the delete application icon operation",
@@ -1937,7 +1936,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/upload_icon/prompt_lib/{projectId} (getApplicationIcons)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:717-762"
+        "apps/elitea-ui/src/api/applications.js:738-783"
       ],
       "acceptance": [
         "GIVEN the user performs the get application icons operation",
@@ -1965,7 +1964,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/default_icons/prompt_lib/{projectId} (getApplicationDefaultIcons)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:763-771"
+        "apps/elitea-ui/src/api/applications.js:784-787"
       ],
       "acceptance": [
         "GIVEN the user performs the get application default icons operation",
@@ -1993,7 +1992,7 @@
       "priority": "must",
       "title": "Endpoint POST /elitea_core/export_converter/prompt_lib (convertLegacyApplication)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:772-784"
+        "apps/elitea-ui/src/api/applications.js:793-805"
       ],
       "acceptance": [
         "GIVEN the user performs the convert legacy application operation",
@@ -2021,7 +2020,7 @@
       "priority": "must",
       "title": "Endpoint PATCH /elitea_core/application_relation/prompt_lib/{projectId}/{selectedApplicationId}/{selectedVersionId} (updateApplicationRelation)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:786-799"
+        "apps/elitea-ui/src/api/applications.js:807-820"
       ],
       "acceptance": [
         "GIVEN the user performs the update application relation operation",
@@ -2049,7 +2048,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/recommendations/prompt_lib/{projectId} (getRecommendations)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:800-809"
+        "apps/elitea-ui/src/api/applications.js:821-828"
       ],
       "acceptance": [
         "GIVEN the user performs the get recommendations operation",
@@ -2077,7 +2076,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/version_validator/prompt_lib/{projectId}/{applicationId}/{versionId} (validateApplicationVersion)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:810-831"
+        "apps/elitea-ui/src/api/applications.js:831-852"
       ],
       "acceptance": [
         "GIVEN the user performs the validate application version operation",
@@ -2105,7 +2104,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/application_attachment_storage/prompt_lib/{projectId}/{applicationId}/{versionId} (setAgentAttachmentStorage)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:832-848"
+        "apps/elitea-ui/src/api/applications.js:853-869"
       ],
       "acceptance": [
         "GIVEN the user performs the set agent attachment storage operation",
@@ -2133,7 +2132,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/index_types/prompt_lib/{projectId} (getDocumentLoaders)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:849-854"
+        "apps/elitea-ui/src/api/applications.js:870-875"
       ],
       "acceptance": [
         "GIVEN the user performs the get document loaders operation",
@@ -2161,7 +2160,7 @@
       "priority": "must",
       "title": "Endpoint GET /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger (getPipelineTrigger)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:857-864"
+        "apps/elitea-ui/src/api/applications.js:878-885"
       ],
       "acceptance": [
         "GIVEN the user performs the get pipeline trigger operation",
@@ -2189,7 +2188,7 @@
       "priority": "must",
       "title": "Endpoint PUT /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger (updatePipelineTrigger)",
       "source": [
-        "apps/elitea-ui/src/api/applications.js:865-876"
+        "apps/elitea-ui/src/api/applications.js:886-897"
       ],
       "acceptance": [
         "GIVEN the user performs the update pipeline trigger operation",
@@ -2217,10 +2216,10 @@
       "priority": "must",
       "title": "Permission `models.applications.application.update` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:544",
+        "apps/elitea-ui/src/common/constants.js:557",
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentButton.jsx:13",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:19",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:20",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:14",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:15",
         "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/AgentEditorPanel.jsx:63",
         "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillButton.jsx:13"
       ],
@@ -2250,13 +2249,13 @@
       "priority": "must",
       "title": "Permission `models.applications.applications.create` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:538",
-        "apps/elitea-ui/src/common/constants.js:548",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:12",
-        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:13",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:70",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:71",
-        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:72"
+        "apps/elitea-ui/src/common/constants.js:561",
+        "apps/elitea-ui/src/common/constants.js:561",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:7",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:8",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:72",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:73",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:74"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.applications.create",
@@ -2284,10 +2283,9 @@
       "priority": "must",
       "title": "Permission `models.applications.export_import.export` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:540",
-        "apps/elitea-ui/src/common/constants.js:550",
-        "apps/elitea-ui/src/[fsd]/entities/application-tab-bar/ui/ApplicationControls.jsx:136",
-        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsControls.jsx:60"
+        "apps/elitea-ui/src/common/constants.js:563",
+        "apps/elitea-ui/src/common/constants.js:563",
+        "apps/elitea-ui/src/[fsd]/widgets/application-controls/ui/ApplicationControls.jsx:165"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.export_import.export",
@@ -2315,7 +2313,7 @@
       "priority": "must",
       "title": "Permission `models.applications.export_import.import` gates its UI",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/index.jsx:52"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/index.jsx:6"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.export_import.import",
@@ -2343,9 +2341,9 @@
       "priority": "must",
       "title": "Permission `models.applications.fork.post` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:541",
-        "apps/elitea-ui/src/common/constants.js:551",
-        "apps/elitea-ui/src/common/constants.js:593"
+        "apps/elitea-ui/src/common/constants.js:564",
+        "apps/elitea-ui/src/common/constants.js:564",
+        "apps/elitea-ui/src/common/constants.js:618"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.fork.post",
@@ -2373,8 +2371,8 @@
       "priority": "must",
       "title": "Permission `models.applications.public_applications.list` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:537",
-        "apps/elitea-ui/src/common/constants.js:547"
+        "apps/elitea-ui/src/common/constants.js:560",
+        "apps/elitea-ui/src/common/constants.js:560"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.public_applications.list",
@@ -2402,8 +2400,8 @@
       "priority": "must",
       "title": "Permission `models.applications.tool.patch` gates its UI",
       "source": [
-        "apps/elitea-ui/src/common/constants.js:592",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/switch/AttachmentSwitch.jsx:40"
+        "apps/elitea-ui/src/common/constants.js:617",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/switch/AttachmentSwitch.jsx:37"
       ],
       "acceptance": [
         "GIVEN a user whose project role does not include models.applications.tool.patch",
@@ -2432,7 +2430,7 @@
       "title": "Action on agents: application create via onApprove/onClick",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationSaveButton.jsx:58",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationSaveButton.jsx:57",
         "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationTabBar.jsx:74",
         "apps/elitea-ui/src/api/applications.js:204"
       ],
@@ -2462,7 +2460,7 @@
       "priority": "must",
       "title": "Action on agents: application edit via onConfirm",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:649",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:628",
         "apps/elitea-ui/src/api/applications.js:237"
       ],
       "acceptance": [
@@ -2491,7 +2489,7 @@
       "priority": "must",
       "title": "Action on agents: delete application via onDelete",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/DeleteApplicationButton.jsx:89",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/DeleteApplicationButton.jsx:91",
         "apps/elitea-ui/src/api/applications.js:264"
       ],
       "acceptance": [
@@ -2549,7 +2547,7 @@
       "priority": "must",
       "title": "Action on agents: save application new version via onConfirm",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveNewVersionButton.jsx:100",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveNewVersionButton.jsx:108",
         "apps/elitea-ui/src/api/applications.js:458"
       ],
       "acceptance": [
@@ -2579,9 +2577,9 @@
       "title": "Action on agents: toolkit associate via onApprove/onConfirm/onScroll",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:649",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:668",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:689",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:628",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:691",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:712",
         "apps/elitea-ui/src/api/toolkits.js:385"
       ],
       "acceptance": [
@@ -2611,9 +2609,9 @@
       "title": "Action on agents: update application relation via onApprove/onClick/onConfirm",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:373",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:649",
-        "apps/elitea-ui/src/api/applications.js:786"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:378",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:628",
+        "apps/elitea-ui/src/api/applications.js:807"
       ],
       "acceptance": [
         "GIVEN the agents screen is displayed with the relevant entity available",
@@ -2641,8 +2639,8 @@
       "priority": "must",
       "title": "Action on agents: update application version via onDiscard",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:80",
-        "apps/elitea-ui/src/api/applications.js:469"
+        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:82",
+        "apps/elitea-ui/src/api/applications.js:490"
       ],
       "acceptance": [
         "GIVEN the agents screen is displayed with the relevant entity available",
@@ -2671,7 +2669,7 @@
       "title": "Action on agents: update skill relation via onApprove",
       "source": [
         "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
-        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:308"
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:323"
       ],
       "acceptance": [
         "GIVEN the agents screen is displayed with the relevant entity available",
@@ -2699,7 +2697,7 @@
       "priority": "must",
       "title": "Action on import-wizard: fork agent via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:269",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:289",
         "apps/elitea-ui/src/[fsd]/entities/import-wizard/api/importWizardApi.js:25"
       ],
       "acceptance": [
@@ -2757,7 +2755,7 @@
       "priority": "must",
       "title": "Action on import-wizard: toolkit fork via onClick",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:269",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:289",
         "apps/elitea-ui/src/api/toolkits.js:224"
       ],
       "acceptance": [
@@ -2786,8 +2784,8 @@
       "priority": "should",
       "title": "Copy: ImportWizardModal/IWModalActions.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalActions.jsx:29",
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalActions.jsx:40"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalActions.jsx:30",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalActions.jsx:41"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -2815,8 +2813,8 @@
       "priority": "should",
       "title": "Copy: ImportWizardModal/IWModalContent.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalContent.jsx:81",
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalContent.jsx:108"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalContent.jsx:83",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalContent.jsx:124"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -2845,7 +2843,7 @@
       "title": "Copy: ImportWizardModal/IWModalDetails.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalDetails.jsx:75",
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalDetails.jsx:95"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalDetails.jsx:102"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -2873,8 +2871,8 @@
       "priority": "should",
       "title": "Copy: ImportWizardModal/IWModalEntityCard.jsx (12 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCard.jsx:55",
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCard.jsx:162"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCard.jsx:59",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCard.jsx:165"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -2902,8 +2900,8 @@
       "priority": "should",
       "title": "Copy: ImportWizardModal/IWModalEntityCardWrapper.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCardWrapper.jsx:48",
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCardWrapper.jsx:48"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCardWrapper.jsx:78",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCardWrapper.jsx:78"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -2956,15 +2954,15 @@
       "id": "COPY-014",
       "domain": "agents",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: ImportWizardModal/IWModalEntityToolkitsField.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityToolkitsField.jsx:17"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityToolkitsField.jsx:9"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 1 strings from this component (for example \"Toolkits:\") appear verbatim",
+        "THEN all 1 strings from this component (for example \"Tools:\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -2978,7 +2976,12 @@
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Baseline vocabulary rename at 20b23c42 (\"Toolkits:\" -> \"Tools:\"), confirmed deliberate. The item still requires verbatim copy parity; the string it names has changed.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "copy string \"Toolkits:\""
+      }
     },
     {
       "id": "COPY-015",
@@ -2987,7 +2990,7 @@
       "priority": "should",
       "title": "Copy: ImportWizardModal/IWModalForkButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:270"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:291"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -3015,7 +3018,7 @@
       "priority": "should",
       "title": "Copy: ImportWizardModal/IWModalImportButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalImportButton.jsx:142"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalImportButton.jsx:143"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -3044,7 +3047,7 @@
       "title": "Copy: ImportWizardModal/IWModalSucceedContent.jsx (4 strings)",
       "source": [
         "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalSucceedContent.jsx:68",
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalSucceedContent.jsx:118"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalSucceedContent.jsx:119"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -3072,7 +3075,7 @@
       "priority": "should",
       "title": "Copy: ui/ToolbarImportButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ToolbarImportButton.jsx:22"
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ToolbarImportButton.jsx:23"
       ],
       "acceptance": [
         "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
@@ -3100,8 +3103,7 @@
       "priority": "should",
       "title": "Copy: ui/RunHistoryContainer.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:77",
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:85"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:172"
       ],
       "acceptance": [
         "GIVEN the run-history screen renders with the default brand in both colour schemes",
@@ -3129,8 +3131,8 @@
       "priority": "should",
       "title": "Copy: RunHistoryList/index.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/index.jsx:65",
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/index.jsx:67"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/index.jsx:74",
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/index.jsx:77"
       ],
       "acceptance": [
         "GIVEN the run-history screen renders with the default brand in both colour schemes",
@@ -3158,8 +3160,7 @@
       "priority": "should",
       "title": "Copy: RunHistoryList/RunHistoryListItem.jsx (7 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/RunHistoryListItem.jsx:189",
-        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/RunHistoryListItem.jsx:233"
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/RunHistoryListItem.jsx:87"
       ],
       "acceptance": [
         "GIVEN the run-history screen renders with the default brand in both colour schemes",
@@ -3187,7 +3188,7 @@
       "priority": "should",
       "title": "Copy: ui/AgentCard.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCard.jsx:55"
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCard.jsx:56"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3215,8 +3216,7 @@
       "priority": "should",
       "title": "Copy: ui/AgentCategorySection.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCategorySection.jsx:85",
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCategorySection.jsx:131"
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCategorySection.jsx:99"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3244,8 +3244,8 @@
       "priority": "should",
       "title": "Copy: ui/AgentConversationStarters.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentConversationStarters.jsx:23",
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentConversationStarters.jsx:40"
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentConversationStarters.jsx:22",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentConversationStarters.jsx:43"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3273,8 +3273,8 @@
       "priority": "should",
       "title": "Copy: ui/AgentModal.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentModal.jsx:193",
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentModal.jsx:257"
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentModal.jsx:198",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentModal.jsx:278"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3302,8 +3302,8 @@
       "priority": "should",
       "title": "Copy: ui/AgentWelcomeMessage.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentWelcomeMessage.jsx:14",
-        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentWelcomeMessage.jsx:30"
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentWelcomeMessage.jsx:13",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentWelcomeMessage.jsx:33"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3331,8 +3331,8 @@
       "priority": "should",
       "title": "Copy: configurations/ApplicationAdvanceSettings.jsx (5 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationAdvanceSettings.jsx:87",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationAdvanceSettings.jsx:119"
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationAdvanceSettings.jsx:95",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationAdvanceSettings.jsx:129"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3360,8 +3360,8 @@
       "priority": "should",
       "title": "Copy: configurations/ApplicationEditorNotes.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationEditorNotes.jsx:30",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationEditorNotes.jsx:42"
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationEditorNotes.jsx:38",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationEditorNotes.jsx:51"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3386,16 +3386,15 @@
       "id": "COPY-041",
       "domain": "agents",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: configurations/ApplicationTools.jsx (3 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationTools.jsx:151",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationTools.jsx:170"
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationTools.jsx:175"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
         "WHEN its user-visible texts are compared with the baseline application",
-        "THEN all 3 strings from this component (for example \"INTERNAL TOOLS\") appear verbatim",
+        "THEN all 3 strings from this component (for example \"MODULES\") appear verbatim",
         "AND no string is dropped, truncated or reworded"
       ],
       "verify": {
@@ -3409,7 +3408,12 @@
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Baseline vocabulary rename at 20b23c42 (\"INTERNAL TOOLS\" -> \"MODULES\"), confirmed deliberate. The item still requires verbatim copy parity; the string it names has changed.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "copy string \"INTERNAL TOOLS\""
+      }
     },
     {
       "id": "COPY-042",
@@ -3418,8 +3422,8 @@
       "priority": "should",
       "title": "Copy: form/CreateAgentForm.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/form/CreateAgentForm.jsx:104",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/form/CreateAgentForm.jsx:183"
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/form/CreateAgentForm.jsx:105",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/form/CreateAgentForm.jsx:196"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3447,8 +3451,8 @@
       "priority": "should",
       "title": "Copy: input/InstructionsInput.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsInput.jsx:335",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsInput.jsx:346"
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsInput.jsx:333",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsInput.jsx:345"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3560,8 +3564,8 @@
       "priority": "should",
       "title": "Copy: version/VersionReplacementModal.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/version/VersionReplacementModal.jsx:128",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/version/VersionReplacementModal.jsx:199"
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionReplacementModal.jsx:128",
+        "apps/elitea-ui/src/[fsd]/entities/version/ui/VersionReplacementModal.jsx:199"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3617,8 +3621,7 @@
       "priority": "should",
       "title": "Copy: generate-agent-modal/GenerateAgentReviewForm.jsx (12 strings)",
       "source": [
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentReviewForm.jsx:92",
-        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentReviewForm.jsx:242"
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentReviewForm.jsx:307"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3646,7 +3649,7 @@
       "priority": "should",
       "title": "Copy: Applications/Applications.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Applications.jsx:105"
+        "apps/elitea-ui/src/pages/Applications/Applications.jsx:96"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3674,8 +3677,8 @@
       "priority": "should",
       "title": "Copy: Applications/ApplicationEditForm.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationEditForm.jsx:93",
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationEditForm.jsx:168"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationEditForm.jsx:96",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationEditForm.jsx:198"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3703,8 +3706,8 @@
       "priority": "should",
       "title": "Copy: Applications/ApplicationInformation.jsx (13 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationInformation.jsx:78",
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationInformation.jsx:158"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationInformation.jsx:79",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationInformation.jsx:146"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3732,8 +3735,8 @@
       "priority": "should",
       "title": "Copy: Applications/ConfigurationTab.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ConfigurationTab.jsx:203",
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ConfigurationTab.jsx:295"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ConfigurationTab.jsx:206",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ConfigurationTab.jsx:318"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3761,7 +3764,7 @@
       "priority": "should",
       "title": "Copy: Applications/CreateApplicationSaveButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationSaveButton.jsx:61"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationSaveButton.jsx:60"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3818,7 +3821,7 @@
       "priority": "should",
       "title": "Copy: Applications/DeleteApplicationButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/DeleteApplicationButton.jsx:62"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/DeleteApplicationButton.jsx:64"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3846,7 +3849,7 @@
       "priority": "should",
       "title": "Copy: Applications/ExportApplicationButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/ExportApplicationButton.jsx:46"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ExportApplicationButton.jsx:47"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3874,7 +3877,7 @@
       "priority": "should",
       "title": "Copy: Applications/SaveApplicationButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveApplicationButton.jsx:77"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveApplicationButton.jsx:67"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3902,7 +3905,7 @@
       "priority": "should",
       "title": "Copy: Applications/SaveNewVersionButton.jsx (1 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveNewVersionButton.jsx:87"
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveNewVersionButton.jsx:98"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3959,8 +3962,8 @@
       "priority": "should",
       "title": "Copy: Tools/AgentPipelineVersionSelector.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:340",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:389"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:344",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:394"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -3988,8 +3991,8 @@
       "priority": "should",
       "title": "Copy: CardActions/EnhancedCardToolActions.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardActions/EnhancedCardToolActions.jsx:63",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardActions/EnhancedCardToolActions.jsx:90"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardActions/EnhancedCardToolActions.jsx:64",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardActions/EnhancedCardToolActions.jsx:91"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4017,8 +4020,8 @@
       "priority": "should",
       "title": "Copy: CardBodies/BaseCardBody.jsx (2 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/BaseCardBody.jsx:29",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/BaseCardBody.jsx:29"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/BaseCardBody.jsx:30",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/BaseCardBody.jsx:30"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4104,8 +4107,7 @@
       "priority": "should",
       "title": "Copy: Tools/ToolCard.jsx (16 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:355",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:623"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:357"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4130,7 +4132,7 @@
       "id": "COPY-431",
       "domain": "agents",
       "kind": "visual",
-      "priority": "should",
+      "priority": "waived",
       "title": "Copy: Tools/ToolConfigurationForm.jsx (3 strings)",
       "source": [
         "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolConfigurationForm.jsx:203",
@@ -4148,12 +4150,17 @@
         "testId": "visual > agents > ToolConfigurationForm.jsx"
       },
       "unit": "V2",
-      "status": "todo",
+      "status": "waived",
       "coverage": {
         "file": "e2e/visual/visual.spec.ts",
         "min": 0
       },
-      "waiver": null
+      "waiver": {
+        "reason": "Tools/ToolConfigurationForm.jsx was dissolved into the agent tools UI upstream at 20b23c42; no successor component owns these 3 strings as a set.",
+        "decidedBy": "Alexander Kharkevich",
+        "date": "2026-08-30",
+        "replacesBehaviour": "3 strings of Tools/ToolConfigurationForm.jsx rendered verbatim"
+      }
     },
     {
       "id": "COPY-432",
@@ -4162,8 +4169,8 @@
       "priority": "should",
       "title": "Copy: Tools/ToolMenu.jsx (12 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:580",
-        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:724"
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:594",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:747"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4248,8 +4255,7 @@
       "priority": "should",
       "title": "Copy: Applications/Latest.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Latest.jsx:16",
-        "apps/elitea-ui/src/pages/Applications/Latest.jsx:23"
+        "apps/elitea-ui/src/pages/Applications/Latest.jsx:24"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4277,8 +4283,7 @@
       "priority": "should",
       "title": "Copy: Applications/MyLiked.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/MyLiked.jsx:16",
-        "apps/elitea-ui/src/pages/Applications/MyLiked.jsx:23"
+        "apps/elitea-ui/src/pages/Applications/MyLiked.jsx:24"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4306,8 +4311,7 @@
       "priority": "should",
       "title": "Copy: Applications/PrivateAgentsList.jsx (8 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/PrivateAgentsList.jsx:25",
-        "apps/elitea-ui/src/pages/Applications/PrivateAgentsList.jsx:117"
+        "apps/elitea-ui/src/pages/Applications/PrivateAgentsList.jsx:138"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4335,8 +4339,7 @@
       "priority": "should",
       "title": "Copy: Applications/Trending.jsx (4 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/Trending.jsx:16",
-        "apps/elitea-ui/src/pages/Applications/Trending.jsx:23"
+        "apps/elitea-ui/src/pages/Applications/Trending.jsx:24"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4364,8 +4367,7 @@
       "priority": "should",
       "title": "Copy: Applications/useApplicationTabs.jsx (10 strings)",
       "source": [
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:43",
-        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:193"
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:41"
       ],
       "acceptance": [
         "GIVEN the agents screen renders with the default brand in both colour schemes",
@@ -4453,8 +4455,8 @@
       "title": "Journey 15: Create a new version, set default, delete old",
       "source": [
         "apps/elitea-ui/src/api/applications.js:458",
-        "apps/elitea-ui/src/api/applications.js:503",
-        "apps/elitea-ui/src/api/applications.js:523"
+        "apps/elitea-ui/src/api/applications.js:524",
+        "apps/elitea-ui/src/api/applications.js:544"
       ],
       "acceptance": [
         "GIVEN an agent with an existing version",
@@ -4500,6 +4502,35 @@
       "coverage": {
         "file": "e2e/journeys.spec.ts",
         "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-077",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/elitea-catalog` is mounted",
+      "source": [
+        "apps/elitea-ui/src/routes.js:84",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:109"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /elitea-catalog",
+        "THEN the Elitea catalog is displayed at that URL",
+        "AND the screen is reachable by navigation, not only by typing the URL"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-077"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
       },
       "waiver": null
     }

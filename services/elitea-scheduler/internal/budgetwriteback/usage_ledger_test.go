@@ -186,8 +186,12 @@ func TestApply_LedgerRowCarriesDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := tx.usageInserts[0]
+	// The trailing nil is execution_id: this delta carries no runtime execution,
+	// and "not made from an execution" has to reach the column as NULL rather
+	// than as an empty string — the agent breakdown GROUPs on it, so '' would
+	// become a nameless agent collecting every unattributable request.
 	want := []any{"e1", 42, intPtr(7), "openai", "gpt-4o", int64(11), int64(22),
-		int64(5_000_000_000), int64(1000), int64(2000), occurredAt}
+		int64(5_000_000_000), int64(1000), int64(2000), occurredAt, nil}
 	if len(args) != len(want) {
 		t.Fatalf("ledger insert took %d args, want %d", len(args), len(want))
 	}

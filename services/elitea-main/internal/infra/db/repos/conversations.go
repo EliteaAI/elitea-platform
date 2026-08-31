@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/contextsettings"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -337,11 +338,72 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 	return c, nil
 }
 
-func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationID string) error {
+// attachmentQuerier is the part of pgx.Tx the attachment collection needs.
+// Stated as an interface so the two delete paths share one scan without either
+// of them handing the helper a transaction it could end.
+type attachmentQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// scanAttachmentRefs collects (bucket, name) pairs from a two-column query.
+//
+// Both delete paths REPORT the attachments whose rows they are about to remove
+// rather than removing the bytes themselves: the bytes are not in the database,
+// only the HTTP handler holds the object store, and reporting is what lets the
+// byte delete happen strictly after the row delete has committed. Sharing the
+// scan states that contract once — a second copy is where the two paths would
+// quietly drift on what counts as an attachment.
+func scanAttachmentRefs(ctx context.Context, q attachmentQuerier, sql string, args ...any) ([]conversations.AttachmentRef, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("conversations: read message attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []conversations.AttachmentRef
+	for rows.Next() {
+		var ref conversations.AttachmentRef
+		if err := rows.Scan(&ref.Bucket, &ref.Name); err != nil {
+			return nil, fmt.Errorf("conversations: scan message attachment: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("conversations: read message attachments: %w", err)
+	}
+	return refs, nil
+}
+
+// collectGroupAttachments reports every stored attachment the named message
+// groups carry.
+func collectGroupAttachments(ctx context.Context, q attachmentQuerier, s string, groupIDs []int64) ([]conversations.AttachmentRef, error) {
+	return scanAttachmentRefs(ctx, q, fmt.Sprintf(`
+		SELECT att.bucket, att.name
+		FROM %s.chat_message_items mi
+		JOIN %s.chat_messages_attachment att ON att.id = mi.id
+		WHERE mi.message_group_id = ANY($1) AND mi.item_type = 'attachment_message'
+		ORDER BY mi.message_group_id, mi.order_index`, s, s), groupIDs)
+}
+
+// collectConversationAttachments reports every stored attachment any message in
+// one conversation carries. Scoped by conversation_id through the group join:
+// the tenant schema holds every conversation in the project, so an unscoped
+// read would hand the handler other conversations' files to destroy.
+func collectConversationAttachments(ctx context.Context, q attachmentQuerier, s string, conversationID int64) ([]conversations.AttachmentRef, error) {
+	return scanAttachmentRefs(ctx, q, fmt.Sprintf(`
+		SELECT att.bucket, att.name
+		FROM %s.chat_message_items mi
+		JOIN %s.chat_message_group g ON g.id = mi.message_group_id
+		JOIN %s.chat_messages_attachment att ON att.id = mi.id
+		WHERE g.conversation_id = $1 AND mi.item_type = 'attachment_message'
+		ORDER BY mi.message_group_id, mi.order_index`, s, s, s), conversationID)
+}
+
+func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationID string) ([]conversations.AttachmentRef, error) {
 	s := schema(projectID)
 	id, err := r.resolveConversationID(ctx, projectID, conversationID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// DEFECT #602: two of the six statements here named tables that exist in NO
@@ -368,36 +430,60 @@ func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationI
 	// present if any statement in the middle failed.
 	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("conversations: delete: %w", err)
+		return nil, fmt.Errorf("conversations: delete: %w", err)
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
 	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_participant_mapping WHERE conversation_id = $1`, s), id); err != nil {
-		return fmt.Errorf("conversations: delete participant mapping: %w", err)
+		return nil, fmt.Errorf("conversations: delete participant mapping: %w", err)
 	}
+
+	// Read the attachments BEFORE anything that names them is deleted, for the
+	// same reason DeleteMessage does: chat_messages_attachment cascades from
+	// chat_message_items (tenant migration 0127), so the item DELETE below takes
+	// these rows with it, and after this transaction nothing anywhere names the
+	// stored files. A message delete at least leaves the rest of the
+	// conversation behind; here the whole graph goes, so an uncollected ref is
+	// bytes no caller can ever reach again — they sit in the object store until
+	// the retention sweeper expires them
+	// (internal/runtimecomposition/artifact_retention_sweep.go).
+	//
+	// Reported rather than deleted, and only once the commit below has
+	// succeeded: the bytes are not in the database, only the handler holds the
+	// object store, and a refused delete must destroy nothing. See
+	// Handler.Delete and Handler.deleteAttachmentObjects.
+	//
+	// Selected by `item_type` as well as by the join, the same way DeleteMessage
+	// does — the discriminator and the payload table state the same fact twice,
+	// and a disagreement between them would show up here as silent data loss.
+	attachments, err := collectConversationAttachments(ctx, transaction, s, id)
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_message_items
 		WHERE message_group_id IN (SELECT id FROM %s.chat_message_group WHERE conversation_id = $1)`, s, s), id); err != nil {
-		return fmt.Errorf("conversations: delete message items: %w", err)
+		return nil, fmt.Errorf("conversations: delete message items: %w", err)
 	}
 	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_message_group WHERE conversation_id = $1`, s), id); err != nil {
-		return fmt.Errorf("conversations: delete message groups: %w", err)
+		return nil, fmt.Errorf("conversations: delete message groups: %w", err)
 	}
 	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_selected_conversations WHERE conversation_id = $1`, s), id); err != nil {
-		return fmt.Errorf("conversations: delete selected conversations: %w", err)
+		return nil, fmt.Errorf("conversations: delete selected conversations: %w", err)
 	}
 
 	q := fmt.Sprintf(`DELETE FROM %s.chat_conversations WHERE id = $1`, s)
 	ct, err := transaction.Exec(ctx, q, id)
 	if err != nil {
-		return fmt.Errorf("conversations: delete: %w", err)
+		return nil, fmt.Errorf("conversations: delete: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
-		return apierr.NotFound("conversation not found")
+		return nil, apierr.NotFound("conversation not found")
 	}
 	if err := transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("conversations: delete commit: %w", err)
+		return nil, fmt.Errorf("conversations: delete commit: %w", err)
 	}
-	return nil
+	return attachments, nil
 }
 
 // participantIdentityQuery finds the participant row that already describes the
@@ -911,97 +997,62 @@ func (r *ConversationsRepo) DeleteAttachments(ctx context.Context, projectID, co
 	return nil
 }
 
-func (r *ConversationsRepo) GetContextAnalytics(ctx context.Context, projectID, conversationID string) (map[string]any, error) {
+// GetContextState reads the two `meta` documents the context routes work
+// with, plus the transcript size, in one query.
+//
+// It replaces GetContextAnalytics, which assembled the whole status document
+// inside the repository AND invented the number at its centre:
+//
+//	currentTokens := msgCount * 500
+//
+// Every conversation therefore reported a token usage that was a function of
+// its message count and of nothing else. Token counting belongs to the runtime
+// that assembles a turn with the model's own tokenizer; this service does not
+// run it. The repository now returns what the database actually holds and lets
+// contextsettings.BuildStatus report the absence — see
+// contextsettings.AnalyticsUnavailableReason.
+func (r *ConversationsRepo) GetContextState(ctx context.Context, projectID, conversationID string) (contextsettings.ConversationState, error) {
 	s := schema(projectID)
 	id, err := r.resolveConversationID(ctx, projectID, conversationID)
 	if err != nil {
-		return nil, err
+		return contextsettings.ConversationState{}, err
 	}
 
-	// Get message count and conversation meta (contains context_strategy + context_analytics)
 	q := fmt.Sprintf(`
-		SELECT COALESCE(c.meta, '{}')::text,
+		SELECT COALESCE(c.meta, '{}'::jsonb) -> 'context_strategy',
+			COALESCE(c.meta, '{}'::jsonb) -> 'context_analytics',
 			(SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
 		FROM %s.chat_conversations c WHERE c.id = $1`, s, s)
 
-	var metaRaw string
-	var msgCount int
-	if err := r.pool.QueryRow(ctx, q, id).Scan(&metaRaw, &msgCount); err != nil {
-		return r.defaultContextStatus(), nil
-	}
-
-	var meta map[string]any
-	if err := json.Unmarshal([]byte(metaRaw), &meta); err != nil {
-		return r.defaultContextStatus(), nil
-	}
-
-	// Extract context_strategy
-	strategy, _ := meta["context_strategy"].(map[string]any)
-	strategyName := "default"
-	maxContextTokens := 128000
-	if strategy != nil {
-		if name, ok := strategy["name"].(string); ok && name != "" {
-			strategyName = name
+	var state contextsettings.ConversationState
+	if err := r.pool.QueryRow(ctx, q, id).Scan(&state.Strategy, &state.Analytics, &state.MessageGroupsTotal); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return contextsettings.ConversationState{}, apierr.NotFound("conversation not found")
 		}
-		if mct, ok := strategy["max_context_tokens"].(float64); ok && mct > 0 {
-			maxContextTokens = int(mct)
-		}
+		return contextsettings.ConversationState{}, fmt.Errorf("conversations: get context state: %w", err)
 	}
-
-	// Extract context_analytics
-	analytics, _ := meta["context_analytics"].(map[string]any)
-	currentTokens := msgCount * 500
-	messagesInContext := msgCount
-	summariesGenerated := 0
-	if analytics != nil {
-		if ct, ok := analytics["current_context_tokens"].(float64); ok {
-			currentTokens = int(ct)
-		}
-		if mic, ok := analytics["messages_in_context"].(float64); ok {
-			messagesInContext = int(mic)
-		}
-		if sg, ok := analytics["summaries_generated"].(float64); ok {
-			summariesGenerated = int(sg)
-		}
-	}
-
-	utilization := float64(0)
-	if maxContextTokens > 0 {
-		utilization = float64(currentTokens) / float64(maxContextTokens) * 100
-	}
-
-	return map[string]any{
-		"current_tokens":            currentTokens,
-		"max_tokens":                maxContextTokens,
-		"message_groups_in_context": messagesInContext,
-		"strategy_name":             strategyName,
-		"utilization":               utilization,
-		"context_analytics": map[string]any{
-			"summaries_generated": summariesGenerated,
-		},
-	}, nil
+	return state, nil
 }
 
-func (r *ConversationsRepo) defaultContextStatus() map[string]any {
-	return map[string]any{
-		"current_tokens":            0,
-		"max_tokens":                128000,
-		"message_groups_in_context": 0,
-		"strategy_name":             "default",
-		"utilization":               float64(0),
-		"context_analytics": map[string]any{
-			"summaries_generated": 0,
-		},
-	}
-}
-
-func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error {
+// UpdateContextStrategy replaces `meta.context_strategy` with one RESOLVED
+// strategy document.
+//
+// It takes the typed value rather than the request body on purpose. The route
+// used to write the raw body straight into the column, so a partial form —
+// which is the only kind the UI sends — silently dropped every key it did not
+// mention (apps/elitea-web's context-budget widget carries a comment warning
+// its future editor about exactly that). Merging happens once, in the handler,
+// against the resolved strategy; what reaches the column is always complete.
+func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, strategy contextsettings.Strategy) error {
 	s := schema(projectID)
 	id, err := r.resolveConversationID(ctx, projectID, conversationID)
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(body)
+	data, err := json.Marshal(strategy)
+	if err != nil {
+		return fmt.Errorf("conversations: encode context strategy: %w", err)
+	}
 	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{context_strategy}', $1::jsonb) WHERE id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: update context strategy: %w", err)
@@ -1120,9 +1171,14 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 // a permission failure reported as "bad request" is the kind of thing that
 // sends the next reader looking for a malformed payload.
 //
-// STILL NOT PORTED: pylon's attachment cleanup (`delete_attachment`), because
-// the attachment byte path is a separate port, and the per-group socket event,
-// which the returned UUIDs replace for the one client that exists.
+// PORTED SINCE: pylon's attachment cleanup (`delete_attachment`). This method
+// reports the refs (DeleteMessageResult.Attachments, collected below) and
+// Handler.DeleteMessage removes the bytes when the request carries the flag —
+// including the deliberate fix to pylon's ordering, which deletes the files
+// BEFORE its own guards run.
+//
+// STILL NOT PORTED: the per-group socket event, which the returned UUIDs
+// replace for the one client that exists.
 func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (conversations.DeleteMessageResult, error) {
 	s := schema(projectID)
 	var result conversations.DeleteMessageResult
@@ -1216,27 +1272,11 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 	// Selected by `item_type` as well as by the join, because the discriminator
 	// and the payload table are two statements of the same fact and this is the
 	// place a disagreement between them would show up as silent data loss.
-	attachmentQ := fmt.Sprintf(`
-		SELECT att.bucket, att.name
-		FROM %s.chat_message_items mi
-		JOIN %s.chat_messages_attachment att ON att.id = mi.id
-		WHERE mi.message_group_id = ANY($1) AND mi.item_type = 'attachment_message'
-		ORDER BY mi.message_group_id, mi.order_index`, s, s)
-	attachmentRows, err := transaction.Query(ctx, attachmentQ, doomed)
+	// Shared with ConversationsRepo.Delete, which needs the same refs for the
+	// whole conversation — see collectGroupAttachments.
+	result.Attachments, err = collectGroupAttachments(ctx, transaction, s, doomed)
 	if err != nil {
-		return result, fmt.Errorf("conversations: read message attachments: %w", err)
-	}
-	for attachmentRows.Next() {
-		var ref conversations.AttachmentRef
-		if err := attachmentRows.Scan(&ref.Bucket, &ref.Name); err != nil {
-			attachmentRows.Close()
-			return result, fmt.Errorf("conversations: scan message attachment: %w", err)
-		}
-		result.Attachments = append(result.Attachments, ref)
-	}
-	attachmentRows.Close()
-	if err := attachmentRows.Err(); err != nil {
-		return result, fmt.Errorf("conversations: read message attachments: %w", err)
+		return result, err
 	}
 
 	// chat_message_items does not cascade from chat_message_group, so the items

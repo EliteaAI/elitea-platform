@@ -43,17 +43,38 @@ package repos
 //
 // # What is STILL refused, and why it is not the same kind of gap
 //
-//   - AGENT analytics. The request log has no agent dimension. A gateway
-//     request knows the model it addressed, not the agent that composed it, and
-//     nothing correlates the two: there is no trace id on the log and the
-//     runtime's execution_jobs carries no token or duration figures to join to.
-//   - TOOL analytics. Same shape. `p_<id>.chat_message_trace_step` records a
+//   - TOOL analytics. `p_<id>.chat_message_trace_step` records a
 //     `tool_name` but no `toolkit_id`, and covers chat turns only — so a
 //     "toolkit usage" table built from it would silently exclude every tool
 //     call an agent made outside a chat.
 //
-// Both are answered with ErrNoSource, which the API layer turns into a FINAL
-// status rather than a retryable one. They are a product gap, not a fault.
+// It is answered with ErrNoSource, which the API layer turns into a FINAL
+// status rather than a retryable one. It is a product gap, not a fault.
+//
+// # What is NO LONGER refused: agent analytics (migration 0100)
+//
+// The paragraph above used to have a second bullet, and it read: "A gateway
+// request knows the model it addressed, not the agent that composed it, and
+// nothing correlates the two." That was true of the corpus when it was written
+// and it is the exact statement this file is a record of going stale.
+//
+// The correlation now exists, and it is a CORRELATION rather than a
+// denormalisation. gateway.llm_request_logs.execution_id (shared 0100) carries
+// the runtime execution a request was made from — signed into the identity
+// tuple at the edge under v2, so it cannot be attached by a caller — and the
+// agent is resolved from it at READ time. Nothing writes an agent id onto the
+// log, deliberately: elitea_runtime.execution_jobs has resource_project_id AND
+// projection_project_id and they can differ, so an agent id copied onto a log
+// row would have had to pick one of those two project meanings and bake it in.
+// That is the exact ambiguity the paragraph at the top of this file says the
+// request log exists to sidestep.
+//
+// WHAT CANNOT BE ANSWERED IS THE PAST. Nothing on a row written before 0100
+// identifies an agent, so there is no backfill to write and none is faked. The
+// read reports AVAILABILITY (analytics.AgentBreakdown.Available) and omits the
+// breakdown for a window it cannot speak for, the way
+// usageDimensions.Available already does for a deployment upgraded mid-period.
+// It never answers "0 agent runs" for a month full of them.
 //
 // # Money is deliberately not read here
 //
@@ -107,6 +128,12 @@ const (
 	topUsersLimit  = 10
 	userRowsLimit  = 500
 	modelRowsLimit = 100
+	// agentRowsLimit caps the Agents tab. Same order as modelRowsLimit and for
+	// the same reason: the rows are one per AGENT, not one per run, so a
+	// group-by collapses a project's whole history into its agent count. The cut
+	// is REPORTED (AgentBreakdown.Truncated) because the client normalises its
+	// share column by summing what it received.
+	agentRowsLimit = 100
 	// healthModelRowsLimit caps the health table. Higher than modelRowsLimit
 	// because its rows are keyed by (provider, model, STREAMING), so a
 	// deployment serving both response kinds produces two rows per model.
@@ -276,12 +303,323 @@ func (r *AnalyticsRepo) GetUserActivity(ctx context.Context, params analytics.Qu
 	return users, false, nil
 }
 
-// GetAgentAnalytics has no source. See the file header for why this is a
-// product gap rather than a fault, and why it is not sourced from
-// elitea_runtime.execution_jobs.
-func (r *AnalyticsRepo) GetAgentAnalytics(context.Context, analytics.QueryParams) ([]analytics.AgentAnalytics, error) {
-	return nil, analytics.NoSourceError("agent analytics",
-		"the gateway request log carries no agent dimension, and elitea_runtime.execution_jobs is project-scoped by two different columns and records no token or duration figures")
+/* ── agents ─────────────────────────────────────────────────────────────── */
+
+// agentCapabilities are the execution capabilities that mean "an agent ran".
+//
+// A fixed list and not a prefix match. elitea_runtime.execution_jobs also holds
+// configuration validations and index ingests, which are executions the
+// platform made for itself; folding those into an agent breakdown would report
+// runs no agent performed. agent_execution_jobs' own CHECK constraint (shared
+// 0055) is this same pair, which is what keeps the two lists from drifting into
+// disagreement without anything failing.
+const agentCapabilities = `('agent.execute.application.v1', 'agent.execute.adhoc.v1')`
+
+// agentExecutionColumn probes for the column migration 0100 adds.
+//
+// It is a COLUMN probe and not a relation probe, because the relation is
+// present on every deployment that ran 0099 and the question here is whether
+// the newer file has run. checkRelations cannot answer it: to_regclass reports
+// on tables.
+//
+// It has to be asked BEFORE the statement rather than caught after it, for the
+// reason userIdentities spells out at length: GetAgentAnalytics runs on a
+// snapshot transaction, and in PostgreSQL a failed statement poisons the whole
+// transaction, so a tolerated 42703 would take every later read with it.
+const agentExecutionColumn = `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'gateway'
+      AND table_name = 'llm_request_logs'
+      AND column_name = 'execution_id'
+)`
+
+// GetAgentAnalytics is the Agents tab: which agents ran in this window, how
+// often, how slowly, and how much of it failed.
+//
+// # How a request becomes an agent
+//
+//	gateway.llm_request_logs.execution_id   the runtime execution, signed at the
+//	                                        edge, written by the gateway
+//	  -> elitea_runtime.execution_jobs      the GUARD: is this execution real,
+//	                                        is it an AGENT execution, and does it
+//	                                        belong to this project
+//	  -> p_<id>.chat_message_group.task_id  the turn that execution produced
+//	  -> chat_participants.entity_meta      the agent that authored the turn
+//	  -> p_<id>.applications.name           its display name
+//
+// execution_jobs is a guard and NOT the project source. The window is scoped by
+// llm_request_logs.project_id, which is one column with one meaning;
+// execution_jobs has resource_project_id AND projection_project_id and they can
+// differ, so asking it "which project is this" has no single answer. Asking it
+// "does either of your project columns agree with the one the log already
+// named" does, and that is all it is asked.
+//
+// That guard is also what contains a forged execution id. The id is signed into
+// the v2 identity tuple so it cannot normally be attached by a caller at all;
+// if one ever were, it would resolve only inside the project the LOG row names,
+// against an agent that caller can already see. It is never an authorization
+// input.
+//
+// # What it does NOT do
+//
+// It does not zero-fill and it does not backfill. See AgentBreakdown.Available
+// and the file header.
+func (r *AnalyticsRepo) GetAgentAnalytics(ctx context.Context, params analytics.QueryParams) (analytics.AgentBreakdown, error) {
+	id, err := projectID(params)
+	if err != nil {
+		return analytics.AgentBreakdown{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, analyticsReadTimeout)
+	defer cancel()
+
+	// One snapshot, for the reason GetUsageSummary opens one: the attributed
+	// and unattributed counts and the per-agent rows are three views of one row
+	// set, and the gateway commits into this table continuously.
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return analytics.AgentBreakdown{}, fmt.Errorf("analytics: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var hasColumn bool
+	if err := tx.QueryRow(ctx, agentExecutionColumn).Scan(&hasColumn); err != nil {
+		if missingRelation(err) {
+			return analytics.AgentBreakdown{}, analytics.NoSourceError("agent analytics",
+				"gateway.llm_request_logs is absent — shared migration 0099 has not run on this database")
+		}
+		return analytics.AgentBreakdown{}, fmt.Errorf("analytics: agent column probe: %w", err)
+	}
+	if !hasColumn {
+		// A NAMED absence, not an empty table. The endpoint refuses rather than
+		// answering with a breakdown it cannot build, because a 200 with no
+		// agents is indistinguishable from a project whose agents never ran.
+		return analytics.AgentBreakdown{}, analytics.NoSourceError("agent analytics",
+			"gateway.llm_request_logs has no execution_id column — shared migration 0100 has not run on this database")
+	}
+
+	attributed, unattributed, err := agentAttribution(ctx, tx, id, params)
+	if err != nil {
+		return analytics.AgentBreakdown{}, err
+	}
+
+	breakdown := analytics.AgentBreakdown{
+		AttributedCalls:   attributed,
+		UnattributedCalls: unattributed,
+	}
+	if attributed == 0 {
+		// NOT AVAILABLE, and not "zero agents".
+		//
+		// This is the pre-migration window, and it is also the window of a
+		// deployment whose runtime is not tagging its calls. Both are "we have
+		// nothing to say about agents here", which is a different sentence from
+		// "no agent ran here" — and the second one is a measurement, so it is
+		// not made. Agents stays nil and the handler omits the list entirely.
+		return breakdown, nil
+	}
+	breakdown.Available = true
+
+	agents, truncated, err := agentUsage(ctx, tx, id, params)
+	if err != nil {
+		return analytics.AgentBreakdown{}, err
+	}
+	// Present-and-possibly-empty once the window HAS attributable traffic: at
+	// that point "no row resolved to a named agent" is a measured fact about
+	// ad-hoc runs and deleted conversations, not an absence of data.
+	if agents == nil {
+		agents = []analytics.AgentAnalytics{}
+	}
+	breakdown.Agents = agents
+	breakdown.Truncated = truncated
+	return breakdown, nil
+}
+
+// agentAttribution splits the window into requests that carry a usable
+// execution id and requests that do not.
+//
+// BOTH HALVES ARE REPORTED. The per-agent rows are not a partition of the
+// project's llm_calls tile and never will be — most /llm traffic is not made
+// from a runtime execution — so publishing only the attributed side would leave
+// an operator reconciling a breakdown against a total it was never part of.
+func agentAttribution(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) (attributed, unattributed int64, err error) {
+	query := `
+SELECT count(*) FILTER (WHERE l.execution_id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM elitea_runtime.execution_jobs AS j
+           WHERE j.execution_id = l.execution_id
+             AND j.capability_id IN ` + agentCapabilities + `
+             AND (j.resource_project_id = l.project_id
+                  OR j.projection_project_id = l.project_id)))::bigint,
+       count(*)::bigint
+FROM gateway.llm_request_logs AS l
+WHERE l.project_id = $1
+  AND l.occurred_at >= $2
+  AND l.occurred_at < $3`
+
+	var total int64
+	if err := q.QueryRow(ctx, query, id, params.From, params.To).Scan(&attributed, &total); err != nil {
+		if missingRelation(err) {
+			return 0, 0, analytics.NoSourceError("agent analytics",
+				"gateway.llm_request_logs or elitea_runtime.execution_jobs is absent on this database")
+		}
+		return 0, 0, fmt.Errorf("analytics: agent attribution: %w", err)
+	}
+	return attributed, total - attributed, nil
+}
+
+// agentUsage groups the attributable requests by the agent that made them.
+//
+// # Why the tenant schema is interpolated
+//
+// The chat projection lives in p_<project_id>, and a schema name cannot be a
+// bind parameter. The id is not caller text: projectID() has already parsed it
+// as a positive integer and pgx.Identifier.Sanitize quotes the result. This is
+// the same construction internal/infra/db/repos/index_activity.go uses.
+//
+// # A MISS IS NOT A FAILURE
+//
+// p_<id>.applications is pylon-owned and a Go-bootstrapped database
+// legitimately has none, exactly as userIdentities documents for
+// public.auth_core__user. The relations are probed BEFORE the statement runs,
+// never caught after: this read is on a snapshot transaction, and a failed
+// statement poisons the whole transaction rather than just itself.
+//
+// When the chat projection is absent the breakdown is EMPTY rather than
+// refused: the window's attributed count is still a true measurement, and the
+// caller has already published it.
+func agentUsage(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.AgentAnalytics, bool, error) {
+	schema := pgx.Identifier{"p_" + strconv.FormatInt(id, 10)}.Sanitize()
+
+	// The chat projection is REQUIRED — without it there is no execution-to-agent
+	// mapping at all — and the name is not.
+	//
+	// They are probed separately because they belong to different corpora.
+	// chat_message_group and chat_participants are created by this service's
+	// tenant history (0123), so a migrated database always has them.
+	// `applications` is PYLON-OWNED, and a Go-bootstrapped database
+	// legitimately has none — the same split userIdentities documents for
+	// public.auth_core__user.
+	//
+	// So an absent applications table costs the DISPLAY NAME and nothing else.
+	// Dropping the rows instead would silently shrink the breakdown, and
+	// refusing the whole read because a decoration is unavailable is the
+	// "absence reads as failure" defect this repository has met before.
+	present, err := checkRelations(ctx, q, schema+".chat_message_group", schema+".chat_participants")
+	if err != nil {
+		return nil, false, err
+	}
+	if !present {
+		return nil, false, nil
+	}
+	named, err := checkRelations(ctx, q, schema+".applications")
+	if err != nil {
+		return nil, false, err
+	}
+	// A fixed fragment chosen from two constants, never assembled from request
+	// data — the shape usageScopeFilter uses for the same reason.
+	// nameGroup is separate from nameSelect because a literal cannot appear in
+	// GROUP BY — PostgreSQL reads a bare constant there as an ordinal and
+	// refuses a string outright (42601). The unnamed form groups on the id
+	// alone, which is the same grouping: one constant cannot split a group.
+	nameSelect, nameJoin, nameGroup := `''`, ``, ``
+	if named {
+		nameSelect = `coalesce(app.name, '')`
+		nameJoin = `
+LEFT JOIN ` + schema + `.applications AS app
+       ON app.id = agent.application_id::integer`
+		nameGroup = `, coalesce(app.name, '')`
+	}
+
+	// attributed: one row per EXECUTION, so the per-agent fold below cannot be
+	// distorted by an execution that has several generations in execution_jobs.
+	// EXISTS rather than a JOIN for exactly that reason — execution_jobs is
+	// keyed (execution_id, generation), and a join on the id alone multiplies
+	// every request by the number of retries the turn had.
+	//
+	// agent: DISTINCT ON (task_id) because a projection could hold more than
+	// one group against an execution; the earliest is the response the
+	// execution was admitted for.
+	query := `
+WITH attributed AS (
+    SELECT l.execution_id,
+           count(*)::bigint AS requests,
+           coalesce(sum(l.prompt_tokens + l.completion_tokens), 0)::bigint AS tokens,
+           coalesce(sum(l.duration_ms), 0)::bigint AS duration_ms,
+           count(*) FILTER (WHERE ` + errorPredicate + `)::bigint AS errors
+    FROM gateway.llm_request_logs AS l
+    WHERE l.project_id = $1
+      AND l.occurred_at >= $2
+      AND l.occurred_at < $3
+      AND l.execution_id IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM elitea_runtime.execution_jobs AS j
+          WHERE j.execution_id = l.execution_id
+            AND j.capability_id IN ` + agentCapabilities + `
+            AND (j.resource_project_id = l.project_id
+                 OR j.projection_project_id = l.project_id)
+      )
+    GROUP BY l.execution_id
+), agent AS (
+    SELECT DISTINCT ON (g.task_id)
+           g.task_id AS execution_id,
+           (author.entity_meta ->> 'id') AS application_id
+    FROM ` + schema + `.chat_message_group AS g
+    JOIN ` + schema + `.chat_participants AS author
+      ON author.id = g.author_participant_id
+     AND author.entity_name = 'application'
+    WHERE g.task_id IN (SELECT execution_id FROM attributed)
+      AND author.entity_meta ->> 'id' ~ '^[1-9][0-9]*$'
+    ORDER BY g.task_id, g.id
+)
+SELECT agent.application_id,
+       ` + nameSelect + `,
+       sum(attributed.requests)::bigint,
+       sum(attributed.tokens)::bigint,
+       sum(attributed.duration_ms)::bigint,
+       sum(attributed.errors)::bigint
+FROM agent
+JOIN attributed ON attributed.execution_id = agent.execution_id` + nameJoin + `
+GROUP BY agent.application_id` + nameGroup + `
+ORDER BY sum(attributed.requests) DESC, agent.application_id ASC
+LIMIT $4`
+
+	rows, err := q.Query(ctx, query, id, params.From, params.To, agentRowsLimit+1)
+	if err != nil {
+		if missingRelation(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("analytics: agent usage: %w", err)
+	}
+	defer rows.Close()
+
+	agents := make([]analytics.AgentAnalytics, 0)
+	for rows.Next() {
+		var (
+			agent      analytics.AgentAnalytics
+			durationMS int64
+			errorCount int64
+		)
+		if err := rows.Scan(&agent.ApplicationID, &agent.Name, &agent.RunCount,
+			&agent.TotalTokens, &durationMS, &errorCount); err != nil {
+			return nil, false, fmt.Errorf("analytics: agent usage scan: %w", err)
+		}
+		// Guarded rather than assumed non-zero. A group-by cannot produce a row
+		// with no requests today, but a division that only works because of an
+		// invariant elsewhere is the kind that starts returning NaN into a JSON
+		// body the day the invariant moves.
+		if agent.RunCount > 0 {
+			agent.AvgDuration = math.Round(float64(durationMS)/float64(agent.RunCount)*10) / 10
+			agent.ErrorRate = math.Round(float64(errorCount)/float64(agent.RunCount)*1000) / 10
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(agents) > agentRowsLimit {
+		return agents[:agentRowsLimit], true, nil
+	}
+	return agents, false, nil
 }
 
 // GetToolAnalytics has no source. See the file header.

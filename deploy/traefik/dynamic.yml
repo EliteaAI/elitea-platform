@@ -35,7 +35,7 @@ http:
     # avatars broken there while every compose test stayed green. Change both
     # files. edge_gateway_api_test.go walks the same router against that file.
     api:
-      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/icons/`) || PathPrefix(`/avatars/`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`) || PathPrefix(`/app/application_icon/`) || PathPrefix(`/app/application_tool_icon/`) || PathPrefix(`/llm/`)"
+      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || Path(`/healthz`) || PathPrefix(`/icons/`) || PathPrefix(`/avatars/`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`) || PathPrefix(`/app/application_icon/`) || PathPrefix(`/app/application_tool_icon/`) || PathPrefix(`/llm/`)"
       service: elitea-main
       entryPoints:
         - web
@@ -123,6 +123,16 @@ http:
           X-Elitea-Project-Id: ""
           X-Elitea-User-Id: ""
           X-Elitea-Tenant-Id: ""
+          # The runtime execution a /llm call was made from. It is a legitimate
+          # header from the RUNTIME WORKER, which does not pass this edge, and
+          # never from a browser: this edge runs no forwardAuth, so nothing
+          # arriving here has been authenticated when the strip happens.
+          #
+          # elitea-main re-signs whatever survives into the v2 identity tuple,
+          # so a value left in place here would be attributed to an agent the
+          # caller chose. Stripping it is what keeps the id a fact the platform
+          # asserts rather than one a caller claims.
+          X-Elitea-Execution-Id: ""
 
     redirect-to-app:
       redirectRegex:

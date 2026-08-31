@@ -167,6 +167,62 @@ type AgentAnalytics struct {
 	ErrorRate     float64 `json:"error_rate"`
 }
 
+// AgentBreakdown is the Agents tab, and the reason it is a struct rather than a
+// bare []AgentAnalytics is Available.
+//
+// # Why an availability flag and not an empty list
+//
+// The agent dimension is a COLUMN ADDED LATE. gateway.llm_request_logs gained
+// execution_id in shared migration 0100, and nothing in the rows written before
+// it identifies an agent — the log records the model a request addressed, never
+// what composed it, and no other table records the correlation after the fact.
+// A backfill is therefore impossible rather than merely unwritten, and any
+// value put into those rows would be invented.
+//
+// So a window that predates the migration has NO agent data, and that is not
+// the same claim as "no agent ran". Rendering it as an empty list beside a
+// live llm_calls figure would produce the 200-with-a-fallback-body this
+// codebase keeps being burned by: a dashboard reporting "0 agent runs" for a
+// month in which agents ran constantly, with nothing on screen able to tell the
+// difference.
+//
+// The precedent is exact and deliberate: usageDimensions.Available
+// (internal/api/v2/budgets/usage_dimensions.go) exists because a deployment
+// upgraded mid-period has accumulator spend from before the ledger existed, and
+// it OMITS the dimensional block rather than zero-filling it. This does the
+// same. When Available is false, Agents is nil and the handler emits no items
+// key at all.
+type AgentBreakdown struct {
+	// Available reports whether the window contains at least one request
+	// carrying an execution id — that is, whether this deployment was writing
+	// the agent dimension while these requests were served.
+	//
+	// False means "no data for this window", which covers a period before
+	// migration 0100 and a deployment whose runtime is not tagging its calls.
+	// It does NOT mean "no agent ran", and the two must not render alike.
+	Available bool `json:"agent_dimension_available"`
+
+	// Agents is the per-agent table, busiest first. Nil when Available is
+	// false. Empty (and present) when the window HAS attributable requests but
+	// none of them resolves to a named agent — an ad-hoc run, or an execution
+	// whose chat projection has since been deleted. That is a real and
+	// different state from both of the above.
+	Agents []AgentAnalytics `json:"-"`
+
+	// AttributedCalls and UnattributedCalls split the window's requests. They
+	// are published because the per-agent rows do NOT sum to the project's
+	// llm_calls tile and never will: most /llm traffic is not made from a
+	// runtime execution. Without both figures on screen an operator is left
+	// reconciling a breakdown against a total it was never a partition of.
+	AttributedCalls   int64 `json:"attributed_llm_calls"`
+	UnattributedCalls int64 `json:"unattributed_llm_calls"`
+
+	// Truncated is true when the table was cut to the busiest N agents, stated
+	// for the reason ModelsTruncated is: the client normalises shares by summing
+	// what it received.
+	Truncated bool `json:"truncated"`
+}
+
 type ToolAnalytics struct {
 	ToolkitID   string  `json:"toolkit_id"`
 	ToolName    string  `json:"tool_name"`

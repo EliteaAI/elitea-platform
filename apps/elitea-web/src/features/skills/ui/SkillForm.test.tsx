@@ -1,7 +1,11 @@
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 
+import { configureGeneratedClient } from '@/shared/api/generated/mutator';
+
+import { server } from '../../../test/setup';
 import { renderWithProviders } from '../__tests__/testUtils';
 import { SkillForm } from './SkillForm';
 
@@ -42,7 +46,7 @@ describe('SkillForm', () => {
     expect(screen.getByTestId('skill-instructions-input')).toBeInTheDocument();
   });
 
-  it('shows validation feedback and keeps icon upload disabled', () => {
+  it('shows validation feedback, and disables the icon control when there is no version to bind to', () => {
     renderWithProviders(
       <SkillForm
         value={{ name: '', description: '', instructions: '', tags: [] }}
@@ -51,7 +55,40 @@ describe('SkillForm', () => {
       />,
     );
     expect(screen.getAllByText(/required/i)).toHaveLength(3);
+    // No `icon` prop — a skill being created has no version id, so the bind
+    // would have nowhere to land. It is disabled for that reason, not because
+    // the feature is missing.
     expect(screen.getByRole('button', { name: 'Icon' })).toBeDisabled();
+  });
+
+  it('enables the icon control and opens the picker once a version exists', async () => {
+    const user = userEvent.setup();
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    server.use(
+      http.get('/api/v2/elitea_core/default_icons/prompt_lib/7', () => HttpResponse.json([])),
+      http.get('/api/v2/elitea_core/upload_skill_icon/prompt_lib/7', () =>
+        HttpResponse.json({ rows: [{ name: 'skill_a.png', url: '/icons/7/skill_a.png' }], total: 1 }),
+      ),
+    );
+    const onIconChange = vi.fn();
+    renderWithProviders(
+      <SkillForm
+        value={value}
+        onChange={vi.fn()}
+        icon={{ projectId: '7', versionId: '42', iconMeta: null, onIconChange }}
+      />,
+    );
+
+    const button = screen.getByTestId('skill-icon-button');
+    expect(button).toBeEnabled();
+    await user.click(button);
+
+    // The gallery must actually show the uploaded icon: an empty "Uploaded"
+    // section is what a mis-unwrapped {rows,total} body renders, with a 200 in
+    // the network tab and nothing in the console.
+    const tile = await screen.findByAltText('skill_a.png');
+    await user.click(tile);
+    expect(onIconChange).toHaveBeenCalledWith({ name: 'skill_a.png', url: '/icons/7/skill_a.png' });
   });
 
   it('offers AI generation only when the caller supplies it', async () => {

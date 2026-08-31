@@ -19,7 +19,10 @@ describe('the default pack', () => {
     const light = Object.keys(DEFAULT_BRAND_PACK.schemes.light).sort();
     const dark = Object.keys(DEFAULT_BRAND_PACK.schemes.dark).sort();
     expect(light).toEqual(dark);
-    expect(light.length).toBe(362);
+    // 406 at baseline 20b23c42 (was 362 at a55f36cf): the baseline added 44
+    // tokens, and both new asymmetric ones carry a SYMMETRY_FILLS entry, which
+    // is why the light/dark equality above still holds.
+    expect(light.length).toBe(406);
   });
 
   it('states the mandatory §4.2 roles in both schemes', () => {

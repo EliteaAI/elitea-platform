@@ -64,4 +64,39 @@ describe('ProjectParamsHeader', () => {
 
     expect(screen.queryByRole('button', { name: EDIT_LABEL })).not.toBeInTheDocument();
   });
+
+  /**
+   * The project-info endpoint answers 501 `project_info_not_available` on a
+   * deployment that has not enabled the capability. It used to answer 200 and
+   * simply omit `teammates_count`, which `?? 0` turned into a rendered "0" —
+   * a counted figure nobody had counted.
+   *
+   * This test fails on a "0": the screen must not restate the claim the server
+   * stopped making. It also asserts the request is made ONCE — 501 is final
+   * (see `isFinalClientAnswer` in app/providers/queryClient.ts), so this state
+   * is reached without an error loop.
+   */
+  it('shows no teammate count when the deployment does not report one', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    let requests = 0;
+    server.use(
+      http.get(`${BASE}/elitea_core/project_info/prompt_lib/1/project-info`, () => {
+        requests += 1;
+        return HttpResponse.json(
+          { error: 'project info is not available on this deployment', code: 'project_info_not_available' },
+          { status: 501 },
+        );
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithTheme(
+      <QueryClientProvider client={queryClient}>
+        <ProjectParamsHeader projectId="1" projectName="Demo" canEdit={false} onIconChange={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+    expect(requests).toBe(1);
+  });
 });

@@ -271,8 +271,17 @@ var _ llmproxy.LLMRouter = (*MockRouter)(nil)
 // llmproxy.SignIdentityHeaders helper which replicates the edge's signing logic
 // exactly. An empty secret omits the signature header, matching the gateway
 // config that disables verification.
+// An empty executionID signs under v1, which is what every caller that is not a
+// runtime execution does.
 func SignRequest(req *http.Request, secret []byte, projectID, userID, tenantID string) {
-	llmproxy.SignIdentityHeaders(req.Header, secret, projectID, userID, tenantID)
+	llmproxy.SignIdentityHeaders(req.Header, secret, projectID, userID, tenantID, "")
+}
+
+// SignRequestFromExecution is SignRequest for a call made FROM a runtime
+// execution: it sets X-Elitea-Execution-Id and signs the v2 tuple that covers
+// it.
+func SignRequestFromExecution(req *http.Request, secret []byte, projectID, userID, tenantID, executionID string) {
+	llmproxy.SignIdentityHeaders(req.Header, secret, projectID, userID, tenantID, executionID)
 }
 
 // ── FakeNATS ─────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import {
   removeArtifacts,
   removeArtifactBucket,
   setArtifactBucketPinned,
+  setArtifactBucketRetention,
 } from '../api/artifactsApi';
 
 export const artifactQueryKeys = {
@@ -72,6 +73,20 @@ export function useArtifactMutations(projectId: string | undefined) {
       setArtifactBucketPinned(requiredProjectId(), name, isPinned),
     onSuccess: refreshBuckets,
   });
+  /**
+   * Bucket EDIT. `setArtifactBucketRetention` existed with a unit test and
+   * zero production callers — the dead-export class this branch is clearing
+   * — because no screen ever offered a bucket-edit affordance. It is the
+   * whole of "edit a bucket": the API has no rename (S3 buckets cannot be
+   * renamed in place, and neither `PUT /buckets/{name}` nor the legacy
+   * `editBucket` it replaced ever renamed one — the legacy call only
+   * reconfigured the lifecycle, `expiration_measure`/`expiration_value`).
+   */
+  const editBucketRetention = useMutation({
+    mutationFn: ({ name, retentionDays }: { readonly name: string; readonly retentionDays: number | null }) =>
+      setArtifactBucketRetention(requiredProjectId(), name, retentionDays),
+    onSuccess: refreshBuckets,
+  });
   const deleteBucket = useMutation({
     mutationFn: (name: string) => removeArtifactBucket(requiredProjectId(), name),
     onSuccess: refreshBuckets,
@@ -87,5 +102,5 @@ export function useArtifactMutations(projectId: string | undefined) {
     onSuccess: (_data, variables) => refreshFiles(variables.bucket),
   });
 
-  return { createBucket, pinBucket, deleteBucket, deleteFile, deleteMany, refreshFiles };
+  return { createBucket, editBucketRetention, pinBucket, deleteBucket, deleteFile, deleteMany, refreshFiles };
 }

@@ -233,7 +233,7 @@ SELECT count(*) FROM p_1.chat_selected_conversations WHERE user_id = $1`, userID
 		if err := conversationsRepo.SelectConversation(ctx, chatFoldersCorpusProject, first.ID, userID); err != nil {
 			t.Fatalf("reselect before cascade check: %v", err)
 		}
-		if err := conversationsRepo.Delete(ctx, chatFoldersCorpusProject, first.ID); err != nil {
+		if _, err := conversationsRepo.Delete(ctx, chatFoldersCorpusProject, first.ID); err != nil {
 			t.Fatalf("delete conversation: %v", err)
 		}
 		if err := pool.QueryRow(ctx, `

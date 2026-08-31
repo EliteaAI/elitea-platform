@@ -40,6 +40,8 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { MemoryContextManagement } from "./memoryContextManagement.zod";
+import { MemorySummarization } from "./memorySummarization.zod";
 
 export const SocialAuthorProfile = zod
   .object({
@@ -57,6 +59,8 @@ export const SocialAuthorProfile = zod
       .unknown()
       .nullish()
       .describe("Arbitrary user-defined personalization payload."),
+    default_context_management: MemoryContextManagement.optional(),
+    default_summarization: MemorySummarization.optional(),
   })
   .describe(
     'NOTE(W2): AuthorResponse struct (internal\/api\/v2\/social\/handler.go:41-49), served by GetAuthor (:51-123). All string fields except personalization are present with a `\"\"` fallback on both the \"row found\" and \"no row \/ query error\" paths (:98-121) — the query error path is a swallowed fallback, always 200, never surfaced as an error.\n',

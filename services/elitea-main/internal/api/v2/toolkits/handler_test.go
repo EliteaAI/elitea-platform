@@ -533,7 +533,16 @@ func TestTestToolkitTool_NoTester_Returns503(t *testing.T) {
 
 // --- IndexTypes ---
 
-func TestIndexTypes_StaticResponse(t *testing.T) {
+// TestIndexTypes_RefusesInsteadOfServingAnInventedCatalogue replaces
+// TestIndexTypes_StaticResponse, which asserted the six hand-written entries
+// verbatim — including their invented `supported_extensions` lists. That test
+// could only ever confirm that the literal in the handler still matched the
+// literal in the test; it had no way to notice that neither matched anything
+// the deployment can actually index.
+//
+// This one fails on a 200: a deployment that has not enabled the real
+// index-types route must say so rather than answer with a guess.
+func TestIndexTypes_RefusesInsteadOfServingAnInventedCatalogue(t *testing.T) {
 	repo := &mockRepo{}
 	r := setupRouter(repo)
 
@@ -541,50 +550,21 @@ func TestIndexTypes_StaticResponse(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = 200 — the six hardcoded loaders were served as though a "+
+			"catalogue had been read; body=%s", rec.Body.String())
+	}
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body=%s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]any
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-
-	// Handler emits key "items", not "index_types".
-	indexTypes, ok := resp["items"].([]any)
-	if !ok {
-		t.Fatalf("expected items array, got %T", resp["items"])
+	if code, _ := resp["code"].(string); code != "index_types_not_available" {
+		t.Fatalf("code = %q, want a machine-readable index_types_not_available", code)
 	}
-	// Handler defines 6 static index types (file_loader, web_loader, confluence_loader,
-	// github_loader, jira_loader, s3_loader).
-	if len(indexTypes) != 6 {
-		t.Errorf("expected 6 index types, got %d", len(indexTypes))
-	}
-
-	total := resp["total"].(float64)
-	if int(total) != 6 {
-		t.Errorf("expected total 6, got %v", total)
-	}
-
-	// Verify expected loader types are present via the "type" field.
-	expected := map[string]bool{
-		"file_loader":       false,
-		"web_loader":        false,
-		"confluence_loader": false,
-		"github_loader":     false,
-		"jira_loader":       false,
-		"s3_loader":         false,
-	}
-	for _, item := range indexTypes {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if typ, _ := entry["type"].(string); typ != "" {
-			expected[typ] = true
-		}
-	}
-	for typ, found := range expected {
-		if !found {
-			t.Errorf("missing index type %q in response", typ)
-		}
+	if _, present := resp["items"]; present {
+		t.Fatal("the refusal must not carry an items list — a client that reads it " +
+			"would be back where it started")
 	}
 }

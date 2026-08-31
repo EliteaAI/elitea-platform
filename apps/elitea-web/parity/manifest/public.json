@@ -9,8 +9,8 @@
       "priority": "must",
       "title": "Route `/user-public/:tab` renders UserPublic",
       "source": [
-        "apps/elitea-ui/src/routes.js:51",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:235"
+        "apps/elitea-ui/src/routes.js:59",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:276"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -38,8 +38,8 @@
       "priority": "must",
       "title": "Route `/user-public/agents/:agentId` renders EditApplication",
       "source": [
-        "apps/elitea-ui/src/routes.js:52",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:236"
+        "apps/elitea-ui/src/routes.js:60",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:277"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -67,8 +67,8 @@
       "priority": "must",
       "title": "Route `/user-public/pipelines/:agentId` renders EditPipeline",
       "source": [
-        "apps/elitea-ui/src/routes.js:53",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:237"
+        "apps/elitea-ui/src/routes.js:61",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:278"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -96,8 +96,8 @@
       "priority": "must",
       "title": "Route `/user-public/toolkits/:toolkitId` renders EditToolkit",
       "source": [
-        "apps/elitea-ui/src/routes.js:54",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:238"
+        "apps/elitea-ui/src/routes.js:62",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:279"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -125,8 +125,8 @@
       "priority": "must",
       "title": "Route `/user-public/mcps/:mcpId` renders EditToolkit (MCP mode)",
       "source": [
-        "apps/elitea-ui/src/routes.js:55",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:239"
+        "apps/elitea-ui/src/routes.js:63",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:280"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -154,8 +154,8 @@
       "priority": "must",
       "title": "Route `/user-public/apps/:appId` renders AppDetail",
       "source": [
-        "apps/elitea-ui/src/routes.js:56",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:240"
+        "apps/elitea-ui/src/routes.js:64",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -183,8 +183,8 @@
       "priority": "must",
       "title": "Route `/user-public/agents/:agentId/:version` renders EditApplication (version child) (spec §8.1 id ROUTE-069b)",
       "source": [
-        "apps/elitea-ui/src/routes.js:52",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+        "apps/elitea-ui/src/routes.js:60",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:321-326"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -212,8 +212,8 @@
       "priority": "must",
       "title": "Route `/user-public/pipelines/:agentId/:version` renders EditPipeline (version child) (spec §8.1 id ROUTE-069c)",
       "source": [
-        "apps/elitea-ui/src/routes.js:53",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+        "apps/elitea-ui/src/routes.js:61",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:321-326"
       ],
       "acceptance": [
         "GIVEN an authenticated user with a selected project",
@@ -241,8 +241,8 @@
       "priority": "must",
       "title": "Route anomaly `/user-public` — declared but not mounted, reproduced bug-for-bug",
       "source": [
-        "apps/elitea-ui/src/routes.js:50",
-        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:386"
+        "apps/elitea-ui/src/routes.js:58",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:452"
       ],
       "acceptance": [
         "GIVEN the application is running with the baseline route table",
@@ -300,7 +300,7 @@
       "priority": "must",
       "title": "Endpoint GET /social/authors/{projectId}{?{queryString}|} (authorList) [dynamic path template]",
       "source": [
-        "apps/elitea-ui/src/api/social.js:103-119"
+        "apps/elitea-ui/src/api/social.js:91-111"
       ],
       "acceptance": [
         "GIVEN the user performs the author list operation",
@@ -328,7 +328,7 @@
       "priority": "must",
       "title": "Endpoint GET /social/author/ (authorDetails)",
       "source": [
-        "apps/elitea-ui/src/api/social.js:120-138"
+        "apps/elitea-ui/src/api/social.js:108-126"
       ],
       "acceptance": [
         "GIVEN the user performs the author details operation",
@@ -356,7 +356,7 @@
       "priority": "must",
       "title": "Endpoint PUT /social/author/ (authorDescription)",
       "source": [
-        "apps/elitea-ui/src/api/social.js:139-148"
+        "apps/elitea-ui/src/api/social.js:127-136"
       ],
       "acceptance": [
         "GIVEN the user performs the author description operation",
@@ -384,7 +384,7 @@
       "priority": "must",
       "title": "Endpoint POST /social/feedbacks/default/{PUBLIC_PROJECT_ID} (feedback)",
       "source": [
-        "apps/elitea-ui/src/api/social.js:149-157"
+        "apps/elitea-ui/src/api/social.js:137-145"
       ],
       "acceptance": [
         "GIVEN the user performs the feedback operation",
@@ -412,7 +412,7 @@
       "priority": "must",
       "title": "Endpoint GET /social/pin/prompt_lib/{projectId}/{entityType}/{entityId} (togglePinItem)",
       "source": [
-        "apps/elitea-ui/src/api/social.js:158-196"
+        "apps/elitea-ui/src/api/social.js:146-185"
       ],
       "acceptance": [
         "GIVEN the user performs the toggle pin item operation",

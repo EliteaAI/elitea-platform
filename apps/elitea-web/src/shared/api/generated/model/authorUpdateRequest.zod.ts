@@ -40,6 +40,8 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { MemoryContextManagement } from "./memoryContextManagement.zod";
+import { MemorySummarization } from "./memorySummarization.zod";
 
 export const AuthorUpdateRequest = zod
   .object({
@@ -50,9 +52,11 @@ export const AuthorUpdateRequest = zod
       .unknown()
       .nullish()
       .describe("Arbitrary user-defined personalization payload."),
+    default_context_management: MemoryContextManagement.optional(),
+    default_summarization: MemorySummarization.optional(),
   })
   .describe(
-    "NOTE(W2): decoded into map[string]any (internal\/api\/v2\/social\/handler.go:137-141); only name\/description\/avatar\/personalization are read (strVal\/jsonVal helpers, :156-159, 435-448) — every property is optional, and any other body key is silently ignored. A missing name\/description\/avatar upserts as an empty string.\n",
+    "NOTE(W2): decoded into map[string]any (internal\/api\/v2\/social\/handler.go, UpdateAuthor); every property is optional, and any key not listed here is silently ignored. A missing name\/description\/avatar upserts as an empty string, and a missing personalization stores JSON null — but a missing default_context_management or default_summarization KEEPS whatever is stored, because Settings > AI Personality and Settings > Memory are two pages saving one record and the personality page sends no context settings at all. Either block may also arrive nested inside personalization, which is where apps\/elitea-web put them while this endpoint still dropped every other top-level key; the top-level placement wins, and a nested one is rewritten into the columns.\n",
   );
 
 export type AuthorUpdateRequest = zod.input<typeof AuthorUpdateRequest>;

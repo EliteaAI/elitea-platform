@@ -1,10 +1,13 @@
 import { json, jsonParseLinter } from '@codemirror/lang-json';
 import { linter } from '@codemirror/lint';
 import userEvent from '@testing-library/user-event';
+import { createRef } from 'react';
+import { act } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderWithTheme } from '../lib/testTheme';
 import { installCodeMirrorTestPolyfills } from '../lib/field/codeMirrorTestPolyfills';
+import type { CodeMirrorEditorHandle } from '.';
 import { CodeMirrorEditor } from '.';
 
 installCodeMirrorTestPolyfills();
@@ -148,5 +151,103 @@ describe('CodeMirrorEditor', () => {
     expect(getContent(container)).toHaveTextContent('first');
     rerender(<CodeMirrorEditor value="second" />);
     expect(getContent(container)).toHaveTextContent('second');
+  });
+});
+
+/**
+ * The imperative API and the undo/redo callbacks were trimmed from the
+ * original port on the reasoning that neither in-scope caller attached a ref.
+ * `features/chat-messages`' `CanvasEditor` does — its whole header row
+ * (undo, redo, copy, remote-sync `setCode`) is driven through them — so the
+ * trim was what kept that editor's toolbar inert.
+ *
+ * Every case here is additive: the two ref-less callers above are untouched,
+ * and the tests above still pass unchanged, which is the point.
+ */
+describe('CodeMirrorEditor — imperative handle', () => {
+  it('reads the live document through getCode, not the debounced mirror', async () => {
+    const user = userEvent.setup();
+    const ref = createRef<CodeMirrorEditorHandle>();
+    const { container } = renderWithTheme(<CodeMirrorEditor value="abc" ref={ref} />);
+    await user.click(getContent(container));
+    await user.keyboard('Z');
+    // No wait for the 30ms onChange debounce: getCode must not depend on it.
+    expect(ref.current?.getCode()).toBe('Zabc');
+  });
+
+  it('replaces the whole document through setCode', () => {
+    const ref = createRef<CodeMirrorEditorHandle>();
+    const { container } = renderWithTheme(<CodeMirrorEditor value="before" ref={ref} />);
+    act(() => ref.current?.setCode('after'));
+    expect(getContent(container)).toHaveTextContent('after');
+    expect(ref.current?.getCode()).toBe('after');
+  });
+
+  /*
+   * The parent still holds its old `value` after a setCode (the point of
+   * setCode is a write the parent did not initiate). If the value-sync
+   * effect treated that as an external change, the next render would revert
+   * the document — which is exactly what a remote canvas sync would hit.
+   */
+  it('survives a parent re-render with the OLD value after setCode', () => {
+    const ref = createRef<CodeMirrorEditorHandle>();
+    const { container, rerender } = renderWithTheme(<CodeMirrorEditor value="before" ref={ref} />);
+    act(() => ref.current?.setCode('after'));
+    rerender(<CodeMirrorEditor value="before" ref={ref} />);
+    expect(getContent(container)).toHaveTextContent('after');
+  });
+
+  it('undoes and redoes through the handle', async () => {
+    const user = userEvent.setup();
+    const ref = createRef<CodeMirrorEditorHandle>();
+    const { container } = renderWithTheme(<CodeMirrorEditor value="abc" ref={ref} />);
+    await user.click(getContent(container));
+    await user.keyboard('Z');
+    expect(ref.current?.getCode()).toBe('Zabc');
+
+    act(() => ref.current?.undo());
+    expect(ref.current?.getCode()).toBe('abc');
+
+    act(() => ref.current?.redo());
+    expect(ref.current?.getCode()).toBe('Zabc');
+  });
+
+  it('exposes the editor/view/state escape hatches', () => {
+    const ref = createRef<CodeMirrorEditorHandle>();
+    renderWithTheme(<CodeMirrorEditor value="abc" ref={ref} />);
+    expect(ref.current?.editor).toBeInstanceOf(HTMLElement);
+    expect(ref.current?.view).toBeDefined();
+    expect(ref.current?.state?.doc.toString()).toBe('abc');
+  });
+});
+
+describe('CodeMirrorEditor — onCanUndo / onCanRedo', () => {
+  it('reports undo becoming available on the first edit, and redo only after an undo', async () => {
+    const user = userEvent.setup();
+    const onCanUndo = vi.fn();
+    const onCanRedo = vi.fn();
+    const ref = createRef<CodeMirrorEditorHandle>();
+    const { container } = renderWithTheme(
+      <CodeMirrorEditor
+        value="abc"
+        ref={ref}
+        history={{ onCanUndo, onCanRedo }}
+      />,
+    );
+
+    await user.click(getContent(container));
+    await user.keyboard('Z');
+    await vi.waitFor(() => {
+      expect(onCanUndo).toHaveBeenLastCalledWith(true);
+    });
+    // Nothing has been undone yet, so redo is still unavailable — a
+    // "something changed" flag would wrongly report both as true here.
+    expect(onCanRedo).toHaveBeenLastCalledWith(false);
+
+    act(() => ref.current?.undo());
+    await vi.waitFor(() => {
+      expect(onCanRedo).toHaveBeenLastCalledWith(true);
+    });
+    expect(onCanUndo).toHaveBeenLastCalledWith(false);
   });
 });

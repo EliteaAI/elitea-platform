@@ -26,15 +26,54 @@
  *  5. `useLanguageLinter` → replaced with `extensions` and `onChangeLanguage`
  *     injected from the feature layer (the linter integration depends on the
  *     editor's view instance, which the feature layer owns).
+ *  6. Editor presence (`chat_canvas_editors_change` → read-only lock) is NOT
+ *     wired — see the block below where it stays commented out. Nothing here
+ *     takes a lock or reserves the canvas, so two people editing the same one
+ *     is last-write-wins. That is no longer a disclosure to code readers
+ *     alone: the editor renders a notice saying so, for the person who could
+ *     actually lose the work (`concurrentEditNotice`).
+ *  7. The baseline's five mermaid quick-fix toasts are GONE. Three of them
+ *     fire on every click in a default install, where
+ *     `ELITEA_CONFIGURATIONS_ENABLED` is false and neither the model nor the
+ *     `MERMAID_QUICK_FIX` service prompt is reachable. The control is gated on
+ *     the capability instead — `./MermaidQuickFixButton.tsx` renders nothing
+ *     when it cannot run. Genuine runtime failures reach `onError`.
+ *  8. `useDownloadTable` + `SplitButton` (the table's xlsx/csv export footer)
+ *     are not ported — neither has a `shared/ui` counterpart yet. See
+ *     `./table/MarkdownTableEditor.tsx`'s deviation 1; `tracking` carries the
+ *     two uuids so that port lands without a signature change.
+ *
+ * ── TWO EDITORS, ONE HEADER ────────────────────────────────────────────────
+ * A canvas is edited by ONE of two panes: `CodeMirrorEditor` (code and the
+ * mermaid source) or `MarkdownTableEditor` (a `markdownTable` canvas). Both
+ * expose the same `undo`/`redo`/`getCode` handle shape, and the header's
+ * undo/redo/copy/close must dispatch to whichever is mounted — see
+ * `activeEditor` below. Their undo depths are tracked separately
+ * (`codeHistory`/`tableHistory`) because they are separate histories:
+ * switching the language switches which pane is mounted, and the header must
+ * then reflect THAT pane's depth, not the one that just unmounted.
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 
 import { Box, Typography } from '@mui/material';
 
 import { useCanvasDetailSocket, useCanvasEditSocket, useCanvasErrorSocket, useCanvasSyncSocket } from '@/entities/canvas/api/canvasSocket';
+import { t } from '@/shared/i18n';
+import type { CodeMirrorEditorHandle } from '@/shared/ui/CodeMirrorEditor';
+import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
+import { MermaidDiagram } from '@/shared/ui/MermaidDiagram';
+
+import type { MarkdownTableData } from '../../lib/markdownTable';
+import { parseMarkdownTable } from '../../lib/markdownTable';
+import type { UseMermaidQuickFixResult } from '../../model/useMermaidQuickFix';
+
+import { getCanvasCodeExtensions } from './canvasCodeExtensions';
 
 import { extraCodeFromBlock } from './Canvas';
 import { CanvasEditHeader } from './CanvasEditHeader';
+import { MermaidQuickFixButton } from './MermaidQuickFixButton';
+import type { MarkdownTableEditorHandle } from './table/MarkdownTableEditor';
+import { MarkdownTableEditor } from './table/MarkdownTableEditor';
 
 export interface CanvasEditorProps {
   /** Info about the selected code block this editor is editing. */
@@ -62,8 +101,16 @@ export interface CanvasEditorProps {
   readonly viewOnly?: boolean;
   /** Current user's display name (for editor presence filtering). */
   readonly userName?: string;
-  /** Called when a quick-fix is requested for a mermaid diagram (returns a promise resolving the new code). */
-  readonly onQuickFix?: (error: string, currentCode: string) => Promise<string>;
+  /**
+   * The mermaid quick-fix capability + runner, from
+   * `useMermaidQuickFix({ projectId, readOnly })`. Omit it — or pass one
+   * reporting `isAvailable: false` — and NO quick-fix control is rendered.
+   * Grouped as one object rather than two props to stay inside the §3.5
+   * 12-prop component budget.
+   */
+  readonly quickFix?: UseMermaidQuickFixResult;
+  /** Surfaces editor-level failures (canvas socket error, failed quick-fix, failed CSV import, failed clipboard write). This app has no toast hook yet. */
+  readonly onError?: (error: unknown) => void;
   /** Plain async fetcher for editing an existing canvas (baseline: `useEditCanvasMutation().mutate`). */
   readonly editCanvas?: (params: { projectId: string | number; canvasUUID: string; name?: string; canvas_type?: string; code_language?: string }) => Promise<unknown>;
   /** Project ID for canvas edits. */
@@ -93,11 +140,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       onCloseCanvasEditor,
       onRegenerate,
       onDelete,
-      interaction_uuid: _interaction_uuid,
-      conversation_uuid: _conversation_uuid,
+      interaction_uuid,
+      conversation_uuid,
       viewOnly = false,
       userName: _userName,
-      onQuickFix: _onQuickFix,
+      quickFix,
+      onError,
       editCanvas,
       projectId,
     },
@@ -105,14 +153,118 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
   ) {
     const [code, setCode] = useState(selectedCodeBlockInfo?.codeBlock ?? '');
     const [readOnly, setReadOnly] = useState(viewOnly);
-    const [canUndo, _setCanUndo] = useState(false);
-    const [canRedo, _setCanRedo] = useState(false);
-    const [_tableId] = useState(`table-${Date.now()}`);
-    const [hasSelectedRowsColumns] = useState({ hasSelectedRows: false, hasSelectedColumns: false });
-    const [_editorError, setEditorError] = useState<unknown>(null);
     const [codeLanguage, setCodeLanguage] = useState(selectedCodeBlockInfo?.language ?? 'markdown');
 
-    const { sendChangeToRemote: _sendChangeToRemote } = useCanvasEditSocket();
+    /**
+     * Which pane is mounted. A `markdownTable` canvas renders the table
+     * editor; everything else (including `mermaid`, whose source pane is a
+     * code editor) renders CodeMirror.
+     */
+    const isTableEditing = codeLanguage === 'markdownTable';
+
+    /** The CodeMirror host's imperative handle. Null while the table pane is mounted. */
+    const editorRef = useRef<CodeMirrorEditorHandle>(null);
+    /** The table editor's imperative handle. Null while the code pane is mounted. */
+    const tableRef = useRef<MarkdownTableEditorHandle>(null);
+
+    /*
+     * Two histories, not one. Each pane owns its own undo stack — CodeMirror's
+     * is the document's, the table's is a snapshot list — and only the mounted
+     * one can answer an undo. Keeping a single `canUndo` would leave the
+     * header enabled from the pane that just unmounted.
+     */
+    const [codeHistory, setCodeHistory] = useState({ canUndo: false, canRedo: false });
+    const [tableHistory, setTableHistory] = useState({ canUndo: false, canRedo: false });
+    const { canUndo, canRedo } = isTableEditing ? tableHistory : codeHistory;
+
+    /*
+     * Stable identity (each pane installs its depth listener keyed on this
+     * object), and — load-bearing — each setter BAILS OUT when the flag has not
+     * actually changed.
+     *
+     * `(prev) => ({ ...prev, canUndo: value })` returns a new object every
+     * call, so React never skips the re-render even when nothing changed. Both
+     * panes report their depth on every document change, that re-render feeds
+     * `value={code}` back into the editor, which reports depth again — typing
+     * into a canvas wedged the tab. Returning `prev` unchanged is what stops
+     * it; `./CanvasEditor.table.test.tsx`'s "the code pane" cases hang without
+     * this and pass with it.
+     */
+    const historyCallbacks = useMemo(
+      () => ({
+        onCanUndo: (value: boolean) =>
+          setCodeHistory((prev) => (prev.canUndo === value ? prev : { ...prev, canUndo: value })),
+        onCanRedo: (value: boolean) =>
+          setCodeHistory((prev) => (prev.canRedo === value ? prev : { ...prev, canRedo: value })),
+      }),
+      [],
+    );
+    /** Same, for the table pane — its model hook holds these in a `useCallback` dep list. */
+    const tableHistoryCallbacks = useMemo(
+      () => ({
+        onCanUndo: (value: boolean) =>
+          setTableHistory((prev) => (prev.canUndo === value ? prev : { ...prev, canUndo: value })),
+        onCanRedo: (value: boolean) =>
+          setTableHistory((prev) => (prev.canRedo === value ? prev : { ...prev, canRedo: value })),
+      }),
+      [],
+    );
+
+    /*
+     * Memoised on the language, NOT rebuilt per render.
+     *
+     * `getCanvasCodeExtensions` returns a fresh array on every call (`[]` for
+     * the 42 languages with no package installed), and
+     * `@uiw/react-codemirror` compares `extensions` by REFERENCE — so the
+     * inline call this replaced made the editor reconfigure its whole
+     * extension set on every keystroke. That was wasteful rather than fatal
+     * (the wedge above was the history setters), but it is a per-keystroke
+     * rebuild of the editor for no change in what the editor holds.
+     */
+    const codeExtensions = useMemo(() => getCanvasCodeExtensions(codeLanguage), [codeLanguage]);
+
+    /**
+     * The pane the header's buttons act on. Both handles expose the same
+     * `undo`/`redo`/`getCode`, so the header does not branch — this does.
+     */
+    const activeEditor = useCallback(
+      (): Pick<CodeMirrorEditorHandle, 'undo' | 'redo' | 'getCode'> | null =>
+        isTableEditing ? tableRef.current : editorRef.current,
+      [isTableEditing],
+    );
+
+    const [hasSelectedRowsColumns, setHasSelectedRowsColumns] = useState({
+      hasSelectedRows: false,
+      hasSelectedColumns: false,
+    });
+
+    const { sendChangeToRemote } = useCanvasEditSocket();
+
+    /**
+     * The baseline's `notifyChange`: keep local state, then broadcast.
+     *
+     * This lived commented out with a "currently unused" TODO because there
+     * was no CodeMirror host to call it. There is one now, so it is live —
+     * every keystroke updates `code` (what Save and Copy read) and, when the
+     * block is backed by a canvas, is pushed to the other editors.
+     */
+    const notifyChange = useCallback(
+      (newCode: string) => {
+        setCode((current) => {
+          if (current === newCode) return current;
+          if (selectedCodeBlockInfo?.canvasId) {
+            sendChangeToRemote(selectedCodeBlockInfo.canvasId, newCode);
+          }
+          return newCode;
+        });
+      },
+      [selectedCodeBlockInfo?.canvasId, sendChangeToRemote],
+    );
+
+    /** Replaces the whole table — the header's CSV/TSV import and canvas sync both land here. */
+    const onImportTableData = useCallback((data: MarkdownTableData) => {
+      tableRef.current?.resetTable(data);
+    }, []);
 
     // Canvas sync — when another editor pushes content, update local state
     const onCanvasSync = useCallback(
@@ -120,41 +272,39 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
         const extracted = extraCodeFromBlock(newContent as string);
         if (code !== extracted) {
           setCode(extracted);
-          // TODO: editorRef?.setCode(extracted)
-          if (codeLanguage === 'markdownTable') {
-            // TODO: onImportTableData(parseMarkdownTable(extracted))
+          // Push it into the live document too: `code` is passed as the
+          // editor's `value`, but whichever pane is mounted owns the doc, so a
+          // state update alone would leave the visible content stale.
+          if (isTableEditing) {
+            onImportTableData(parseMarkdownTable(extracted));
+          } else {
+            editorRef.current?.setCode(extracted);
           }
         }
       },
-      [code, codeLanguage],
+      [code, isTableEditing, onImportTableData],
     );
 
     const { listenCanvasSyncEvent, stopListenCanvasSyncEvent } = useCanvasSyncSocket({ onCanvasSync });
     const { listenCanvasDetailEvent, stopListenCanvasDetailEvent } = useCanvasDetailSocket({ onCanvasDetail: onCanvasSync });
     const { listenCanvasErrorEvent, stopListenCanvasErrorEvent } = useCanvasErrorSocket({
-      onCanvasError: (payload) => {
-        setEditorError(payload);
-        // TODO: toast error
-      },
+      onCanvasError: (payload) => onError?.(payload),
     });
 
-    // Editor change — when other editors join/leave, update read-only state
-    // TODO: Wire up onCanvasEditorsChange to useCanvasPresenceSocket (currently unused)
-    // TODO: Also wire up _notifyChange to CodeMirror onChange (currently unused)
     /*
-    // Code change handler — mirrors the baseline's `notifyChange` (update local state + broadcast to remote)
-    const _notifyChange = useCallback(
-      (newCode: string) => {
-        if (code !== newCode) {
-          setCode(newCode);
-          if (selectedCodeBlockInfo?.canvasId) {
-            sendChangeToRemote(selectedCodeBlockInfo.canvasId, newCode);
-          }
-        }
-      },
-      [code, selectedCodeBlockInfo?.canvasId, sendChangeToRemote],
-    );
-
+     * TODO (deliberately LEFT, not half-wired): editor presence.
+     *
+     * `onCanvasEditorsChange` is the only thing that would ever set
+     * `readOnly` to true for a second concurrent editor. It is left dead
+     * because it CANNOT work here: there is no socket server at all —
+     * `internal/api/socketio` was deleted with #126 and was never mounted —
+     * so no presence event is ever delivered. Wiring the listener would
+     * produce a control that looks live and never fires.
+     *
+     * Consequence, stated plainly rather than implied: two people editing
+     * the same canvas is last-write-wins.
+     */
+    /*
     const _onCanvasEditorsChange = useCallback(
       (message: unknown) => {
         // Message shape: { editors: CanvasEditorPresence[], canvas_uuid?: string, message_group_uuid?: string }
@@ -184,37 +334,30 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     );
     */
 
-    // Quick fix for mermaid diagrams
-    // TODO: Wire up handleQuickFix to MermaidDiagramOutput (currently unused)
     /*
-    const _handleQuickFix = useCallback(
-      async (mermaidError: string, mermaidCode: string) => {
-        if (readOnly) {
-          // TODO: toast error — "Diagram is read-only right now"
-          return;
-        }
-        if (!projectId) {
-          // TODO: toast error — "Select a project to use Quick Fix"
-          return;
-        }
-        if (!onQuickFix) {
-          // TODO: toast error — "Quick Fix is not configured"
-          return;
-        }
+     * Mermaid quick-fix. The runner and the four-condition capability gate live
+     * in `../../model/useMermaidQuickFix.ts`; the caller injects the result as
+     * `quickFix`. `mermaidError` is the RENDER error `MermaidDiagram` reports —
+     * the control is only offered for a diagram that actually failed.
+     */
+    const [mermaidError, setMermaidError] = useState<string>('');
 
-        try {
-          const newCode = await onQuickFix(mermaidError, mermaidCode);
-          if (newCode) {
-            _notifyChange(newCode);
-          }
-        } catch (e) {
-          setEditorError(e);
-          // TODO: toast error
-        }
+    const onQuickFixed = useCallback(
+      (fixedCode: string) => {
+        setCode(fixedCode);
+        editorRef.current?.setCode(fixedCode);
+        notifyChange(fixedCode);
       },
-      [readOnly, projectId, _onQuickFix, _notifyChange],
+      [notifyChange],
     );
-    */
+
+    // Header actions, dispatched to whichever pane is mounted
+    // (baseline `CanvasEditor.jsx:248-266` for the table half).
+    const onUndo = useCallback(() => activeEditor()?.undo(), [activeEditor]);
+    const onRedo = useCallback(() => activeEditor()?.redo(), [activeEditor]);
+    const onClickAddColumn = useCallback(() => tableRef.current?.addColumn(), []);
+    const onClickAddRow = useCallback(() => tableRef.current?.addRow(), []);
+    const onDeleteSelectedRowsOrColumns = useCallback(() => tableRef.current?.delete(), []);
 
     // Title for the editor header
     const title = useMemo(
@@ -280,16 +423,46 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     // Leave the canvas room on unmount
     useEffect(() => {
       return () => {
-        // TODO: leave canvas room (baseline: leaveTheCanvasRoom)
+        // TODO: leaveTheCanvasRoom — `entities/canvas/api/canvasSocket` exposes
+        // no leave hook yet, so the room is never left. Blocked on that hook,
+        // not on this editor.
       };
     }, []);
 
     const onCloseEditor = useCallback(
       () => {
-        onCloseCanvasEditor(canUndo, code, codeLanguage);
+        // The LIVE document, for the same reason Copy reads it: `code` only
+        // catches up after the editor's change debounce, so closing right
+        // after the last keystroke would hand the caller the previous
+        // revision to save.
+        onCloseCanvasEditor(canUndo, activeEditor()?.getCode() ?? code, codeLanguage);
       },
-      [canUndo, code, codeLanguage, onCloseCanvasEditor],
+      [activeEditor, canUndo, code, codeLanguage, onCloseCanvasEditor],
     );
+
+    /*
+     * The honest statement of what the editor does NOT do.
+     *
+     * A shared canvas (one with a `canvasId`) is reachable by everyone who
+     * can see the conversation, and the presence/read-only lock the baseline
+     * had is deliberately not wired here (deviation 6). So a save writes the
+     * whole document and whichever save lands last is the one that survives.
+     * Only a shared, editable canvas can lose someone's work this way, so the
+     * notice is shown for exactly that case — a read-only view has nothing to
+     * lose, and a canvas with no id has no second editor.
+     *
+     * It must not imply a lock, a merge or a live document, because there is
+     * none of the three.
+     */
+    const concurrentEditNotice =
+      selectedCodeBlockInfo?.canvasId && !readOnly ? (
+        <Typography variant="labelSmall" color="text.secondary" sx={{ padding: '0 4px' }}>
+          {t(
+            'canvas.editor.concurrentEdits',
+            'Anyone with access can edit this canvas. Edits are not merged — the last save replaces earlier ones.',
+          )}
+        </Typography>
+      ) : null;
 
     // Determine if we should show the editor at all
     if (!selectedCodeBlockInfo?.codeBlock && !selectedCodeBlockInfo?.isCreatingCanvas) {
@@ -398,13 +571,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           title={title}
           actions={{
             onClose: onCloseEditor,
-            onUndo: () => { /* TODO: editorRef?.undo() */ },
+            onUndo,
             disableUndo: !canUndo,
-            onRedo: () => { /* TODO: editorRef?.redo() */ },
+            onRedo,
             disableRedo: !canRedo,
             onCopy: () => {
-              navigator.clipboard.writeText(code).catch(() => { /* non-fatal */ });
-              // TODO: toast
+              // Read the LIVE document of the ACTIVE pane, not the debounced
+              // `code` mirror: a copy fired within the change debounce would
+              // otherwise put the previous revision on the clipboard.
+              const current = activeEditor()?.getCode() ?? code;
+              navigator.clipboard.writeText(current).catch((cause: unknown) => onError?.(cause));
             },
             onRegenerate,
             onDelete,
@@ -417,11 +593,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           }}
           isThisWholeMessage={!selectedCodeBlockInfo?.isBlock}
           table={{
-            isTableEditing: codeLanguage === 'markdownTable',
+            isTableEditing,
             hasSelectedRowsColumns,
+            onClickAddColumn,
+            onClickAddRow,
+            onDeleteSelectedRowsOrColumns,
+            onImportTableData,
+            onImportError: onError,
           }}
           disabledAll={readOnly || selectedCodeBlockInfo?.isCreatingCanvas || !!selectedCodeBlockInfo?.createCanvasError}
         />
+        {concurrentEditNotice}
         {codeLanguage === 'mermaid' ? (
           /* Mermaid split-view (baseline uses react-split; simplified to flex here) */
           <Box
@@ -447,7 +629,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
                 boxSizing: 'border-box',
               }}
             >
-              {/* TODO: CodeMirrorEditor — baseline: Field.CodeMirrorEditor with extensions, _notifyChange, onCanUndo, onCanRedo, readOnly */}
+              <CodeMirrorEditor
+                ref={editorRef}
+                value={code}
+                onChange={notifyChange}
+                history={historyCallbacks}
+                readOnly={readOnly}
+                extensions={codeExtensions}
+                height="100%"
+                minHeight="240px"
+                aria-label={title}
+              />
             </Box>
             <Box
               sx={{
@@ -459,7 +651,26 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
                 boxSizing: 'border-box',
               }}
             >
-              {/* TODO: MermaidDiagramOutput — baseline: <MermaidDiagramOutput code={code} onQuickFix={readOnly ? undefined : handleQuickFix} /> */}
+              {/*
+                Baseline: `<MermaidDiagramOutput code={code} onQuickFix={readOnly ? undefined : handleQuickFix} />`.
+                `shared/ui/MermaidDiagram` is the RENDER half; the quick-fix half
+                (the model round trip that rewrites broken diagram source) is the
+                sibling control below, which reads the render error this reports.
+              */}
+              <MermaidDiagram
+                code={code}
+                onError={setMermaidError}
+                data-testid="canvas-mermaid-diagram"
+              />
+              {quickFix && mermaidError !== '' && (
+                <MermaidQuickFixButton
+                  quickFix={quickFix}
+                  error={mermaidError}
+                  code={code}
+                  onFixed={onQuickFixed}
+                  onError={onError}
+                />
+              )}
             </Box>
           </Box>
         ) : codeLanguage === 'markdownTable' ? (
@@ -477,7 +688,14 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               boxSizing: 'border-box',
             }}
           >
-            {/* TODO: MarkdownTableEditor — baseline: <MarkdownTableEditor initialMarkdown={codeBlock} onChange={_notifyChange} ref={editorRef} readOnly={readOnly} /> */}
+            <MarkdownTableEditor
+              ref={tableRef}
+              content={{ initialMarkdown: code, onChange: notifyChange }}
+              history={tableHistoryCallbacks}
+              onRowsColumnsSelected={setHasSelectedRowsColumns}
+              readOnly={readOnly}
+              tracking={{ interaction_uuid, conversation_uuid }}
+            />
           </Box>
         ) : (
           /* Code editor */
@@ -494,7 +712,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               boxSizing: 'border-box',
             }}
           >
-            {/* TODO: CodeMirrorEditor — baseline: Field.CodeMirrorEditor with value={code}, extensions, _notifyChange, onCanUndo, onCanRedo, readOnly */}
+            <CodeMirrorEditor
+              ref={editorRef}
+              value={code}
+              onChange={notifyChange}
+              history={historyCallbacks}
+              readOnly={readOnly}
+              extensions={codeExtensions}
+              height="100%"
+              minHeight="240px"
+              aria-label={title}
+            />
           </Box>
         )}
       </Box>

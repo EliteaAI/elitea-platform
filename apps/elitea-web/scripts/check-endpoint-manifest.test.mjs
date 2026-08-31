@@ -311,9 +311,33 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * keeps calling through the hand-written
  * src/features/credentials/api/configurations.ts — so the three manifest
  * entries are handwritten, carrying operationIds for the reverse check.
+ *
+ * 162 -> 163, MANIFEST_ENTRY_COUNT unchanged, when issue #194 served
+ * POST /elitea_core/predict_llm/prompt_lib/{projectId} in elitea-main and
+ * described it as `predictLLM`. Exactly the same reverse-check pressure as the
+ * two steps above, only sharper: THREE manifest entries sit on that one path
+ * (agents.generateContentBlocking, pipelines.generateContentStreaming,
+ * chatMessages.generateContentBlocking) and the elitea-main allowlist was
+ * already at its cap, so two of them were failing that gate outright.
+ * Describing the endpoint makes orval generate one hook; the app keeps calling
+ * through the hand-written features/agents/api/aiEdit.ts and
+ * features/chat-messages/api/canvasQuickFix.ts, so all three entries stay
+ * `handwritten` and only gain the operationId the reverse check matches on.
  */
-const GENERATED_OPERATION_COUNT = 162;
-const MANIFEST_ENTRY_COUNT = 189;
+const GENERATED_OPERATION_COUNT = 163;
+/*
+ * 189 -> 191. The canvas mermaid quick-fix added two entries: the blocking
+ * `predict_llm` sender (`chatMessages.generateContentBlocking`) and the
+ * configuration read its capability gate gets the service prompt from.
+ *
+ * Worth recording next to the number: the quick-fix control renders in NO
+ * build today, because `predict_llm` is unrouted — router.go's NOTE(#126)
+ * records the whole Predict/LLM group standing behind a nil RouterConfig
+ * .Predictor gate nothing ever assigned, so it 404s everywhere. The manifest
+ * entry describes a sender that exists and is gated off, which is why it is
+ * counted rather than withheld.
+ */
+const MANIFEST_ENTRY_COUNT = 191;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {
