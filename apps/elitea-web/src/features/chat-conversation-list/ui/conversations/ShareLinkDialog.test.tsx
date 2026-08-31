@@ -78,10 +78,13 @@ describe('ShareLinkDialog', () => {
       http.post(LINKS, () => HttpResponse.json({ ...activeLink, token: 'the-only-copy' }, { status: 201 })),
     );
     const writeText = vi.fn(() => Promise.resolve());
-    // `clipboard` only, not a spread of the real `navigator`: spreading a class
-    // instance drops its prototype, and the replacement would answer
-    // `undefined` for every accessor the rest of the render happens to read.
-    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as unknown as Clipboard);
+    // DEFINED, not spied and not spread. `vi.spyOn(navigator, 'clipboard')`
+    // throws when the property is absent, and jsdom only sometimes provides it
+    // — the spy passed in isolation and failed in the full-suite worker.
+    // Spreading `navigator` instead is worse: it is a class instance, so the
+    // replacement loses its prototype and answers `undefined` for every other
+    // accessor the render happens to read.
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
 
     mount();
     await userEvent.click(screen.getByTestId('share-link-create'));
