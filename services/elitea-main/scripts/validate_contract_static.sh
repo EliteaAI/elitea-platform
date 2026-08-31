@@ -111,6 +111,7 @@ CHECKS=(
   "eliteacore/handler.go|Recommendations|applications|eliteacore.Recommendations → {applications}"
   "eliteacore/handler.go|AgentCategories|categories|eliteacore.AgentCategories → {categories}"
   "eliteacore/handler.go|ListUploadedIcons|rows|eliteacore.ListUploadedIcons → {rows}"
+  "eliteacore/skill_icon.go|ListSkillIcons|rows|eliteacore.ListSkillIcons → {rows}"
   "eliteacore/handler.go|DefaultIcons|ARRAY|eliteacore.DefaultIcons → []"
   "eliteacore/handler.go|PublicApplications|rows|eliteacore.PublicApplications → {rows}"
   "eliteacore/handler.go|Notifications|rows|eliteacore.Notifications → {rows}"

@@ -1,5 +1,5 @@
 /**
- * The delete control of `UserIconItem` is an icon-only `IconButton`.
+ * The delete control of `DeletableIconTile` is an icon-only `IconButton`.
  *
  * `CloseIcon` renders an `<svg>` with no text, so the button had an empty
  * accessible name. The icon grid repeats the item many times, so a screen
@@ -18,18 +18,18 @@ import userEvent from '@testing-library/user-event';
 
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
-import { UserIconItem } from './UserIconItem';
+import { DeletableIconTile } from './DeletableIconTile';
 
-describe('UserIconItem', () => {
+describe('DeletableIconTile', () => {
   it('names the delete control and opens the confirmation dialog', async () => {
     const onDelete = vi.fn();
     renderWithTheme(
-      <UserIconItem
+      <DeletableIconTile
         isSelected={false}
         onDelete={onDelete}
       >
         <span>icon</span>
-      </UserIconItem>,
+      </DeletableIconTile>,
     );
 
     await userEvent.click(screen.getByLabelText('Delete the icon'));
@@ -40,9 +40,9 @@ describe('UserIconItem', () => {
 
   it('renders no delete control while onDelete is absent', () => {
     renderWithTheme(
-      <UserIconItem isSelected={false}>
+      <DeletableIconTile isSelected={false}>
         <span>icon</span>
-      </UserIconItem>,
+      </DeletableIconTile>,
     );
 
     expect(screen.queryByLabelText('Delete the icon')).not.toBeInTheDocument();
