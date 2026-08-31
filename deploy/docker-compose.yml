@@ -178,6 +178,29 @@ services:
       # (libs/go/observability) and internal/api/v2/tracing's otlp proxy
       # target point at the collector below.
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      # The DeepWiki facade (ADR-0022). OFF unless the `deepwiki` profile is
+      # up — an enabled facade with no provider behind it is four routes that
+      # 503, and the value is read strictly, so "" is off and a typo is a boot
+      # failure rather than a quiet disable.
+      #
+      # Turn the whole thing on with:
+      #     bash deploy/scripts/gen-deepwiki-certs.sh
+      #     ELITEA_DEEPWIKI_ENABLED=true podman compose --profile deepwiki up -d
+      ELITEA_DEEPWIKI_ENABLED: "${ELITEA_DEEPWIKI_ENABLED:-false}"
+      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8443"
+      ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /certs/client.crt
+      ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /certs/client.key
+      ELITEA_DEEPWIKI_CA_FILE: /certs/ca.crt
+      # The origin the PROVIDER calls back to for artifacts and models. The
+      # engine derives the artifact API base by stripping `/llm/v1` off this,
+      # so it is one value and not two.
+      ELITEA_DEEPWIKI_CALLBACK_BASE_URL: "http://elitea-main:8080"
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "changeme"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+    volumes:
+      # Read-only, and shared with the gateway hop: one dev CA signs both, and
+      # `CN=elitea-main` is the same client on both.
+      - ./certs:/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -193,6 +216,82 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # ── DeepWiki provider service (ADR-0022) ───────────────────────────────────
+  #
+  # OPT-IN: `podman compose --profile deepwiki up -d`. Out of the default stack
+  # because the image it can actually run tools with carries a torch-sized
+  # dependency closure, and because it needs certificates generated first.
+  #
+  # BEFORE the first run:
+  #     bash deploy/scripts/gen-deepwiki-certs.sh
+  #
+  # There is no plaintext mode on either side and that is deliberate — read the
+  # script's header. A dev-only relaxation in the production code path is how a
+  # deployment ends up serving without mTLS while believing it has it.
+  #
+  # WHAT THIS IMAGE CAN DO. The default build serves the whole SPI and REFUSES
+  # every tool: it carries the engine SOURCE but not its ~92-package closure.
+  # GET /health names the active runner, so it cannot look like it has an
+  # engine. For a stack that actually generates a wiki, build the engine image
+  # (`docker buildx bake elitea-deepwiki-engine`) and set
+  # ELITEA_DEEPWIKI_RUNNER=legacy here.
+  elitea-deepwiki:
+    profiles: ["deepwiki"]
+    build:
+      context: ..
+      dockerfile: services/elitea-deepwiki/Containerfile
+      args:
+        EXTRAS: "[storage-postgres]"
+    image: ghcr.io/eliteaai/elitea-deepwiki:dev
+    environment:
+      # The service's OWN storage (decision 3): its wiki index and its
+      # invocation rows. The same database as the platform here, because a
+      # dev stack has one; the ownership is still separate, and the migrate
+      # service below is what applies its schema.
+      ELITEA_DEEPWIKI_DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      ELITEA_DEEPWIKI_TLS_CERTFILE: /certs/deepwiki-server.crt
+      ELITEA_DEEPWIKI_TLS_KEYFILE: /certs/deepwiki-server.key
+      # Setting the CA is what turns mutual authentication ON. Without it the
+      # service would serve TLS and accept any client.
+      ELITEA_DEEPWIKI_TLS_CA_FILE: /certs/ca.crt
+      # Must hold the SAME value as elitea-main's ELITEA_DEEPWIKI_IDENTITY_SECRET:
+      # this side verifies what that side signs.
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "changeme"
+      # FAIL-CLOSED on both sides. This dev value allows GitHub and nothing
+      # else; elitea-main carries the same string, and two that disagree mean
+      # an invocation that starts and then fails.
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_MODEL_ALLOWLIST: "huggingface.co,*.huggingface.co"
+      ELITEA_DEEPWIKI_RUNNER: "unavailable"
+      ELITEA_DEEPWIKI_SCRATCH_PATH: /var/scratch/deepwiki
+      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8443"
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elitea-deepwiki-migrate:
+        condition: service_completed_successfully
+
+  # The service's own migrations, run once before it starts. Separate from the
+  # platform's own migrations for the reason the chart's Job header gives: the
+  # service owns this schema and versions it independently.
+  elitea-deepwiki-migrate:
+    profiles: ["deepwiki"]
+    build:
+      context: ..
+      dockerfile: services/elitea-deepwiki/Containerfile
+      args:
+        EXTRAS: "[storage-postgres]"
+    image: ghcr.io/eliteaai/elitea-deepwiki:dev
+    entrypoint: ["python", "-m", "elitea_deepwiki.storage"]
+    environment:
+      ELITEA_DEEPWIKI_DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   elitea-ui:
     build:

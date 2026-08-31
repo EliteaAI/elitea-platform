@@ -78,3 +78,45 @@ def test_the_unicode61_fold_is_identical_on_both_sides():
 
     # Both query-side uses — the match and the lexeme extraction — need it.
     assert len(re.findall(fold, backend_source)) >= 2
+
+
+def test_the_migrations_live_inside_the_package():
+    """The published image must carry them, and it did not.
+
+    ``MIGRATIONS_DIR`` used to be ``parents[3] / "migrations"``, which resolves
+    to the service directory from a source checkout and to
+    ``<site-packages>/../migrations`` from an installed one — a path that
+    exists nowhere. Only files inside the package go into the wheel, so the
+    image had no migrations at all and could not prepare its own database.
+
+    Every test above passed the whole time, because every test runs from a
+    checkout where the wrong path happens to resolve. This one does not: it
+    asserts the directory is under the package root, which is false for the
+    old computation in EITHER layout and true for the new one in both.
+    """
+    import elitea_deepwiki
+
+    package_root = Path(elitea_deepwiki.__file__).resolve().parent
+    assert migrate.MIGRATIONS_DIR.resolve().is_relative_to(package_root), (
+        f"{migrate.MIGRATIONS_DIR} is outside the package at {package_root}, "
+        "so it will not be installed and the image cannot migrate"
+    )
+    assert list(migrate.MIGRATIONS_DIR.glob("*.sql")), "the packaged directory is empty"
+
+
+def test_the_wheel_configuration_ships_the_package_directory():
+    """A companion to the assertion above, on the other side of the build.
+
+    The path can be correct while packaging excludes the files anyway. This
+    reads pyproject's wheel target and checks that the package directory —
+    which now contains the migrations — is what ships.
+    """
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    config = tomllib.loads(pyproject.read_text())
+    packages = config["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    assert "src/elitea_deepwiki" in packages, (
+        f"the wheel ships {packages}, which does not include the package the "
+        "migrations now live in"
+    )

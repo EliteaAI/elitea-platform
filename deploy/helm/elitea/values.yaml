@@ -517,6 +517,22 @@ main:
       # exactly as the two blocks above document.
       defaultMode: 0444
       volume: {}
+    # The DeepWiki hop's client material (ADR-0022 P3). Same shape and same
+    # 0444 reasoning as llmGatewayClientMaterial above: the kubelet owns these
+    # files as root, this pod runs as nonroot, and podSecurityContext sets no
+    # fsGroup, so the other-read bit is the only one that reaches the user
+    # that must read them.
+    #
+    # secretName is normally deepwiki.mtls.clientSecretName — the Secret the
+    # deepwiki subtree's facade-client Certificate issues. A Secret is
+    # namespace-scoped, so a split-namespace install needs a second
+    # Certificate or the replication described in deploy/README.md.
+    deepwikiClientMaterial:
+      enabled: false
+      secretName: ""
+      mountPath: /run/elitea-deepwiki
+      defaultMode: 0444
+      volume: {}
     brandPack:
       enabled: false
       configMapName: ""
@@ -2064,6 +2080,159 @@ llmGateway:
       name: ""
       namespace: ""
       sectionName: ""
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── DeepWiki provider service (ADR-0022) ─────────────────────────────────────
+#
+# OFF by default, and that is the honest default rather than a cautious one:
+# the published image carries the engine SOURCE but not its ~92-package
+# closure, so a deployment that turns this on without also setting an -engine
+# image tag gets a service that serves the whole SPI and refuses every tool.
+# It says so in GET /health rather than pretending, but it is not what an
+# operator flipping `enabled` expects.
+#
+# Turning it on is TWO settings, not one: this block, and
+# main.env.ELITEA_DEEPWIKI_ENABLED with its base URL, callback origin and the
+# three client-certificate paths. elitea-main is the only door (decision 5), so
+# a provider nobody can reach is a Deployment doing nothing.
+deepwiki:
+  enabled: false
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/eliteaai/elitea-deepwiki
+    # Empty means the chart-wide image.tag. Set this to the `-engine` variant
+    # to get an image that can actually run a tool; the guard in _helpers.tpl
+    # refuses the combination of runner=legacy with a non-engine tag.
+    tag: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+  service:
+    # Named explicitly, not release-derived: the server certificate's SANs name
+    # this Service and elitea-main verifies exactly that name.
+    name: elitea-deepwiki-svc
+    port: 8443
+    annotations: {}
+
+  env:
+    # FAIL-CLOSED, and the chart refuses to render while it is empty — see
+    # elitea-deepwiki.validateGuards. The SAME value belongs in
+    # main.env.ELITEA_DEEPWIKI_GIT_ALLOWLIST: the facade checks it before
+    # opening the vault, this service checks it before building a clone URL,
+    # and two allowlists that disagree mean an invocation that starts and then
+    # fails. Example: "github.com,*.github.com".
+    ELITEA_DEEPWIKI_GIT_ALLOWLIST: ""
+    # Hosts the engine may reach to download models. A DIFFERENT trust decision
+    # from the git allowlist — a deployment may well allow an internal model
+    # mirror and no public git host — and fail-closed in the same way.
+    ELITEA_DEEPWIKI_MODEL_ALLOWLIST: ""
+    # "unavailable" (the default) refuses every tool and says so; "legacy" runs
+    # the ported engine and needs the -engine image tag above.
+    ELITEA_DEEPWIKI_RUNNER: "unavailable"
+    # "subprocess" for compose and small installs, Kubernetes Jobs for scale.
+    # Jobs mode needs cluster access this chart's ServiceAccount does not grant
+    # by default; grant it deliberately before turning it on.
+    ELITEA_DEEPWIKI_SLOTS_MODE: "false"
+    ELITEA_DEEPWIKI_MAX_PARALLEL_WORKERS: "1"
+    ELITEA_DEEPWIKI_SCRATCH_PATH: /var/scratch/deepwiki
+    # The origin elitea-main proxies to. Must agree with
+    # main.env.ELITEA_DEEPWIKI_BASE_URL.
+    ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: https://elitea-deepwiki-svc:8443
+
+  # Sensitive values from Kubernetes Secrets. ELITEA_DEEPWIKI_DATABASE_URL
+  # defaults to the chart-wide postgresql secret when one is set, exactly as
+  # every other component's database URL does.
+  secrets:
+    # The HMAC key that verifies the identity headers elitea-main signs. It
+    # must hold the SAME value as main's ELITEA_DEEPWIKI_IDENTITY_SECRET —
+    # this side verifies what that side signs, and a mismatch fails every
+    # request with a signature error.
+    ELITEA_DEEPWIKI_IDENTITY_SECRET:
+      secretName: elitea-deepwiki-secrets
+      key: identity-secret
+      optional: true
+
+  # The service's own migrations, run as a pre-install/pre-upgrade Job from the
+  # service's own image. See templates/deepwiki/migrate-job.yaml for why this
+  # is not part of elitea-migrate.
+  migrate:
+    enabled: true
+    backoffLimit: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+  # Ephemeral clone and index space (decision 4). Nothing durable lives here:
+  # a wiki is published to PostgreSQL, and a replica that dies mid-generation
+  # loses only work that is being redone anyway. Size it for the largest
+  # repository this deployment expects to clone.
+  scratch:
+    mountPath: /var/scratch/deepwiki
+    sizeLimit: 8Gi
+
+  # mTLS for the elitea-main -> deepwiki hop (decision 5). cert-manager issues
+  # a server cert (this Deployment mounts it) and a facade client cert
+  # (elitea-main mounts it) from a shared internal CA issuer.
+  mtls:
+    enabled: true
+    serverSecretName: elitea-deepwiki-server-tls
+    clientSecretName: elitea-main-deepwiki-client-tls
+    duration: 2160h    # 90d
+    renewBefore: 360h  # 15d
+    issuerRef:
+      # A cluster-shared internal (private-CA) issuer — NOT created by this
+      # chart. The same issuer the llmGateway hop uses.
+      name: elitea-internal-ca
+      kind: ClusterIssuer
+    mountPath: /etc/deepwiki/tls
+
+  # probes: with mtls.enabled (the default) these paths are NOT used — the
+  # listener requires a verified client certificate, which a kubelet probe
+  # cannot present, so the Deployment probes the socket instead.
+  probes:
+    liveness:
+      path: /health
+      periodSeconds: 10
+      failureThreshold: 3
+    readiness:
+      path: /ready
+      periodSeconds: 5
+      failureThreshold: 2
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  terminationGracePeriodSeconds: 60
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      # No CPU limit, deliberately, as elsewhere in this chart: throttling an
+      # indexing pass makes a generation slow rather than making it fail, and
+      # the memory limit is what actually bounds the blast radius.
+      memory: 4Gi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
 
   nodeSelector: {}
   tolerations: []

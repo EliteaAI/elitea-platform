@@ -21,7 +21,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "migrations"
+# INSIDE the package, and that is the whole reason it moved here.
+#
+# It used to be ``parents[3] / "migrations"``, which resolves to the service
+# directory from a source checkout and to ``<site-packages>/../migrations``
+# from an installed one — a path that exists nowhere. The published image
+# therefore carried no migrations at all and could not prepare its own
+# database, and every test passed because every test runs from the checkout.
+#
+# Files inside the package ship in the wheel, so the two layouts agree.
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 _FILENAME = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
 

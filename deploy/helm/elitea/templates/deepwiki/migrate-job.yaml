@@ -1,0 +1,94 @@
+{{- if .Values.deepwiki.enabled }}
+{{- if .Values.deepwiki.migrate.enabled }}
+{{- $secrets := .Values.deepwiki.secrets | default dict }}
+{{- $pg := .Values.postgresql | default dict }}
+{{- if and $pg.existingSecret (not (hasKey $secrets "ELITEA_DEEPWIKI_DATABASE_URL")) }}
+{{- $secrets = merge (deepCopy $secrets) (dict "ELITEA_DEEPWIKI_DATABASE_URL" (dict "secretName" $pg.existingSecret "key" (required "postgresql.key is required when postgresql.existingSecret is set" $pg.key))) }}
+{{- end }}
+# The service's own migrations (ADR-0022 decision 3).
+#
+# A JOB, not a startup step, and not a second responsibility of the platform's
+# elitea-migrate. Two reasons, and they point the same way:
+#
+#   * Two replicas starting together would both migrate. The second would race
+#     the first, or find the work done and have to decide whether that is an
+#     error. A Job runs once and Kubernetes already knows how to order it.
+#   * The service OWNS this schema. elitea-migrate owns the product schema and
+#     has never issued DDL for anything else; giving it a second corpus would
+#     make one binary the owner of two things that version independently —
+#     the shape shared/0064 and 0065 both describe from the other direction.
+#
+# The image is the service's own, so the migrations are exactly the ones the
+# running code expects. They travel INSIDE the package (they used to be
+# resolved relative to the source tree, which is a path that does not exist in
+# an installed layout — the published image carried none at all).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "elitea-deepwiki.fullname" . }}-migrate
+  labels:
+    {{- include "elitea-deepwiki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deepwiki-migrate
+  annotations:
+    # BEFORE the Deployment. A pod that starts against an unmigrated database
+    # answers every read with a missing-relation error, which reads as a broken
+    # service rather than as an unfinished install.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+    # Argo ignores helm.sh/hook-weight when its own annotation is present, so
+    # the wave states the same ordering in its dialect.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  backoffLimit: {{ .Values.deepwiki.migrate.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "elitea-deepwiki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: deepwiki-migrate
+    spec:
+      restartPolicy: Never
+      {{- with .Values.deepwiki.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "elitea-deepwiki.serviceAccountName" . }}
+      {{- include "elitea.imagePullSecrets" (dict "local" .Values.deepwiki.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.deepwiki.image.repository }}:{{ .Values.deepwiki.image.tag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.deepwiki.image.pullPolicy }}
+          {{- with .Values.deepwiki.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Overrides the image's ENTRYPOINT, which starts the server.
+          command: ["python", "-m", "elitea_deepwiki.storage"]
+          env:
+            {{- range $name, $ref := $secrets }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.deepwiki.migrate.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.deepwiki.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deepwiki.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

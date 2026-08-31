@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# render-deepwiki.sh — the DeepWiki provider component (ADR-0022 P3).
+#
+# Asserts BOTH directions, which is the shape render-llm-path.sh settled on
+# and for the same reason: a chart that renders the feature is only half the
+# claim, and the half that rots silently is the refusal. Delete either guard
+# and every other gate in helm-lint.yml stays green.
+#
+# Every assertion reads the RENDERED manifest. A values file that sets a key
+# proves nothing on its own — the key still has to survive into an env list,
+# and the container still has to consume it.
+#
+# Usage: deploy/helm/tests/render-deepwiki.sh
+# Needs: helm, yq. No cluster, no network.
+set -euo pipefail
+
+CHART="deploy/helm/elitea"
+
+# The chart's LLM gateway refuses to render until an operator states its two
+# postures, so every render below supplies them. They are render-only values
+# (.invalid is reserved by RFC 2606).
+GATEWAY_POSTURES="--set llmGateway.egressPosture=public-unrestricted --set llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://elitea.invalid/llm/v1"
+
+# A complete, correct DeepWiki install. Every refusal case below is this minus
+# exactly one thing, so a case can never pass because of a second omission.
+COMPLETE="\
+--set deepwiki.enabled=true \
+--set deepwiki.env.ELITEA_DEEPWIKI_GIT_ALLOWLIST=github.com \
+--set main.fileConfig.deepwikiClientMaterial.enabled=true \
+--set main.fileConfig.deepwikiClientMaterial.secretName=elitea-main-deepwiki-client-tls \
+--set main.env.ELITEA_DEEPWIKI_ENABLED=true \
+--set main.env.ELITEA_DEEPWIKI_BASE_URL=https://elitea-deepwiki-svc:8443 \
+--set main.env.ELITEA_DEEPWIKI_CALLBACK_BASE_URL=http://elitea-main:8080 \
+--set main.env.ELITEA_DEEPWIKI_GIT_ALLOWLIST=github.com \
+--set main.env.ELITEA_DEEPWIKI_CLIENT_CERT_FILE=/run/elitea-deepwiki/tls.crt \
+--set main.env.ELITEA_DEEPWIKI_CLIENT_KEY_FILE=/run/elitea-deepwiki/tls.key \
+--set main.env.ELITEA_DEEPWIKI_CA_FILE=/run/elitea-deepwiki/ca.crt"
+
+failures=0
+note() { printf '  %s\n' "$1"; }
+fail() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
+
+render() { helm template test "$CHART" $GATEWAY_POSTURES "$@" 2>&1; }
+
+# ── 1. The component renders, and renders the things it needs ────────────────
+
+echo "== the enabled component renders its objects =="
+manifest="$(render $COMPLETE)" || { fail "a complete install does not render: $manifest"; }
+
+for kind_name in \
+  "Deployment/elitea-deepwiki" \
+  "Service/elitea-deepwiki-svc" \
+  "ServiceAccount/elitea-deepwiki" \
+  "Job/elitea-deepwiki-migrate" \
+  "Certificate/elitea-deepwiki-server" \
+  "Certificate/elitea-deepwiki-facade-client"
+do
+  kind="${kind_name%%/*}"
+  name="${kind_name##*/}"
+  if ! printf '%s' "$manifest" \
+      | yq eval-all "select(.kind == \"$kind\" and .metadata.name == \"$name\") | .metadata.name" - \
+      | grep -qx "$name"; then
+    fail "$kind/$name is not in the render"
+  else
+    note "$kind/$name"
+  fi
+done
+
+echo "== the migration Job runs the migration command, not the server =="
+command_json="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Job" and .metadata.name == "elitea-deepwiki-migrate")
+      | .spec.template.spec.containers[0].command | join(" ")' -)"
+if [ "$command_json" != "python -m elitea_deepwiki.storage" ]; then
+  fail "the migrate Job runs '$command_json'; the image ENTRYPOINT starts the SERVER, so a Job that does not override it never migrates anything"
+else
+  note "command: $command_json"
+fi
+
+echo "== the migration Job runs BEFORE the Deployment =="
+hook="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Job" and .metadata.name == "elitea-deepwiki-migrate")
+      | .metadata.annotations["helm.sh/hook"]' -)"
+case "$hook" in
+  *pre-install*|*pre-upgrade*) note "hook: $hook" ;;
+  *) fail "the migrate Job's hook is '$hook'; a pod that starts against an unmigrated database answers every read with a missing-relation error, which reads as a broken service" ;;
+esac
+
+echo "== mTLS material reaches the provider container =="
+env_names="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[0].env[].name' -)"
+for required in ELITEA_DEEPWIKI_TLS_CERTFILE ELITEA_DEEPWIKI_TLS_KEYFILE ELITEA_DEEPWIKI_TLS_CA_FILE; do
+  if ! printf '%s' "$env_names" | grep -qx "$required"; then
+    fail "$required is not in the provider's environment; without it the service serves plain HTTP and its own refusal of non-mTLS traffic has nothing to enforce"
+  else
+    note "$required"
+  fi
+done
+
+echo "== the facade's client material is mounted where its paths point =="
+mount_path="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-main")
+      | .spec.template.spec.containers[]
+      | select(.volumeMounts[]?.name == "deepwiki-client-material")
+      | .volumeMounts[] | select(.name == "deepwiki-client-material") | .mountPath' -)"
+if [ "$mount_path" != "/run/elitea-deepwiki" ]; then
+  fail "the material is mounted at '$mount_path' but the three env paths point at /run/elitea-deepwiki; a path outside the mount is a file that does not exist in the container"
+else
+  note "mountPath: $mount_path"
+fi
+
+echo "== the two halves name the SAME git allowlist =="
+provider_allowlist="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[0].env[] | select(.name == "ELITEA_DEEPWIKI_GIT_ALLOWLIST") | .value' -)"
+if [ "$provider_allowlist" != "github.com" ]; then
+  fail "the provider's allowlist rendered as '$provider_allowlist'"
+else
+  note "provider: $provider_allowlist"
+fi
+
+# ── 2. The refusals still fire ───────────────────────────────────────────────
+#
+# Each case is COMPLETE minus one thing. `--set x=` clears a value that the
+# base already set, which is how a refusal is provoked without rebuilding the
+# whole argument list and accidentally omitting something else too.
+
+echo "== the guards refuse a half-configured install =="
+refuses() {
+  local description="$1"; shift
+  local output
+  if output="$(render $COMPLETE "$@" 2>&1)"; then
+    fail "accepted: $description"
+  else
+    case "$output" in
+      *Error*) note "refused: $description" ;;
+      *) fail "failed for the wrong reason ($description): $output" ;;
+    esac
+  fi
+}
+
+refuses "provider with no git allowlist"        --set deepwiki.env.ELITEA_DEEPWIKI_GIT_ALLOWLIST=
+refuses "facade with no git allowlist"          --set main.env.ELITEA_DEEPWIKI_GIT_ALLOWLIST=
+refuses "facade with no callback origin"        --set main.env.ELITEA_DEEPWIKI_CALLBACK_BASE_URL=
+refuses "facade with a plain-http base URL"     --set main.env.ELITEA_DEEPWIKI_BASE_URL=http://elitea-deepwiki-svc:8443
+refuses "facade with no client certificate"     --set main.env.ELITEA_DEEPWIKI_CLIENT_CERT_FILE=
+refuses "facade with a path outside the mount"  --set main.env.ELITEA_DEEPWIKI_CA_FILE=/elsewhere/ca.crt
+refuses "facade with no material mounted"       --set main.fileConfig.deepwikiClientMaterial.enabled=false
+refuses "an unrecognised ENABLED spelling"      --set main.env.ELITEA_DEEPWIKI_ENABLED=ture
+refuses "legacy runner on a non-engine image"   --set deepwiki.env.ELITEA_DEEPWIKI_RUNNER=legacy
+
+# The reverse direction: material configured with the facade off is a mounted
+# Secret nothing reads, which looks configured and does nothing.
+if output="$(render \
+      --set main.fileConfig.deepwikiClientMaterial.enabled=true \
+      --set main.fileConfig.deepwikiClientMaterial.secretName=s 2>&1)"; then
+  fail "accepted: material mounted with the facade off"
+else
+  note "refused: material mounted with the facade off"
+fi
+
+# ── 3. Off by default ────────────────────────────────────────────────────────
+
+echo "== the default install ships the component off =="
+default_manifest="$(render)" || { fail "the default install does not render"; }
+if printf '%s' "$default_manifest" | grep -q "name: elitea-deepwiki$"; then
+  fail "the default install renders DeepWiki objects; it is off by default because the published image refuses every tool"
+else
+  note "no DeepWiki objects in the default render"
+fi
+
+# ── 4. The legacy runner IS accepted on an engine tag ────────────────────────
+#
+# The guard must refuse the wrong combination and permit the right one. A
+# guard that refuses both is indistinguishable from a broken template.
+
+echo "== the legacy runner renders on an engine image =="
+if render $COMPLETE \
+     --set deepwiki.env.ELITEA_DEEPWIKI_RUNNER=legacy \
+     --set deepwiki.image.tag=1.2.3-engine >/dev/null 2>&1; then
+  note "runner=legacy with an -engine tag renders"
+else
+  fail "the guard refuses the CORRECT combination too, so it is not a guard"
+fi
+
+if [ "$failures" -ne 0 ]; then
+  echo "render-deepwiki: $failures assertion(s) failed" >&2
+  exit 1
+fi
+echo "render-deepwiki: every assertion passed"

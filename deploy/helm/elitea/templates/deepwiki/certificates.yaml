@@ -1,0 +1,64 @@
+{{- if .Values.deepwiki.enabled }}
+{{- if .Values.deepwiki.mtls.enabled }}
+# mTLS material for the elitea-main -> deepwiki hop (ADR-0022 decision 5).
+# Issued by cert-manager from an internal (private-CA) issuer, in the same
+# shape as the llmGateway hop and from the same kind of issuer. Two certs:
+#   - the provider SERVER cert (presented by elitea-deepwiki-svc)
+#   - the facade CLIENT cert (presented by elitea-main's reverse proxy)
+# Both trust the same CA bundle so each verifies the other. The CA issuer is
+# NOT created here — it is a cluster-shared prerequisite referenced by name.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "elitea-deepwiki.fullname" . }}-server
+  labels:
+    {{- include "elitea-deepwiki.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.deepwiki.mtls.serverSecretName }}
+  duration: {{ .Values.deepwiki.mtls.duration }}
+  renewBefore: {{ .Values.deepwiki.mtls.renewBefore }}
+  isCA: false
+  usages:
+    - server auth
+  dnsNames:
+    # The SAN elitea-main verifies (ELITEA_DEEPWIKI_SERVER_NAME, or the base
+    # URL's host when that is unset). MUST match the internal service DNS
+    # name, or the handshake fails with an error that reads like a trust
+    # problem rather than a naming one.
+    - {{ .Values.deepwiki.service.name }}
+    - {{ .Values.deepwiki.service.name }}.{{ .Release.Namespace }}.svc
+    - {{ .Values.deepwiki.service.name }}.{{ .Release.Namespace }}.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ .Values.deepwiki.mtls.issuerRef.name }}
+    kind: {{ .Values.deepwiki.mtls.issuerRef.kind }}
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "elitea-deepwiki.fullname" . }}-facade-client
+  labels:
+    {{- include "elitea-deepwiki.labels" . | nindent 4 }}
+spec:
+  # The Secret elitea-main mounts as ELITEA_DEEPWIKI_CLIENT_CERT_FILE /
+  # _CLIENT_KEY_FILE / _CA_FILE. Rendered here rather than in the main
+  # subtree so both certificates share one issuer and rotate together.
+  secretName: {{ .Values.deepwiki.mtls.clientSecretName }}
+  duration: {{ .Values.deepwiki.mtls.duration }}
+  renewBefore: {{ .Values.deepwiki.mtls.renewBefore }}
+  isCA: false
+  usages:
+    - client auth
+  commonName: elitea-main
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ .Values.deepwiki.mtls.issuerRef.name }}
+    kind: {{ .Values.deepwiki.mtls.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}
+{{- end }}

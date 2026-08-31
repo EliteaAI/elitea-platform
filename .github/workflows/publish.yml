@@ -258,6 +258,25 @@ jobs:
           - name: elitea-worker-rust
             context: .
             dockerfile: ./services/elitea-worker-rust/Containerfile
+          # The DeepWiki provider service (ADR-0022 P3). Repo ROOT context: the
+          # Containerfile COPYs services/elitea-deepwiki from there.
+          #
+          # build-args carries EXTRAS=[storage-postgres] and nothing more. The
+          # engine's closure is torch-sized, and a release must not wait tens of
+          # minutes on two arches for it. The published image therefore serves
+          # the whole SPI and REFUSES every tool — it cannot silently look like
+          # it has an engine, because ELITEA_DEEPWIKI_RUNNER defaults to the
+          # refusing runner and GET /health names the active one.
+          #
+          # The engine image is `docker buildx bake elitea-deepwiki-engine`,
+          # deliberately not released here. Releasing it needs a decision about
+          # scan thresholds against a multi-GB ML closure that this entry does
+          # not make.
+          - name: elitea-deepwiki
+            context: .
+            dockerfile: ./services/elitea-deepwiki/Containerfile
+            build_args: |
+              EXTRAS=[storage-postgres]
         platform:
           - runner: ubuntu-latest
             arch: linux/amd64
@@ -299,6 +318,7 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ matrix.image.name }}:${{ needs.release.outputs.new_release_version }}-${{ matrix.platform.suffix }}
           build-args: |
             VERSION=${{ needs.release.outputs.new_release_version }}
+            ${{ matrix.image.build_args }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -397,6 +417,20 @@ jobs:
           - name: elitea-worker-rust
             expect_type: rustbinary
             blocking: true
+          # python-pkg, like the other two Python images, and NOT blocking for
+          # the same reason they are not: a Debian-slim base with a pip closure
+          # carries base-image findings this repository does not control, and
+          # .github/image-scan-exempt.txt is where a measured exemption is
+          # recorded. `blocking: false` reports the count and does not stop the
+          # release; it relaxes no threshold and no dormancy guard.
+          #
+          # It is NOT a permanent posture. This value should be measured
+          # against the first published image and tightened to `true` if the
+          # count allows, exactly as elitea-worker-rust's comment above
+          # records having been.
+          - name: elitea-deepwiki
+            expect_type: python-pkg
+            blocking: false
 
     steps:
       # The gate script is read from the released tree, not from the default
@@ -477,6 +511,7 @@ jobs:
           - name: elitea-llm-gateway
           - name: elitea-worker-python
           - name: elitea-worker-rust
+          - name: elitea-deepwiki
 
     steps:
       - name: Set up Docker Buildx
@@ -521,6 +556,7 @@ jobs:
           - name: elitea-llm-gateway
           - name: elitea-worker-python
           - name: elitea-worker-rust
+          - name: elitea-deepwiki
 
     steps:
       - name: Install cosign
@@ -831,7 +867,7 @@ jobs:
           # Must list exactly the images the `build` matrix pushes — the same
           # rule as the chart array below, and held by the same gate in
           # helm-lint.yml.
-          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust")
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust" "elitea-deepwiki")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"
 

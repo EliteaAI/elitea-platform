@@ -393,6 +393,25 @@ jobs:
             target: ""
             expect_type: rustbinary
             blocking: true
+          # The DeepWiki provider service (ADR-0022 P3). Repo ROOT context: the
+          # Containerfile COPYs services/elitea-deepwiki from there.
+          #
+          # Built WITHOUT the engine extra, exactly as publish.yml releases it.
+          # Scanning the engine image instead would report on a multi-GB ML
+          # closure nobody publishes, which is a scan of something that does not
+          # ship — the shape this gate exists to avoid in the other direction.
+          #
+          # blocking: false to start, and publish.yml carries the same value and
+          # the same note: measure it against the first published image and
+          # tighten it if the count allows.
+          - name: elitea-deepwiki
+            context: .
+            dockerfile: ./services/elitea-deepwiki/Containerfile
+            target: ""
+            build_args: |
+              EXTRAS=[storage-postgres]
+            expect_type: python-pkg
+            blocking: false
 
     steps:
       - uses: actions/checkout@v7
@@ -412,6 +431,10 @@ jobs:
           # Empty for single-target images, which build their last stage. Same
           # expression publish.yml uses.
           target: ${{ matrix.image.target }}
+          # Empty for every image but elitea-deepwiki, which needs its storage
+          # extra to be the image publish.yml actually releases. Scanning a
+          # different build than the one that ships is a scan of nothing.
+          build-args: ${{ matrix.image.build_args }}
           push: false
           load: true
           tags: ${{ matrix.image.name }}:ci-scan
