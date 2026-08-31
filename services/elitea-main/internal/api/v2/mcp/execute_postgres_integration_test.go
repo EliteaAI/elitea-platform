@@ -322,6 +322,37 @@ func TestCallOfAnAgentToolReportsAPauseRatherThanWaiting(t *testing.T) {
 	}
 }
 
+// A turn the runtime REFUSES TO ADMIT leaves no empty transcript behind. A
+// client retrying against a misconfigured agent would otherwise fill the chat
+// list with conversations that never held anything.
+func TestARefusedAdmissionLeavesNoEmptyConversation(t *testing.T) {
+	pool := newMCPPool(t)
+	seedUser(t, pool, callerUserID)
+	seedAgent(t, pool, homeSchema, "Release Notes", "writes release notes", "mcp")
+
+	start := &fakeStart{err: agentexecutionapp.ErrUnsupportedCurrentAgentStart}
+	result := callTool(t, pool, start, "/app/"+homeProject+"/mcp", "Release_Notes", "go")
+
+	if result["isError"] != true {
+		t.Fatalf("isError = %v, want true", result["isError"])
+	}
+	if text := resultText(t, result); !strings.Contains(text, "Release_Notes") {
+		t.Fatalf("text = %q, want it to name the tool", text)
+	}
+	if len(start.requests) != 1 {
+		t.Fatalf("start called %d times, want once — the conversation must be built before the admission",
+			len(start.requests))
+	}
+	var conversations int
+	if err := pool.QueryRow(context.Background(), fmt.Sprintf(
+		`SELECT count(*) FROM %q.chat_conversations`, homeSchema)).Scan(&conversations); err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if conversations != 0 {
+		t.Fatalf("a refused admission left %d conversations behind, want 0", conversations)
+	}
+}
+
 // A TOOLKIT tool is refused even with a runtime present, and refused with the
 // sentence that names only the missing half — and it must not create a
 // conversation on its way to refusing.
