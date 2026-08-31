@@ -643,6 +643,40 @@ func TestARefusedHostAnswers403WithoutReachingTheProvider(t *testing.T) {
 	}
 }
 
+// A project id above MaxInt32 must not alias a real project.
+//
+// The id is narrowed to int32 to read a configuration, and Go truncates
+// silently: 4294967301 becomes 5. Without the bound, naming an out-of-range
+// project resolves project 5's stored credentials and pushes them to the
+// provider — an aliasing bug, not a lossy conversion. CodeQL found the
+// conversion; this pins the behaviour.
+func TestAnOutOfRangeProjectDoesNotAliasARealOne(t *testing.T) {
+	log, cfg := provider(t)
+	credentials, unsecreter := testResolver(t, map[int32]configurationapp.CurrentConfiguration{
+		42: githubToolkit(42, 5, "https://api.github.com"), // project FIVE
+	}, "api.github.com")
+	minter := &recordingMinter{}
+	handler := routeWith(t, cfg, credentials, minter)
+
+	// 4294967301 truncates to 5 in int32.
+	response := call(t, handler, http.MethodPost,
+		"/api/v2/deepwiki/tools/4294967301/Wikis/generate_wiki/invoke",
+		`{"configuration":{"parameters":{"code_toolkit":42}}}`)
+
+	if response.Code == http.StatusOK {
+		t.Fatalf("an out-of-range project was served: %d", response.Code)
+	}
+	if unsecreter.opens != 0 {
+		t.Fatal("an out-of-range project opened project 5's vault")
+	}
+	if len(*log) != 0 {
+		t.Fatal("an out-of-range project reached the provider")
+	}
+	if minted, _ := minter.snapshot(); len(minted) != 0 {
+		t.Fatalf("a token was minted for an out-of-range project: %v", minted)
+	}
+}
+
 // Only the invoke path is rewritten. Poll and cancel carry no body worth
 // touching, and a rewrite there would mint a token per poll.
 func TestPollingMintsNothing(t *testing.T) {

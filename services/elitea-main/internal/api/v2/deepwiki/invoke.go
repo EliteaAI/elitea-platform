@@ -364,11 +364,25 @@ func invoke(
 	// alongside the new one; the header and the field must agree.
 	r.Header.Del("Content-Length")
 
-	recorder := &statusRecorder{ResponseWriter: w}
-	proxy.Forward(recorder, r, providerPath, strconv.FormatInt(projectID, 10),
+	// The status is observed through the proxy's own ModifyResponse hook, not
+	// by wrapping the ResponseWriter.
+	//
+	// A wrapper was the first shape, and it was worse in two ways. It has to
+	// forward Flush or a streaming response stops streaming — a hazard this
+	// route does not need to carry — and it puts a Write on a
+	// caller-influenced response body, which CodeQL reads as a reflected-XSS
+	// sink (go/reflected-xss). SecurityHeaders already sets nosniff in front
+	// of every route, so the sink was not exploitable; ModifyResponse is
+	// simply the seam the standard library provides for reading a proxied
+	// status, and using it means there is no wrapper to reason about.
+	outcome := &proxyOutcome{}
+	proxy.Forward(w, r.WithContext(withProxyOutcome(r.Context(), outcome)),
+		providerPath, strconv.FormatInt(projectID, 10),
 		strconv.FormatInt(userID, 10))
 
-	if recorder.status >= 400 || recorder.status == 0 {
+	// Zero means ModifyResponse never ran, which is a transport failure — the
+	// provider was never reached, so the invocation certainly did not start.
+	if outcome.status >= 400 || outcome.status == 0 {
 		revoke(r.Context(), rewriter, logger, userID, grant.UUID)
 	}
 }
@@ -391,42 +405,6 @@ func revoke(
 			"token", tokenUUID, "error", err)
 	}
 }
-
-// statusRecorder observes the proxied status without changing the response.
-//
-// It forwards Flush. A wrapper that does not is how a streaming response stops
-// streaming: the proxy asserts http.Flusher on whatever it was handed, and a
-// wrapper that fails the assertion turns an incremental response into a
-// buffered one — or, where the code takes the assertion as a precondition,
-// into a failure.
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (rec *statusRecorder) WriteHeader(status int) {
-	if rec.status == 0 {
-		rec.status = status
-	}
-	rec.ResponseWriter.WriteHeader(status)
-}
-
-func (rec *statusRecorder) Write(b []byte) (int, error) {
-	if rec.status == 0 {
-		rec.status = http.StatusOK
-	}
-	return rec.ResponseWriter.Write(b)
-}
-
-func (rec *statusRecorder) Flush() {
-	if flusher, ok := rec.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-// Unwrap lets http.ResponseController reach the wrapped writer for everything
-// this type does not implement itself.
-func (rec *statusRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
 func pathProjectID(r *http.Request) (int64, bool) {
 	raw := chi.URLParam(r, "project_id")
