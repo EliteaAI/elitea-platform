@@ -91,13 +91,6 @@ spec:
         - path:
             type: Exact
             value: /auth
-        # Parity with the traefik edge. This service registers no socket.io
-        # handler today, and internal/api/main_public_rules.go still keeps the
-        # public rule for the path. Forwarding it costs one 404 from chi
-        # instead of one from the Gateway, and it stops the two edges diverging.
-        - path:
-            type: PathPrefix
-            value: /socket.io
         # The liveness endpoint. `/readyz` and `/startupz` are deliberately
         # absent: their bodies name each dependency's state, and no caller
         # reaches them through an edge. The probes reach the pod directly.

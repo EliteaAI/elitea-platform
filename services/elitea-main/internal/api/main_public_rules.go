@@ -20,10 +20,19 @@ import forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/inte
 //
 // The four operator-configured auth.yml rules remain in the versioned Form
 // config.
+//
+// DELIBERATELY ABSENT: `current.elitea_core.socket_io` (`^/socket\.io/.*$`).
+// It was an auth-EXEMPT rule for a path this service never served. The
+// Socket.IO prototype server was deleted with #126 (see the NOTE in
+// cmd/elitea-main/main.go), so the standing state was an anonymous entry
+// point waiting for whoever mounted a handler there. The rule and the
+// matching `/socket.io/` forwards at both browser edges
+// (deploy/traefik/dynamic.yml, deploy/traefik/dynamic.e2e.yml,
+// deploy/gateway-api/httproute.yaml) are gone together. A future socket
+// surface needs its own AUTHENTICATED rule, not this one.
 func CurrentMainRoutePublicRules() []forwardapp.PublicRule {
 	return []forwardapp.PublicRule{
 		uriRule("current.admin_ui.assets", `^/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$`),
-		uriRule("current.elitea_core.socket_io", `^/socket\.io/.*$`),
 		uriRule("current.elitea_core.robots", `^/robots\.txt$`),
 		uriRule("current.elitea_core.favicon", `^/favicon\.ico$`),
 		uriRule("current.elitea_core.access_denied", `^/app/access_denied$`),

@@ -1,19 +1,22 @@
 /**
- * AUTO-GENERATED — DO NOT EDIT BY HAND.
+ * The socket.io event contract this app speaks — 43 events, their direction
+ * and their payload schemas.
  *
- * Produced by `node scripts/gen-socket-contract.mjs` (unit S5, spec §5.5)
- * from:
- *   - apps/elitea-ui/src/common/constants.js (sioEvents / SocketMessageType)
- *   - services/elitea-main/internal/api/socketio/server.go (registered
- *     `client.On(...)` handlers — the ONLY source for `hasServerHandler`)
- *   - scripts/lib/socket-contract-render.mjs (hand-authored payload-shape
- *     catalogue — see that file's header for why payload TYPES cannot be
- *     mechanically derived from either source)
+ * MAINTAINED BY HAND. It was generated until #126 deleted the Go prototype
+ * socket.io server (services/elitea-main/internal/api/socketio/server.go);
+ * scripts/gen-socket-contract.mjs read that file as a required input and
+ * could not run without it, so the generator, its allow-list and its
+ * rendering library are retired. Edit this file directly; the tests in
+ * events.test.ts are what hold it to its shape.
  *
- * Regenerate with: node scripts/gen-socket-contract.mjs
- * Re-running with unchanged inputs reproduces this file byte-for-byte.
+ * Evidence for every entry is the CLIENT side — the pylon-era app's own
+ * catalogue and call sites (apps/elitea-ui/src/common/constants.js
+ * sioEvents, and the hooks that emit/listen). The Go service registers no
+ * socket.io handler and mounts no socket.io path, so nothing here is a
+ * statement about what elitea-main serves. A live socket server, when this
+ * app has one, is reached through VITE_SOCKET_SERVER (empty in every shipped
+ * deployment today — see client.ts's no-op client).
  */
-
 import { z } from 'zod';
 
 /**
@@ -34,11 +37,10 @@ const responseMetadataSchema = z.record(z.string(), z.unknown());
  * application_predict / chat_predict_attachment, receive direction).
  * Evidence: components/Chat/hooks.js:367-373 (destructures message_id,
  * type, response_metadata, sio_event, question_id from every message).
- * `done`/`type`+`content`-only is what the CURRENT Go stub emits
- * (server.go:163-181); the richer envelope fields are what the old React
- * client actually consumes — see the S5 final report for the gap this
- * documents between the Go stub and the pre-existing (Python) backend
- * contract the client was built against.
+ * The full envelope is what the old React client actually consumes. The Go
+ * prototype server that once emitted a narrower `type`+`content` subset is
+ * deleted (#126), so this schema now describes the client's expectation
+ * alone, and stays loose because a real server may send less.
  */
 const streamEnvelopeSchema = z.looseObject({
   message_id: z.string().optional(),
@@ -56,9 +58,9 @@ const streamEnvelopeSchema = z.looseObject({
  * Client -> server "start/continue a run" emit payload. Loose: the old app
  * builds this from a free-form `eventPayload` object
  * ([fsd]/features/chat/ui/chat-box/ChatBox.jsx:929) merged with a
- * `conversation_uuid`; server.go's stub handler instead reads
- * `conversation_id` (see the S5 final report — a pre-existing Go-stub /
- * old-client field-name mismatch, out of scope for this unit).
+ * `conversation_uuid`. Both `conversation_uuid` and `conversation_id` are
+ * accepted: the deleted Go prototype read the second name, and the pylon
+ * server the shipped client talks to is not held to either by this file.
  */
 const predictEmitSchema = z.looseObject({
   conversation_uuid: z.string().optional(),
@@ -71,11 +73,10 @@ const predictEmitSchema = z.looseObject({
 });
 
 /**
- * Room enter/leave emit payload. server.go's handleEnterRoom reads
- * `room_id`, falling back to `conversation_id`
- * (services/elitea-main/internal/api/socketio/server.go:118-121);
- * handleLeaveRooms ignores its payload entirely — rooms are tracked
- * server-side by socket id (server.go:130-136) — so this stays permissive.
+ * Room enter/leave emit payload. Every observed server has accepted either
+ * `room_id` or `conversation_id`, and the leave side has been observed
+ * ignoring its payload altogether (rooms tracked by socket id), so this
+ * stays permissive rather than pinning one name.
  */
 const roomLifecycleEmitSchema = z.looseObject({
   conversation_id: z.union([z.string(), z.number()]).optional(),
@@ -115,10 +116,10 @@ const canvasEditEmitSchema = z.looseObject({
 const canvasSyncReceiveSchema = z.looseObject({ content: z.unknown().optional() });
 const canvasErrorReceiveSchema = z.unknown();
 const canvasDetailReceiveSchema = z.looseObject({ content: z.unknown().optional() });
-/** Mirrors server.go:237-239's own emit shape exactly (the one canvas event the server both triggers and the client fully specifies). */
+/** The one canvas event whose received shape the client fully specifies (hooks/chat/useCanvasSocket.js:130-154). */
 const canvasEditorJoinedReceiveSchema = z.looseObject({ user_id: z.unknown().optional() });
 const canvasEditorsChangeReceiveSchema = z.unknown();
-/** server.go:252 broadcasts the raw edit payload verbatim (`data`) — arbitrary shape. */
+/** Broadcast of the raw edit payload verbatim (`data`) — arbitrary shape. */
 const canvasContentChangeReceiveSchema = z.record(z.string(), z.unknown());
 
 // -- Notifications ----------------------------------------------------------
@@ -211,10 +212,6 @@ type SocketEventDirection = 'emit' | 'receive' | 'bidirectional';
 export interface SocketEventContract<TEmit = unknown, TReceive = unknown> {
   readonly name: SocketEventName;
   readonly direction: SocketEventDirection;
-  /** Whether services/elitea-main's socket.io server registers a `client.On(...)` listener for this event today (mechanically derived — see the generator header). */
-  readonly hasServerHandler: boolean;
-  /** Whether the Go server contains an `.Emit(...)` call site for this event name (informational — distinct from hasServerHandler, see chat_canvas_editor_joined / chat_canvas_content_change). */
-  readonly serverEmits: boolean;
   readonly emitSchema: z.ZodType<TEmit> | null;
   readonly receiveSchema: z.ZodType<TReceive> | null;
   readonly evidence: readonly string[];
@@ -230,8 +227,6 @@ export const SOCKET_EVENTS = {
   socket_validation_error: {
     name: "socket_validation_error",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: socketValidationErrorReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:882", "apps/elitea-ui/src/components/Chat/hooks.js:1527"],
@@ -245,8 +240,6 @@ export const SOCKET_EVENTS = {
   chat_predict: {
     name: "chat_predict",
     direction: "bidirectional",
-    hasServerHandler: true,
-    serverEmits: true,
     emitSchema: predictEmitSchema,
     receiveSchema: streamEnvelopeSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:883", "apps/elitea-ui/src/components/Chat/hooks.js:239,496", "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:929"],
@@ -259,8 +252,6 @@ export const SOCKET_EVENTS = {
   chat_continue_predict: {
     name: "chat_continue_predict",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: predictEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:884", "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-box/ChatBox.jsx:174"],
@@ -273,8 +264,6 @@ export const SOCKET_EVENTS = {
   application_continue_message: {
     name: "application_continue_message",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: predictEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:885"],
@@ -289,8 +278,6 @@ export const SOCKET_EVENTS = {
   chat_enter_room: {
     name: "chat_enter_room",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: roomLifecycleEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:886", "apps/elitea-ui/src/[fsd]/features/agent/lib/hooks/useApplicationChat.hooks.js:114", "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:95,156", "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:208,218-224"],
@@ -305,8 +292,6 @@ export const SOCKET_EVENTS = {
   chat_leave_rooms: {
     name: "chat_leave_rooms",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: leaveRoomsEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:887", "apps/elitea-ui/src/components/Chat/hooks.js:73,240,1529", "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:96", "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:209"],
@@ -319,8 +304,6 @@ export const SOCKET_EVENTS = {
   chat_participant_delete: {
     name: "chat_participant_delete",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: chatParticipantDeleteReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:888", "apps/elitea-ui/src/components/Chat/hooks.js:1584-1596"],
@@ -333,8 +316,6 @@ export const SOCKET_EVENTS = {
   chat_message_delete: {
     name: "chat_message_delete",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: chatMessageDeleteReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:889", "apps/elitea-ui/src/components/Chat/hooks.js:1554-1566"],
@@ -347,8 +328,6 @@ export const SOCKET_EVENTS = {
   chat_message_delete_all: {
     name: "chat_message_delete_all",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: chatMessageDeleteAllReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:890", "apps/elitea-ui/src/components/Chat/hooks.js:1569-1581"],
@@ -361,8 +340,6 @@ export const SOCKET_EVENTS = {
   chat_message_sync: {
     name: "chat_message_sync",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: chatMessageSyncReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:891", "apps/elitea-ui/src/components/Chat/hooks.js:1540-1551"],
@@ -375,8 +352,6 @@ export const SOCKET_EVENTS = {
   chat_participant_update: {
     name: "chat_participant_update",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: chatParticipantUpdateReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:892", "apps/elitea-ui/src/components/Chat/hooks.js:1599-1610"],
@@ -389,8 +364,6 @@ export const SOCKET_EVENTS = {
   chat_conversation_name_updated: {
     name: "chat_conversation_name_updated",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: chatConversationNameUpdatedReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:893", "apps/elitea-ui/src/components/Chat/hooks.js:1613-1624"],
@@ -405,8 +378,6 @@ export const SOCKET_EVENTS = {
   application_predict: {
     name: "application_predict",
     direction: "bidirectional",
-    hasServerHandler: true,
-    serverEmits: true,
     emitSchema: predictEmitSchema,
     receiveSchema: streamEnvelopeSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:894", "apps/elitea-ui/src/[fsd]/features/agent/lib/hooks/useApplicationChat.hooks.js:114-115", "apps/elitea-ui/src/[fsd]/features/pipelines/lib/hooks/usePipelineChat.hooks.js:95-96", "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:207-209"],
@@ -418,8 +389,6 @@ export const SOCKET_EVENTS = {
   application_leave_rooms: {
     name: "application_leave_rooms",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: leaveRoomsEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:895"],
@@ -427,13 +396,11 @@ export const SOCKET_EVENTS = {
   /**
    * evidence:
    *   - apps/elitea-ui/src/common/constants.js:896
-   *   NOTE: Declared, grep-verified UNUSED anywhere else in the old app. server.go registers a listener that routes to handleApplicationPredict, which emits its response back under the LITERAL "application_predict" name, not "promptlib_predict" — so even server-side this event is effectively emit-only. Typed by analogy to application_predict/chat_predict.
+   *   NOTE: Declared, grep-verified UNUSED anywhere else in the old app. Every server implementation seen so far answers it under the LITERAL "application_predict" name, so it is effectively emit-only. Typed by analogy to application_predict/chat_predict.
    */
   promptlib_predict: {
     name: "promptlib_predict",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: predictEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:896"],
@@ -446,8 +413,6 @@ export const SOCKET_EVENTS = {
   promptlib_leave_rooms: {
     name: "promptlib_leave_rooms",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: leaveRoomsEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:897"],
@@ -460,8 +425,6 @@ export const SOCKET_EVENTS = {
   notifications_notify: {
     name: "notifications_notify",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: notificationsNotifyReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:898", "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/NotificationButton.jsx:43"],
@@ -474,8 +437,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_join: {
     name: "chat_canvas_join",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: canvasJoinEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:901", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:7-23"],
@@ -488,8 +449,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_leave_rooms: {
     name: "chat_canvas_leave_rooms",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: canvasLeaveEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:902", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:25-35"],
@@ -502,8 +461,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_edit: {
     name: "chat_canvas_edit",
     direction: "emit",
-    hasServerHandler: true,
-    serverEmits: false,
     emitSchema: canvasEditEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:903", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:37-49"],
@@ -516,8 +473,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_sync: {
     name: "chat_canvas_sync",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: canvasSyncReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:905", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:51-76"],
@@ -530,8 +485,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_error: {
     name: "chat_canvas_error",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: canvasErrorReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:906", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:78-101"],
@@ -544,8 +497,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_detail: {
     name: "chat_canvas_detail",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: canvasDetailReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:907", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:103-128"],
@@ -554,17 +505,14 @@ export const SOCKET_EVENTS = {
    * evidence:
    *   - apps/elitea-ui/src/common/constants.js:908
    *   - apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:130-154
-   *   - services/elitea-main/internal/api/socketio/server.go:237-239
    *   NOTE: The Go server both triggers chat_canvas_join AND emits this back — see the S5 report for the emitter/listener asymmetry this documents.
    */
   chat_canvas_editor_joined: {
     name: "chat_canvas_editor_joined",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: true,
     emitSchema: null,
     receiveSchema: canvasEditorJoinedReceiveSchema,
-    evidence: ["apps/elitea-ui/src/common/constants.js:908", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:130-154", "services/elitea-main/internal/api/socketio/server.go:237-239"],
+    evidence: ["apps/elitea-ui/src/common/constants.js:908", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:130-154"],
   },
   /**
    * evidence:
@@ -574,8 +522,6 @@ export const SOCKET_EVENTS = {
   chat_canvas_editors_change: {
     name: "chat_canvas_editors_change",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: canvasEditorsChangeReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:909", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:156-180"],
@@ -584,17 +530,14 @@ export const SOCKET_EVENTS = {
    * evidence:
    *   - apps/elitea-ui/src/common/constants.js:910
    *   - apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:182-206
-   *   - services/elitea-main/internal/api/socketio/server.go:252
    *   NOTE: The Go server emits this back to the room when chat_canvas_edit is received — same asymmetry class as chat_canvas_editor_joined.
    */
   chat_canvas_content_change: {
     name: "chat_canvas_content_change",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: true,
     emitSchema: null,
     receiveSchema: canvasContentChangeReceiveSchema,
-    evidence: ["apps/elitea-ui/src/common/constants.js:910", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:182-206", "services/elitea-main/internal/api/socketio/server.go:252"],
+    evidence: ["apps/elitea-ui/src/common/constants.js:910", "apps/elitea-ui/src/hooks/chat/useCanvasSocket.js:182-206"],
   },
   /**
    * evidence:
@@ -604,8 +547,6 @@ export const SOCKET_EVENTS = {
   chat_predict_attachment: {
     name: "chat_predict_attachment",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: streamEnvelopeSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:911", "apps/elitea-ui/src/components/Chat/hooks.js:1478"],
@@ -620,8 +561,6 @@ export const SOCKET_EVENTS = {
   mcp_status: {
     name: "mcp_status",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: mcpStatusReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:914", "apps/elitea-ui/src/hooks/chat/useMCPParticipantStatusMonitor.js:24", "apps/elitea-ui/src/hooks/application/useAgentMCPToolsStatusMonitor.js:73", "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useGetCurrentToolkitSchemas.hooks.js:40"],
@@ -630,16 +569,13 @@ export const SOCKET_EVENTS = {
    * evidence:
    *   - apps/elitea-ui/src/common/constants.js:917
    *   - apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:84-133
-   *   - services/elitea-main/internal/api/socketio/server.go:105-107,255-280
    */
   test_mcp_connection: {
     name: "test_mcp_connection",
     direction: "bidirectional",
-    hasServerHandler: true,
-    serverEmits: true,
     emitSchema: testMcpConnectionEmitSchema,
     receiveSchema: testMcpConnectionReceiveSchema,
-    evidence: ["apps/elitea-ui/src/common/constants.js:917", "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:84-133", "services/elitea-main/internal/api/socketio/server.go:105-107,255-280"],
+    evidence: ["apps/elitea-ui/src/common/constants.js:917", "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:84-133"],
   },
   /**
    * evidence:
@@ -649,8 +585,6 @@ export const SOCKET_EVENTS = {
   asr_start: {
     name: "asr_start",
     direction: "emit",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: asrStartEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:920", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:215-220"],
@@ -663,8 +597,6 @@ export const SOCKET_EVENTS = {
   asr_audio_chunk: {
     name: "asr_audio_chunk",
     direction: "emit",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: asrAudioChunkEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:921", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:200-203"],
@@ -677,8 +609,6 @@ export const SOCKET_EVENTS = {
   asr_stop: {
     name: "asr_stop",
     direction: "emit",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: asrStopEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:922", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:251,261"],
@@ -691,8 +621,6 @@ export const SOCKET_EVENTS = {
   asr_transcript_delta: {
     name: "asr_transcript_delta",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: asrTranscriptDeltaReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:923", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:113-116,140"],
@@ -705,8 +633,6 @@ export const SOCKET_EVENTS = {
   asr_transcript_done: {
     name: "asr_transcript_done",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: asrTranscriptDoneReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:924", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:118-124,141"],
@@ -719,8 +645,6 @@ export const SOCKET_EVENTS = {
   asr_error: {
     name: "asr_error",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: asrErrorReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:925", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:136-138,144"],
@@ -733,8 +657,6 @@ export const SOCKET_EVENTS = {
   asr_speech_started: {
     name: "asr_speech_started",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: asrSpeechStartedReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:926", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:126-129,142"],
@@ -747,8 +669,6 @@ export const SOCKET_EVENTS = {
   asr_vad_flush: {
     name: "asr_vad_flush",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: asrVadFlushReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:927", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useStreamingSpeechRecognition.hooks.js:131-134,143"],
@@ -761,8 +681,6 @@ export const SOCKET_EVENTS = {
   tts_start: {
     name: "tts_start",
     direction: "emit",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: ttsStartEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:930", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:465-472"],
@@ -775,8 +693,6 @@ export const SOCKET_EVENTS = {
   tts_stop: {
     name: "tts_stop",
     direction: "emit",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: ttsStopEmitSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:931", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:446,525"],
@@ -789,8 +705,6 @@ export const SOCKET_EVENTS = {
   tts_next: {
     name: "tts_next",
     direction: "emit",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: ttsNextUnusedSchema,
     receiveSchema: null,
     evidence: ["apps/elitea-ui/src/common/constants.js:932"],
@@ -803,8 +717,6 @@ export const SOCKET_EVENTS = {
   tts_audio_chunk: {
     name: "tts_audio_chunk",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: ttsAudioChunkReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:933", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:562-586,635"],
@@ -817,8 +729,6 @@ export const SOCKET_EVENTS = {
   tts_done: {
     name: "tts_done",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: ttsDoneReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:934", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:588-626,636"],
@@ -831,8 +741,6 @@ export const SOCKET_EVENTS = {
   tts_error: {
     name: "tts_error",
     direction: "receive",
-    hasServerHandler: false,
-    serverEmits: false,
     emitSchema: null,
     receiveSchema: ttsErrorReceiveSchema,
     evidence: ["apps/elitea-ui/src/common/constants.js:935", "apps/elitea-ui/src/[fsd]/features/chat/lib/hooks/useTextToSpeech.hooks.js:628-633,637"],
@@ -856,8 +764,3 @@ export type EmitPayloadOf<E extends EmittableEventName> = (typeof SOCKET_EVENTS)
 export type ReceivePayloadOf<E extends ReceivableEventName> = (typeof SOCKET_EVENTS)[E]['receiveSchema'] extends z.ZodType<infer T>
   ? T
   : never;
-
-/** Events with NO registered server handler today (client.On absent) — cross-check against scripts/socket-contract.allowlist.json. */
-export const EVENTS_WITHOUT_SERVER_HANDLER: readonly SocketEventName[] = SOCKET_EVENT_NAMES.filter(
-  (name) => !SOCKET_EVENTS[name].hasServerHandler,
-);

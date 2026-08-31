@@ -2856,5 +2856,6 @@
   "sharedConversation.author.user": "User",
   "sharedConversation.author.assistant": "Assistant",
   "sharedConversation.message.error": "This message failed.",
-  "sharedConversation.message.attachment": "Attachment: "
+  "sharedConversation.message.attachment": "Attachment: ",
+  "canvas.editor.concurrentEdits": "Anyone with access can edit this canvas. Edits are not merged — the last save replaces earlier ones."
 }

@@ -140,7 +140,7 @@ export interface UseCanvasContentChangeSocketResult {
   readonly stopListenCanvasContentChangeEvent: () => void;
 }
 
-/** server.go:252 broadcasts the raw edit payload verbatim — no unwrap, unlike sync/detail. */
+/** This event carries the raw edit payload verbatim — no unwrap, unlike sync/detail. */
 export function useCanvasContentChangeSocket(params: {
   readonly onCanvasContentChange: (payload: ReceivePayloadOf<'chat_canvas_content_change'>) => void;
 }): UseCanvasContentChangeSocketResult {

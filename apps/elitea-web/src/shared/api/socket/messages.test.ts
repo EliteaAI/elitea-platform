@@ -1,6 +1,7 @@
 /**
- * messages.ts is GENERATED (scripts/gen-socket-contract.mjs) — these tests
- * assert the generated discriminated union's runtime behaviour, in
+ * messages.ts is hand-maintained (its generator was retired with the Go
+ * prototype socket.io server it read, #126) — these tests are what hold the
+ * discriminated union to its shape, and assert its runtime behaviour, in
  * particular the spec-mandated unknown_event fallback (§5.5: "unknown
  * discriminants route to a logged unknown_event branch rather than
  * crashing or silently dropping").

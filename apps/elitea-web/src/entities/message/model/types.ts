@@ -5,8 +5,8 @@
  * is not spec-described).
  *
  * `SocketMessageType` and `RawSocketMessage` are TYPE-ONLY re-derivations of
- * S5's now-landed, generated contract (`shared/api/socket/messages.ts`,
- * `scripts/gen-socket-contract.mjs`) rather than a hand-maintained parallel
+ * the socket contract (`shared/api/socket/messages.ts`)
+ * rather than a second, hand-maintained parallel
  * definition: `import type` + `typeof` erase completely at compile time (no
  * runtime edge into `shared/api/socket`, verified — `tsc --noEmit` on a
  * throwaway probe file emits zero output), and deriving structurally means

@@ -26,12 +26,19 @@
  *  5. `useLanguageLinter` → replaced with `extensions` and `onChangeLanguage`
  *     injected from the feature layer (the linter integration depends on the
  *     editor's view instance, which the feature layer owns).
+ *  6. Editor presence (`chat_canvas_editors_change` → read-only lock) is NOT
+ *     wired — see the block below where it stays commented out. Nothing here
+ *     takes a lock or reserves the canvas, so two people editing the same one
+ *     is last-write-wins. That is no longer a disclosure to code readers
+ *     alone: the editor renders a notice saying so, for the person who could
+ *     actually lose the work (`concurrentEditNotice`).
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 
 import { Box, Typography } from '@mui/material';
 
 import { useCanvasDetailSocket, useCanvasEditSocket, useCanvasErrorSocket, useCanvasSyncSocket } from '@/entities/canvas/api/canvasSocket';
+import { t } from '@/shared/i18n';
 import type { CodeMirrorEditorHandle } from '@/shared/ui/CodeMirrorEditor';
 import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { MermaidDiagram } from '@/shared/ui/MermaidDiagram';
@@ -326,6 +333,30 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       [canUndo, code, codeLanguage, onCloseCanvasEditor],
     );
 
+    /*
+     * The honest statement of what the editor does NOT do.
+     *
+     * A shared canvas (one with a `canvasId`) is reachable by everyone who
+     * can see the conversation, and the presence/read-only lock the baseline
+     * had is deliberately not wired here (deviation 6). So a save writes the
+     * whole document and whichever save lands last is the one that survives.
+     * Only a shared, editable canvas can lose someone's work this way, so the
+     * notice is shown for exactly that case — a read-only view has nothing to
+     * lose, and a canvas with no id has no second editor.
+     *
+     * It must not imply a lock, a merge or a live document, because there is
+     * none of the three.
+     */
+    const concurrentEditNotice =
+      selectedCodeBlockInfo?.canvasId && !readOnly ? (
+        <Typography variant="labelSmall" color="text.secondary" sx={{ padding: '0 4px' }}>
+          {t(
+            'canvas.editor.concurrentEdits',
+            'Anyone with access can edit this canvas. Edits are not merged — the last save replaces earlier ones.',
+          )}
+        </Typography>
+      ) : null;
+
     // Determine if we should show the editor at all
     if (!selectedCodeBlockInfo?.codeBlock && !selectedCodeBlockInfo?.isCreatingCanvas) {
       return <Box sx={{ display: 'none' }} />;
@@ -460,6 +491,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           }}
           disabledAll={readOnly || selectedCodeBlockInfo?.isCreatingCanvas || !!selectedCodeBlockInfo?.createCanvasError}
         />
+        {concurrentEditNotice}
         {codeLanguage === 'mermaid' ? (
           /* Mermaid split-view (baseline uses react-split; simplified to flex here) */
           <Box

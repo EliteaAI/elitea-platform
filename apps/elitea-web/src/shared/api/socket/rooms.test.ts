@@ -87,9 +87,10 @@ describe('useSocketRoom', () => {
 });
 
 describe('useSocketRoom — reference counting (post-review fix)', () => {
-  // server.go's handleLeaveRooms (server.go:130-136) ignores the payload it
-  // receives and leaves EVERY room the socket connection has ever joined,
-  // not just the one named in the event. An unconditional leave-on-unmount
+  // A leave handler need not honour the payload it receives: the Go
+  // prototype server this behaviour was measured against (deleted with #126)
+  // left EVERY room the socket connection had ever joined, not just the one
+  // named in the event. An unconditional leave-on-unmount
   // would therefore let one subscriber's unmount silently evict a sibling
   // subscriber's still-mounted room on the same connection. Reproduces the
   // verifier's exact scenario.

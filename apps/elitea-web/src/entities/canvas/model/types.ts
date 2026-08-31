@@ -10,15 +10,14 @@
  * unwrap this slice's `lib/normalise.ts` performs, but leaves `content`'s
  * inner shape opaque), `canvasErrorReceiveSchema` is a bare `z.unknown()`,
  * and — the field this module doc specifically flags —
- * **`canvasEditorsChangeReceiveSchema` is a bare `z.unknown()`**: S5's own
- * generator, working from `server.go`'s handler code, could not pin down
- * `chat_canvas_editors_change`'s payload shape at all. `CanvasEditorPresence.
+ * **`canvasEditorsChangeReceiveSchema` is a bare `z.unknown()`**: no source
+ * pinned `chat_canvas_editors_change`'s payload shape. `CanvasEditorPresence.
  * userName` below is therefore OLD-APP-CLIENT-EVIDENCED (what
- * `CanvasEditor.jsx` reads off an incoming payload) but NOT confirmed
- * against a live Go-server payload — whoever wires the real canvas feature
- * onto socket data should double-check this shape against an actual
- * `chat_canvas_editors_change` payload before trusting it, rather than
- * assuming this type is Go-verified the way the schema-backed entities are.
+ * `CanvasEditor.jsx` reads off an incoming payload) and NOT confirmed against
+ * any server — whoever wires the real canvas feature onto socket data should
+ * double-check this shape against an actual `chat_canvas_editors_change`
+ * payload before trusting it, rather than assuming it is verified the way the
+ * schema-backed entities are.
  *
  * Evidence:
  * - apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:279-316,433-456 —
