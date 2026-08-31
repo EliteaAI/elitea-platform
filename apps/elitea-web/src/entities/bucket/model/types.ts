@@ -10,6 +10,15 @@ export interface Bucket {
   readonly isPinned: boolean;
   /** ISO 8601 date-time. */
   readonly createdAt: string;
+  /**
+   * Lifecycle window in days, or `null` when the bucket keeps its objects
+   * indefinitely. Served by the same handler as every other field here
+   * (`Bucket.RetentionDays`, handler.go:32) and the ONLY mutable bucket
+   * property the API exposes — `PUT /buckets/{name}` takes
+   * `retention_days`/`is_pinned` and nothing else, so bucket "edit" is
+   * retention editing (see `pages/artifacts/CreateBucket.tsx`).
+   */
+  readonly retentionDays: number | null;
 }
 
 /**
@@ -21,4 +30,6 @@ export interface BucketWire {
   readonly name: string;
   readonly is_pinned: boolean;
   readonly created_at: string;
+  /** Absent on responses predating the retention column; normalised to `null`. */
+  readonly retention_days?: number | null;
 }

@@ -12,7 +12,16 @@ describe('normaliseBucket', () => {
       name: 'artifacts',
       isPinned: true,
       createdAt: '2026-01-01T00:00:00Z',
+      retentionDays: null,
     });
+  });
+
+  it('carries retention_days through, and folds an absent one to null', () => {
+    expect(normaliseBucket({ ...wire, retention_days: 30 }).retentionDays).toBe(30);
+    expect(normaliseBucket({ ...wire, retention_days: null }).retentionDays).toBeNull();
+    // Absent, not null: pre-retention responses must not become `undefined`,
+    // which the edit form would render as the string "undefined".
+    expect(normaliseBucket(wire).retentionDays).toBeNull();
   });
 
   it('uses the name as the id — the handler exposes no surrogate id', () => {

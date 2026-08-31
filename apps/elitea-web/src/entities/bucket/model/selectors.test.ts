@@ -8,6 +8,7 @@ const bucket = (id: string, name: string, isPinned = false): Bucket => ({
   name,
   isPinned,
   createdAt: '2026-01-01T00:00:00Z',
+  retentionDays: null,
 });
 
 describe('sortBucketsPinnedFirst', () => {

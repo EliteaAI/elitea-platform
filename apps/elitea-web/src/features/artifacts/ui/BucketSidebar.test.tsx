@@ -8,8 +8,8 @@ import { renderWithProviders } from '../__tests__/testUtils';
 import { BucketSidebar } from './BucketSidebar';
 
 const buckets: Bucket[] = [
-  { id: '1', name: 'docs', isPinned: false, createdAt: '2026-01-01T00:00:00Z' },
-  { id: '2', name: 'images', isPinned: true, createdAt: '2026-01-02T00:00:00Z' },
+  { id: '1', name: 'docs', isPinned: false, createdAt: '2026-01-01T00:00:00Z', retentionDays: null },
+  { id: '2', name: 'images', isPinned: true, createdAt: '2026-01-02T00:00:00Z', retentionDays: 30 },
 ];
 
 function renderSidebar(overrides: Partial<Parameters<typeof BucketSidebar>[0]> = {}) {
@@ -20,6 +20,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof BucketSidebar>[0]> =
     onStorageChange: vi.fn(),
     onSelect: vi.fn(),
     onCreate: vi.fn(),
+    onEdit: vi.fn(),
     onPin: vi.fn().mockResolvedValue(undefined),
     onDelete: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -48,6 +49,18 @@ describe('BucketSidebar', () => {
     expect(screen.queryByRole('button', { name: 'Rename docs' })).not.toBeInTheDocument();
   });
 
+  /**
+   * The edit affordance the baseline reaches through `Buckets.jsx`'s
+   * `handleEdit`. It hands the WHOLE bucket up, not just the name — the
+   * caller needs the row to build the create-bucket link.
+   */
+  it('raises onEdit for the clicked bucket', async () => {
+    const user = userEvent.setup();
+    const props = renderSidebar();
+    await user.click(screen.getByRole('button', { name: 'Edit images' }));
+    expect(props.onEdit).toHaveBeenCalledWith(buckets[1]);
+  });
+
   it('deletes through a confirmation dialog', async () => {
     const user = userEvent.setup();
     const props = renderSidebar();
@@ -66,6 +79,7 @@ describe('BucketSidebar', () => {
         onStorageChange={vi.fn()}
         onSelect={vi.fn()}
         onCreate={vi.fn()}
+        onEdit={vi.fn()}
         onPin={vi.fn()}
         onDelete={vi.fn()}
       />,
@@ -79,6 +93,7 @@ describe('BucketSidebar', () => {
         onStorageChange={vi.fn()}
         onSelect={vi.fn()}
         onCreate={vi.fn()}
+        onEdit={vi.fn()}
         onPin={vi.fn()}
         onDelete={vi.fn()}
       />,
