@@ -69,6 +69,20 @@ type Record struct {
 	ErrorCode  string
 	PromptToks int64
 	OutputToks int64
+	// ExecutionID is the runtime execution this request was made from, empty
+	// for every request that is not made from one.
+	//
+	// It does not break this struct's rule that no field is reachable by caller
+	// content. The id is MINTED BY US — elitea_runtime.execution_jobs' own key —
+	// and the edge validates its shape against a fixed charset and length bound
+	// before it is signed into the identity tuple (elitea-main
+	// internal/llmproxy/identity.go, executionIDFromHeader), so an unbounded or
+	// free-text value cannot reach this field.
+	//
+	// It is stored RAW and resolved to an agent at read time. Denormalising an
+	// agent id here would import execution_jobs' two disagreeing project columns
+	// into a table whose whole point is having exactly one.
+	ExecutionID string
 }
 
 // Sink writes a batch of records. Implemented by the Postgres store; taken as

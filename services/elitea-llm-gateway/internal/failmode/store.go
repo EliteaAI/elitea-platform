@@ -361,6 +361,7 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 			d.EventID, d.ProjectID, d.Usage.UserID, d.Usage.Provider, d.Usage.Model,
 			d.Usage.PromptTokens, d.Usage.CompletionTokens,
 			d.DeltaNanoUSD, d.PeriodStart, d.PeriodEnd, d.Usage.OccurredAtUnix,
+			nullableExecutionID(d.Usage.ExecutionID),
 		); err != nil {
 			return fmt.Errorf("failmode: persist outage usage event: %w", err)
 		}
@@ -386,10 +387,20 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 var usageEventInsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_usage_events
 		(event_id, project_id, user_id, provider, model,
 		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end,
-		 occurred_at)
+		 occurred_at, execution_id)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric / %d,
-		to_timestamp($9), to_timestamp($10), to_timestamp($11))
+		to_timestamp($9), to_timestamp($10), to_timestamp($11), $12)
 	ON CONFLICT (event_id) DO NOTHING`, NanoUSD)
+
+// nullableExecutionID renders an absent execution id as SQL NULL. "This request
+// came from no execution" and "it came from an execution with an empty id" are
+// different claims, and only NULL makes the first one.
+func nullableExecutionID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
 
 // UsageDimensions are the reporting dimensions of one billed request: who made
 // it, against which provider and model, and how many tokens it consumed
@@ -413,6 +424,12 @@ type UsageDimensions struct {
 	// billing path already assumes; no count is ever estimated here (#79).
 	PromptTokens     int64
 	CompletionTokens int64
+	// ExecutionID is the runtime execution the call was made from, empty when
+	// the caller is not one. It is what gives the ledger an AGENT dimension:
+	// the id resolves to an agent at READ time, against
+	// elitea_runtime.execution_jobs, so the ledger never has to carry an agent
+	// id — and never has to choose between execution_jobs' two project columns.
+	ExecutionID string
 	// OccurredAtUnix is when the GATEWAY billed the request, not when a writer
 	// stored the row.
 	//

@@ -179,6 +179,12 @@ spec:
               - X-Elitea-Project-Id
               - X-Elitea-User-Id
               - X-Elitea-Tenant-Id
+              # The runtime execution a /llm call was made from. Legitimate from
+              # the runtime worker, which does not pass this edge; never from a
+              # browser. elitea-main re-signs whatever survives into the v2
+              # identity tuple, so a value left here would attribute the call to
+              # an agent the caller chose.
+              - X-Elitea-Execution-Id
       backendRefs:
         - name: elitea-main
           port: 8080

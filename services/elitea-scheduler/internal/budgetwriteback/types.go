@@ -126,6 +126,21 @@ type UsageDimensions struct {
 	// even in different billing periods. The per-day series buckets on this
 	// value, so it must be the gateway's.
 	OccurredAtUnix int64 `json:"occurred_at"`
+	// ExecutionID is the runtime execution the call was made from, empty when
+	// the caller is not one — which is most callers. It is what gives the
+	// ledger an AGENT dimension.
+	//
+	// It is stored RAW and resolved to an agent at READ time, against
+	// elitea_runtime.execution_jobs. Resolving it HERE would mean this consumer
+	// choosing between execution_jobs' resource_project_id and
+	// projection_project_id, which can differ — and baking that choice into a
+	// table whose value is having exactly one project column.
+	//
+	// omitempty on both sides: a gateway that emits this key can talk to a
+	// consumer that predates it, and vice versa. An absent key leaves the
+	// column NULL, which is what "we do not know" already means there
+	// (shared migration 0101).
+	ExecutionID string `json:"execution_id,omitempty"`
 }
 
 // deltaKey is the coalescing / upsert key: one accumulator row per

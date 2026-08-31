@@ -26,13 +26,57 @@ const (
 	HeaderProjectID = "X-Elitea-Project-Id"
 	HeaderUserID    = "X-Elitea-User-Id"
 	HeaderTenantID  = "X-Elitea-Tenant-Id"
+	// HeaderExecutionID names the runtime execution a /llm request was made
+	// FROM — the value elitea_runtime.execution_jobs is keyed by. It is what
+	// gives the gateway's request log and usage ledger an AGENT dimension.
+	//
+	// It is an EXECUTION id and not an agent id on purpose: the runtime already
+	// mints it, it is stable across retries of the same turn, and resolving it
+	// to an agent at READ time keeps execution_jobs' two project columns —
+	// resource_project_id and projection_project_id, which can differ — out of
+	// the log. Copying an agent id onto the log would copy that ambiguity with
+	// it (internal/infra/db/repos/analytics.go).
+	//
+	// Unlike the three headers above it is not resolved from this process's own
+	// middleware: the caller that knows it is the runtime worker, which sends
+	// it inbound. The edge therefore READS it off the inbound request, validates
+	// its shape, and re-emits it as part of the signed tuple — see
+	// executionIDFromHeader.
+	HeaderExecutionID = "X-Elitea-Execution-Id"
 	// HeaderSignature carries "sha256=<hex>" over the canonical identity tuple.
 	HeaderSignature = "X-Elitea-Identity-Signature"
 )
 
-// signatureVersion prefixes the canonical signing string so the scheme can be
-// rotated without ambiguity.
-const signatureVersion = "v1"
+// The canonical string is prefixed with a scheme VERSION so it can be rotated
+// without ambiguity, and this is the rotation the prefix was put there for.
+//
+// v1 signs (project, user, tenant). v2 signs (project, user, tenant, execution).
+//
+// THE CANONICAL STRING IS DUPLICATED ACROSS TWO INDEPENDENTLY DEPLOYED GO
+// MODULES — this file signs it and services/elitea-llm-gateway's
+// internal/llmproxy/identity.go verifies it. Changing it in place would fail
+// EVERY gateway request in both directions for the length of a rolling deploy.
+//
+// So this edge signs v2 only when it actually has an execution id, and v1 —
+// byte for byte what it signed before — otherwise. Every existing caller (chat,
+// the SDK, anything that is not a runtime execution) therefore keeps producing
+// a signature an OLD gateway still accepts, and only the new agent-tagged
+// requests need a new gateway. The deploy order is "gateway first" rather than
+// a hard cutover, and no request is signed under a scheme its peer cannot at
+// least recognise.
+const (
+	signatureVersionV1 = "v1"
+	signatureVersionV2 = "v2"
+)
+
+// maxExecutionIDLen bounds the inbound execution id.
+//
+// The value is minted by the runtime and is a short opaque token; the bound
+// exists because this one field arrives on the request rather than being
+// resolved from the session, so it is the only part of the signed tuple a
+// caller can put bytes into. See executionIDFromHeader for what it may contain
+// and why an invalid value is DROPPED rather than refused.
+const maxExecutionIDLen = 128
 
 // identity is the resolved edge identity forwarded to the gateway. The
 // projectID is the resolved, non-secret handle used as the Bifrost virtual-key
@@ -41,6 +85,9 @@ type identity struct {
 	projectID string
 	userID    string
 	tenantID  string
+	// executionID is the runtime execution this request belongs to, empty for
+	// every request that is not made from one.
+	executionID string
 }
 
 // identityFromContext derives the forwarded identity from the request context
@@ -65,15 +112,66 @@ func identityFromContext(ctx context.Context) identity {
 // canonical returns the deterministic string signed by the HMAC. Newline
 // separation with a version prefix prevents field-concatenation ambiguity
 // (e.g. project "1"+user "2" colliding with project "12").
-func (id identity) canonical() string {
-	return signatureVersion + "\n" + id.projectID + "\n" + id.userID + "\n" + id.tenantID
+func (id identity) canonical(version string) string {
+	base := version + "\n" + id.projectID + "\n" + id.userID + "\n" + id.tenantID
+	if version == signatureVersionV2 {
+		return base + "\n" + id.executionID
+	}
+	return base
+}
+
+// signatureVersion is the scheme this identity signs under: v2 exactly when
+// there is an execution id to cover, v1 otherwise.
+func (id identity) signatureVersion() string {
+	if id.executionID != "" {
+		return signatureVersionV2
+	}
+	return signatureVersionV1
 }
 
 // sign returns the "sha256=<hex>" signature of the identity under secret.
 func (id identity) sign(secret []byte) string {
+	return id.signVersion(secret, id.signatureVersion())
+}
+
+func (id identity) signVersion(secret []byte, version string) string {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(id.canonical()))
+	mac.Write([]byte(id.canonical(version)))
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// executionIDFromHeader reads and validates the inbound execution id.
+//
+// An INVALID value yields "", which drops the dimension for that request rather
+// than refusing it. That is deliberate: the execution id decorates analytics
+// and decides nothing — not routing, not authorization, not billing — so a
+// malformed one costs a row in a breakdown, while refusing would let a bad
+// header break the product's most visible path.
+//
+// The charset is restrictive because the value is re-emitted as a HEADER and
+// then signed: a CR or LF in it would be header injection on the outbound
+// request, and nothing outside this set belongs in an id the runtime minted.
+//
+// A caller CAN put an id here for an execution it did not make. That is
+// contained by resolving the id at READ time inside the project the log row
+// already names (analytics.go): an id from another project resolves to nothing,
+// and one from the caller's own project attributes to an agent that caller can
+// already see. It is never an authorization input.
+func executionIDFromHeader(h http.Header) string {
+	value := h.Get(HeaderExecutionID)
+	if value == "" || len(value) > maxExecutionIDLen {
+		return ""
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_', c == '.', c == ':':
+		default:
+			return ""
+		}
+	}
+	return value
 }
 
 // stripIdentityHeaders removes any caller-supplied authentication and identity
@@ -95,6 +193,7 @@ func stripIdentityHeaders(h http.Header) {
 	h.Del(HeaderProjectID)
 	h.Del(HeaderUserID)
 	h.Del(HeaderTenantID)
+	h.Del(HeaderExecutionID)
 	h.Del(HeaderSignature)
 
 	// The project headers are edge control headers (issue #318). The edge
@@ -124,9 +223,18 @@ func stripIdentityHeaders(h http.Header) {
 // the edge-resolved identity. When secret is non-empty and a project is present
 // it also attaches the HMAC signature.
 func injectIdentity(ctx context.Context, out http.Header, secret []byte) {
+	// READ BEFORE STRIP. stripIdentityHeaders deletes every X-Elitea-* header,
+	// this one included, and `out` is a copy of the inbound headers — so the
+	// caller-supplied execution id has to be taken (and validated) here, before
+	// the strip removes it. Taking it afterwards would silently produce an empty
+	// dimension on every request: a column that is always NULL and a breakdown
+	// that is always empty, with nothing failing.
+	executionID := executionIDFromHeader(out)
+
 	stripIdentityHeaders(out)
 
 	id := identityFromContext(ctx)
+	id.executionID = executionID
 	if id.projectID != "" {
 		out.Set(HeaderProjectID, id.projectID)
 	}
@@ -135,6 +243,9 @@ func injectIdentity(ctx context.Context, out http.Header, secret []byte) {
 	}
 	if id.tenantID != "" {
 		out.Set(HeaderTenantID, id.tenantID)
+	}
+	if id.executionID != "" {
+		out.Set(HeaderExecutionID, id.executionID)
 	}
 
 	// Sign only when we have both a secret and a project identity to bind; an
@@ -155,9 +266,9 @@ func injectIdentity(ctx context.Context, out http.Header, secret []byte) {
 // mount never populates. Mirrors the gateway's own exported
 // SignIdentityHeaders (elitea-llm-gateway/internal/llmproxy/identity.go) so
 // the two sides cannot silently diverge on the signing scheme.
-func SignIdentityHeaders(out http.Header, secret []byte, projectID, userID, tenantID string) {
+func SignIdentityHeaders(out http.Header, secret []byte, projectID, userID, tenantID, executionID string) {
 	stripIdentityHeaders(out)
-	id := identity{projectID: projectID, userID: userID, tenantID: tenantID}
+	id := identity{projectID: projectID, userID: userID, tenantID: tenantID, executionID: executionID}
 	if id.projectID != "" {
 		out.Set(HeaderProjectID, id.projectID)
 	}
@@ -166,6 +277,9 @@ func SignIdentityHeaders(out http.Header, secret []byte, projectID, userID, tena
 	}
 	if id.tenantID != "" {
 		out.Set(HeaderTenantID, id.tenantID)
+	}
+	if id.executionID != "" {
+		out.Set(HeaderExecutionID, id.executionID)
 	}
 	if len(secret) > 0 && id.projectID != "" {
 		out.Set(HeaderSignature, id.sign(secret))
@@ -181,10 +295,20 @@ func verifyIdentitySignature(h http.Header, secret []byte) bool {
 		return false
 	}
 	id := identity{
-		projectID: h.Get(HeaderProjectID),
-		userID:    h.Get(HeaderUserID),
-		tenantID:  h.Get(HeaderTenantID),
+		projectID:   h.Get(HeaderProjectID),
+		userID:      h.Get(HeaderUserID),
+		tenantID:    h.Get(HeaderTenantID),
+		executionID: h.Get(HeaderExecutionID),
 	}
-	want := id.sign(secret)
-	return hmac.Equal([]byte(got), []byte(want))
+	// Mirrors the gateway's acceptance rule exactly: v2 always, v1 only when no
+	// execution id is present. A v1 canonical string does not cover the id, so
+	// accepting one beside the header would make the id caller-attachable —
+	// the single thing signing it prevents.
+	if hmac.Equal([]byte(got), []byte(id.signVersion(secret, signatureVersionV2))) {
+		return true
+	}
+	if id.executionID != "" {
+		return false
+	}
+	return hmac.Equal([]byte(got), []byte(id.signVersion(secret, signatureVersionV1)))
 }

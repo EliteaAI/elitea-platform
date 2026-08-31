@@ -47,6 +47,18 @@ import (
 const (
 	headerProjectID = "X-Elitea-Project-Id"
 	headerUserID    = "X-Elitea-User-Id"
+	// headerExecutionID is the runtime execution the request was made from. It
+	// is read here rather than enriched by a handler for the same reason the
+	// other two are: it is on the transport, so it is known for a request that
+	// 404s or is refused before any handler runs — and those are exactly the
+	// agent runs an operator is looking for when a run produced nothing.
+	//
+	// Like the two above it is taken AS CLAIMED. The signature that covers it
+	// (v2, llmproxy/identity.go) is checked on the request path; a record of a
+	// request whose signature failed is still worth keeping, with its identity
+	// unverified, which is why nothing read from here is ever an authorization
+	// input.
+	headerExecutionID = "X-Elitea-Execution-Id"
 )
 
 type contextKey struct{}
@@ -219,19 +231,20 @@ func Middleware(recorder *Recorder) func(http.Handler) http.Handler {
 			// silently-empty response.
 			defer func() {
 				recorder.Record(Record{
-					OccurredAt: started,
-					ProjectID:  r.Header.Get(headerProjectID),
-					UserID:     r.Header.Get(headerUserID),
-					Route:      routePattern(request),
-					Method:     r.Method,
-					Status:     recording.status,
-					Duration:   recorder.now().Sub(started),
-					Provider:   enrichment.provider,
-					Model:      enrichment.model,
-					Streaming:  enrichment.streaming,
-					ErrorCode:  errorCodeFor(enrichment, recording),
-					PromptToks: enrichment.promptToks,
-					OutputToks: enrichment.outputToks,
+					OccurredAt:  started,
+					ProjectID:   r.Header.Get(headerProjectID),
+					UserID:      r.Header.Get(headerUserID),
+					Route:       routePattern(request),
+					Method:      r.Method,
+					Status:      recording.status,
+					Duration:    recorder.now().Sub(started),
+					Provider:    enrichment.provider,
+					Model:       enrichment.model,
+					Streaming:   enrichment.streaming,
+					ErrorCode:   errorCodeFor(enrichment, recording),
+					PromptToks:  enrichment.promptToks,
+					OutputToks:  enrichment.outputToks,
+					ExecutionID: r.Header.Get(headerExecutionID),
 				})
 			}()
 

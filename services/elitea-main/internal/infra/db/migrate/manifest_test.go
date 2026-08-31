@@ -186,7 +186,32 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It stores NO request or response content, including no upstream error
 	// text: the failure column is a classification the gateway assigns, so
 	// there is no column a prompt fragment can reach.
-	require.EqualValues(t, 99, Head(shared))
+	// 100: shared/0100_gateway_request_log_execution_id.sql, which gives the
+	// request log an AGENT dimension: the runtime execution id the request was
+	// made from, signed into the identity tuple at the edge under signature
+	// version v2 so it cannot be attached by a caller.
+	//
+	// It is an EXECUTION id and not an agent id on purpose. Resolving it to an
+	// agent happens at READ time, because elitea_runtime.execution_jobs carries
+	// resource_project_id AND projection_project_id and they can differ —
+	// writing an agent id onto the log would have had to pick one of those two
+	// project meanings and bake it in, importing the exact ambiguity 0099 was
+	// built to keep out.
+	//
+	// THERE IS NO BACKFILL AND THERE CANNOT BE ONE: nothing on a row written
+	// before this file identifies an agent. The read side reports availability
+	// and omits the breakdown rather than answering "0 agent runs" for a window
+	// it cannot speak for.
+	// 101: shared/0101_gateway_usage_event_execution_id.sql, the same column on
+	// the billing ledger, so per-agent SPEND is answerable and not only
+	// per-agent volume — the log has no cost column, deliberately, so that
+	// there is one money path and not two.
+	//
+	// A separate file from 0100 because the two tables have separate WRITERS
+	// (the gateway in process; the scheduler's write-back consumer) and
+	// therefore separate deployment risk — and because a migration's checksum
+	// is immutable once applied, so a combined file could never be split later.
+	require.EqualValues(t, 101, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

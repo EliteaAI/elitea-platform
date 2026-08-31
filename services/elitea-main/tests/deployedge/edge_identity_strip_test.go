@@ -100,6 +100,12 @@ var requiredStrippedHeaders = []string{
 	"X-Elitea-Project-Id",
 	"X-Elitea-User-Id",
 	"X-Elitea-Tenant-Id",
+	// The runtime execution id (shared migration 0100). It is legitimate input
+	// from the RUNTIME WORKER, which does not pass this edge, and never from a
+	// browser — and elitea-main re-signs whatever survives into the v2 identity
+	// tuple, so a value left in place here would be attributed to an agent the
+	// caller chose rather than to the execution that made the call.
+	"X-Elitea-Execution-Id",
 }
 
 // hopMarkerHeader is the LLM gateway's hop marker (issue #164). The gateway

@@ -54,10 +54,22 @@ var upsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_budget_accumulators AS acc
 var usageEventSQL = fmt.Sprintf(`INSERT INTO gateway.llm_usage_events
 		(event_id, project_id, user_id, provider, model,
 		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end,
-		 occurred_at)
+		 occurred_at, execution_id)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric / %d,
-		to_timestamp($9), to_timestamp($10), to_timestamp($11))
+		to_timestamp($9), to_timestamp($10), to_timestamp($11), $12)
 	ON CONFLICT (event_id) DO NOTHING`, nanoUSDPerUSD)
+
+// nullableExecutionID renders an absent execution id as SQL NULL. "This request
+// came from no execution" and "it came from an execution whose id is the empty
+// string" are different claims, and the agent breakdown groups on this column —
+// so an empty string would become a nameless agent collecting every
+// unattributable request in the project.
+func nullableExecutionID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
 
 // RetentionWindow is how long a usage-ledger row is kept (issue #320).
 //
@@ -197,6 +209,7 @@ func (s *Store) Apply(ctx context.Context, group []BudgetDelta) (applyOutcome, e
 			d.EventID, d.ProjectID, d.Usage.UserID, d.Usage.Provider, d.Usage.Model,
 			d.Usage.PromptTokens, d.Usage.CompletionTokens,
 			d.DeltaNanoUSD, d.PeriodStart, d.PeriodEnd, d.Usage.OccurredAtUnix,
+			nullableExecutionID(d.Usage.ExecutionID),
 		); err != nil {
 			return outcomeApplied, err
 		}
