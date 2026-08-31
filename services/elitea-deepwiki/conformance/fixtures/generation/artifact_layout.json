@@ -1,0 +1,48 @@
+{
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "plugin_implementation/artifact_export.py",
+        "bytes": 21481,
+        "sha256": "dbd1d618c62c8056d03cf50add847ad3320e900ef1d4a99aa4af666f97a7e9a4"
+      },
+      {
+        "path": "plugin_implementation/registry_manager.py",
+        "bytes": 15798,
+        "sha256": "7b0bea20cd1fabf2ebf8a744d22e9cdc9b1b86542e13fec24977dfba838721cf"
+      },
+      {
+        "path": "plugin_implementation/repository_identity.py",
+        "bytes": 3572,
+        "sha256": "e434370577fce2f50f04e47150e95e952f639e4f17a268083c273a6fe6b2ae37"
+      },
+      {
+        "path": "plugin_implementation/wiki_subprocess_worker.py",
+        "bytes": 27752,
+        "sha256": "03cd4bb936f131fb41ffa883a5307023b8202f97aef4a8df3542366807f2eed1"
+      }
+    ]
+  },
+  "bucket": "wiki-artifacts",
+  "descriptor_declares_bucket": "wiki",
+  "layout": {
+    "_registry/wikis.json": "global registry (all wikis, all projects)",
+    "acme--notes-service--main/wiki_manifest_{version}.json": "one per generation",
+    "acme--notes-service--main/analysis/wiki_structure_{ts}.json": "structure + page bodies",
+    "acme--notes-service--main/wiki_pages/{section}/{page}.md": "one per page",
+    "acme--notes-service--main/repository_context.txt": "LLM repository analysis",
+    "acme--notes-service--main/{hash}.wiki.db": "unified index (nodes/edges/FTS/vec)",
+    "acme--notes-service--main/{hash}.bm25.sqlite": "standalone BM25 postings",
+    "acme--notes-service--main/{hash}.docstore.bin + .doc_index.json": "mmap docstore",
+    "acme--notes-service--main/{hash}.faiss": "legacy FAISS vectorstore",
+    "acme--notes-service--main/combined.code_graph.gz": "compressed code graph"
+  },
+  "target": "ADR-0022 decision 4: pages/manifests/structure move to the ADR-0016 object-storage layout under the tenant prefix; every index file above becomes PostgreSQL rows; the registry becomes a table."
+}

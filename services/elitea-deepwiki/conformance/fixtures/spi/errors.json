@@ -1,0 +1,161 @@
+{
+  "producer": "methods/invoke.py::_create_error_response",
+  "envelope": {
+    "invocation_id": "str",
+    "status": "Error",
+    "result": "JSON string: a list of result objects, always at least one object_type='message' targeting the response",
+    "result_type": "String",
+    "error_category": "one of the categories below",
+    "error_type": "type(exception).__name__"
+  },
+  "classifier_precedence": [
+    "'not found' in message OR FileNotFoundError -> resource_not_found",
+    "'[service_busy]' / 'service is busy' -> service_busy",
+    "'download' or 'artifact' in message -> artifact_error",
+    "'memory' in message OR MemoryError -> out_of_memory",
+    "'timeout' in message -> timeout_error",
+    "RuntimeError: 'training' -> training_failed; 'inference'/'generat' -> inference_failed; else runtime_error",
+    "ValueError -> invalid_input",
+    "anything else -> unknown_error"
+  ],
+  "recorded": {
+    "resource_not_found": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': Wiki not found for repository\"}]",
+      "result_type": "String",
+      "error_category": "resource_not_found",
+      "error_type": "FileNotFoundError"
+    },
+    "service_busy": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': [SERVICE_BUSY] DeepWiki service is busy\"}]",
+      "result_type": "String",
+      "error_category": "service_busy",
+      "error_type": "RuntimeError"
+    },
+    "artifact_error": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': Failed to download artifact\"}]",
+      "result_type": "String",
+      "error_category": "artifact_error",
+      "error_type": "RuntimeError"
+    },
+    "out_of_memory": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': out of memory while embedding\"}]",
+      "result_type": "String",
+      "error_category": "out_of_memory",
+      "error_type": "MemoryError"
+    },
+    "timeout_error": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': Clone timeout after 300s\"}]",
+      "result_type": "String",
+      "error_category": "timeout_error",
+      "error_type": "RuntimeError"
+    },
+    "inference_failed": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': LLM generation failed\"}]",
+      "result_type": "String",
+      "error_category": "inference_failed",
+      "error_type": "RuntimeError"
+    },
+    "runtime_error": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': worker exited with code 1\"}]",
+      "result_type": "String",
+      "error_category": "runtime_error",
+      "error_type": "RuntimeError"
+    },
+    "invalid_input": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': query must not be empty\"}]",
+      "result_type": "String",
+      "error_category": "invalid_input",
+      "error_type": "ValueError"
+    },
+    "unknown_error": {
+      "invocation_id": "invocation_0000000000000000",
+      "status": "Error",
+      "result": "[{\"object_type\": \"message\", \"result_target\": \"response\", \"result_encoding\": \"plain\", \"data\": \"Generate_wiki failed for model 'gpt-4o': 'llm_settings'\"}]",
+      "result_type": "String",
+      "error_category": "unknown_error",
+      "error_type": "KeyError"
+    }
+  },
+  "with_traceback": {
+    "invocation_id": "invocation_0000000000000000",
+    "status": "Error",
+    "result": "<message + 'Error:' / 'Type:' / 'Category:' lines + 'Stack Trace:' block>",
+    "result_type": "String",
+    "error_category": "runtime_error",
+    "error_type": "RuntimeError"
+  },
+  "transport_errors": {
+    "route_level": {
+      "status_code": 500,
+      "body": {
+        "errorCode": "500",
+        "message": "Internal Server Error",
+        "details": [
+          "<exception text>"
+        ]
+      },
+      "note": "emitted by methods/invocations.py when the task result cannot be read, and by routes/invoke.py when the task cannot be started"
+    }
+  },
+  "notes": [
+    "A failed tool is HTTP 200 with status='Error' in the body — the errorCode/message/details envelope is only used for transport-level failures. Both shapes must survive the port.",
+    "include_traceback=True (unknown toolkit/tool, unhandled exception) puts a full Python stack trace into a user-facing message. The port should keep the category/type fields and stop shipping the trace outward."
+  ],
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "routes/descriptor.py",
+        "bytes": 290,
+        "sha256": "949348c80d1e016306a716642df51f7d9118c08206e51475213bec4d7b273cb2"
+      },
+      {
+        "path": "routes/health.py",
+        "bytes": 1218,
+        "sha256": "424ef9b5fecb2523b186c192f2fc8a0c6c12b49e94dee83309d3d1f4b3b57060"
+      },
+      {
+        "path": "routes/invoke.py",
+        "bytes": 1781,
+        "sha256": "a7c8c9ead8c0b43d457a95dbec0dcd878c9329dd621ad21cde02dbb1dc848f06"
+      },
+      {
+        "path": "routes/invocations.py",
+        "bytes": 4168,
+        "sha256": "79215b63a41bdb8a95370c528c67fe6efd9e6e9096045f2191c351f330948385"
+      },
+      {
+        "path": "routes/slots.py",
+        "bytes": 5394,
+        "sha256": "21e1397d947a8ee5650850fcd74f362bfdc265e61709685f432c6baed0050992"
+      },
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "methods/invocations.py",
+        "bytes": 8817,
+        "sha256": "87442c2ea928c02617fcdfe178718978d3b63dcff540667de9a410ac35b0d3c9"
+      }
+    ]
+  }
+}

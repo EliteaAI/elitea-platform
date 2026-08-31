@@ -1,0 +1,111 @@
+{
+  "base_path": "/",
+  "transport": {
+    "legacy": "plain HTTP inside the cluster; the descriptor advertises service_location_url and the platform calls it directly",
+    "target": "mTLS with HMAC-signed identity headers behind the elitea-main facade (ADR-0022 decision 5); the service refuses non-mTLS traffic"
+  },
+  "routes": [
+    {
+      "path": "/descriptor",
+      "methods": [
+        "GET"
+      ],
+      "handler": "routes/descriptor.py -> methods/descriptor.py",
+      "in_legacy_spi_openapi": false,
+      "fixture": "../descriptor/legacy-v0/provider_descriptor.json"
+    },
+    {
+      "path": "/health",
+      "methods": [
+        "GET"
+      ],
+      "handler": "routes/health.py",
+      "in_legacy_spi_openapi": true,
+      "fixture": "health.get.json"
+    },
+    {
+      "path": "/slots",
+      "methods": [
+        "GET"
+      ],
+      "handler": "routes/slots.py",
+      "in_legacy_spi_openapi": false,
+      "fixture": "slots.get.json"
+    },
+    {
+      "path": "/tools/{toolkit_name}/{tool_name}/invoke",
+      "methods": [
+        "POST"
+      ],
+      "handler": "routes/invoke.py -> methods/invoke.py::perform_invoke_request",
+      "in_legacy_spi_openapi": true,
+      "fixture": "invoke.post.json"
+    },
+    {
+      "path": "/tools/{toolkit_name}/{tool_name}/invocations/{invocation_id}",
+      "methods": [
+        "GET",
+        "DELETE"
+      ],
+      "handler": "routes/invocations.py",
+      "in_legacy_spi_openapi": true,
+      "fixture": "invocations.get.json / invocations.delete.json"
+    },
+    {
+      "path": "/ui/<path>",
+      "methods": [
+        "GET"
+      ],
+      "handler": "routes/ui.py",
+      "in_legacy_spi_openapi": false,
+      "fixture": null,
+      "note": "the vendored SPA; ADR-0022 decision 8 moves it behind an authenticated elitea-main handler"
+    }
+  ],
+  "retired_by_adr_0022": [
+    "the X-SECRET shared-string header on every callback (methods/invoke.py::extract_artifact_settings defaults it to 'secret')",
+    "verify=False on outbound artifact calls",
+    "the register_descriptor self-registration event (events/init.py)"
+  ],
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "routes/descriptor.py",
+        "bytes": 290,
+        "sha256": "949348c80d1e016306a716642df51f7d9118c08206e51475213bec4d7b273cb2"
+      },
+      {
+        "path": "routes/health.py",
+        "bytes": 1218,
+        "sha256": "424ef9b5fecb2523b186c192f2fc8a0c6c12b49e94dee83309d3d1f4b3b57060"
+      },
+      {
+        "path": "routes/invoke.py",
+        "bytes": 1781,
+        "sha256": "a7c8c9ead8c0b43d457a95dbec0dcd878c9329dd621ad21cde02dbb1dc848f06"
+      },
+      {
+        "path": "routes/invocations.py",
+        "bytes": 4168,
+        "sha256": "79215b63a41bdb8a95370c528c67fe6efd9e6e9096045f2191c351f330948385"
+      },
+      {
+        "path": "routes/slots.py",
+        "bytes": 5394,
+        "sha256": "21e1397d947a8ee5650850fcd74f362bfdc265e61709685f432c6baed0050992"
+      },
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "methods/invocations.py",
+        "bytes": 8817,
+        "sha256": "87442c2ea928c02617fcdfe178718978d3b63dcff540667de9a410ac35b0d3c9"
+      }
+    ]
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "plugin_implementation/artifact_export.py",
+        "bytes": 21481,
+        "sha256": "dbd1d618c62c8056d03cf50add847ad3320e900ef1d4a99aa4af666f97a7e9a4"
+      },
+      {
+        "path": "plugin_implementation/registry_manager.py",
+        "bytes": 15798,
+        "sha256": "7b0bea20cd1fabf2ebf8a744d22e9cdc9b1b86542e13fec24977dfba838721cf"
+      },
+      {
+        "path": "plugin_implementation/repository_identity.py",
+        "bytes": 3572,
+        "sha256": "e434370577fce2f50f04e47150e95e952f639e4f17a268083c273a6fe6b2ae37"
+      },
+      {
+        "path": "plugin_implementation/wiki_subprocess_worker.py",
+        "bytes": 27752,
+        "sha256": "03cd4bb936f131fb41ffa883a5307023b8202f97aef4a8df3542366807f2eed1"
+      }
+    ]
+  },
+  "producers": [
+    "ArtifactExporter._create_safe_filename",
+    "repository_identity.rebase_artifact_name"
+  ],
+  "wiki_id": "acme--notes-service--main",
+  "wiki_id_rule": "registry_manager.normalize_wiki_id: '{owner}--{repo}--{branch}', lowercased, every non [a-z0-9-] char becomes '-', runs collapse, path segments joined with '--'",
+  "safe_filename_rule": "strip everything but word chars/space/dash, collapse dash+space runs to '-', strip dashes, lowercase",
+  "rebase_rule": "an already-{wiki_id}-prefixed name is kept; otherwise the part below the subfolder is rebased under {wiki_id}/{subfolder}/",
+  "pages": [
+    {
+      "section": "Overview",
+      "title": "Getting Started",
+      "raw_name": "wiki_pages/overview/getting-started.md",
+      "artifact_name": "acme--notes-service--main/wiki_pages/overview/getting-started.md"
+    },
+    {
+      "section": "Overview",
+      "title": "Architecture & Data Flow",
+      "raw_name": "wiki_pages/overview/architecture-data-flow.md",
+      "artifact_name": "acme--notes-service--main/wiki_pages/overview/architecture-data-flow.md"
+    },
+    {
+      "section": "Components",
+      "title": "Note Storage",
+      "raw_name": "wiki_pages/components/note-storage.md",
+      "artifact_name": "acme--notes-service--main/wiki_pages/components/note-storage.md"
+    },
+    {
+      "section": "Components",
+      "title": "Search Ranking",
+      "raw_name": "wiki_pages/components/search-ranking.md",
+      "artifact_name": "acme--notes-service--main/wiki_pages/components/search-ranking.md"
+    },
+    {
+      "section": "Components",
+      "title": "Bearer Tokens",
+      "raw_name": "wiki_pages/components/bearer-tokens.md",
+      "artifact_name": "acme--notes-service--main/wiki_pages/components/bearer-tokens.md"
+    }
+  ],
+  "manifest_pages": [
+    "acme--notes-service--main/wiki_pages/overview/getting-started.md",
+    "acme--notes-service--main/wiki_pages/overview/architecture-data-flow.md",
+    "acme--notes-service--main/wiki_pages/components/note-storage.md",
+    "acme--notes-service--main/wiki_pages/components/search-ranking.md",
+    "acme--notes-service--main/wiki_pages/components/bearer-tokens.md"
+  ]
+}

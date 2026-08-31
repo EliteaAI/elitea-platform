@@ -1,0 +1,117 @@
+{
+  "source": "methods/invoke.py::perform_invoke_request",
+  "accepted_toolkit_names": {
+    "main": [
+      "WikiBuilderToolkit",
+      "deepwiki",
+      "Deepwiki",
+      "wiki",
+      "DeepWikiToolkit",
+      "DeepWiki",
+      "Wiki",
+      "wikis",
+      "Wikis"
+    ],
+    "query": [
+      "wikis_query",
+      "deepwiki_query",
+      "DeepwikiQuery",
+      "deepwiki-query"
+    ],
+    "wiki_query": [
+      "wiki_query",
+      "WikiQuery",
+      "wiki-query"
+    ]
+  },
+  "declared_toolkit_names": [
+    "Wikis",
+    "wikis_query",
+    "wiki_query"
+  ],
+  "tools_per_family": {
+    "main": [
+      "generate_wiki",
+      "ask",
+      "deep_research"
+    ],
+    "query": [
+      "ask",
+      "deep_research"
+    ],
+    "wiki_query": [
+      "list_wikis",
+      "resolve_and_ask",
+      "resolve_and_deep_research",
+      "delete_wiki"
+    ]
+  },
+  "unknown_toolkit": {
+    "exception": "FileNotFoundError",
+    "error_category": "resource_not_found",
+    "message": "Unknown toolkit: {name}. Expected: one of {all_valid_toolkits}"
+  },
+  "unknown_tool": {
+    "main_family": {
+      "exception": "FileNotFoundError",
+      "error_category": "resource_not_found",
+      "message": "Unknown tool: {name}"
+    },
+    "query_family": {
+      "exception": "ValueError",
+      "error_category": "invalid_input",
+      "message": "Tool '{name}' not available in deepwiki_query toolkit. Available: ask, deep_research"
+    },
+    "wiki_query_family": {
+      "exception": "ValueError",
+      "error_category": "invalid_input",
+      "message": "Tool '{name}' not available in wiki_query toolkit. Available: {valid_wiki_query_tools}"
+    }
+  },
+  "notes": [
+    "Toolkit names are matched case-sensitively against these literal lists; only 'Wikis', 'wikis_query' and 'wiki_query' are advertised by the descriptor, the rest exist for user data created before renames.",
+    "The wikis_query family rewrites the request via _transform_deepwiki_query_request and then falls through to the main handler, so the two families share a code path from there on.",
+    "The query family also accepts the legacy config key 'deepwiki_toolkit' as an alias for 'wikis_toolkit'."
+  ],
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "routes/descriptor.py",
+        "bytes": 290,
+        "sha256": "949348c80d1e016306a716642df51f7d9118c08206e51475213bec4d7b273cb2"
+      },
+      {
+        "path": "routes/health.py",
+        "bytes": 1218,
+        "sha256": "424ef9b5fecb2523b186c192f2fc8a0c6c12b49e94dee83309d3d1f4b3b57060"
+      },
+      {
+        "path": "routes/invoke.py",
+        "bytes": 1781,
+        "sha256": "a7c8c9ead8c0b43d457a95dbec0dcd878c9329dd621ad21cde02dbb1dc848f06"
+      },
+      {
+        "path": "routes/invocations.py",
+        "bytes": 4168,
+        "sha256": "79215b63a41bdb8a95370c528c67fe6efd9e6e9096045f2191c351f330948385"
+      },
+      {
+        "path": "routes/slots.py",
+        "bytes": 5394,
+        "sha256": "21e1397d947a8ee5650850fcd74f362bfdc265e61709685f432c6baed0050992"
+      },
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "methods/invocations.py",
+        "bytes": 8817,
+        "sha256": "87442c2ea928c02617fcdfe178718978d3b63dcff540667de9a410ac35b0d3c9"
+      }
+    ]
+  }
+}

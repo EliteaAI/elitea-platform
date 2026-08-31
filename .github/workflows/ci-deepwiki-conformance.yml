@@ -1,0 +1,45 @@
+name: CI — DeepWiki conformance
+
+# ADR-0022 phase P0 ships golden fixtures for the DeepWiki port. Fixtures that
+# nothing replays are dead weight that reads as coverage, so this workflow runs
+# the fixture invariants on every change to them. It deliberately installs
+# nothing but pytest: replaying the committed fixtures needs only the standard
+# library. Re-recording them from the legacy deepwiki_plugin checkout
+# (tools/record_*.py) is a local step — the legacy plugin is not available here.
+
+on:
+  pull_request:
+    paths:
+      - "services/elitea-deepwiki/**"
+      - ".github/workflows/ci-deepwiki-conformance.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "services/elitea-deepwiki/**"
+      - ".github/workflows/ci-deepwiki-conformance.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Fixture invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check "pytest>=8.0"
+
+      - name: Replay fixtures
+        working-directory: services/elitea-deepwiki/conformance
+        run: python -m pytest -q
