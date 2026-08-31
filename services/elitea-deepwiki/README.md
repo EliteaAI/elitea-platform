@@ -3,11 +3,14 @@
 The standalone DeepWiki provider service — the ADR-0022 port of the legacy
 `deepwiki_plugin` Pylon module.
 
-**Status: the SPI shell plus the storage layer.** The service serves the whole
-frozen provider contract and refuses every actual tool invocation with a
-readable error — see [The engine seam](#the-engine-seam). The retrieval
-storage layer (ADR-0022 decision 3) is ported and parity-gated; the rest of the
-analysis engine has not moved yet.
+**Status: SPI, storage layer and engine are all here; execution is not yet
+wired end to end.** The service serves the whole frozen provider contract. The
+retrieval storage layer (ADR-0022 decision 3) is ported and parity-gated. The
+~90.5k-line analysis engine has been plain-copied and the dispatch adapter is
+in place — but the engine's dependency closure is an optional extra and
+out-of-process execution has not been repointed at the new layout, so a default
+build still refuses every tool. See [Engine](#engine) and
+[What is not wired yet](#what-is-not-wired-yet).
 
 ## What is here
 
@@ -20,17 +23,21 @@ services/elitea-deepwiki/
 │   ├── toolkits.py      toolkit/tool admission, including the legacy aliases
 │   ├── slots.py         GET /slots capacity accounting
 │   ├── errors.py        the two error shapes
-│   ├── engine.py        the seam the analysis engine plugs into
+│   ├── toolrunner.py    the seam between the SPI and the engine
+│   ├── legacy_runner.py dispatch + result composition (perform_invoke_request)
+│   ├── repo_config.py   repository-config extraction, copied from the handler
 │   ├── config.py        strict-parsed settings
+│   ├── engine/          the analysis engine — 101 files, plain copy, digest-guarded
 │   └── storage/
 │       ├── base.py      the RetrievalBackend interface + the frozen RRF
 │       ├── postgres.py  pgvector + tsvector + BM25 term statistics
 │       ├── sqlite.py    the legacy file backend, as the reference
-│       ├── migrate.py   versioned, checksummed migrations
-│       └── legacy/      verbatim copies of four legacy storage modules
+│       └── migrate.py   versioned, checksummed migrations
 ├── migrations/          service-owned SQL, applied against the deepwiki DB
+├── tools/               refresh_engine_copy.py — re-copy and re-digest
 ├── tests/
 │   ├── conformance/     replays the P0 SPI fixtures against the real app
+│   ├── engine/          copy digests + the dispatch/composition adapter
 │   ├── storage/         retrieval parity: both backends, live, side by side
 │   └── unit/            settings parsing, invocation lifecycle
 ├── conformance/         the phase-P0 golden fixtures (see its own README)
@@ -63,18 +70,85 @@ Two response shapes cross the boundary and both are frozen:
   and `error_type`;
 * a **transport** failure is a non-2xx `{"errorCode", "message", "details"}`.
 
-## The engine seam
+## Engine
 
-`engine.py` defines a one-method `Engine` protocol. Everything above it is the
-SPI; everything below it is the ~90k-LOC analysis engine, which arrives in the
-next slice of P1. The default implementation is `UnavailableEngine`, which
-**refuses** every tool with a `resource_not_found` error.
+`src/elitea_deepwiki/engine/` is a **plain copy** of
+`deepwiki_plugin/plugin_implementation/` at revision `ce679f11` — 101 files,
+~90.5k lines, unmodified. ADR-0022 decision 1: the engine moves, it is not
+rewritten. `COPY_MANIFEST.json` records every file's SHA-256 and the test suite
+re-checks them, because at that size a modification is not detectable by
+reading. `tools/refresh_engine_copy.py` performs the copy and regenerates the
+manifest; `--check` verifies it and needs no legacy checkout.
 
-That default is a choice: a shell that answered `Completed` with an empty
-artifact set would let the elitea-main facade (P2) and the UI (P4) be built
-against a fake success and look finished. Refusing makes the missing engine
-visible in every response and in `GET /health`
-(`extra_info.engine == "unavailable"`).
+The one file we own inside that tree is `__init__.py`. The legacy one was
+empty; ours registers `sys.modules["plugin_implementation"]`, because twenty
+engine call sites import their siblings absolutely. Rewriting those would make
+the copy non-verbatim, and the parity argument rests on it being verbatim.
+
+`toolrunner.py` is the seam: a one-method `ToolRunner` protocol. Everything
+above it is the SPI, everything below is the engine.
+
+* `UnavailableToolRunner` (the default) **refuses** every tool with a
+  `resource_not_found` error. A shell that answered `Completed` with an empty
+  artifact set would let the facade (P2) and the UI (P4) be built against a
+  fake success. `GET /health` reports which runner is active.
+* `LegacyToolRunner` (`ELITEA_DEEPWIKI_RUNNER=legacy`) is the port of
+  `perform_invoke_request`: the parameter merge, per-tool dispatch and the
+  composed artifact set. It takes its tool callables by injection, so the
+  composition path is tested against
+  `conformance/fixtures/generation/composed_result.json` with a stub in place
+  of the engine — the same experiment that recorded the fixture.
+
+`repo_config.py` is also copied rather than retyped: 140 lines resolving four
+providers, each with its own precedence chain over a dozen differently-prefixed
+keys. Only the GitHub path has a fixture; the other three are carried on trust,
+which is an argument for copying it rather than against.
+
+### Deliberate omissions from the handler port
+
+The legacy `methods/invoke.py` was 1767 lines. These parts have no successor,
+by decision:
+
+* **the LLM factory** — the engine builds its own models from `llm_settings`;
+* **`extract_artifact_settings`** — it derived the artifact base URL by
+  regex-stripping `/llm` off the LLM base URL and defaulted an `X-SECRET`
+  header to the literal `"secret"`. ADR-0022 decision 6 retires both;
+* **`verify=False`** — on every legacy artifact call. Absent here, and
+  forbidden from returning;
+* **the registry write** — a read-modify-write on one JSON blob under no lock;
+  its successor is the `wikis` table.
+
+### One legacy defect preserved, and named
+
+`[SERVICE_BUSY]` is stripped from the error before the category classifier
+runs, and the classifier looks for exactly that marker. So a busy signal
+carrying its own explanation classifies as `runtime_error` — a caller cannot
+tell "retry shortly" from "this broke". Only a bare marker falls through to the
+default text and classifies as `service_busy`. Verified against the legacy
+`_create_error_response` directly, and pinned by a test. It stands because
+decision 2 freezes the error contract; changing a visible category needs its
+own decision.
+
+## What is not wired yet
+
+The engine is present and dispatchable in-process. Three things stand between
+that and a working `generate_wiki`:
+
+1. **The dependency closure is optional.** `pip install -e ".[engine]"`
+   installs the 92 pins from the legacy `requirements.txt` (torch,
+   transformers, faiss-cpu, tree-sitter grammars). The default image does not
+   carry it, which is why the default runner refuses.
+2. **Out-of-process execution is not repointed.** ADR-0022 decision 7 keeps
+   heavy work in subprocesses and Kubernetes Jobs. `k8s_job_manager` still
+   builds a `PYTHONPATH` from the legacy filesystem layout
+   (`/data/plugins/deepwiki_plugin`) and runs
+   `plugin_implementation/wiki_job_worker.py` as a file — paths that do not
+   exist here. A fresh worker process also never imports the engine package,
+   so the compatibility alias is not installed there. A test pins this so the
+   green suite cannot be read as "out-of-process execution works".
+3. **Credentials and artifacts.** The facade has to pass artifact base URL and
+   token explicitly (decision 6); nothing here derives them any more, which
+   means nothing here can currently fetch or store an artifact either.
 
 ## The storage layer
 
@@ -144,7 +218,8 @@ recorded as a finding in the P0 fixtures.
 3. **Settings are strict-parsed at startup.** A malformed
    `DEEPWIKI_MAX_PARALLEL_WORKERS` is a boot failure, not a request-time
    `mode: "error"` with zero capacity.
-4. **`GET /health` reports `extra_info.durable_invocations`.** It is `false`
+4. **`GET /health` reports `extra_info.durable_invocations` and
+   `extra_info.runner`.** The first is `false`
    today: the invocation store is in-process, so a restart loses accepted
    operations. spec-provider-service requires durable provider-side operation
    state, and saying so is better than being silent about it. The flag flips
@@ -185,9 +260,15 @@ podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
 
 ## Still to do in P1
 
-- [ ] **Move the engine** — `plugin_implementation/` plus its tests, wired
-      behind the `Engine` seam. The composed `generate_wiki` result set is
-      already pinned by `conformance/fixtures/generation/composed_result.json`.
+- [x] **Move the engine** — 101 files, plain copy, digest-guarded, wired behind
+      the `ToolRunner` seam with the composition gated by
+      `conformance/fixtures/generation/composed_result.json`.
+- [ ] **Repoint out-of-process execution** — a new worker entry point for
+      subprocess and Kubernetes-Job mode, replacing the legacy filesystem
+      `PYTHONPATH`; drop the licence-credential init container; secrets to Jobs
+      via projected files, not environment variables.
+- [ ] **Run the engine end to end** with the `engine` extra installed, against
+      a real repository, and record what breaks.
 - [x] **The storage port** — done for retrieval: the backend interface,
       the PostgreSQL implementation and migration 0001, parity-gated against
       `conformance/fixtures/retrieval/`.

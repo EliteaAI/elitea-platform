@@ -1,7 +1,4 @@
-"""Guards on the plain copy and on the migration set.
-
-Neither needs a database.
-"""
+"""Guards on the migration set. No database needed."""
 
 from __future__ import annotations
 
@@ -12,65 +9,6 @@ from pathlib import Path
 import pytest
 
 from elitea_deepwiki.storage import migrate
-
-LEGACY_DIR = (
-    Path(migrate.__file__).resolve().parent / "legacy"
-)
-
-#: The digests recorded when the four storage modules were copied out of
-#: deepwiki_plugin at ce679f11dc31c209cc67f13565b286d5bb28ce58. They are also
-#: written into the package docstring; this test is what makes them binding.
-EXPECTED_DIGESTS = {
-    "constants.py": "4030c459261afb62bc19f9ae284d6a8f743443b30211b88b80e2b36368bccabb",
-    "unified_db.py": "1d2a44e6317effbd9806a539ea30fdd7f15e49140551f5f5d2a6426840e9a3c5",
-    "bm25_disk.py": "beac75986d86a776a52d9402fda8859e8b43f73ea9efb02a8c491e799c7b744e",
-    "docstore.py": "7fb251ab3b51e13eaabb3f2104c5077fc88a81dfaebb1664186cfa14dc9450c1",
-}
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-@pytest.mark.parametrize("filename,digest", sorted(EXPECTED_DIGESTS.items()))
-def test_legacy_copy_is_verbatim(filename: str, digest: str):
-    """The reference implementation must stay byte-identical to the legacy one.
-
-    The whole parity argument rests on this: if these files are edited, the
-    "reference" backend is no longer the code the P0 fixtures were recorded
-    from, and a green parity run stops meaning what it claims. A deliberate
-    change belongs in a commit that updates this digest and says why.
-    """
-    path = LEGACY_DIR / filename
-    assert path.is_file(), f"{filename} is missing from the legacy copy"
-    assert sha256(path) == digest, (
-        f"{filename} has been modified since it was copied out of "
-        f"deepwiki_plugin. Revert it, or update the digest here and in the "
-        f"package docstring with a reason."
-    )
-
-
-def test_the_legacy_copy_has_no_extra_files():
-    """A file appearing here without a digest would be unguarded."""
-    present = {
-        path.name
-        for path in LEGACY_DIR.glob("*.py")
-        if path.name != "__init__.py"
-    }
-    assert present == set(EXPECTED_DIGESTS)
-
-
-def test_package_docstring_records_the_same_digests():
-    """The docstring is where a reader looks; keep it from going stale."""
-    from elitea_deepwiki.storage import legacy
-
-    for filename, digest in EXPECTED_DIGESTS.items():
-        assert digest in legacy.__doc__, f"{filename}'s digest is not documented"
-
-
-# ---------------------------------------------------------------------------
-# migrations
-# ---------------------------------------------------------------------------
 
 
 def test_migrations_are_discovered_in_order():
@@ -85,7 +23,7 @@ def test_every_migration_filename_is_numbered(tmp_path: Path):
     """A misnamed file is an error, not something to skip.
 
     Skipping would mean a typo in a migration filename reads as "there are no
-    migrations here" — the failure shape that keeps showing up in this
+    migrations here" — the failure shape that keeps recurring in this
     codebase, where absence is mistaken for correctness.
     """
     (tmp_path / "0001_fine.sql").write_text("SELECT 1;")

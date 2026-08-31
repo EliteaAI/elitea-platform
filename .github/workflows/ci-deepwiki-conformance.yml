@@ -10,6 +10,8 @@ name: CI — DeepWiki
 #   * "Service conformance" drives the ported ASGI service and compares its
 #     answers with those same fixtures. This is what makes "the SPI is a frozen
 #     contract" (decision 2) mean something: moving the contract fails a build.
+#     It also checks the engine copy's digests and the dispatch/composition
+#     adapter, neither of which needs the engine's multi-GB closure.
 #   * "Storage parity" runs the legacy file backend and the PostgreSQL backend
 #     side by side over the P0 retrieval fixtures. This is the gate on decision
 #     3 — the SQLite/FAISS to pgvector/tsvector port — which ADR-0022 names as
@@ -75,7 +77,12 @@ jobs:
         # Scoped deliberately. tests/storage needs a database and would SKIP
         # here, which would let this job's green tick look like it covered
         # storage parity. That gate is the storage-parity job below.
-        run: python -m pytest tests/unit tests/conformance -q
+        run: python -m pytest tests/unit tests/conformance tests/engine -q
+
+      - name: Verify the engine copy is verbatim
+        working-directory: services/elitea-deepwiki
+        # Needs no legacy checkout: it hashes what is committed here.
+        run: python tools/refresh_engine_copy.py --check
 
   storage-parity:
     name: Storage parity (PostgreSQL)

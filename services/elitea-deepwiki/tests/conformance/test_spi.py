@@ -101,7 +101,7 @@ async def test_health_reports_whether_invocation_state_survives_a_restart(
     """
     body = (await client.get("/health")).json()
     assert body["extra_info"]["durable_invocations"] is False
-    assert body["extra_info"]["engine"] == "unavailable"
+    assert body["extra_info"]["runner"] == "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ async def test_slots_counts_an_in_flight_invocation():
                 "result_type": "String",
             }
 
-    app = create_app(settings=Settings(max_parallel_workers=1), engine=SlowEngine())
+    app = create_app(settings=Settings(max_parallel_workers=1), runner=SlowEngine())
     async with make_client(app) as http:
         async with app.router.lifespan_context(app):
             assert (await http.get("/slots")).json()["can_start"] is True
@@ -284,7 +284,7 @@ async def test_poll_projects_in_flight_status_and_then_the_terminal_result():
                 "result_type": "String",
             }
 
-    app = create_app(engine=SlowEngine())
+    app = create_app(runner=SlowEngine())
     async with make_client(app) as http:
         async with app.router.lifespan_context(app):
             invocation_id = (await http.post(INVOKE_URL, json={})).json()[
@@ -322,7 +322,7 @@ async def test_terminal_result_is_returned_on_every_poll():
                 "result_type": "String",
             }
 
-    app = create_app(engine=DoneEngine())
+    app = create_app(runner=DoneEngine())
     async with make_client(app) as http:
         async with app.router.lifespan_context(app):
             invocation_id = (await http.post(INVOKE_URL, json={})).json()[
@@ -356,7 +356,7 @@ async def test_custom_events_accumulate_and_drain_on_read():
                 "result_type": "String",
             }
 
-    app = create_app(engine=ChattyEngine())
+    app = create_app(runner=ChattyEngine())
     async with make_client(app) as http:
         async with app.router.lifespan_context(app):
             invocation_id = (await http.post(INVOKE_URL, json={})).json()[
@@ -403,7 +403,7 @@ async def test_cancel_returns_204_and_an_unknown_id_404s():
             cancelled.set()
             raise AssertionError("engine was never cancelled")
 
-    app = create_app(engine=CancellableEngine())
+    app = create_app(runner=CancellableEngine())
     async with make_client(app) as http:
         async with app.router.lifespan_context(app):
             invocation_id = (await http.post(INVOKE_URL, json={})).json()[
@@ -438,7 +438,7 @@ async def test_a_failing_tool_is_http_200_with_status_error():
         async def invoke(self, **_kwargs):
             raise RuntimeError("worker exited with code 1")
 
-    app = create_app(engine=BrokenEngine())
+    app = create_app(runner=BrokenEngine())
     async with make_client(app) as http:
         async with app.router.lifespan_context(app):
             invocation_id = (await http.post(INVOKE_URL, json={})).json()[

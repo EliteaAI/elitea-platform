@@ -1,0 +1,206 @@
+"""Guards on the engine copy. No engine dependencies needed.
+
+None of these import an engine module — they hash bytes and compile source —
+so they run in any environment, including the SPI-shell image's, which does
+not carry torch.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SERVICE_ROOT = Path(__file__).resolve().parents[2]
+ENGINE_DIR = SERVICE_ROOT / "src" / "elitea_deepwiki" / "engine"
+MANIFEST_PATH = ENGINE_DIR / "COPY_MANIFEST.json"
+REFRESH_TOOL = SERVICE_ROOT / "tools" / "refresh_engine_copy.py"
+
+MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def engine_files() -> list[Path]:
+    return sorted(
+        path
+        for path in ENGINE_DIR.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+
+def test_manifest_pins_a_revision_and_a_plausible_tree():
+    assert MANIFEST["source_revision"], "the legacy revision must be pinned"
+    assert MANIFEST["source_path"] == "plugin_implementation"
+    # ~90.5k lines across ~100 files. A manifest that suddenly covered five
+    # files would still "pass" every digest check it listed.
+    assert MANIFEST["file_count"] >= 100
+    assert MANIFEST["total_bytes"] > 3_000_000
+
+
+def test_every_copied_file_matches_its_digest():
+    """The copy is verbatim, byte for byte.
+
+    ADR-0022 decision 1 is that the engine *moves* rather than being
+    rewritten. That claim is only checkable if a modification is detectable,
+    and at ~90k lines it is not checkable by reading.
+    """
+    mismatched = []
+    for relative, entry in MANIFEST["files"].items():
+        path = ENGINE_DIR / relative
+        if not path.is_file():
+            mismatched.append(f"missing: {relative}")
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != entry["sha256"]:
+            mismatched.append(f"modified: {relative}")
+
+    assert not mismatched, (
+        "the engine copy has diverged from the manifest:\n  "
+        + "\n  ".join(mismatched)
+        + "\n\nRevert, or re-run tools/refresh_engine_copy.py and say why in "
+        "the commit."
+    )
+
+
+def test_no_engine_file_is_outside_the_manifest():
+    """An added file would otherwise be unguarded.
+
+    The reverse of the digest check: digests only cover what they list, so a
+    file smuggled into the copy would never be hashed. This is the same shape
+    as the manifest bug found while building it — matching on a bare filename
+    dropped eight subpackage ``__init__.py`` files from the manifest while the
+    file count still looked plausible.
+    """
+    not_copied = set(MANIFEST["not_copied"])
+    present = {
+        path.relative_to(ENGINE_DIR).as_posix()
+        for path in ENGINE_DIR.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    unaccounted = present - set(MANIFEST["files"]) - not_copied
+    assert not unaccounted, f"files in the copy but not in the manifest: {sorted(unaccounted)}"
+
+
+def test_the_refresh_tool_agrees():
+    """The tool CI runs, run here, so a broken tool is caught by the suite."""
+    result = subprocess.run(
+        [sys.executable, str(REFRESH_TOOL), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "path", engine_files(), ids=lambda p: p.relative_to(ENGINE_DIR).as_posix()
+)
+def test_every_engine_module_parses(path: Path):
+    """Syntax-check the whole copy without importing it.
+
+    Importing needs torch, faiss, tree-sitter grammars and the rest of the
+    engine's 92-package closure, which the shell image deliberately does not
+    carry. Compiling needs none of that, and it is enough to prove the copy
+    landed intact and targets this interpreter's Python version.
+    """
+    source = path.read_text(encoding="utf-8")
+    ast.parse(source, filename=str(path))
+
+
+def test_only_our_init_is_not_copied():
+    """The one file we own inside the copied tree, and the manifest itself."""
+    assert set(MANIFEST["not_copied"]) == {"__init__.py", "COPY_MANIFEST.json"}
+
+    init = (ENGINE_DIR / "__init__.py").read_text(encoding="utf-8")
+    assert "plugin_implementation" in init, (
+        "the package initialiser must still install the compatibility alias"
+    )
+    assert MANIFEST["source_revision"] in init, (
+        "the initialiser's documented revision has drifted from the manifest"
+    )
+
+
+def test_subpackage_inits_are_guarded():
+    """The bug the manifest tool had: they must be IN the manifest.
+
+    Matching ``not_copied`` on a bare filename excluded every subpackage
+    ``__init__.py`` — nine files — from the digest set while the file count
+    still looked reasonable.
+    """
+    guarded = {
+        name for name in MANIFEST["files"] if name.endswith("__init__.py")
+    }
+    assert len(guarded) >= 8, f"only {len(guarded)} subpackage inits are guarded"
+    assert "state/__init__.py" in guarded
+    assert "agents/__init__.py" in guarded
+
+
+def test_the_engine_does_not_import_the_pylon_shim():
+    """Nothing copied may reach back into module.py / methods / routes / events.
+
+    The shim is not copied and has no successor inside the engine; if a module
+    imported it, the copy would be incomplete rather than verbatim-and-whole.
+    """
+    offenders = []
+    for path in engine_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                root = node.module.split(".")[0]
+                if root in ("methods", "routes", "events", "pylon", "arbiter"):
+                    offenders.append(f"{path.name}:{node.lineno} -> {node.module}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if root in ("methods", "routes", "events", "pylon", "arbiter"):
+                        offenders.append(f"{path.name}:{node.lineno} -> {alias.name}")
+
+    assert not offenders, (
+        "engine modules import the Pylon shim, which was not copied:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_compatibility_alias_resolves_engine_submodules():
+    """``from plugin_implementation.x import y`` must work inside the engine.
+
+    Twenty engine call sites import their siblings absolutely. They are all
+    inside functions, so by the time one runs, this package has been imported
+    and the alias installed — but only *in that process*.
+    """
+    import sys
+
+    import elitea_deepwiki.engine as engine
+
+    assert sys.modules.get("plugin_implementation") is engine
+
+    import plugin_implementation.constants as constants  # noqa: PLC0415
+
+    assert constants.__name__ == "plugin_implementation.constants"
+
+
+def test_out_of_process_execution_is_not_wired_yet():
+    """A named gap, pinned so it cannot be mistaken for working.
+
+    ADR-0022 decision 7 keeps heavy work out of process — subprocess workers
+    for compose/dev, Kubernetes Jobs for scale. Neither launch path has been
+    repointed at this package yet: ``k8s_job_manager`` still builds a
+    ``PYTHONPATH`` out of the legacy filesystem layout
+    (``/data/plugins/deepwiki_plugin``, ``/app/deepwiki_plugin``) and runs
+    ``plugin_implementation/wiki_job_worker.py`` as a file. In this image those
+    paths do not exist, and a fresh worker process never imports
+    ``elitea_deepwiki.engine``, so the compatibility alias above is not
+    installed there either.
+
+    This test asserts the *legacy* shape is still what the copy contains — it
+    is a reminder, not an endorsement. When the launch path is repointed, this
+    test fails and should be replaced by one that checks the new entry point.
+    Until then nobody can read the green suite as "out-of-process execution
+    works".
+    """
+    source = (ENGINE_DIR / "k8s_job_manager.py").read_text(encoding="utf-8")
+    assert "/data/plugins/deepwiki_plugin" in source
+    assert "plugin_implementation/wiki_job_worker.py" in source

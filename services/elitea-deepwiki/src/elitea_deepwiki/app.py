@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from . import errors
 from .config import Settings
 from .descriptor import provider_descriptor
-from .engine import Engine, UnavailableEngine
+from .toolrunner import ToolRunner, build_runner
 from .invocations import InvocationManager
 from .slots import current_slots
 from .toolkits import resolve_family, validate_tool
@@ -50,17 +50,18 @@ SERVICE_NAME = "elitea-deepwiki"
 
 def create_app(
     settings: Settings | None = None,
-    engine: Engine | None = None,
+    runner: ToolRunner | None = None,
 ) -> FastAPI:
     """Build the ASGI application.
 
-    ``engine`` defaults to :class:`UnavailableEngine`, which refuses every
-    tool. That is the correct default for a shell with no engine wired: the
-    SPI is fully served and every actual invocation terminates with a readable
-    error, so nothing downstream can be built against a fake success.
+    ``runner`` defaults to whatever ``ELITEA_DEEPWIKI_RUNNER`` selects, which
+    is ``UnavailableToolRunner`` unless the engine is explicitly enabled. That
+    is the correct default: the SPI is fully served and every actual
+    invocation terminates with a readable error, so nothing downstream can be
+    built against a fake success.
     """
     settings = settings or Settings.from_env()
-    engine = engine or UnavailableEngine()
+    runner = runner or build_runner(settings)
     manager = InvocationManager(
         retention_seconds=settings.invocation_retention_seconds
     )
@@ -70,9 +71,9 @@ def create_app(
     async def lifespan(_app: FastAPI):
         await manager.start()
         logger.info(
-            "%s started (engine=%s, durable_invocations=%s)",
+            "%s started (runner=%s, durable_invocations=%s)",
             SERVICE_NAME,
-            getattr(engine, "name", type(engine).__name__),
+            getattr(runner, "name", type(runner).__name__),
             manager.store.durable,
         )
         try:
@@ -91,7 +92,7 @@ def create_app(
         openapi_url=None,
     )
     app.state.settings = settings
-    app.state.engine = engine
+    app.state.runner = runner
     app.state.invocations = manager
 
     # -- descriptor --------------------------------------------------------
@@ -126,7 +127,7 @@ def create_app(
                     # durable operation state; until the PostgreSQL store
                     # lands, this says so rather than being silent about it.
                     "durable_invocations": manager.store.durable,
-                    "engine": getattr(engine, "name", type(engine).__name__),
+                    "runner": getattr(runner, "name", type(runner).__name__),
                 },
             }
         )
@@ -161,7 +162,7 @@ def create_app(
         async def call(context):
             family = resolve_family(toolkit_name)
             validate_tool(family, tool_name)
-            return await engine.invoke(
+            return await runner.invoke(
                 family=family,
                 toolkit_name=toolkit_name,
                 tool_name=tool_name,

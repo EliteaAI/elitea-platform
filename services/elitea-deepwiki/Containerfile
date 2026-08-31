@@ -1,14 +1,26 @@
-# ELITEA DeepWiki provider service — SPI shell image.
+# ELITEA DeepWiki provider service.
 #
-# This image carries the frozen provider SPI and nothing else. The analysis
-# engine's closure (torch, faiss, tree-sitter grammars, LangGraph) arrives with
-# the engine itself; ADR-0022 keeps that image out of the default bake group
-# because it is torch-sized. Until then this stays small and buildable in CI.
+# The engine SOURCE is always in the image — it is part of the package. Its
+# ~92-package dependency CLOSURE (torch, transformers, faiss-cpu, tree-sitter
+# grammars) is not, unless EXTRAS asks for it:
 #
-# Build from the repository root:
 #   podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
+#   podman build -f services/elitea-deepwiki/Containerfile \
+#       --build-arg EXTRAS="[engine,storage-postgres]" \
+#       -t elitea-deepwiki:engine .
+#
+# The default build stays small and CI-buildable; the engine build is
+# torch-sized, which is why ADR-0022 keeps it out of the default bake group.
+# A container without the closure still serves the whole SPI and refuses every
+# tool — it cannot silently look like it has an engine, because
+# ELITEA_DEEPWIKI_RUNNER defaults to the refusing runner and GET /health says
+# which runner is active.
+#
+# Build from the repository root.
 
 FROM python:3.12.10-slim AS build
+
+ARG EXTRAS=""
 
 WORKDIR /build
 COPY services/elitea-deepwiki ./services/elitea-deepwiki
@@ -17,7 +29,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip wheel \
       --no-cache-dir \
       --wheel-dir /wheels \
-      ./services/elitea-deepwiki
+      "./services/elitea-deepwiki${EXTRAS}"
 
 FROM python:3.12.10-slim AS runtime
 
@@ -27,9 +39,12 @@ RUN useradd --create-home --uid 10001 deepwiki \
     && mkdir -p /var/scratch/deepwiki \
     && chown deepwiki:deepwiki /var/scratch/deepwiki
 
+ARG EXTRAS=""
+
 COPY --from=build /wheels /wheels
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --no-cache-dir --no-index --find-links /wheels elitea-deepwiki \
+    python -m pip install --no-cache-dir --no-index --find-links /wheels \
+      "elitea-deepwiki${EXTRAS}" \
     && rm -rf /wheels
 
 USER deepwiki

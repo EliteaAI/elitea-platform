@@ -1,10 +1,15 @@
 """The legacy file backend, behind the storage interface.
 
-This wraps the verbatim copies in :mod:`elitea_deepwiki.storage.legacy` —
+This wraps the verbatim engine modules in :mod:`elitea_deepwiki.engine` —
 ``UnifiedWikiDB`` (repo_nodes, FTS5, sqlite-vec) and ``BM25SqliteIndex`` over
 the mmap docstore — without changing any of their retrieval code. Every
 ranking it returns is produced by the same lines that produced the P0
 fixtures.
+
+They live in ``engine/`` rather than beside this file because they are part of
+the engine copy: keeping a second copy here would mean two sets of digests to
+hold in step, and the moment they drifted the "reference implementation" would
+stop being the code the fixtures came from.
 
 It exists for one reason: so a parity run compares the PostgreSQL backend
 against a *live reference implementation* rather than against a JSON file. A
@@ -16,7 +21,7 @@ control.
 
 Requires the ``storage-legacy`` extra (networkx, sqlite-vec, langchain-core,
 langchain-community), which is why the import is local to the constructor —
-the SPI shell image must not need the legacy closure to start.
+the SPI shell image must not need that closure to start.
 """
 
 from __future__ import annotations
@@ -48,7 +53,7 @@ class SqliteBackend:
         directory: str | Path | None = None,
         embedding_dim: int = 1536,
     ) -> None:
-        from .legacy import bm25_disk, docstore, unified_db  # noqa: PLC0415
+        from ..engine import bm25_disk, docstore, unified_db  # noqa: PLC0415
 
         self.wiki_id = wiki_id
         self._bm25_disk = bm25_disk

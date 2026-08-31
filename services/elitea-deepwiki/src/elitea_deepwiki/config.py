@@ -55,6 +55,18 @@ def _int(name: str, default: int, *, minimum: int = 0) -> int:
     return value
 
 
+def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
+    raw = _raw(name)
+    if raw is None or raw == "":
+        return default
+    value = raw.strip()
+    if value not in allowed:
+        raise ConfigError(
+            f"{ENV_PREFIX}{name} must be one of {list(allowed)}, got {raw!r}"
+        )
+    return value
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = _raw(name)
     if raw is None or raw == "":
@@ -88,6 +100,13 @@ class Settings:
     #: Terminal-invocation retention, seconds (legacy: one hour).
     invocation_retention_seconds: int = 3600
 
+    #: Which tool runner to serve. ``unavailable`` refuses every tool;
+    #: ``legacy`` dispatches into the copied analysis engine and requires the
+    #: ``engine`` extra. The default is deliberately the refusing one: enabling
+    #: a several-GB dependency closure is an explicit deployment decision, and
+    #: an image built without it must not silently look like it has an engine.
+    runner: str = "unavailable"
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -100,4 +119,5 @@ class Settings:
             invocation_retention_seconds=_int(
                 "INVOCATION_RETENTION_SECONDS", 3600, minimum=1
             ),
+            runner=_choice("RUNNER", "unavailable", ("unavailable", "legacy")),
         )
