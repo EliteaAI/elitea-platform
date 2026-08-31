@@ -334,8 +334,17 @@ export function CreateAgentForm({
       />
       {showInstructions && (
         <Box sx={instructionsContainerSx}>
-          {/* Renders nothing when the caller passes no slot, and the button itself renders nothing where the backend cannot serve it. */}
-          <Box sx={instructionsAiEditSlotSx}>{instructionsAiEditSlot}</Box>
+          {/* The wrapper carries its own margin, so it must not render when the slot is
+              empty -- an empty action row would still push the editor down. The button
+              itself also renders nothing where the backend cannot serve it. */}
+          {instructionsAiEditSlot ? (
+            <Box
+              data-testid="agent-instructions-ai-edit-slot"
+              sx={instructionsAiEditSlotSx}
+            >
+              {instructionsAiEditSlot}
+            </Box>
+          ) : null}
           <InstructionsInput
             instructions={versionDetails?.instructions}
             onInstructionsChange={state.onInstructionsChange}
