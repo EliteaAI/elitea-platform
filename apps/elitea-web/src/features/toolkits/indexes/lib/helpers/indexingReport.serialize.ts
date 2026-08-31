@@ -100,9 +100,14 @@ export function parseIndexEntryJson(value: unknown): UnknownRecord | null {
 
 function labelsOf(labels: unknown, fallback: IndexingItemLabels): IndexingItemLabels {
   const record = asRecord(labels);
-  const singular = typeof record?.['singular'] === 'string' ? (record['singular'] as string) : '';
-  const plural = typeof record?.['plural'] === 'string' ? (record['plural'] as string) : '';
+  const singular = textOf(record?.['singular']);
+  const plural = textOf(record?.['plural']);
   return { singular: singular === '' ? fallback.singular : singular, plural: plural === '' ? fallback.plural : plural };
+}
+
+/** A server-authored cell is `unknown`; only a real string is text. */
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function countOf(value: unknown): number {
@@ -157,8 +162,8 @@ function normalizeCategories(categories: unknown, dependentLabels: IndexingItemL
         const group = asRecord(rawGroup) ?? {};
         const dependent = group['dependent'] === true;
         return buildGroup({
-          reason: String(group['reason'] ?? ''),
-          label: String(group['label'] ?? ''),
+          reason: textOf(group['reason']),
+          label: textOf(group['label']),
           count: countOf(group['count']),
           items: stringsOf(group['items']),
           dependent,
@@ -335,7 +340,7 @@ function fromLegacyEntry(entry: UnknownRecord): IndexingReport {
     leftOut: skippedCount + notIndexedCount + failedCount,
   };
 
-  const error = typeof entry['error'] === 'string' ? entry['error'].trim() : '';
+  const error = textOf(entry['error']).trim();
   const state = entry['state'];
   const isFailed = (typeof state === 'string' && FAILED_STATES.includes(state)) || error !== '';
 

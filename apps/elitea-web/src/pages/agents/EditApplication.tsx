@@ -25,6 +25,7 @@ import { useEditApplicationVersionFields } from './lib/useEditApplicationVersion
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditApplicationActions } from './ui/EditApplicationActions';
+import { EditApplicationAiEditSlot } from './ui/EditApplicationAiEditSlot';
 import { EditApplicationSaveBar } from './ui/EditApplicationSaveBar';
 import { EditApplicationToolsPanel } from './ui/EditApplicationToolsPanel';
 
@@ -362,6 +363,8 @@ export function EditApplication(): ReactNode {
                   onChange={versionFields.setTags}
                 />
               }
+              /* AI-assisted instructions edit; gates itself, see that file. */
+              instructionsAiEditSlot={<EditApplicationAiEditSlot editor={editor} projectId={projectId} disabled={isEditorDisabled} />}
               modelSettingsSlot={
                 <AgentModelSettings
                   projectId={projectId}

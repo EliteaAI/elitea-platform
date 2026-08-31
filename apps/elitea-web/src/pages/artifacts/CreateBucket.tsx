@@ -9,6 +9,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useNavigate, useSearch } from '@tanstack/react-router';
 
+import type { Bucket } from '@/entities/bucket';
 import { useArtifactBuckets, useArtifactMutations } from '@/features/artifacts';
 import { t } from '@/shared/i18n';
 
@@ -46,6 +47,31 @@ export function parseRetentionDays(raw: string): number | null {
   return trimmed === '' ? null : Number(trimmed);
 }
 
+/** `?bucket=` -> the bucket being edited, or `undefined` for create mode. */
+function editedBucketName(raw: string | undefined): string | undefined {
+  return raw !== undefined && raw !== '' ? raw : undefined;
+}
+
+/** The form's heading across both modes. */
+function formTitle(isEditing: boolean): string {
+  return isEditing ? t('artifacts.edit.title', 'Edit bucket') : t('artifacts.create.title', 'New bucket');
+}
+
+/** The Name field's helper line. Never empty — see the #138 note at the call site. */
+function nameHelperText(isEditing: boolean, touched: boolean, validationError: string): string {
+  if (isEditing) return t('artifacts.edit.nameHelp', 'A bucket cannot be renamed after it is created.');
+  if (touched && validationError !== '') return validationError;
+  return t('artifacts.create.nameHelp', 'Bucket names can contain letters, numbers, and hyphens.');
+}
+
+/** The submit button's label across both modes and their pending states. */
+function submitLabel(isEditing: boolean, pending: boolean): string {
+  if (isEditing) {
+    return pending ? t('artifacts.edit.saving', 'Saving…') : t('artifacts.edit.submit', 'Save bucket');
+  }
+  return pending ? t('artifacts.create.creating', 'Creating…') : t('artifacts.create.submit', 'Create bucket');
+}
+
 /**
  * The bucket form, in BOTH its modes.
  *
@@ -64,6 +90,47 @@ export function parseRetentionDays(raw: string): number | null {
  * /buckets` takes `{name}`), which is exactly why the affordance is worth
  * having.
  */
+/**
+ * The retention box, seeded from the server ONCE — when the bucket row first
+ * resolves. Re-seeding on every list refetch would wipe whatever the user had
+ * typed since. Its own function so `CreateBucket` stays inside the §3.5
+ * cyclomatic-complexity budget.
+ */
+function useSeededRetention(
+  isEditing: boolean,
+  bucket: Bucket | undefined,
+): [string, (value: string) => void] {
+  const [retention, setRetention] = useState('');
+  const [seeded, setSeeded] = useState(false);
+
+  useEffect(() => {
+    if (!isEditing || seeded || bucket === undefined) return;
+    setRetention(bucket.retentionDays === null ? '' : String(bucket.retentionDays));
+    setSeeded(true);
+  }, [bucket, isEditing, seeded]);
+
+  return [retention, setRetention];
+}
+
+/**
+ * The retention box. Its own component so `CreateBucket` stays inside the
+ * §3.5 cyclomatic-complexity budget — it carries the field's own error/hint
+ * branch, which the page does not otherwise need.
+ */
+function RetentionField(props: { value: string; error: string; onChange: (value: string) => void }): ReactNode {
+  const { value, error, onChange } = props;
+  return (
+    <TextField
+      fullWidth
+      label={t('artifacts.edit.retention', 'Retention (days)')}
+      value={value}
+      error={error !== ''}
+      helperText={error === '' ? t('artifacts.edit.retentionHelp', 'Leave empty to keep files indefinitely.') : error}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
 export function CreateBucket(): ReactNode {
   const navigate = useNavigate();
   // `strict: false` — this app's convention for reading route search off a
@@ -72,7 +139,7 @@ export function CreateBucket(): ReactNode {
   const projectId = useSelectedProjectId();
   const mutations = useArtifactMutations(projectId);
 
-  const editingName = search.bucket !== undefined && search.bucket !== '' ? search.bucket : undefined;
+  const editingName = editedBucketName(search.bucket);
   const isEditing = editingName !== undefined;
 
   // Edit mode has no single-bucket GET wired in this app; the list query is
@@ -82,46 +149,32 @@ export function CreateBucket(): ReactNode {
   const editedBucket = buckets.data?.find((bucket) => bucket.name === editingName);
 
   const [name, setName] = useState(editingName ?? 'new-bucket');
-  const [retention, setRetention] = useState('');
-  const [retentionLoaded, setRetentionLoaded] = useState(false);
+  const [retention, setRetention] = useSeededRetention(isEditing, editedBucket);
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string>();
   const validationError = isEditing ? '' : validateBucketName(name);
   const retentionError = validateRetentionDays(retention);
 
-  // Seed the box from the server ONCE, when the row first resolves. Keying
-  // this on `editedBucket` alone would re-seed on every list refetch and
-  // wipe whatever the user had typed since.
-  useEffect(() => {
-    if (!isEditing || retentionLoaded || editedBucket === undefined) return;
-    setRetention(editedBucket.retentionDays === null ? '' : String(editedBucket.retentionDays));
-    setRetentionLoaded(true);
-  }, [editedBucket, isEditing, retentionLoaded]);
-
   const pending = isEditing ? mutations.editBucketRetention.isPending : mutations.createBucket.isPending;
+
+  const goToBucket = (bucket: string): void => {
+    void navigate({ to: '/artifacts', search: { bucket, file: '', folder: '', shared_bucket: '' }, replace: true });
+  };
 
   const submit = (): void => {
     setTouched(true);
     if (validationError !== '' || retentionError !== '' || projectId === undefined) return;
     setError(undefined);
-    if (isEditing) {
+    if (editingName !== undefined) {
       void mutations.editBucketRetention
         .mutateAsync({ name: editingName, retentionDays: parseRetentionDays(retention) })
-        .then(() => navigate({
-          to: '/artifacts',
-          search: { bucket: editingName, file: '', folder: '', shared_bucket: '' },
-          replace: true,
-        }))
+        .then(() => goToBucket(editingName))
         .catch(() => setError('Failed to update the bucket.'));
       return;
     }
     void mutations.createBucket
       .mutateAsync(name.trim())
-      .then(() => navigate({
-        to: '/artifacts',
-        search: { bucket: name.trim(), file: '', folder: '', shared_bucket: '' },
-        replace: true,
-      }))
+      .then(() => goToBucket(name.trim()))
       .catch(() => setError('Failed to create the bucket.'));
   };
 
@@ -135,9 +188,7 @@ export function CreateBucket(): ReactNode {
           submit();
         }}
       >
-        <Typography variant="headingMedium">
-          {isEditing ? t('artifacts.edit.title', 'Edit bucket') : t('artifacts.create.title', 'New bucket')}
-        </Typography>
+        <Typography variant="headingMedium">{formTitle(isEditing)}</Typography>
         {error !== undefined && <Typography role="alert">{error}</Typography>}
         <TextField
           fullWidth
@@ -152,24 +203,15 @@ export function CreateBucket(): ReactNode {
           // button while mouseup landed 23px below it and no click event was
           // ever generated (#138). Falling back to the hint instead of ''
           // both reserves the line and keeps the naming rule on screen.
-          helperText={isEditing
-            ? t('artifacts.edit.nameHelp', 'A bucket cannot be renamed after it is created.')
-            : touched && validationError !== ''
-              ? validationError
-              : t('artifacts.create.nameHelp', 'Bucket names can contain letters, numbers, and hyphens.')}
+          helperText={nameHelperText(isEditing, touched, validationError)}
           onBlur={() => setTouched(true)}
           onChange={(event) => setName(event.target.value)}
         />
         {isEditing ? (
-          <TextField
-            fullWidth
-            label={t('artifacts.edit.retention', 'Retention (days)')}
+          <RetentionField
             value={retention}
-            error={retentionError !== ''}
-            helperText={retentionError !== ''
-              ? retentionError
-              : t('artifacts.edit.retentionHelp', 'Leave empty to keep files indefinitely.')}
-            onChange={(event) => setRetention(event.target.value)}
+            error={retentionError}
+            onChange={setRetention}
           />
         ) : (
           <Typography variant="bodySmall">
@@ -185,13 +227,7 @@ export function CreateBucket(): ReactNode {
             variant="contained"
             disabled={pending || validationError !== '' || retentionError !== ''}
           >
-            {isEditing
-              ? pending
-                ? t('artifacts.edit.saving', 'Saving…')
-                : t('artifacts.edit.submit', 'Save bucket')
-              : pending
-                ? t('artifacts.create.creating', 'Creating…')
-                : t('artifacts.create.submit', 'Create bucket')}
+            {submitLabel(isEditing, pending)}
           </Button>
           <Button onClick={() => void navigate({ to: '/artifacts' })}>{t('common.cancel', 'Cancel')}</Button>
         </Box>

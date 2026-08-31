@@ -6,6 +6,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
+import { combineSx } from '@/shared/ui/lib/combineSx';
 
 import { INDEXING_REPORT_KIND_PRESENTATION } from '../../lib/constants/indexingReport.constants';
 import {
@@ -46,7 +47,7 @@ export function IndexingReportSummary(props: IndexingReportSummaryProps): ReactN
 
   return (
     <Box
-      sx={[rootSx, ...(Array.isArray(sx) ? sx : [sx ?? {}])] as SxProps<Theme>}
+      sx={combineSx(rootSx, sx)}
       data-testid="indexing-report-summary"
     >
       {headline !== null && (
