@@ -1106,7 +1106,8 @@
             "usedBy": [
                 "features/agents",
                 "features/credentials",
-                "features/pipelines"
+                "features/pipelines",
+                "features/chat-messages"
             ]
         },
         {
@@ -1242,7 +1243,8 @@
             "fixture": null,
             "usedBy": [
                 "features/credentials",
-                "features/chat-input"
+                "features/chat-input",
+                "features/chat-messages"
             ]
         },
         {
@@ -2175,6 +2177,19 @@
             "fixture": null,
             "usedBy": [
                 "features/credentials"
+            ]
+        },
+        {
+            "$comment": "Blocking-mode sibling of pipelines.generateContentStreaming / agents.generateContentBlocking on the SAME path: await_task_timeout 60 instead of 0, so the generated text would come back in this HTTP response rather than over the application_predict socket event. Called by the canvas mermaid quick-fix (features/chat-messages/api/canvasQuickFix.ts). NOT ROUTED: the Predict/LLM group stood behind a nil RouterConfig.Predictor gate nothing ever assigned, so chi 404s this path in every deployment (internal/api/router.go NOTE(#126); backend gap #194). Listed here because the manifest records what the SPA can build a request for, per R-A5 — the affordance itself is hidden by shared/config/backendCapabilities.ts's aiGeneration flag, exactly like the other senders of this path.",
+            "id": "chatMessages.generateContentBlocking",
+            "method": "POST",
+            "path": "/elitea_core/predict_llm/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "QuickFixPredictResult",
+            "fixture": null,
+            "usedBy": [
+                "features/chat-messages"
             ]
         }
     ]

@@ -30,10 +30,12 @@ export type BackendCapability = 'aiGeneration' | 'pipelineTriggers';
  * What this build serves.
  *
  * `aiGeneration` covers the agent draft, the project-context draft, the skill
- * draft, and `predict_llm`. `predict_llm` has two senders: the skill test run,
- * and the pipeline AI assistant. The assistant is gated inside
- * `features/pipelines/ui/AIAssistantInput.tsx`, the component that owns the
- * trigger, so every call site is covered by one check.
+ * draft, and `predict_llm`. `predict_llm` has three senders: the skill test
+ * run, the pipeline AI assistant, and the canvas mermaid quick-fix. Each is
+ * gated inside the component or hook that owns its trigger — respectively
+ * `features/pipelines/ui/AIAssistantInput.tsx` and
+ * `features/chat-messages/model/useMermaidQuickFix.ts` — so every call site is
+ * covered by one check and a later call site cannot miss it.
  * `pipelineTriggers` covers the webhook and scheduled trigger types, and the
  * trigger read the application-information panel makes. The Chat Message
  * trigger type calls no endpoint and stays available.
