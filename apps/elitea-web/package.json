@@ -6,7 +6,7 @@
   ],
   "private": true,
   "type": "module",
-  "description": "Elitea web UI \u2014 drop-in replacement for apps/elitea-ui (spec: elitea-docs ui/spec-ui-reimplementation.md)",
+  "description": "Elitea web UI — drop-in replacement for apps/elitea-ui (spec: elitea-docs ui/spec-ui-reimplementation.md)",
   "engines": {
     "node": ">=24",
     "npm": ">=11"
@@ -62,6 +62,7 @@
     "js-yaml": "5.2.2",
     "jszip": "3.10.1",
     "marked": "18.0.7",
+    "mermaid": "11.17.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-hook-form": "7.83.0",

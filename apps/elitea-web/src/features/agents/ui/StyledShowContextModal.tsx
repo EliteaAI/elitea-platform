@@ -16,6 +16,7 @@ import Typography from '@mui/material/Typography';
 import { handleCopy } from '@/shared/lib/clipboard';
 import { t } from '@/shared/i18n';
 import { Markdown } from '@/shared/ui/Markdown';
+import { MermaidDiagram } from '@/shared/ui/MermaidDiagram';
 
 import { parseYamlToMermaid } from '../lib/helpers/parseYamlToMermaid.helpers';
 
@@ -38,21 +39,15 @@ import { ModalMessage } from './ModalMessage';
  * directly (falling back to `handleCopy` only when it's absent) instead of
  * routing every copy through the swallow-everything helper.
  *
- * `renderContextAsMermaid` real, documented gap: `parseYamlToMermaid`
- * (`../lib/helpers/parseYamlToMermaid.helpers.ts`, this sub-unit's own
- * sibling A1b/A1e-adjacent port — landed in this worktree, reused here
- * intra-slice) produces a real Mermaid `graph TD` DEFINITION STRING, byte-
- * for-byte faithful to the baseline. What the baseline additionally had —
- * `components/MermaidDiagramOutput/DiagramOutput` — actually RENDERS that
- * string as an SVG diagram (the `mermaid` npm package). No such renderer
- * exists anywhere in this app (`grep -n '"mermaid"' package.json` — zero
- * hits; `find shared/ui -iname '*mermaid*'` — zero hits): the diagram
- * definition is real and computed correctly, but there is nothing in this
- * worktree that turns it into a picture yet. Rather than inventing a
- * mermaid-rendering integration (a `shared/ui` concern, out of this
- * sub-unit's ownership fence), the raw diagram-definition text is shown
- * inside a `<pre>`-equivalent monospace block — an honest "here is the
- * diagram source, unrendered" state, not a silent no-op.
+ * `renderContextAsMermaid`: `parseYamlToMermaid`
+ * (`../lib/helpers/parseYamlToMermaid.helpers.ts`) produces a real Mermaid
+ * `graph TD` DEFINITION STRING, byte-for-byte faithful to the baseline, and
+ * `shared/ui/MermaidDiagram` (canvas slice 2a — the render half of the
+ * baseline's `components/MermaidDiagramOutput/DiagramOutput`) turns it into an
+ * SVG. This file's earlier doc comment recorded the gap while no renderer
+ * existed and the definition was shown as raw monospace text; that gap is
+ * closed. `MermaidDiagram` reports a malformed definition inline, so the
+ * "unrendered source" fallback has no remaining job.
  */
 interface StyledShowContextModalMessage {
   readonly id: string | number;
@@ -137,13 +132,10 @@ function ModalBody({ context, messages, renderContextAsMermaid, mermaidDefinitio
     <DialogContent sx={dialogContentSx}>
       {isLoading && <CircularProgress size={20} />}
       {renderContextAsMermaid && (
-        <Typography
-          component="pre"
-          variant="bodySmall"
-          sx={mermaidSourceSx}
-        >
-          {mermaidDefinition}
-        </Typography>
+        <MermaidDiagram
+          code={mermaidDefinition}
+          data-testid="show-context-mermaid-diagram"
+        />
       )}
       {!renderContextAsMermaid && context && (
         <Typography
@@ -263,12 +255,6 @@ const dialogContentSx: SxProps<Theme> = (theme: Theme) => ({
   flexDirection: 'column',
   gap: '1rem',
 });
-
-const mermaidSourceSx: SxProps<Theme> = {
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-  fontFamily: 'monospace',
-};
 
 const preserveWhitespaceSx: SxProps<Theme> = {
   whiteSpaceCollapse: 'preserve',
