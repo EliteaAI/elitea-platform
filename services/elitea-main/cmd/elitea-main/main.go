@@ -29,6 +29,7 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
@@ -1041,6 +1042,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// would then wire a use case whose first call panics — the typed-nil trap
 	// this service has already been bitten by on /healthz.
 	var supportAssistantStart v2support.StartUseCase
+	// The MCP server's half of the same wiring, assigned under the same guard
+	// and for the same typed-nil reason. `tools/call` runs an agent through the
+	// SAME use case; left nil it keeps answering the refusal it always has.
+	var mcpAgentStart v2mcp.AgentStartUseCase
 	var currentAgentCancel http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
@@ -1163,6 +1168,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		if publicRoutes.AgentStart != nil {
 			supportAssistantStart = publicRoutes.AgentStart
+			mcpAgentStart = publicRoutes.AgentStart
 			currentAgentStart, err = agentexecutionapi.NewCurrentApplicationStartRoute(
 				publicRoutes.AgentStart,
 				apimw.AuthConfig{
@@ -1504,6 +1510,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// project, and giving it its own executor is how the two would drift
 		// apart on tracing, budgets and cancellation.
 		SupportAssistantStart:      supportAssistantStart,
+		MCPAgentStart:              mcpAgentStart,
 		CurrentAgentCancel:         currentAgentCancel,
 		CurrentIndexCancel:         currentIndexCancel,
 		CurrentIndexMeta:           currentIndexMeta,

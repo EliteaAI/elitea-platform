@@ -257,7 +257,13 @@ type RouterConfig struct {
 	// route answers 503 and the rest of the support surface still works
 	// (history stays readable), which is the honest degrade for a deployment
 	// that runs no agent execution.
-	SupportAssistantStart      v2support.StartUseCase
+	SupportAssistantStart v2support.StartUseCase
+	// MCPAgentStart is the agent-execution use case the MCP server's
+	// `tools/call` drives — again the SAME use case CurrentAgentStart's route
+	// and the support assistant drive, for the same reason. Left nil (which is
+	// what `runtime.enabled` off produces), `tools/call` answers the unchanged
+	// v2mcp.ToolExecutionUnavailableReason and `tools/list` is unaffected.
+	MCPAgentStart              v2mcp.AgentStartUseCase
 	CurrentAgentCancel         http.Handler
 	CurrentIndexCancel         http.Handler
 	CurrentIndexMeta           http.Handler
@@ -626,8 +632,13 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 // because chi will not match a bare `/app/{projectID}/mcp` against a `/*`
 // pattern; the handler reads the tail with chi.URLParam(r, "*"), which is empty
 // for the first pair.
-func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(http.Handler) http.Handler) {
-	handler := v2mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool))
+func mountMCPServerRoutes(
+	r chi.Router,
+	pool *pgxpool.Pool,
+	authenticate func(http.Handler) http.Handler,
+	agentStart v2mcp.AgentStartUseCase,
+) {
+	handler := v2mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool), agentStart, legacyrbac.NewPostgresResolver(pool))
 	r.Group(func(r chi.Router) {
 		r.Use(authenticate)
 		r.Use(apimw.RequireProjectAccess(pool))
@@ -970,7 +981,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 
 	// The MCP server (issue 252). Outside the /api/v2 group for the reasons in
 	// mountMCPServerRoutes.
-	mountMCPServerRoutes(r, cfg.Pool, authenticate)
+	mountMCPServerRoutes(r, cfg.Pool, authenticate, cfg.MCPAgentStart)
 
 	// This group holds the whole JSON API — the `/api/v2` route below is its
 	// only member. Compression sits at the top of it, ABOVE the shadow
@@ -2566,7 +2577,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// internal/api/v2/mcp/registry.go. It is registered rather than
 				// left off so the refusal is explicit and pinned by a test: a
 				// 404 leaves the next person free to wire a stub up.
-				mcpHandler := v2mcp.NewHandler(cfg.Pool, apimw.NewDBPersonalProjectResolver(cfg.Pool))
+				mcpHandler := v2mcp.NewHandler(cfg.Pool, apimw.NewDBPersonalProjectResolver(cfg.Pool), cfg.MCPAgentStart, permissionResolver)
 				r.Group(func(r chi.Router) {
 					r.Use(projectScoped)
 					r.Get("/tools_list/{projectID}", mcpHandler.ToolsList)
