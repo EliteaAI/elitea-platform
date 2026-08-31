@@ -127,6 +127,12 @@ class Settings:
     #: '*' to disable the control explicitly.
     git_allowlist: str | None = None
 
+    #: Hosts the engine may reach for model downloads. Separate from the git
+    #: allowlist because it is a different trust decision — a deployment may
+    #: well allow an internal model mirror and no public git host, or the
+    #: reverse. Same fail-closed rule.
+    model_allowlist: str | None = None
+
     #: DSN for the dedicated ``deepwiki`` database (ADR-0022 decision 3).
     #: When set, the engine's READ path is served from PostgreSQL and query
     #: replicas are stateless. When unset, retrieval falls back to the
@@ -154,4 +160,5 @@ class Settings:
             tls_ca_file=_raw("TLS_CA_FILE") or None,
             identity_secret=_raw("IDENTITY_SECRET") or None,
             git_allowlist=_raw("GIT_ALLOWLIST") or None,
+            model_allowlist=_raw("MODEL_ALLOWLIST") or None,
         )

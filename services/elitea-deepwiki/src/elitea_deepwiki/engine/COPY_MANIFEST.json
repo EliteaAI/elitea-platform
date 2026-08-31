@@ -2,8 +2,8 @@
   "source_repository": "deepwiki_plugin",
   "source_path": "plugin_implementation",
   "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
-  "file_count": 101,
-  "total_bytes": 3938608,
+  "file_count": 100,
+  "total_bytes": 3920378,
   "not_copied": [
     "COPY_MANIFEST.json",
     "__init__.py"
@@ -32,10 +32,6 @@
     "artifact_manager.py": {
       "bytes": 39049,
       "sha256": "0f015414e8b45013c3750e501a029434c7c324e07a2e62ff7feffad7eac6fcfa"
-    },
-    "artifacts_platform_client.py": {
-      "bytes": 18230,
-      "sha256": "e0398f0bf9e971c010db817e3fdf1e67b85a432053d40c259a21853416f63860"
     },
     "ask_engine.py": {
       "bytes": 17146,
@@ -415,6 +411,26 @@
     }
   },
   "transformed_files": {
+    "plugin_implementation/artifacts_platform_client.py": {
+      "target": "src/elitea_deepwiki/engine/artifacts_platform_client.py",
+      "bytes": 18371,
+      "sha256": "b6e7c34d3610ac3ec0898ad32ade6ee056b337cfb6b8cf0c13eee6fd6e9dae03",
+      "in_place": true,
+      "substitutions": [
+        {
+          "from": "        return {\n            \"Authorization\": f\"Bearer {self.api_key}\",\n            \"X-SECRET\": self.x_secret,\n        }",
+          "to": "        return {\n            \"Authorization\": f\"Bearer {self.api_key}\",\n        }"
+        },
+        {
+          "from": "DEFAULT_BUCKET = \"wiki-artifacts\"",
+          "to": "def _tls_verify():\n    \"\"\"CA bundle path, or True for the system trust store.\"\"\"\n    return os.environ.get(\"ELITEA_DEEPWIKI_TLS_CA_FILE\") or True\n\n\nDEFAULT_BUCKET = \"wiki-artifacts\""
+        },
+        {
+          "from": "verify=False",
+          "to": "verify=_tls_verify()"
+        }
+      ]
+    },
     "methods/tool_operations.py": {
       "target": "src/elitea_deepwiki/tool_operations.py",
       "bytes": 60566,

@@ -442,3 +442,133 @@ async def test_registry_tools_are_not_blocked_by_the_allowlist():
         await manager.stop()
 
     assert body["status"] == "Completed"
+
+
+# ---------------------------------------------------------------------------
+# model-download egress
+# ---------------------------------------------------------------------------
+
+
+def test_no_model_allowlist_forces_offline():
+    """Fail-closed, and enforced rather than declared.
+
+    huggingface_hub reads HF_HUB_OFFLINE; the engine is a verbatim copy that
+    calls the library directly, so a policy object it never consults would be
+    decoration. Setting the variable is the control.
+    """
+    from elitea_deepwiki.security.egress import apply_model_egress
+
+    environ: dict[str, str] = {}
+    assert apply_model_egress(EgressPolicy.parse(None), environ) == "offline"
+    assert environ["HF_HUB_OFFLINE"] == "1"
+
+
+def test_the_public_hub_on_the_allowlist_permits_downloads():
+    from elitea_deepwiki.security.egress import apply_model_egress
+
+    environ: dict[str, str] = {"HF_HUB_OFFLINE": "1"}
+    assert apply_model_egress(EgressPolicy.parse("huggingface.co"), environ) == "allowed"
+    assert "HF_HUB_OFFLINE" not in environ
+
+
+def test_an_allowlisted_mirror_is_left_alone():
+    from elitea_deepwiki.security.egress import apply_model_egress
+
+    environ = {"HF_ENDPOINT": "https://models.internal"}
+    assert apply_model_egress(EgressPolicy.parse("models.internal"), environ) == "mirror"
+    assert environ["HF_ENDPOINT"] == "https://models.internal"
+    assert "HF_HUB_OFFLINE" not in environ
+
+
+def test_a_mirror_off_the_allowlist_is_forced_offline():
+    """Configuring an endpoint does not exempt it from the allowlist."""
+    from elitea_deepwiki.security.egress import apply_model_egress
+
+    environ = {"HF_ENDPOINT": "https://models.attacker.example"}
+    assert apply_model_egress(EgressPolicy.parse("models.internal"), environ) == "offline"
+    assert environ["HF_HUB_OFFLINE"] == "1"
+
+
+def test_git_and_model_allowlists_are_independent():
+    """Different trust decisions.
+
+    A deployment may allow an internal model mirror and no public git host, or
+    the reverse. Sharing one list would force them together.
+    """
+    settings = Settings(git_allowlist="github.com", model_allowlist="models.internal")
+    assert EgressPolicy.parse(settings.git_allowlist).permits("github.com")
+    assert not EgressPolicy.parse(settings.model_allowlist).permits("github.com")
+    assert EgressPolicy.parse(settings.model_allowlist).permits("models.internal")
+
+
+# ---------------------------------------------------------------------------
+# readiness
+# ---------------------------------------------------------------------------
+
+
+async def test_readiness_is_separate_from_the_provider_health_document():
+    """`/health` is the SPI's frozen shape; `/ready` answers a probe's question.
+
+    Answering both from one path would mean either widening a frozen contract
+    or having a probe that passes while the service cannot work.
+    """
+    async with client_for(Settings()) as http:
+        health = await http.get("/health")
+        ready = await http.get("/ready")
+
+    assert health.status_code == 200
+    assert ready.status_code == 200
+    assert ready.json()["status"] == "READY"
+    # The two documents are not the same shape.
+    assert "providerVersion" in health.json()
+    assert "providerVersion" not in ready.json()
+
+
+async def test_readiness_fails_when_the_database_is_unreachable():
+    """503 is what takes a replica out of rotation.
+
+    A replica that cannot reach the index database cannot serve queries; one
+    that reports READY anyway keeps receiving them.
+    """
+    settings = Settings(database_url="postgresql://nobody@127.0.0.1:1/nope")
+    async with client_for(settings) as http:
+        response = await http.get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "NOT_READY"
+    assert body["checks"]["database"] is False
+
+
+async def test_probes_are_reachable_without_a_client_certificate():
+    """Both of them. Requiring one would empty the rotation when mTLS is on."""
+    settings = Settings(tls_ca_file="/etc/deepwiki/ca.pem")
+    async with client_for(settings) as http:
+        assert (await http.get("/health")).status_code == 200
+        assert (await http.get("/ready")).status_code == 200
+        # And a real SPI route is still refused.
+        assert (await http.get("/descriptor")).status_code == 496
+
+
+def test_a_dsn_without_the_driver_fails_loudly_at_startup(monkeypatch):
+    """Misconfiguration must not degrade into a silent loss of durability.
+
+    Falling back to the in-process store here would leave a deployment that
+    asked for durable invocation state running without it, while `/health`
+    reported `durable_invocations: false` and the operator believed otherwise.
+    """
+    import builtins
+
+    from elitea_deepwiki.config import ConfigError
+
+    real_import = builtins.__import__
+
+    def no_psycopg(name, *args, **kwargs):
+        if name == "psycopg":
+            raise ModuleNotFoundError("No module named 'psycopg'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_psycopg)
+
+    with pytest.raises(ConfigError, match="storage-postgres"):
+        create_app(settings=Settings(database_url="postgresql://x/y"))

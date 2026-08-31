@@ -3,7 +3,7 @@
 The standalone DeepWiki provider service — the ADR-0022 port of the legacy
 `deepwiki_plugin` Pylon module.
 
-**Status: it runs.** A real `generate_wiki` has been driven through the frozen
+**Status: it runs, and P1 is complete bar packaging.** A real `generate_wiki` has been driven through the frozen
 SPI, into the copied tool layer, out to a subprocess worker and back with the
 frozen artifact set — clone, index, repository analysis, structure planning,
 page generation, composition. See [Running it end to end](#running-it-end-to-end).
@@ -110,6 +110,27 @@ above it is the SPI, everything below is the engine.
 providers, each with its own precedence chain over a dozen differently-prefixed
 keys. Only the GitHub path has a fixture; the other three are carried on trust,
 which is an argument for copying it rather than against.
+
+### Two ADR violations that were live in the copy
+
+ADR-0022 decision 6 says the `X-SECRET` shared-string header is retired — "no
+surface of the ported service sends or honours it" — and that "TLS
+verification is mandatory on every outbound call. `verify=False` does not
+appear in the ported code."
+
+Both were **false** of the copied `artifacts_platform_client.py`: it sent
+`X-SECRET` on every artifact call with the value defaulting to the literal
+string `"secret"`, and disabled TLS verification on four requests. The README
+claimed otherwise, because the claim was about the adapter rather than the
+whole service.
+
+Both are now closed by declared, reproducible in-place substitutions
+(`tools/refresh_engine_copy.py`), and
+`test_the_adr_0022_security_retirements_hold_in_the_copy` asserts them over the
+whole tree — against the code, not the prose, so the claim cannot drift from
+the thing again. TLS verification takes a CA bundle from
+`ELITEA_DEEPWIKI_TLS_CA_FILE`, because an internal mesh signs with a private CA
+the system trust store does not carry.
 
 ### Deliberate omissions from the handler port
 
@@ -268,6 +289,19 @@ falling back to v1 for a request that carries one would make that id
 caller-attachable, which is what signing it prevents. That asymmetry is easy to
 get wrong and has its own test.
 
+### Model-download egress
+
+`ELITEA_DEEPWIKI_MODEL_ALLOWLIST` governs where the engine may fetch models
+from, separately from the git allowlist — a deployment may well permit an
+internal model mirror and no public git host, or the reverse.
+
+It is enforced rather than declared. The engine is a verbatim copy that calls
+`huggingface_hub` directly, so a policy object it never consults would be
+decoration; instead the allowlist decides `HF_ENDPOINT` and `HF_HUB_OFFLINE`
+before the engine runs. No allowlist, or an endpoint the allowlist does not
+admit, means `HF_HUB_OFFLINE=1`: cached models only, and a raise rather than a
+silent reach onto the network.
+
 ### Git-host egress
 
 `ELITEA_DEEPWIKI_GIT_ALLOWLIST` names the hosts this deployment may clone from,
@@ -297,6 +331,47 @@ Registry-only tools (`wiki_query`) clone nothing and are not subject to it;
 refusing them for want of a repository would break a toolkit for a control that
 does not apply.
 
+## Health and readiness
+
+`/health` is the SPI's own document — a frozen shape the platform polls, which
+says the provider exists and how it is configured. `/ready` answers a different
+question: can this replica serve traffic right now. It checks the index
+database and returns **503** when it cannot, which is what takes a replica out
+of rotation.
+
+Keeping them separate avoids the two bad options: widening a frozen contract,
+or having a probe that passes while the service cannot work. Both paths are
+reachable without a client certificate — requiring one would empty the rotation
+the moment mTLS was enabled — while every real SPI route still refuses.
+
+## Durable invocation state
+
+`GET /health` now reports `durable_invocations: true` when a database is
+configured. spec-provider-service requires it:
+
+> A restarted service MUST NOT silently reinterpret a known accepted operation
+> as never having existed.
+
+Migration 0002 adds `invocations` and `invocation_events`;
+`storage/invocation_store.py` implements the same `InvocationStore` interface
+the in-memory store does, so routes, projection, drain semantics and the 404
+rules are untouched. Only where the rows live moves.
+
+Two things it buys beyond surviving a restart:
+
+**Reconciliation.** A row still `running` whose `owner` is a process that no
+longer exists is work nobody is doing. At startup those become a terminal
+error, so a caller polling across a restart gets an answer instead of
+`InProgress` forever. Reconciliation keys on owner, so a replica starting up
+does not cancel another replica's in-flight generations — getting that wrong
+would make every deploy kill every running job in the fleet.
+
+**Atomic event drain.** `custom_events` are read-once. As a jsonb array that is
+read-modify-write under a lock on the hottest path; as rows it is one
+`DELETE … RETURNING`, so two concurrent pollers can neither both receive an
+event nor lose one. Read-once remains the contract — the P0 fixtures pin it —
+and making events durable does not make them re-readable.
+
 ## What is not wired yet
 
 1. **The dependency closure is optional.** `pip install -e ".[engine]"`
@@ -310,9 +385,11 @@ does not apply.
    licence-credential init container ADR-0022 drops, and passes secrets through
    Job environment variables where the ADR requires projected files. A test
    pins this.
-3. **Credentials and artifacts.** The facade has to pass artifact base URL and
-   token explicitly (decision 6); nothing here derives them any more, so
-   nothing here can currently fetch or store a platform artifact.
+3. **Artifact credentials are still derived, not supplied.** The copied client
+   still builds its base URL by regex-stripping `/llm` off the LLM base URL.
+   `X-SECRET` and `verify=False` are gone (see below), but replacing the
+   derivation with explicit inputs belongs with the facade that will supply
+   them, in P2.
 4. **Generation still writes files.** By design — it is bounded by slot
    accounting and runs on the pod that owns the work — but the `.bm25.sqlite`,
    docstore and FAISS artefacts it also produces are not published; only the

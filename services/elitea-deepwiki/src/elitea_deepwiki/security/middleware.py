@@ -46,9 +46,10 @@ from .identity import (
 
 logger = logging.getLogger(__name__)
 
-#: Paths served before an identity exists. ``/health`` is what a readiness
-#: probe calls, and a probe has no project.
-UNAUTHENTICATED_PATHS = frozenset({"/health"})
+#: Paths served before an identity exists. Probes have no project and no
+#: client certificate, and a liveness or readiness check that required one
+#: would take every replica out of rotation the moment mTLS was enabled.
+UNAUTHENTICATED_PATHS = frozenset({"/health", "/ready"})
 
 
 def _refuse(status_code: int, message: str) -> JSONResponse:
