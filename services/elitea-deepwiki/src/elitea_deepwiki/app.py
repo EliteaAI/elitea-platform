@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from . import errors
-from .config import Settings
+from .config import ConfigError, Settings
 from .security.egress import EgressPolicy
 from .descriptor import provider_descriptor
 from .toolrunner import ToolRunner, build_runner
@@ -59,9 +59,21 @@ def _build_invocation_store(settings: Settings):
     """
     if not settings.database_url:
         return None
-    from .storage.invocation_store import build_store  # noqa: PLC0415
 
-    return build_store(settings.database_url)
+    try:
+        from .storage.invocation_store import build_store  # noqa: PLC0415
+
+        return build_store(settings.database_url)
+    except ModuleNotFoundError as exc:  # the driver, not the server
+        # Loud, and at startup. Falling back to the in-process store would
+        # leave a deployment that asked for durability running without it —
+        # and `/health` would report durable_invocations: false while the
+        # operator believed otherwise, which is the worst of both.
+        raise ConfigError(
+            "ELITEA_DEEPWIKI_DATABASE_URL is set but the PostgreSQL driver is "
+            "not installed. Install the 'storage-postgres' extra, or unset the "
+            f"variable to run without durable invocation state ({exc})."
+        ) from exc
 
 
 def create_app(

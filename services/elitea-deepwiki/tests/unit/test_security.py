@@ -548,3 +548,27 @@ async def test_probes_are_reachable_without_a_client_certificate():
         assert (await http.get("/ready")).status_code == 200
         # And a real SPI route is still refused.
         assert (await http.get("/descriptor")).status_code == 496
+
+
+def test_a_dsn_without_the_driver_fails_loudly_at_startup(monkeypatch):
+    """Misconfiguration must not degrade into a silent loss of durability.
+
+    Falling back to the in-process store here would leave a deployment that
+    asked for durable invocation state running without it, while `/health`
+    reported `durable_invocations: false` and the operator believed otherwise.
+    """
+    import builtins
+
+    from elitea_deepwiki.config import ConfigError
+
+    real_import = builtins.__import__
+
+    def no_psycopg(name, *args, **kwargs):
+        if name == "psycopg":
+            raise ModuleNotFoundError("No module named 'psycopg'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_psycopg)
+
+    with pytest.raises(ConfigError, match="storage-postgres"):
+        create_app(settings=Settings(database_url="postgresql://x/y"))
