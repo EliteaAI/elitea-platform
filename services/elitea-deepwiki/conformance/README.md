@@ -99,6 +99,11 @@ declarations and 7 unique tool names with the argument schemas in
 `libs/provider/legacy/v0/bundle.manifest.json`.
 
 **2. SPI → a black-box HTTP test against the ported container.**
+*Landed:* `../tests/conformance/test_spi.py` already replays these fixtures
+against the ported ASGI application, so the descriptor, health, slots, invoke,
+poll, cancel and error-contract cases are a live gate rather than a plan. What
+is still ahead is running the same cases over mTLS through the elitea-main
+facade (P2) and against the engine-carrying image.
 `routes.json` drives the operation list; for each, the recorded case files are
 the expected responses. The ported ASGI app is started with the same fake
 worker seam, and each case is issued over mTLS through the elitea-main facade

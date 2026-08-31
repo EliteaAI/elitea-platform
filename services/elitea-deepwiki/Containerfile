@@ -1,0 +1,45 @@
+# ELITEA DeepWiki provider service — SPI shell image.
+#
+# This image carries the frozen provider SPI and nothing else. The analysis
+# engine's closure (torch, faiss, tree-sitter grammars, LangGraph) arrives with
+# the engine itself; ADR-0022 keeps that image out of the default bake group
+# because it is torch-sized. Until then this stays small and buildable in CI.
+#
+# Build from the repository root:
+#   podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
+
+FROM python:3.12.10-slim AS build
+
+WORKDIR /build
+COPY services/elitea-deepwiki ./services/elitea-deepwiki
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip wheel \
+      --no-cache-dir \
+      --wheel-dir /wheels \
+      ./services/elitea-deepwiki
+
+FROM python:3.12.10-slim AS runtime
+
+# Non-root by default; the service needs no privileged capability and its
+# scratch directory is ephemeral pod storage (ADR-0022 decision 4).
+RUN useradd --create-home --uid 10001 deepwiki \
+    && mkdir -p /var/scratch/deepwiki \
+    && chown deepwiki:deepwiki /var/scratch/deepwiki
+
+COPY --from=build /wheels /wheels
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --no-cache-dir --no-index --find-links /wheels elitea-deepwiki \
+    && rm -rf /wheels
+
+USER deepwiki
+WORKDIR /home/deepwiki
+
+ENV ELITEA_DEEPWIKI_SCRATCH_PATH=/var/scratch/deepwiki \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+
+# The settings object is strict-parsed at startup, so a malformed environment
+# fails the container rather than degrading a request later.
+ENTRYPOINT ["python", "-m", "elitea_deepwiki"]

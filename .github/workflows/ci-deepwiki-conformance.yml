@@ -1,11 +1,19 @@
-name: CI — DeepWiki conformance
+name: CI — DeepWiki
 
-# ADR-0022 phase P0 ships golden fixtures for the DeepWiki port. Fixtures that
-# nothing replays are dead weight that reads as coverage, so this workflow runs
-# the fixture invariants on every change to them. It deliberately installs
-# nothing but pytest: replaying the committed fixtures needs only the standard
-# library. Re-recording them from the legacy deepwiki_plugin checkout
-# (tools/record_*.py) is a local step — the legacy plugin is not available here.
+# ADR-0022 ports deepwiki_plugin into services/elitea-deepwiki. Two gates run
+# here:
+#
+#   * "Fixture invariants" replays the phase-P0 golden fixtures on their own.
+#     It installs nothing but pytest — replaying the committed fixtures needs
+#     only the standard library. Fixtures that nothing replays are dead weight
+#     that reads as coverage.
+#   * "Service conformance" drives the ported ASGI service and compares its
+#     answers with those same fixtures. This is what makes "the SPI is a frozen
+#     contract" (decision 2) mean something: moving the contract fails a build.
+#
+# Re-recording the fixtures from the legacy deepwiki_plugin checkout
+# (conformance/tools/record_*.py) is a local step — the legacy plugin is not
+# available to CI.
 
 on:
   pull_request:
@@ -43,3 +51,34 @@ jobs:
       - name: Replay fixtures
         working-directory: services/elitea-deepwiki/conformance
         run: python -m pytest -q
+
+  service:
+    name: Service conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the service and its test extras
+        working-directory: services/elitea-deepwiki
+        run: python -m pip install --disable-pip-version-check -e ".[test]"
+
+      - name: Replay the SPI fixtures against the service
+        working-directory: services/elitea-deepwiki
+        run: python -m pytest -q
+
+  image:
+    name: Container builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The image is not published yet (no docker-bake.hcl target — the engine
+      # closure will make it torch-sized and it stays out of the default bake
+      # group). Building it here keeps the Containerfile honest in the
+      # meantime: a broken build is caught on the change that broke it.
+      - name: Build the SPI shell image
+        run: docker build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki:ci .
