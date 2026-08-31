@@ -353,6 +353,26 @@ def _install_postgres_read_path(settings) -> None:
     storage_install.install(lambda: psycopg.connect(dsn))
 
 
+_JOB_PATH_INSTALLED = False
+
+
+def _install_job_path() -> None:
+    """Repoint the Kubernetes-Job manifest builder, once.
+
+    Unconditional: unlike the PostgreSQL read path this needs no
+    configuration, and a Job created with the legacy manifest would reference
+    filesystem paths that do not exist in this image.
+    """
+    global _JOB_PATH_INSTALLED
+    if _JOB_PATH_INSTALLED:
+        return
+
+    from .jobs import install as install_job_path  # noqa: PLC0415
+
+    install_job_path()
+    _JOB_PATH_INSTALLED = True
+
+
 _BOUND_HOST_CACHE: dict[type, type] = {}
 
 
@@ -419,6 +439,7 @@ class LegacyToolRunner:
         # and binding a single function leaves those unresolvable. Found by
         # running it.
         _install_postgres_read_path(settings)
+        _install_job_path()
 
         host = _bound_host_class(Method)(settings, context)
         return getattr(host, name)

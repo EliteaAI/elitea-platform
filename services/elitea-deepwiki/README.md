@@ -27,6 +27,7 @@ services/elitea-deepwiki/
 │   ├── legacy_runner.py dispatch + result composition (perform_invoke_request)
 │   ├── repo_config.py   repository-config extraction, copied from the handler
 │   ├── publishing.py    publish a completed generation into PostgreSQL
+│   ├── jobs.py          the Kubernetes-Job manifest, repointed at this layout
 │   ├── security/        the mTLS terminus, identity headers, egress allowlist
 │   ├── config.py        strict-parsed settings
 │   ├── engine/          the analysis engine — 101 files, plain copy, digest-guarded
@@ -186,6 +187,48 @@ So the frozen artifact set decision 2 pins is produced **only** by the
 out-of-process path. The composition fixtures would not catch a regression
 here, because they test the composer *given* a worker result rather than the
 worker itself — which is exactly why this run exists.
+
+## Kubernetes Jobs
+
+ADR-0022 decision 7 keeps execution out of process — subprocess workers for
+compose and dev, Jobs for scale — and names two legacy practices that do not
+survive. Both live in the Job manifest, so `jobs.py` subclasses the copied
+`K8sJobManager` and replaces exactly the manifest construction. Slot
+accounting, status, failure diagnosis, log streaming, result reading and
+cleanup are inherited unchanged: none of them is what the ADR alters, and
+re-implementing 800 working lines to change 200 would be the wrong trade.
+
+**No init container.** The legacy one git-cloned `deepwiki_plugin` from GitHub
+with a licence credential and pip-installed its requirements, at Job start, on
+every job — so every generation depended on GitHub being reachable and on a
+long-lived credential in the controller's environment. The engine and its
+closure are in the image now.
+
+**A module, not a file path.** The legacy command was a shell that probed
+`/data/plugins/…` then `/app/deepwiki_plugin/…` for
+`plugin_implementation/wiki_job_worker.py` and ran whichever existed. Neither
+exists here. The worker is run as `python -m elitea_deepwiki.engine.wiki_job_worker`
+— which is what the engine's own module docstring documented all along; the
+legacy Job manager was the thing running it as a file.
+
+**Secrets as projected files.** The legacy manifest put artifact credentials —
+a bearer token among them — into `V1EnvVar` values, readable by every process
+in the pod, visible in `kubectl describe`, and captured by crash reporters.
+They now arrive on a projected Secret volume mounted read-only at
+`/var/run/deepwiki/credentials` with mode `0400`. The wholesale `DEEPWIKI_*`
+pass-through is kept, because the feature flags really are numerous, but names
+that look like secrets are dropped rather than copied.
+
+### What is not verified
+
+No cluster was available, so **this has never created a real Job.** What is
+verified is the manifest, in detail, against a fake Kubernetes client — and
+the manifest is the artifact the ADR constrains. One thing that would normally
+need a cluster *is* covered: the tests execute
+`python -m elitea_deepwiki.engine.wiki_job_worker --help`, which proves the
+module has a `__main__` guard and parses `--job-id`. Without a guard, `-m`
+would import it, exit 0 having done nothing, and the Job would report success
+while generating no wiki.
 
 ## The security boundary
 
@@ -461,10 +504,9 @@ podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
       the `ToolRunner` seam with the composition gated by
       `conformance/fixtures/generation/composed_result.json`.
 - [x] **Run the engine end to end** — done, with the findings above.
-- [ ] **Repoint the Kubernetes-Job path** — a worker entry point replacing the
-      legacy filesystem `PYTHONPATH`; drop the licence-credential init
-      container; secrets to Jobs via projected files, not environment
-      variables.
+- [x] **Repoint the Kubernetes-Job path** — module entry point, no init
+      container, projected-file secrets. Manifest verified; never run on a
+      cluster.
 - [x] **Point the engine at the PostgreSQL backend** — the read path is served
       from PostgreSQL and a replica that never built an index can answer.
 - [x] **Call the publisher from the generation path** — a completed
