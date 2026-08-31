@@ -224,9 +224,11 @@ export function EditSkill(): ReactNode {
 
 
 
-  // The test run POSTs `predict_llm`, which no router mounts, so the pane
-  // stays hidden — see `shared/config/backendCapabilities`.
-  const canTestSkill = hasBackendCapability('aiGeneration');
+  // The test run POSTs `predict_llm` in its STREAMING mode
+  // (`await_task_timeout: 0`, output over an `application_predict` socket
+  // event). The route is served now, but that socket transport is not, so the
+  // pane stays hidden — see `shared/config/backendCapabilities`.
+  const canTestSkill = hasBackendCapability('llmPredictStreaming');
 
   const isDirty = JSON.stringify(value) !== JSON.stringify(initialValue);
   const versions = detail.data?.versions ?? [];

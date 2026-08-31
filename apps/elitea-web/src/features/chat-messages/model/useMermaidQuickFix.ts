@@ -16,14 +16,14 @@
  *
  * `isAvailable` is true only when ALL FIVE of these hold:
  *   1. This build actually ROUTES the endpoint the fix is sent to
- *      (`hasBackendCapability('aiGeneration')`). It does not today:
- *      `POST /elitea_core/predict_llm/prompt_lib/{projectId}` stood behind a
- *      nil `RouterConfig.Predictor` gate that nothing ever assigned, so it was
- *      never registered and chi 404s it in every deployment — see
- *      `internal/api/router.go:2303-2317`'s NOTE(#126), backend gap #194, and
- *      the fuller account in `../api/canvasQuickFix.ts`. Checked FIRST and
- *      before the two configuration reads: with the endpoint absent there is
- *      nothing to ask about, so the reads are skipped too.
+ *      (`hasBackendCapability('llmPredictBlocking')`). `POST /elitea_core/
+ *      predict_llm/prompt_lib/{projectId}` once stood behind a nil
+ *      `RouterConfig.Predictor` gate that nothing ever assigned, so it was
+ *      never registered and chi 404'd it in every deployment (NOTE(#126));
+ *      elitea-main now serves its blocking mode, which is the mode this fix
+ *      uses. The flag is still checked FIRST and before the two configuration
+ *      reads: a deployment with no LLM gateway configured still has nothing to
+ *      ask, so the reads are skipped too.
  *   2. `projectId` is set (no project ⇒ no configurations scope).
  *   3. The models read answered AND `getMermaidQuickFixModelInfo` found a
  *      usable `(model_name, model_project_id)` pair — the low-tier default,
@@ -71,7 +71,7 @@ import {
 
 /** Which of the five gate conditions is not met. `null` when the capability is available. */
 export type MermaidQuickFixUnavailableReason =
-  /** This build does not route `predict_llm` — `hasBackendCapability('aiGeneration')` is false (#194). */
+  /** This build serves no blocking `predict_llm` — `hasBackendCapability('llmPredictBlocking')` is false. */
   | 'no-backend'
   | 'loading'
   | 'no-project'
@@ -113,7 +113,7 @@ export function useMermaidQuickFix({
    * endpoint unrouted, asking which model and which prompt would serve it is
    * two requests spent on a question that cannot matter.
    */
-  const predictServed = hasBackendCapability('aiGeneration');
+  const predictServed = hasBackendCapability('llmPredictBlocking');
   const shouldRead = predictServed && enabled && projectId !== undefined && projectId !== '';
 
   const modelsQuery = useQuery({

@@ -9,7 +9,7 @@
  *  - `POST /elitea_core/predict_llm/prompt_lib/{projectId}` is not routed at
  *    all. It stood behind a nil `RouterConfig.Predictor` gate nothing ever
  *    assigned, so chi 404s it in every deployment (`internal/api/router.go`'s
- *    NOTE(#126); backend gap #194). `hasBackendCapability('aiGeneration')`
+ *    NOTE(#126); backend gap #194). `hasBackendCapability('llmPredictBlocking')`
  *    records that, and it is `false` in this build — so the FIRST test below
  *    is the one that describes what ships today, and every other test in this
  *    file has to turn the capability on to reach the case it is about.
@@ -93,7 +93,7 @@ describe('MermaidQuickFixButton', () => {
     // Every case EXCEPT the first is about a condition further down the gate,
     // so the route capability is turned on to reach it. The first case turns it
     // back off, because that is what this build actually serves.
-    setBackendCapabilityForTests('aiGeneration', true);
+    setBackendCapabilityForTests('llmPredictBlocking', true);
     installReads(MODELS_OK, PROMPT_OK);
   });
 

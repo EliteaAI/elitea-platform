@@ -20,13 +20,14 @@
  * `generateContentBlocking` (`apps/elitea-ui/src/api/llm.js:18-26`), which
  * returns the content in the HTTP response and needs no socket at all.
  *
- * **THE ROUTE IS NOT SERVED IN THIS BUILD.** `POST /elitea_core/predict_llm/
- * prompt_lib/{projectId}` was removed by #126 (`services/elitea-main/
- * internal/api/router.go:2107-2120` — the group was gated on a
- * `RouterConfig.Predictor` nothing ever assigned, so it 404'd in every
- * deployment before it was deleted; #194 tracks the backend). That is why
- * the affordance is behind `hasBackendCapability('aiGeneration')` as well as
- * its own prompt/model gate — see `../model/useAiEditAvailability.ts`.
+ * **THE ROUTE.** `POST /elitea_core/predict_llm/prompt_lib/{projectId}` was
+ * removed by #126 — the group was gated on a `RouterConfig.Predictor` nothing
+ * ever assigned, so it 404'd in every deployment before it was deleted. It is
+ * served again: elitea-main now answers the BLOCKING mode by calling the LLM
+ * gateway directly. The affordance stays behind
+ * `hasBackendCapability('llmPredictBlocking')` as well as its own prompt/model
+ * gate (see `../model/useAiEditAvailability.ts`), because a deployment with no
+ * `LLM_GATEWAY_URL` still has no LLM to reach.
  */
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 

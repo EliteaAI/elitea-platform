@@ -40,7 +40,7 @@ beforeEach(() => {
   // The AI Assistant POSTs `predict_llm`, which no router mounts, so the
   // field renders as the plain input by default — see
   // `shared/config/backendCapabilities`.
-  setBackendCapabilityForTests('aiGeneration', true);
+  setBackendCapabilityForTests('llmPredictStreaming', true);
 });
 
 afterEach(() => {

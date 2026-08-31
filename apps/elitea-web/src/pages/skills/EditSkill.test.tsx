@@ -31,7 +31,7 @@ beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
   // The test pane POSTs `predict_llm`, which no router mounts, so it is
   // hidden by default — see `shared/config/backendCapabilities`.
-  setBackendCapabilityForTests('aiGeneration', true);
+  setBackendCapabilityForTests('llmPredictStreaming', true);
   server.use(
     http.get(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () =>
       HttpResponse.json(detail),

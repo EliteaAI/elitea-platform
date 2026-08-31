@@ -184,14 +184,17 @@ export const AIAssistantInput = memo(function AIAssistantInput(props: AIAssistan
   /*
    * THE TRIGGER IS GATED HERE, not only at the call sites.
    *
-   * The modal posts to `/elitea_core/predict_llm/...`, which the Go router
-   * registers in no profile. `SimpleLLMInputItem` was gated on its own, but
+   * The modal posts to `/elitea_core/predict_llm/...` in its STREAMING mode
+   * (`await_task_timeout: 0`, output over an `application_predict` socket.io
+   * event). The route is served now, but only its blocking mode is — the Go
+   * stack has no socket task channel at all, so this trigger stays hidden.
+   * `SimpleLLMInputItem` was gated on its own, but
    * this component is rendered directly by `nodes/PrinterNode.tsx`,
    * `nodes/ConditionNode.tsx` and `settings/PipelineSettings.tsx` as well.
    * Those three paths kept a button that answers 404. The gate belongs on the
    * component that owns the trigger, so a later call site cannot miss it.
    */
-  const aiAssistantServed = hasBackendCapability('aiGeneration');
+  const aiAssistantServed = hasBackendCapability('llmPredictStreaming');
 
   return (
     <Box sx={{ position: 'relative' }}>

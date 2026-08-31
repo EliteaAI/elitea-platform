@@ -277,7 +277,7 @@ export function SimpleLLMInputItem(props: SimpleLLMInputItemProps): ReactNode {
   // `shared/config/backendCapabilities`. The field then renders as the plain
   // input, which is the same field without the assistant button.
   const shouldEnableAIAssistant = useMemo(
-    () => hasBackendCapability('aiGeneration') && enableAIAssistant && (type === 'fstring' || type === 'fixed') && AI_ASSISTANT_VARIABLE_NAMES.has(variableName),
+    () => hasBackendCapability('llmPredictStreaming') && enableAIAssistant && (type === 'fstring' || type === 'fixed') && AI_ASSISTANT_VARIABLE_NAMES.has(variableName),
     [enableAIAssistant, type, variableName],
   );
 

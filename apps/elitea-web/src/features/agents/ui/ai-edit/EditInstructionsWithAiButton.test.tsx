@@ -75,7 +75,7 @@ function refuseConfigurations(): void {
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
-  setBackendCapabilityForTests('aiGeneration', true);
+  setBackendCapabilityForTests('llmPredictBlocking', true);
 });
 
 afterEach(() => {
@@ -85,7 +85,7 @@ afterEach(() => {
 
 describe('EditInstructionsWithAiButton — the gate', () => {
   it('renders nothing when the build does not serve the AI routes at all', async () => {
-    setBackendCapabilityForTests('aiGeneration', false);
+    setBackendCapabilityForTests('llmPredictBlocking', false);
     let called = false;
     server.use(
       http.get(`${BASE}/configurations/available/`, () => {

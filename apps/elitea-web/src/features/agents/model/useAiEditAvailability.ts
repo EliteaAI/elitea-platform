@@ -18,11 +18,12 @@ import {
  * would:
  *
  *  1. **The route.** `POST /elitea_core/predict_llm/prompt_lib/{projectId}`
- *     is not registered by this backend (#126 removed the group, #194 tracks
- *     the replacement) — `hasBackendCapability('aiGeneration')` is this
- *     app's existing switch for exactly that set of endpoints, and
- *     `GenerateAgentButton` is already hidden by it. Same switch here, so
- *     one change turns the whole AI surface on.
+ *     is served in its BLOCKING mode, which is the mode this affordance uses
+ *     (#126 removed the group; this is its replacement). The switch is
+ *     `hasBackendCapability('llmPredictBlocking')` and NOT the broader
+ *     `aiGeneration`, which still covers only the three unrouted draft
+ *     endpoints. A deployment that sets no `LLM_GATEWAY_URL` has no LLM to
+ *     reach, so the flag remains the honest gate rather than a formality.
  *  2. **The prompt.** The base instruction the model is steered with is a
  *     Service Prompt, read from `/configurations/*`. Those routes only exist
  *     when `ELITEA_CONFIGURATIONS_ENABLED` is on — FALSE in a default
@@ -61,7 +62,7 @@ const AI_EDIT_QUERY_ROOT = ['agents', 'aiEdit'] as const;
 export function useAiEditAvailability(options: UseAiEditAvailabilityOptions): UseAiEditAvailabilityResult {
   const { projectId, modelSettings } = options;
 
-  const capabilityServed = hasBackendCapability('aiGeneration');
+  const capabilityServed = hasBackendCapability('llmPredictBlocking');
   const modelName = modelSettings?.model_name ?? '';
   // Nothing is fetched at all until the two cheap, synchronous conditions
   // hold — a build without the capability, or a version without a model,

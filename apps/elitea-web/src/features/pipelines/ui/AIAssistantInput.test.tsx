@@ -22,7 +22,7 @@ import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '
 // `shared/config/backendCapabilities`. These tests assert the trigger's own
 // behaviour, so they turn the capability on.
 beforeEach(() => {
-  setBackendCapabilityForTests('aiGeneration', true);
+  setBackendCapabilityForTests('llmPredictStreaming', true);
 });
 
 afterEach(() => {

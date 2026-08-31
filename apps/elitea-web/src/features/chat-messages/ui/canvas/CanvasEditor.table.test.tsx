@@ -201,7 +201,7 @@ describe('CanvasEditor — undo/redo dispatches to the active pane', () => {
 /*
  * The `quickFix` objects below are hand-built, NOT produced by
  * `useMermaidQuickFix`. The hook cannot report `isAvailable: true` in any build
- * today: its first condition is `hasBackendCapability('aiGeneration')`, and
+ * today: its first condition is `hasBackendCapability('llmPredictBlocking')`, and
  * `predict_llm` is not routed (#194). These cases are about what CANVAS EDITOR
  * does with a capability once one exists — whether it offers the control, and
  * for which diagrams. Whether the hook can ever hand it one is

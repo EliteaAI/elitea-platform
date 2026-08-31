@@ -13,22 +13,23 @@
  *     aiAssistantPredict.ts`'s streaming (`await_task_timeout: 0`) call of
  *     the same path.
  *
- *     **THIS PATH IS NOT ROUTED.** An earlier revision of this comment said it
- *     was "registered at services/elitea-main/internal/api/router.go:427-429".
- *     That was wrong. `internal/api/router.go:2303-2317`'s NOTE(#126) records
- *     what actually happened: the Predict/LLM route group stood behind a nil
- *     gate on `RouterConfig.Predictor`, nothing ever assigned that field, the
- *     group was never registered, and chi answers `404 page not found` for
- *     `POST /predict_llm/prompt_lib/{projectID}` in every deployment.
- *     `api/openapi/v2.yaml` does not declare it either. Backend gap #194
- *     tracks it.
+ *     **THIS PATH IS ROUTED, IN THIS MODE ONLY.** It was not, for a long time:
+ *     an earlier revision of this comment claimed it was "registered at
+ *     services/elitea-main/internal/api/router.go:427-429", which was wrong,
+ *     and `internal/api/router.go`'s NOTE(#126) recorded what actually
+ *     happened — the Predict/LLM group stood behind a nil gate on
+ *     `RouterConfig.Predictor` that nothing ever assigned, so chi answered
+ *     `404 page not found` in every deployment. elitea-main now serves the
+ *     BLOCKING mode by calling the LLM gateway directly, and
+ *     `api/openapi/v2.yaml` declares it. The STREAMING mode is still
+ *     unserved: it needs an `application_predict` socket.io task channel the
+ *     Go stack does not have.
  *
- *     `shared/config/backendCapabilities.ts`'s `aiGeneration` flag is the
- *     single place that records this, for every sender of the path; it is
- *     `false` in this build. `../model/useMermaidQuickFix.ts` reads it as gate
- *     condition 1, BEFORE the two configuration reads, so no request is made
- *     and no control is rendered. Turn the flag on in the same change that
- *     mounts the route.
+ *     `shared/config/backendCapabilities.ts` records that split as two flags.
+ *     This sender reads `llmPredictBlocking`.
+ *     `../model/useMermaidQuickFix.ts` checks it as gate condition 1, BEFORE
+ *     the two configuration reads, so a deployment with no LLM gateway makes
+ *     no request and renders no control.
  *
  * WHY LOCAL COPIES: `features/pipelines/api/aiAssistantConfigurations.ts` and
  * `features/settings/api/ai-configuration/api.ts` already speak (1) and (2),
@@ -38,14 +39,11 @@
  *
  * READS 1 AND 2 SIT BEHIND `ELITEA_CONFIGURATIONS_ENABLED`, which is `false`
  * in a default install, and 2 additionally needs a seeded `MERMAID_QUICK_FIX`
- * row. WRITE 3 is not routed at all (see above). The consequence is deliberate
+ * row. WRITE 3 additionally needs an LLM gateway (see above). The consequence is deliberate
  * and lives in `../model/useMermaidQuickFix.ts`: unless every one of those can
  * work, the quick-fix control is not rendered. It is never rendered as a
  * button that only ever toasts an error.
  *
- * The port STAYS despite the route being absent, for the reason
- * `shared/config/backendCapabilities.ts` gives for the other four senders:
- * deleting it would only mean writing it again when #194 lands.
  */
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
