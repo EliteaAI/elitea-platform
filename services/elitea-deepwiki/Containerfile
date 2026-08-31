@@ -18,7 +18,7 @@
 #
 # Build from the repository root.
 
-FROM python:3.12.10-slim AS build
+FROM python:3.12.14-slim AS build
 
 ARG EXTRAS=""
 
@@ -31,7 +31,26 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       --wheel-dir /wheels \
       "./services/elitea-deepwiki${EXTRAS}"
 
-FROM python:3.12.10-slim AS runtime
+FROM python:3.12.14-slim AS runtime
+
+# The base's remaining fixable packages, upgraded.
+#
+# MEASURED, not precautionary. The blocking image scan reported 73 HIGH and
+# CRITICAL findings on the previous base (python:3.12.10-slim, Debian 12.11),
+# every one of them from the Debian layer and none from this project's own
+# packages. Moving to 3.12.14-slim (Debian 13, trixie) takes that to 19, and
+# these three packages are the only ones of the nineteen that Debian has a
+# fixed version for — CVE-2026-14456, fixed in openssl 3.5.7-1~deb13u2.
+#
+# That leaves 16, none of which has a fix in Debian at all. They are recorded
+# in .github/image-scan-exempt.txt with the issue that ends the entry.
+#
+# --only-upgrade, so this installs nothing new: a package that is not already
+# in the base is not pulled in by naming it here.
+RUN apt-get update \
+    && apt-get install --no-install-recommends --only-upgrade -y \
+         openssl libssl3t64 openssl-provider-legacy \
+    && rm -rf /var/lib/apt/lists/*
 
 # Non-root by default; the service needs no privileged capability and its
 # scratch directory is ephemeral pod storage (ADR-0022 decision 4).

@@ -417,17 +417,16 @@ jobs:
           - name: elitea-worker-rust
             expect_type: rustbinary
             blocking: true
-          # python-pkg, and BLOCKING — unlike the other two Python images.
-          #
-          # Their exemptions are measured: .github/image-scan-exempt.txt names
-          # the finding counts and the issues that end them. This image has
-          # never been scanned, so it has no such measurement, and an exemption
-          # written without one would be an invention. It blocks until a real
-          # count says otherwise; ci-image-scan.yml carries the same value and
-          # the same reasoning.
+          # python-pkg and exempt, like the other two Python images, and for
+          # the same measured reason they are: 16 HIGH/CRITICAL findings, all
+          # from the Debian base and none with a published fix. The count came
+          # from running this image as blocking first — see #635 for the
+          # numbers, #636 for the path that ends the entry, and
+          # ci-image-scan.yml for the same value and the register that holds
+          # the two files in step.
           - name: elitea-deepwiki
             expect_type: python-pkg
-            blocking: true
+            blocking: false
 
     steps:
       # The gate script is read from the released tree, not from the default

@@ -46,3 +46,13 @@ pylon-indexer
 # retirement #554 — bump the 11 fixable packages through elitea-sdk.lock.json,
 #   then flip blocking to true and delete this line
 elitea-worker-python
+
+# findings #635 — 16 HIGH/CRITICAL, ALL from the Debian base and NONE from this
+#   project's own packages, with no fixed version published for any of them.
+#   Measured down from 73 first: the base moved from python:3.12.10-slim
+#   (Debian 12.11) to 3.12.14-slim (trixie), and the three findings that DID
+#   have a fix are closed by an --only-upgrade in the Containerfile.
+# retirement #636 — re-measure on each base bump; perl-base alone is 8 of the
+#   16 and nothing in the image runs perl, so removing it may end this entry
+#   before Debian does
+elitea-deepwiki
