@@ -35,6 +35,7 @@ import (
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/sharedchat"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
@@ -1538,11 +1539,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// lines — and had zero callers, so router.go dropped their route groups
 		// and the endpoints 404'd in every deployment. Counted at the gates:
 		// conversations 23 routes, skills 12, analytics 7, folders 6, tags 3.
-		ConvsRepo:     conversationsRepository(pool),
-		SkillsRepo:    skillsRepository(pool),
-		FoldersRepo:   foldersRepository(pool),
-		TagsRepo:      tagsRepository(pool),
-		AnalyticsRepo: analyticsRepository(pool),
+		ConvsRepo: conversationsRepository(pool),
+		// Share a conversation by link. One repository satisfies both
+		// interfaces — the central link table and the per-project transcript
+		// read — but they are two FIELDS because they are two tenancies and
+		// two mount points (one authenticated group, one anonymous pair), and
+		// a single field would make it impossible to register the anonymous
+		// routes without also claiming a transcript reader.
+		SharedChatStore:      sharedChatLinksRepository(pool),
+		SharedChatTranscript: sharedChatTranscriptRepository(pool),
+		SkillsRepo:           skillsRepository(pool),
+		FoldersRepo:          foldersRepository(pool),
+		TagsRepo:             tagsRepository(pool),
+		AnalyticsRepo:        analyticsRepository(pool),
 		// WebhookRepo is the sixth instance of the same defect, and it hid one
 		// step deeper than the other five. Its gate mounts a subrouter —
 		// `r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(...).Routes())`
@@ -1615,6 +1624,25 @@ func conversationsRepository(pool *pgxpool.Pool) v2convs.Repository {
 		return nil
 	}
 	return dbrepos.NewConversationsRepo(pool)
+}
+
+// sharedChatLinksRepository and sharedChatTranscriptRepository return the same
+// concrete repository under its two interfaces. Both return a TYPED NIL-safe
+// untyped nil when the pool is absent: a typed nil in an interface field is not
+// `== nil`, so router.go's gate would register the routes over a repository
+// whose every method panics — the typed-nil trap the gateway's /healthz hit.
+func sharedChatLinksRepository(pool *pgxpool.Pool) sharedchat.Store {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewSharedChatLinksRepo(pool)
+}
+
+func sharedChatTranscriptRepository(pool *pgxpool.Pool) sharedchat.TranscriptStore {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewSharedChatLinksRepo(pool)
 }
 
 func skillsRepository(pool *pgxpool.Pool) v2skills.Repository {

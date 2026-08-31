@@ -1632,6 +1632,14 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		TagsRepo:      dbrepos.NewTagsRepo(pool),
 		AnalyticsRepo: dbrepos.NewAnalyticsRepo(pool),
 		WebhookRepo:   dbrepos.NewWebhooksRepo(pool),
+		// main.go sets both of these too (share a conversation by link). They
+		// contribute five patterns: three owner-facing ones inside
+		// /api/v2/elitea_core, and TWO ANONYMOUS ones that appear in this list
+		// without any auth-group ancestor. That is the point of pinning them
+		// here — if a later change moves shared_chat_view under the Auth group,
+		// or moves anything else out of it, this snapshot is what says so.
+		SharedChatStore:      dbrepos.NewSharedChatLinksRepo(pool),
+		SharedChatTranscript: dbrepos.NewSharedChatLinksRepo(pool),
 	}
 	router := NewRouter(cfg)
 
@@ -1670,6 +1678,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/elitea_core/project_icon/prompt_lib/{projectID}/{name}",
 		"DELETE /api/v2/elitea_core/register_descriptor/{projectID}",
 		"DELETE /api/v2/elitea_core/select_conversation/prompt_lib/{projectID}",
+		"DELETE /api/v2/elitea_core/shared_chat_link/prompt_lib/{projectID}/{conversationID}/{linkID}",
 		"DELETE /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"DELETE /api/v2/elitea_core/tags/prompt_lib/{projectID}/{tagID}",
 		"DELETE /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
@@ -1811,6 +1820,8 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/elitea_core/recommendations/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/roles/{mode}/{projectID}",
 		"GET /api/v2/elitea_core/search_options/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/shared_chat_links/prompt_lib/{projectID}/{conversationID}",
+		"GET /api/v2/elitea_core/shared_chat_view/prompt_lib/{token}",
 		"GET /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"GET /api/v2/elitea_core/skill_categories/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/skill_export/{mode}/{projectID}/{skillID}",
@@ -1968,6 +1979,8 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{conversationID}",
 		"POST /api/v2/elitea_core/register_descriptor/{projectID}",
 		"POST /api/v2/elitea_core/select_conversation/prompt_lib/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/shared_chat_links/prompt_lib/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/shared_chat_view_unlock/prompt_lib/{token}/unlock",
 		"POST /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"POST /api/v2/elitea_core/skill_import/{mode}/{projectID}",
 		"POST /api/v2/elitea_core/skills/{mode}/{projectID}",

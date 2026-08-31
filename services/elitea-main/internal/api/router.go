@@ -40,6 +40,7 @@ import (
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/sharedchat"
 	v2skillpublish "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skillpublish"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
@@ -189,9 +190,17 @@ type RouterConfig struct {
 	TagsRepo        v2tags.Repository
 	AnalyticsRepo   v2analytics.Repository
 	ConvsRepo       v2convs.Repository
-	WebhookRepo     webhook.Repository
-	RedisClient     *goredis.Client
-	EventSource     v2events.EventSource
+	// SharedChatStore and SharedChatTranscript back "share a conversation by
+	// link" (internal/api/v2/sharedchat). Two fields for one feature because
+	// they have different tenancies — one central link table, one per-project
+	// transcript read — and because the anonymous routes must be registrable
+	// with the transcript reader absent, so a deployment that has not wired it
+	// refuses rather than serving a half-built view.
+	SharedChatStore      sharedchat.Store
+	SharedChatTranscript sharedchat.TranscriptStore
+	WebhookRepo          webhook.Repository
+	RedisClient          *goredis.Client
+	EventSource          v2events.EventSource
 	// ProjectVectorStore provisions a new project's PgVector credentials and
 	// its `vectorstorage` configuration row (#371). It is injected because the
 	// composition needs the Configurations runtime's finder, unsecreter and
@@ -841,6 +850,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
+
+	// Share a conversation by link — the ANONYMOUS half.
+	//
+	// It is registered HERE, on the root mux, for one reason: everything below
+	// `r.Group(...)`/`r.Use(apimw.Auth(...))` is authenticated, and these two
+	// routes must not be. This is the same placement /icons, the social avatar
+	// download and the branding bootstrap already use — a route mounted above
+	// the Auth group, not a bypass threaded through it. There is deliberately
+	// no "skip auth for this path" branch inside the middleware: a path-matching
+	// exemption is a second, weaker copy of the routing table, and the first
+	// time the two disagree the exemption wins.
+	//
+	// The paths carry their full /api/v2 prefix because they are siblings of
+	// the /api/v2 subrouter rather than children of it. Chi allows that (the
+	// branding bootstrap above does the same), and it is what keeps the URL the
+	// SPA already speaks.
+	mountSharedChatAnonymousRoutes(r, cfg)
 
 	// Served API docs (S251): the legacy shared plugin's openapi/swagger-ui
 	// routes had no Go counterpart at all — public/unauthenticated like the
@@ -2186,6 +2212,34 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						Get("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextStrategy)
 					r.With(requireConversationEdit).
 						Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
+				}
+
+				// Share a conversation by link — the OWNER-FACING half. The
+				// anonymous half (shared_chat_view / shared_chat_view_unlock)
+				// is registered far above this group, outside every auth
+				// middleware; see mountSharedChatAnonymousRoutes.
+				//
+				// PERMISSIONS. Listing links takes the conversation READ
+				// permission: a link is metadata about a conversation the
+				// caller can already read. Creating and revoking take the
+				// conversation UPDATE permission, not the read one —
+				// publishing a transcript to anyone holding a URL, and taking
+				// that publication away, are changes to who can see the
+				// conversation, and the weakest role that may merely read it
+				// must not be the role that may expose it.
+				//
+				// They sit inside this group, so `projectScoped` has already
+				// bound {projectID} to the caller's membership before the
+				// permission is resolved.
+				if cfg.SharedChatStore != nil {
+					sharedChatHandler := sharedchat.NewHandler(
+						cfg.SharedChatStore, cfg.SharedChatTranscript, []byte(cfg.SessionSecret))
+					r.With(projectPermission("models.chat.conversation.details")).
+						Get("/shared_chat_links/prompt_lib/{projectID}/{conversationID}", sharedChatHandler.List)
+					r.With(projectPermission("models.chat.conversation.update")).
+						Post("/shared_chat_links/prompt_lib/{projectID}/{conversationID}", sharedChatHandler.Create)
+					r.With(projectPermission("models.chat.conversation.update")).
+						Delete("/shared_chat_link/prompt_lib/{projectID}/{conversationID}/{linkID}", sharedChatHandler.Revoke)
 				}
 
 				// NOTE(#126): the Predict/LLM, Chat and Pipeline-trigger route

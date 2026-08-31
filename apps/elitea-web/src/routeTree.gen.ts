@@ -63,6 +63,7 @@ import { Route as ShellToolkitsIndexRouteImport } from './routes/_shell/toolkits
 import { Route as ShellToolkitsTabRouteImport } from './routes/_shell/toolkits/$tab'
 import { Route as ShellToolkitsCreateRouteImport } from './routes/_shell/toolkits/create'
 import { Route as ShellUserPublicTabRouteImport } from './routes/_shell/user-public/$tab'
+import { Route as SharedChatTokenRouteImport } from './routes/shared.chat.$token'
 import { Route as ShellAgentsTabAgentIdRouteImport } from './routes/_shell/agents/$tab.$agentId'
 import { Route as ShellAppsTabAppIdRouteImport } from './routes/_shell/apps/$tab.$appId'
 import { Route as ShellAppsCreateAppTypeRouteImport } from './routes/_shell/apps/create.$appType'
@@ -367,6 +368,11 @@ const ShellUserPublicTabRoute = ShellUserPublicTabRouteImport.update({
   path: '/user-public/$tab',
   getParentRoute: () => ShellRouteRoute,
 } as any)
+const SharedChatTokenRoute = SharedChatTokenRouteImport.update({
+  id: '/shared/chat/$token',
+  path: '/shared/chat/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShellAgentsTabAgentIdRoute = ShellAgentsTabAgentIdRouteImport.update({
   id: '/$agentId',
   path: '/$agentId',
@@ -545,6 +551,7 @@ export interface FileRoutesByFullPath {
   '/toolkits/$tab': typeof ShellToolkitsTabRouteWithChildren
   '/toolkits/create': typeof ShellToolkitsCreateRouteWithChildren
   '/user-public/$tab': typeof ShellUserPublicTabRoute
+  '/shared/chat/$token': typeof SharedChatTokenRoute
   '/agents/': typeof ShellAgentsIndexRoute
   '/apps/': typeof ShellAppsIndexRoute
   '/artifacts/': typeof ShellArtifactsIndexRoute
@@ -622,6 +629,7 @@ export interface FileRoutesByTo {
   '/toolkits/$tab': typeof ShellToolkitsTabRouteWithChildren
   '/toolkits/create': typeof ShellToolkitsCreateRouteWithChildren
   '/user-public/$tab': typeof ShellUserPublicTabRoute
+  '/shared/chat/$token': typeof SharedChatTokenRoute
   '/agents': typeof ShellAgentsIndexRoute
   '/apps': typeof ShellAppsIndexRoute
   '/artifacts': typeof ShellArtifactsIndexRoute
@@ -702,6 +710,7 @@ export interface FileRoutesById {
   '/_shell/toolkits/$tab': typeof ShellToolkitsTabRouteWithChildren
   '/_shell/toolkits/create': typeof ShellToolkitsCreateRouteWithChildren
   '/_shell/user-public/$tab': typeof ShellUserPublicTabRoute
+  '/shared/chat/$token': typeof SharedChatTokenRoute
   '/_shell/agents/': typeof ShellAgentsIndexRoute
   '/_shell/apps/': typeof ShellAppsIndexRoute
   '/_shell/artifacts/': typeof ShellArtifactsIndexRoute
@@ -782,6 +791,7 @@ export interface FileRouteTypes {
     | '/toolkits/$tab'
     | '/toolkits/create'
     | '/user-public/$tab'
+    | '/shared/chat/$token'
     | '/agents/'
     | '/apps/'
     | '/artifacts/'
@@ -859,6 +869,7 @@ export interface FileRouteTypes {
     | '/toolkits/$tab'
     | '/toolkits/create'
     | '/user-public/$tab'
+    | '/shared/chat/$token'
     | '/agents'
     | '/apps'
     | '/artifacts'
@@ -938,6 +949,7 @@ export interface FileRouteTypes {
     | '/_shell/toolkits/$tab'
     | '/_shell/toolkits/create'
     | '/_shell/user-public/$tab'
+    | '/shared/chat/$token'
     | '/_shell/agents/'
     | '/_shell/apps/'
     | '/_shell/artifacts/'
@@ -976,6 +988,7 @@ export interface RootRouteChildren {
   ShellRouteRoute: typeof ShellRouteRouteWithChildren
   AuthCallbackRoute: typeof AuthCallbackRoute
   ProjectIdSplatRoute: typeof ProjectIdSplatRoute
+  SharedChatTokenRoute: typeof SharedChatTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -1357,6 +1370,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/user-public/$tab'
       preLoaderRoute: typeof ShellUserPublicTabRouteImport
       parentRoute: typeof ShellRouteRoute
+    }
+    '/shared/chat/$token': {
+      id: '/shared/chat/$token'
+      path: '/shared/chat/$token'
+      fullPath: '/shared/chat/$token'
+      preLoaderRoute: typeof SharedChatTokenRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_shell/agents/$tab/$agentId': {
       id: '/_shell/agents/$tab/$agentId'
@@ -1891,6 +1911,7 @@ const rootRouteChildren: RootRouteChildren = {
   ShellRouteRoute: ShellRouteRouteWithChildren,
   AuthCallbackRoute: AuthCallbackRoute,
   ProjectIdSplatRoute: ProjectIdSplatRoute,
+  SharedChatTokenRoute: SharedChatTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

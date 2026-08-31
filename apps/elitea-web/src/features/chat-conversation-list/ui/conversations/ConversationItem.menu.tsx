@@ -80,6 +80,15 @@ export interface MenuItemsParams {
   readonly onExport?: (() => void) | undefined;
   readonly onMakePublic: () => void;
   readonly onShare: () => void;
+  /**
+   * Opens the share-by-link dialog. Distinct from `onShare`, which copies an
+   * INTERNAL `/chat/{id}?shared_chat=1` URL that still requires a session and
+   * project membership to open. The two are different products: one points a
+   * colleague at the app, the other publishes the transcript to anyone holding
+   * a URL. Collapsing them into one menu entry is how a user reaches for the
+   * first and gets the second.
+   */
+  readonly onShareByLink: () => void;
   readonly onPlayback: () => void;
   readonly onPin: () => void;
 }
@@ -228,6 +237,18 @@ export function buildActiveMenuItems(params: MenuItemsParams): ControlsDropdownI
       onClick: params.onShare,
     });
   }
+
+  items.push({
+    key: 'share-by-link',
+    label: t('features.chatConversationList.conversationItem.menu.shareByLink', 'Share by link'),
+    icon: (
+      <Box sx={secondaryFillSx}>
+        <CopyLinkIcon style={menuIconStyle} />
+      </Box>
+    ),
+    disabled: isEditingActive,
+    onClick: params.onShareByLink,
+  });
 
   items.push({
     key: 'playback',
