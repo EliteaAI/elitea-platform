@@ -26,6 +26,7 @@ services/elitea-deepwiki/
 │   ├── toolrunner.py    the seam between the SPI and the engine
 │   ├── legacy_runner.py dispatch + result composition (perform_invoke_request)
 │   ├── repo_config.py   repository-config extraction, copied from the handler
+│   ├── publishing.py    publish a completed generation into PostgreSQL
 │   ├── config.py        strict-parsed settings
 │   ├── engine/          the analysis engine — 101 files, plain copy, digest-guarded
 │   └── storage/
@@ -207,9 +208,10 @@ worker itself — which is exactly why this run exists.
    `.wiki.db` is. The BM25 statistics are rebuilt from the node text on
    publish, which is faithful for a docstore built from the same nodes and is
    the assumption to revisit if that stops being true.
-5. **Nothing calls `publish_wiki_db` automatically yet.** The generation path
-   has to invoke it (and `register_wiki_path`) when a wiki completes; until
-   then a published wiki is one somebody published.
+5. **The other generation artefacts are not published.** Only the `.wiki.db`
+   is. The `.bm25.sqlite`, the mmap docstore and the FAISS binaries a
+   generation also writes stay on scratch; BM25 statistics are rebuilt from the
+   node text on publish.
 
 ## The storage layer
 
@@ -298,6 +300,22 @@ a separate, callable step rather than something bolted into the engine, so a
 publish that fails looks like a publish failure instead of a generation that
 appears to have worked and then cannot be queried.
 
+`publishing.py` calls it automatically. When `generate_wiki` completes, the
+index is published **before** the invocation reports success, so a wiki that
+finished is a wiki any replica can answer about. It finds the index from the
+manifest's `unified_db_key`, and falls back to the newest `*.wiki.db` in the
+cache directory when there is no manifest — which is the in-process path's
+situation, and is the same mtime heuristic the legacy worker used, so it fails
+the same way rather than in a new one. Either way the choice is logged.
+
+A publish failure is reported **in band**, through the same `errors` list the
+legacy composer renders as "⚠️ Partial issues detected", and does not fail the
+invocation. The reasoning is that the pages, manifest and structure are genuine
+and will land; what is lost is other replicas' ability to answer. Discarding
+good artifacts over that would be worse, and passing silently would claim a
+queryable wiki that is not. Publishing runs before composition precisely so the
+failure can reach that list.
+
 **A bug worth recording, because it was silent.** `repo_vec` is a sqlite-vec
 *virtual* table: without the extension loaded, every read of it raises. The
 first version of the publisher caught that, logged a warning and published
@@ -381,8 +399,8 @@ podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
       variables.
 - [x] **Point the engine at the PostgreSQL backend** — the read path is served
       from PostgreSQL and a replica that never built an index can answer.
-- [ ] **Call the publisher from the generation path**, so a completed wiki is
-      queryable from any replica without a manual step.
+- [x] **Call the publisher from the generation path** — a completed
+      `generate_wiki` publishes its index before reporting success.
 - [x] **The storage port** — done for retrieval: the backend interface,
       the PostgreSQL implementation and migration 0001, parity-gated against
       `conformance/fixtures/retrieval/`.

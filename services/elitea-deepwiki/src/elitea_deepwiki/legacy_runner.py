@@ -451,12 +451,63 @@ class LegacyToolRunner:
         if not result.get("success"):
             raise _engine_error(result)
 
+        if tool_name == "generate_wiki":
+            await self._publish(result, context)
+
         return {
             "invocation_id": context.invocation_id,
             "status": "Completed",
             "result": json.dumps(compose_result_objects(tool_name, result)),
             "result_type": "String",
         }
+
+    async def _publish(
+        self, result: dict[str, Any], context: InvocationContext
+    ) -> None:
+        """Put the generated index into PostgreSQL before reporting success.
+
+        Ordering matters: this runs BEFORE composition, so a publish failure
+        can still be reported through the composed result's ``errors`` list,
+        which the legacy composer renders as "⚠️ Partial issues detected".
+
+        A failure does not fail the invocation. The pages, manifest and
+        structure are genuine and will land; what is lost is the ability of
+        *other* replicas to answer about this wiki. Discarding good artifacts
+        over that would be worse, and passing silently would claim a queryable
+        wiki that is not — so it is reported in band and logged loudly.
+        """
+        import asyncio  # noqa: PLC0415
+
+        from .publishing import publish_generation  # noqa: PLC0415
+
+        settings = self._settings
+        if settings is None or not getattr(settings, "database_url", None):
+            return
+
+        await context.thinking("Publishing the index for query replicas")
+        try:
+            counts = await asyncio.to_thread(publish_generation, settings, result)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            logger.exception(
+                "publishing the index for %s failed", result.get("wiki_id")
+            )
+            errors = result.get("errors")
+            if not isinstance(errors, list):
+                errors = []
+                result["errors"] = errors
+            errors.append(
+                f"The wiki was generated but could not be published to the "
+                f"index database, so replicas other than this one cannot "
+                f"answer questions about it: {exc}"
+            )
+            await context.thinking("Publishing the index FAILED")
+            return
+
+        if counts is not None:
+            await context.thinking(
+                f"Published {counts['nodes']} nodes and "
+                f"{counts['embeddings']} vectors"
+            )
 
     async def _call(
         self, tool_name: str, params: dict[str, Any], context: InvocationContext
