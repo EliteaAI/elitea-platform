@@ -3,6 +3,7 @@ package deepwiki
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -153,17 +154,30 @@ func (route *Route) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route.handler.ServeHTTP(w, r)
 }
 
-// validProjectID accepts only a positive decimal id.
+// validProjectID accepts only a positive decimal id that fits an int32.
 //
 // The value reaches the permission resolver and the provider, so a
 // non-numeric one must be rejected before either sees it rather than being
 // passed along to fail somewhere less obvious.
+//
+// THE UPPER BOUND IS NOT COSMETIC, and it is the same aliasing bug
+// agentexecution/route.go documents at length. The id is narrowed to int32 to
+// read a configuration (the underlying columns are Postgres `integer`), and in
+// Go that narrowing is a silent truncation: without this bound `4294967301`
+// truncates to `5`, so a caller could name an out-of-range project and have
+// the facade resolve project 5's stored credentials — and push them to the
+// provider. CodeQL found the conversion (go/incorrect-integer-conversion);
+// the bound belongs here, at the only parse in this request path, rather than
+// at each narrowing downstream.
+//
+// Rejecting rather than clamping: an id above MaxInt32 cannot correspond to
+// any row in an `integer` column, so "no such project" is the honest answer.
 func validProjectID(raw string) bool {
 	if raw == "" || strings.HasPrefix(raw, "0") && raw != "0" {
 		return false
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
-	return err == nil && value > 0
+	return err == nil && value > 0 && value <= math.MaxInt32
 }
 
 // userIDFrom reads the authenticated user for the signed identity.
