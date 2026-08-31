@@ -73,6 +73,21 @@ target "elitea-worker-python" {
   platforms  = ["linux/amd64", "linux/arm64"]
 }
 
+# The native Rust agent worker, and the chart's default `worker.runtime` since
+# it started shipping. Repo-root context for the same reason as the Python
+# worker: the Containerfile COPYs libs/proto from outside its own directory.
+#
+# Out of `group "default"` on the same grounds as elitea-worker-python, and
+# more so: this compiles 418 crates from source. Name it to build it.
+target "elitea-worker-rust" {
+  context    = "."
+  dockerfile = "services/elitea-worker-rust/Containerfile"
+  tags       = ["${REGISTRY}/elitea-worker-rust:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-worker-rust"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-worker-rust"]
+  platforms  = ["linux/amd64", "linux/arm64"]
+}
+
 group "pylon" {
   targets = ["pylon-indexer"]
 }

@@ -66,6 +66,18 @@ in compose, and the Kubernetes path is the `web` component. `pylon-indexer` is
 not deployed at all — the Go runtime plane serves index ingest through the
 agent worker, on the same command stream.
 
+Two images share one chart component. The `worker` component runs either
+`elitea-worker-rust` (the default) or `elitea-worker-python`, selected by
+`worker.implementation`. They are not drop-in for each other and the chart
+handles the difference rather than the operator: the Rust worker's argument
+parser matches an exact five-token command line and additionally requires
+`--toolkit-security-config`, so the Python argument list makes it exit
+immediately with `worker_cli.invalid_arguments`. `worker.runtime.sensitiveTools`
+is written once and carried to each as that implementation expects — an
+environment variable for Python, a second JSON file for Rust. `runtime.json`
+itself is byte-identical for both, and `deploy/helm/tests/render-worker.sh`
+holds all of that.
+
 ## Values an operator supplies, and where each one goes (#475)
 
 Read this before the first sync. A reader of the committed files alone can say
