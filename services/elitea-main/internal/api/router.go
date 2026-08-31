@@ -36,6 +36,7 @@ import (
 	v2messagetraces "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/messagetraces"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
+	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -312,6 +313,14 @@ type RouterConfig struct {
 	// reporting an honest "not available" failure; it never checks the stored
 	// {{secret.NAME}} reference as though it were the key.
 	ConfigStoredResolver v2configs.StoredConfigurationResolver
+	// PredictCompleter performs the blocking LLM turn behind
+	// POST /elitea_core/predict_llm/prompt_lib/{projectID} (#194).
+	//
+	// It does NOT gate the route: the route is registered unconditionally and
+	// a nil completer answers 503 naming LLM_GATEWAY_URL. That is the whole
+	// lesson of #126 — a capability gated on a dependency the composition root
+	// never assigns is a 404 nobody can tell from a typo.
+	PredictCompleter v2predict.Completer
 }
 
 type RuntimeRoutes struct {
@@ -2306,7 +2315,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// Predictor, ChatService or PipelineRunner field. Nothing ever
 				// assigned those fields, so the groups were never registered
 				// and the paths 404'd in every deployment:
-				//   POST   /predict_llm/prompt_lib/{projectID}
 				//   DELETE /task/prompt_lib/{projectID}/{taskID}
 				//   GET    /application_task/prompt_lib/{projectID}/{taskID}
 				//   POST   /chat/prompt_lib/{projectID}/{conversationID}/messages
@@ -2314,7 +2322,30 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				//   GET|POST|PUT /pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger
 				// See the IndexerDeps note at the top of this file for why the
 				// transport behind them was retired rather than repaired, and
-				// #192/#193/#93/#194 for the capability records.
+				// #192/#193/#93 for the capability records.
+				//
+				// POST /predict_llm/prompt_lib/{projectID} was on that list and
+				// is NOT any more — it is registered immediately below (#194).
+				// A comment that keeps claiming a route is absent after it has
+				// landed is the "disclosed gap goes stale" failure this
+				// repository has produced repeatedly, so the line was removed
+				// from the list rather than annotated.
+
+				// Predict LLM — one stateless turn, no agent, no tools, no
+				// version id (#194). Registered UNCONDITIONALLY, unlike the
+				// group it replaces: the handler carries its own optional
+				// dependency and answers 503 naming LLM_GATEWAY_URL when no LLM
+				// plane is composed, so an unconfigured deployment is
+				// distinguishable from a missing route. Gating the registration
+				// on the dependency instead is exactly what produced #126.
+				//
+				// The permission is legacy's own
+				// (elitea_core/api/v2/predict_llm.py check_api), and its
+				// default-mode split reaches VIEWER — see
+				// migrations/shared/0105_predict_llm_permission.sql, which is
+				// what grants it.
+				r.With(projectPermission("models.applications.predict.post")).
+					Post("/predict_llm/prompt_lib/{projectID}", v2predict.NewHandler(cfg.PredictCompleter).PredictLLM)
 
 				// Batch version replacement
 				if cfg.AppsRepo != nil {

@@ -64,6 +64,7 @@ import type {
   IconUploadResponse,
   ImportWizardResponse,
   OkResponse,
+  PredictLLMResponse,
   ProjectContext,
   ProjectQuota,
   ProjectStatistics,
@@ -78,6 +79,30 @@ import type {
   UploadedIconsList,
   VersionValidatorResponse,
 } from "../model";
+
+export const getPredictLLMResponseMock = (
+  overrideResponse: Partial<Extract<PredictLLMResponse, object>> = {},
+): PredictLLMResponse => ({
+  content: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  messages: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    role: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    content: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  chat_history: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      role: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      content: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
 
 export const getListApplicationsResponseMock = (
   overrideResponse: Partial<Extract<ApplicationList, object>> = {},
@@ -4169,6 +4194,32 @@ export const getUpdateProjectContextResponseMock = (
   ...overrideResponse,
 });
 
+export const getPredictLLMMockHandler = (
+  overrideResponse?:
+    | PredictLLMResponse
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<PredictLLMResponse> | PredictLLMResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/predict_llm/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPredictLLMResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getListApplicationsMockHandler = (
   overrideResponse?:
     | ApplicationList
@@ -5350,6 +5401,7 @@ export const getUpdateProjectContextMockHandler = (
   );
 };
 export const getApplicationsMock = () => [
+  getPredictLLMMockHandler(),
   getListApplicationsMockHandler(),
   getCreateApplicationMockHandler(),
   getListPublicApplicationsMockHandler(),

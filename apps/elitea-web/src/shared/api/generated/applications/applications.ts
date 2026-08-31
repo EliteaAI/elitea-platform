@@ -95,6 +95,9 @@ import type {
   N409Response,
   N500Response,
   OkResponse,
+  PredictLLMRequest,
+  PredictLLMResponse,
+  PredictLLMUnavailableResponse,
   ProjectContext,
   ProjectContextUpdateRequest,
   ProjectGroupCreate,
@@ -146,6 +149,275 @@ const withQueryKey = <T extends object, K>(
   }
   return result;
 };
+
+export type predictLLMResponse200 = {
+  data: PredictLLMResponse;
+  status: 200;
+};
+
+export type predictLLMResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type predictLLMResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type predictLLMResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type predictLLMResponse413 = {
+  data: ErrorResponse;
+  status: 413;
+};
+
+export type predictLLMResponse502 = {
+  data: ErrorResponse;
+  status: 502;
+};
+
+export type predictLLMResponse503 = {
+  data: PredictLLMUnavailableResponse;
+  status: 503;
+};
+
+export type predictLLMResponseSuccess = predictLLMResponse200 & {
+  headers: Headers;
+};
+export type predictLLMResponseError = (
+  | predictLLMResponse400
+  | predictLLMResponse401
+  | predictLLMResponse403
+  | predictLLMResponse413
+  | predictLLMResponse502
+  | predictLLMResponse503
+) & {
+  headers: Headers;
+};
+
+export type predictLLMResponse =
+  predictLLMResponseSuccess | predictLLMResponseError;
+
+export const getPredictLLMUrl = (projectId: string) => {
+  return `/elitea_core/predict_llm/prompt_lib/${projectId}`;
+};
+
+/**
+ * Runs a single stateless completion: no agent, no tools, no version id
+ * and no conversation. The turn is composed of the optional
+ * `instructions` as a system message, then `chat_history`, then
+ * `user_input` last, and is performed by the LLM gateway
+ * (services/elitea-llm-gateway), which resolves the project's provider
+ * credentials and model definitions itself.
+ *
+ * BLOCKING ONLY. Legacy's handler had a second, asynchronous mode
+ * (`await_task_timeout: 0`) that answered with a task id and delivered
+ * the tokens over a socket.io event. That mode is not part of this
+ * contract and no field selects it: every accepted request is answered
+ * synchronously with the generated text in the response body.
+ * `await_task_timeout` is honoured only as this request's deadline in
+ * seconds, clamped to 5..180, defaulting to 60.
+ *
+ * NOTE(W2): internal/api/v2/predict/handler.go PredictLLM — responds
+ * `{"content", "messages"}`, plus `chat_history` when the request asks
+ * for it.
+ * @summary Send one message straight to a model, with no agent and no tools
+ */
+export const predictLLM = async (
+  projectId: string,
+  predictLLMRequest: PredictLLMRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<predictLLMResponse> => {
+  return eliteaFetch<predictLLMResponse>(getPredictLLMUrl(projectId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(predictLLMRequest),
+  });
+};
+
+export const getPredictLLMQueryKey = (
+  projectId: string,
+  predictLLMRequest?: PredictLLMRequest,
+) => {
+  return [
+    "POST",
+    `/elitea_core/predict_llm/prompt_lib/${projectId}`,
+    predictLLMRequest,
+  ] as const;
+};
+
+export const getPredictLLMQueryOptions = <
+  TData = Awaited<ReturnType<typeof predictLLM>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | ErrorResponse
+    | PredictLLMUnavailableResponse,
+>(
+  projectId: string,
+  predictLLMRequest: PredictLLMRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof predictLLM>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getPredictLLMQueryKey(projectId, predictLLMRequest);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof predictLLM>>> = ({
+    signal,
+  }) => predictLLM(projectId, predictLLMRequest, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof predictLLM>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type PredictLLMQueryResult = NonNullable<
+  Awaited<ReturnType<typeof predictLLM>>
+>;
+export type PredictLLMQueryError =
+  | N400Response
+  | N401Response
+  | N403Response
+  | ErrorResponse
+  | PredictLLMUnavailableResponse;
+
+export function usePredictLLM<
+  TData = Awaited<ReturnType<typeof predictLLM>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | ErrorResponse
+    | PredictLLMUnavailableResponse,
+>(
+  projectId: string,
+  predictLLMRequest: PredictLLMRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof predictLLM>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof predictLLM>>,
+          TError,
+          Awaited<ReturnType<typeof predictLLM>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function usePredictLLM<
+  TData = Awaited<ReturnType<typeof predictLLM>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | ErrorResponse
+    | PredictLLMUnavailableResponse,
+>(
+  projectId: string,
+  predictLLMRequest: PredictLLMRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof predictLLM>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof predictLLM>>,
+          TError,
+          Awaited<ReturnType<typeof predictLLM>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function usePredictLLM<
+  TData = Awaited<ReturnType<typeof predictLLM>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | ErrorResponse
+    | PredictLLMUnavailableResponse,
+>(
+  projectId: string,
+  predictLLMRequest: PredictLLMRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof predictLLM>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Send one message straight to a model, with no agent and no tools
+ */
+
+export function usePredictLLM<
+  TData = Awaited<ReturnType<typeof predictLLM>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | ErrorResponse
+    | PredictLLMUnavailableResponse,
+>(
+  projectId: string,
+  predictLLMRequest: PredictLLMRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof predictLLM>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getPredictLLMQueryOptions(
+    projectId,
+    predictLLMRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
 
 export type listApplicationsResponse200 = {
   data: ApplicationList;

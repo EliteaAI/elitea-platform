@@ -63,7 +63,7 @@ export type BackendCapability =
  */
 const SERVED: Readonly<Record<BackendCapability, boolean>> = {
   aiGeneration: false,
-  llmPredictBlocking: false,
+  llmPredictBlocking: true,
   llmPredictStreaming: false,
   pipelineTriggers: false,
 };

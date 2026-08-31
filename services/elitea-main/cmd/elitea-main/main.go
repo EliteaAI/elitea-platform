@@ -32,6 +32,7 @@ import (
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
+	predictapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -1330,6 +1331,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("configurations check-connection client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
 	}
 
+	// #194: POST /elitea_core/predict_llm/prompt_lib/{projectID} runs one
+	// stateless LLM turn through the same gateway hop, configured from the
+	// same four variables. A nil completer is a supported state — the route is
+	// still registered and answers 503 naming LLM_GATEWAY_URL — but it must be
+	// left as a nil INTERFACE, not a boxed nil pointer, or the handler's
+	// `completer == nil` check is false and it calls a method on a nil
+	// receiver instead of reporting "not configured".
+	var predictCompleter predictapi.Completer
+	if completer, completerErr := predictapi.NewGatewayCompleterFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+		os.Getenv("GATEWAY_IDENTITY_SECRET"),
+	); completerErr != nil {
+		return fmt.Errorf("compose predict_llm completion client: %w", completerErr)
+	} else if completer != nil {
+		predictCompleter = completer
+		slog.Info("predict_llm completion client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	} else {
+		slog.Warn("predict_llm completion client disabled: LLM_GATEWAY_URL is empty; " +
+			"the route stays registered and answers 503")
+	}
+
 	// The admin LLM Proxy section reads the gateway's own enforcement status.
 	// Same four settings again, for the third and last consumer of the hop, so
 	// an operator configures the gateway once. No identity secret: the gateway
@@ -1526,6 +1551,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProxy:               gatewayProxy,
 		GatewayProjectResolver:     gatewayProjectResolver,
 		ConfigConnectionChecker:    configConnectionChecker,
+		PredictCompleter:           predictCompleter,
 		GatewayStatus:              gatewayStatus,
 		ConfigProviderAdmission:    configProviderAdmission,
 		ConfigStoredResolver:       configStoredResolver,

@@ -217,12 +217,15 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// more rows in 0068 because a migration is checksum-immutable once it has
 	// run, and it is not optional: 0063's header records that gating a route on
 	// a permission nothing grants is 403-for-everyone, which reads as a broken
-	// page rather than as a missing grant.
+	// page rather than as a missing grant. It grants centrally AND delivers the
+	// same four strings to the projects that carry their own permission rows,
+	// because the central set is discarded wholesale for those callers — see
+	// shared/0090's header and migrations/project_override_reconciliation_test.go.
 	//
 	// RENUMBERED from 0100 at merge. It and the two gateway files above were
 	// authored in parallel and each correctly claimed the next free number at
 	// the time; only the merge can see the collision. The number belongs to
-	// whichever lands first, and nothing about this file's content changed.
+	// whichever lands first.
 	//
 	// 103: shared/0103_shared_chat_links.sql, the store behind "share a
 	// conversation by link". It is SHARED rather than tenant even though every
@@ -257,7 +260,25 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	//
 	// RENUMBERED from 0100 at merge — the FOURTH stream to claim that
 	// number, each correct when it was written. Only the merge sees it.
-	require.EqualValues(t, 104, Head(shared))
+	//
+	// 105: shared/0105_predict_llm_permission.sql, the single default-mode
+	// grant behind POST /elitea_core/predict_llm/prompt_lib/{projectID} (#194).
+	// Nothing in this corpus granted `models.applications.predict.post` before
+	// it, so the route it gates would have shipped registered and
+	// 403-for-everyone.
+	//
+	// It is the first grant file here whose default-mode split reaches VIEWER,
+	// and that is not a widening invented for the port: legacy's own
+	// predict_llm.py declares recommended_roles viewer=True in DEFAULT_MODE and
+	// viewer=False in ADMINISTRATION_MODE, and testdata/postgres/legacy-rbac-matrix.json
+	// carries the same asymmetry. Only the default mode is delivered, because
+	// only the default-mode route exists.
+	//
+	// Like 0102 and 0104 it grants centrally AND delivers the same string to
+	// the projects that carry their own permission rows, because the central
+	// set is discarded wholesale for those callers — see shared/0090's header
+	// and migrations/project_override_reconciliation_test.go.
+	require.EqualValues(t, 105, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

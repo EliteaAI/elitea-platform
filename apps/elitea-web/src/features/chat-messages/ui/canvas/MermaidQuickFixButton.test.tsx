@@ -102,8 +102,12 @@ describe('MermaidQuickFixButton', () => {
     resetBackendCapabilitiesForTests();
   });
 
-  it('is ABSENT when this build does not route predict_llm — which is every build today (#194)', async () => {
-    resetBackendCapabilitiesForTests();
+  it('is ABSENT when this build serves no blocking predict_llm', async () => {
+    // Stated, not inherited from the module default. This build DOES serve the
+    // blocking route now, so relying on the default would make this test assert
+    // the opposite of its name the moment the capability flipped -- which is
+    // exactly what happened.
+    setBackendCapabilityForTests('llmPredictBlocking', false);
 
     const { result } = await renderButton();
 
@@ -113,7 +117,7 @@ describe('MermaidQuickFixButton', () => {
   });
 
   it('makes no configurations request at all when the route is unavailable', async () => {
-    resetBackendCapabilitiesForTests();
+    setBackendCapabilityForTests('llmPredictBlocking', false);
     let asked = 0;
     server.use(
       http.get(MODELS_URL, () => {
@@ -128,8 +132,8 @@ describe('MermaidQuickFixButton', () => {
 
     await renderButton();
 
-    // Asking which model would serve an endpoint that 404s is two requests
-    // spent on a question that cannot matter.
+    // Asking which model would serve an endpoint this build cannot reach is two
+    // requests spent on a question that cannot matter.
     expect(asked).toBe(0);
   });
 

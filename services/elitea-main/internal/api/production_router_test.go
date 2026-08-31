@@ -1971,6 +1971,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/mcp_sync_tools/prompt_lib/{projectID}",
 		"POST /api/v2/elitea_core/participants/prompt_lib/{projectID}/{conversationID}",
 		"POST /api/v2/elitea_core/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"POST /api/v2/elitea_core/predict_llm/prompt_lib/{projectID}",
 		"POST /api/v2/elitea_core/project_icon/prompt_lib/{projectID}",
 		"POST /api/v2/elitea_core/publish/prompt_lib/{projectID}/{versionID}",
 		"POST /api/v2/elitea_core/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}",
