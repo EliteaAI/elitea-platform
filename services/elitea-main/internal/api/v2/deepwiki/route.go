@@ -58,6 +58,8 @@ func NewRoute(
 	cfg Config,
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
+	credentials *CredentialResolver,
+	minter CallbackMinter,
 	logger *slog.Logger,
 ) (*Route, error) {
 	if authConfig.PrincipalValidator == nil ||
@@ -69,6 +71,20 @@ func NewRoute(
 	proxy, err := NewProxy(cfg, logger)
 	if err != nil {
 		return nil, err
+	}
+
+	// The rewriter is not optional. Without it the facade would forward a
+	// body naming a configuration id the provider cannot read, so every
+	// generation would fail on a payload the caller wrote correctly — and it
+	// would do so having already passed authentication and permissions, which
+	// is the point at which a defect stops looking like a defect.
+	rewriter, err := NewInvokeRewriter(
+		credentials, minter, cfg.CallbackBaseURL, cfg.CallbackTokenTTL)
+	if err != nil {
+		return nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	projectFromPath := func(request *http.Request) (string, bool) {
@@ -97,8 +113,8 @@ func NewRoute(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			toolkit := chi.URLParam(r, "toolkit_name")
 			tool := chi.URLParam(r, "tool_name")
-			proxy.Forward(w, r, providerInvokePath(toolkit, tool),
-				chi.URLParam(r, "project_id"), userIDFrom(r))
+			invoke(w, r, proxy, rewriter, logger,
+				providerInvokePath(toolkit, tool))
 		})))
 
 	router.Method(http.MethodGet, InvocationPath, guard(ReadPermission)(

@@ -130,6 +130,10 @@ func provider(t *testing.T) (*[]received, deepwiki.Config) {
 		ServerName:     "deepwiki.internal",
 		IdentitySecret: identitySecret,
 		Timeout:        10 * time.Second,
+
+		CallbackBaseURL:  "https://elitea.test",
+		CallbackTokenTTL: time.Hour,
+		GitEgress:        deepwiki.ParseGitEgressPolicy("github.com,api.github.com"),
 	}
 }
 
@@ -201,8 +205,9 @@ func writeKey(t *testing.T, path string, key *ecdsa.PrivateKey) {
 // route builds the facade with a caller holding exactly `granted`.
 func route(t *testing.T, cfg deepwiki.Config, granted ...string) *deepwiki.Route {
 	t.Helper()
-	built, err := deepwiki.NewRoute(cfg, authConfig(), resolver(granted...), slog.New(
-		slog.NewTextHandler(&strings.Builder{}, nil)))
+	built, err := deepwiki.NewRoute(cfg, authConfig(), resolver(granted...),
+		testCredentialResolver(t), &recordingMinter{}, slog.New(
+			slog.NewTextHandler(&strings.Builder{}, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +268,7 @@ func TestEachFacadePathMapsToItsProviderPath(t *testing.T) {
 		{
 			http.MethodPost,
 			"/api/v2/deepwiki/tools/7/Wikis/generate_wiki/invoke",
-			`{"invocation_id":"abc"}`,
+			`{"configuration":{"parameters":{"code_toolkit":42}}}`,
 			"/tools/Wikis/generate_wiki/invoke",
 		},
 		{
@@ -293,11 +298,12 @@ func TestEachFacadePathMapsToItsProviderPath(t *testing.T) {
 		}
 	}
 
-	// The invoke body must arrive intact: the facade is a pass-through, and a
-	// proxy that rewrote the path but dropped the payload would still satisfy
-	// every assertion above.
-	if (*log)[1].body != `{"invocation_id":"abc"}` {
-		t.Fatalf("the request body did not survive the hop: %q", (*log)[1].body)
+	// A body must arrive. The facade REWRITES an invoke rather than passing it
+	// through (see credentials_test.go for what it becomes), so this asserts
+	// only that a payload crossed the hop — a proxy that mapped the path and
+	// dropped the body would satisfy every other assertion above.
+	if !strings.Contains((*log)[1].body, "github_configuration") {
+		t.Fatalf("no rewritten body reached the provider: %q", (*log)[1].body)
 	}
 }
 
@@ -423,7 +429,8 @@ func TestAGeneratorMayStartAndCancel(t *testing.T) {
 	generator := route(t, cfg, deepwiki.ReadPermission, deepwiki.GeneratePermission)
 
 	if response := call(t, generator, http.MethodPost,
-		"/api/v2/deepwiki/tools/7/Wikis/generate_wiki/invoke", `{}`); response.Code != http.StatusOK {
+		"/api/v2/deepwiki/tools/7/Wikis/generate_wiki/invoke",
+		`{"configuration":{"parameters":{"code_toolkit":42}}}`); response.Code != http.StatusOK {
 		t.Fatalf("start refused: %d %s", response.Code, response.Body.String())
 	}
 	if response := call(t, generator, http.MethodDelete,
@@ -492,12 +499,12 @@ func TestCompositionRefusesAHalfWiredAuthenticationChain(t *testing.T) {
 		"neither": {},
 	}
 	for name, broken := range cases {
-		if _, err := deepwiki.NewRoute(cfg, broken, resolver(), nil); !errors.Is(err, deepwiki.ErrInvalidRoute) {
+		if _, err := deepwiki.NewRoute(cfg, broken, resolver(), testCredentialResolver(t), &recordingMinter{}, nil); !errors.Is(err, deepwiki.ErrInvalidRoute) {
 			t.Fatalf("%s was accepted: %v", name, err)
 		}
 	}
 
-	if _, err := deepwiki.NewRoute(cfg, full, nil, nil); !errors.Is(err, deepwiki.ErrInvalidRoute) {
+	if _, err := deepwiki.NewRoute(cfg, full, nil, testCredentialResolver(t), &recordingMinter{}, nil); !errors.Is(err, deepwiki.ErrInvalidRoute) {
 		t.Fatalf("a nil permission resolver was accepted: %v", err)
 	}
 }
@@ -508,7 +515,7 @@ func TestAPlainHTTPProviderURLIsRefusedAtComposition(t *testing.T) {
 	_, cfg := provider(t)
 	cfg.BaseURL = strings.Replace(cfg.BaseURL, "https://", "http://", 1)
 
-	if _, err := deepwiki.NewRoute(cfg, authConfig(), resolver(), nil); !errors.Is(err, deepwiki.ErrInvalidProxy) {
+	if _, err := deepwiki.NewRoute(cfg, authConfig(), resolver(), testCredentialResolver(t), &recordingMinter{}, nil); !errors.Is(err, deepwiki.ErrInvalidProxy) {
 		t.Fatalf("a plain-HTTP provider URL was accepted: %v", err)
 	}
 }

@@ -57,11 +57,12 @@ func TestAnAbsentFlagLeavesTheFacadeOffAndNeedsNothingElse(t *testing.T) {
 // with a transport failure while the flag says the feature is on.
 func TestEnabledWithoutMTLSMaterialIsRefused(t *testing.T) {
 	complete := map[string]string{
-		deepwiki.EnabledEnv:    "true",
-		deepwiki.BaseURLEnv:    "https://deepwiki:8443",
-		deepwiki.ClientCertEnv: "/tls/tls.crt",
-		deepwiki.ClientKeyEnv:  "/tls/tls.key",
-		deepwiki.CAFileEnv:     "/tls/ca.crt",
+		deepwiki.EnabledEnv:         "true",
+		deepwiki.BaseURLEnv:         "https://deepwiki:8443",
+		deepwiki.ClientCertEnv:      "/tls/tls.crt",
+		deepwiki.ClientKeyEnv:       "/tls/tls.key",
+		deepwiki.CAFileEnv:          "/tls/ca.crt",
+		deepwiki.CallbackBaseURLEnv: "https://elitea.example",
 	}
 
 	cfg, err := deepwiki.ConfigFromEnv(env(complete))
@@ -74,6 +75,10 @@ func TestEnabledWithoutMTLSMaterialIsRefused(t *testing.T) {
 		deepwiki.ClientCertEnv,
 		deepwiki.ClientKeyEnv,
 		deepwiki.CAFileEnv,
+		// The callback origin is as mandatory as the certificates: without it
+		// a generation runs to completion and then cannot hand back what it
+		// produced.
+		deepwiki.CallbackBaseURLEnv,
 	} {
 		partial := map[string]string{}
 		for key, value := range complete {
