@@ -1,0 +1,107 @@
+name: CI — DeepWiki UI
+
+# The vendored DeepWiki SPA (ADR-0022 decision 8).
+#
+# WHY ITS OWN WORKFLOW rather than a job in ci-web.yml: this is a separate npm
+# project with its own dependency tree (MUI 5, React 18) and its own lockfile.
+# ci-web.yml's jobs all share one `npm ci` at apps/elitea-web, and a second
+# project inside them would either share a lockfile it does not use or install
+# twice on every job. It is also DECLARED INTERIM — the target is a native
+# elitea-web feature — and a workflow of its own is a file to delete rather
+# than jobs to unpick from someone else's.
+#
+# WHAT IT GUARDS, and why each one is not hypothetical. The source this bundle
+# was vendored from did not compile: `src/utils/eliteaClient.js` declared
+# `updateClientAuthToken` and `updateClientConfig` twice each, which is a
+# SyntaxError in an ES module. The legacy repository shipped a built `dist/`
+# beside it, so nothing ever noticed — the artefact and its source had drifted
+# apart with no gate between them. The build job below is that gate.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/deepwiki-ui/**"
+      - "services/elitea-main/Containerfile"
+      - ".github/workflows/ci-deepwiki-ui.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/deepwiki-ui/**"
+      - "services/elitea-main/Containerfile"
+      - ".github/workflows/ci-deepwiki-ui.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/deepwiki-ui
+
+jobs:
+  build:
+    name: The bundle builds and its translation is correct
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/deepwiki-ui/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # The socket-to-facade translation. These two functions are the whole of
+      # what the port changed about how a generation starts and how its
+      # progress arrives, and every other file in the bundle consumes their
+      # output unchanged.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # The bundle's compiled-in base must match the path elitea-main serves
+      # it from, or the page loads and then 404s on its own JavaScript. The Go
+      # handler asserts its own half (TestTheBasePathMatchesTheViteBase); this
+      # asserts the artefact's, which is the half a config edit changes.
+      - name: The built asset paths match the served base path
+        run: |
+          if ! grep -q '"/app/deepwiki/assets/' dist/index.html; then
+            echo "::error::dist/index.html does not reference /app/deepwiki/assets/."
+            echo "The vite config's \`base\` and deepwikiui.BasePath must agree;"
+            echo "a mismatch renders a page that 404s on its own JavaScript."
+            grep -o 'src="[^"]*"' dist/index.html || true
+            exit 1
+          fi
+          echo "asset base: /app/deepwiki/"
+
+      # ADR-0022 decision 6 retires the legacy shared-string header: "no
+      # surface of the ported service sends or honours it". The client was one
+      # of those surfaces, and a header that reappears in the SOURCE would ship
+      # in the bundle without anything else noticing.
+      - name: The retired X-SECRET header is not sent
+        run: |
+          if grep -rn "'X-SECRET'" src/ | grep -v '^\s*//' | grep -q .; then
+            echo "::error::src/ still sets the X-SECRET header, which ADR-0022 retires."
+            grep -rn "'X-SECRET'" src/
+            exit 1
+          fi
+          echo "no X-SECRET header in src/"
+
+      # socket.io is gone with its transport. An import that comes back is a
+      # dependency the platform cannot serve, and it would fail at runtime as a
+      # connection that never establishes rather than as a build error.
+      - name: No socket.io client
+        run: |
+          if grep -rn "socket.io-client" src/ package.json | grep -q .; then
+            echo "::error::socket.io-client is back. The Go platform serves no socket.io;"
+            echo "hooks/useSocket.js keeps the interface and polls the facade instead."
+            grep -rn "socket.io-client" src/ package.json
+            exit 1
+          fi
+          echo "no socket.io-client"
