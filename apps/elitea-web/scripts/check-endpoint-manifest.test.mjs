@@ -323,8 +323,20 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * through the hand-written features/agents/api/aiEdit.ts and
  * features/chat-messages/api/canvasQuickFix.ts, so all three entries stay
  * `handwritten` and only gain the operationId the reverse check matches on.
+ *
+ * 163 -> 167, MANIFEST_ENTRY_COUNT unchanged, when the DeepWiki facade landed
+ * (ADR-0022 P2): getDeepWikiSlots, invokeDeepWikiTool, getDeepWikiInvocation
+ * and cancelDeepWikiInvocation. Describing them in v2.yaml makes orval
+ * generate a hook each, which is the whole of this delta.
+ *
+ * MANIFEST_ENTRY_COUNT does NOT move, and the reason is the one the 151 -> 152
+ * step gives: no elitea-web UI ships with them. The DeepWiki UI is the
+ * VENDORED SPA in apps/deepwiki-ui, which is a separate bundle with its own
+ * plain `fetch` calls and no generated client — it is interim by declaration
+ * (decision 8), and the native elitea-web feature that replaces it is the
+ * change that will add manifest entries.
  */
-const GENERATED_OPERATION_COUNT = 163;
+const GENERATED_OPERATION_COUNT = 167;
 /*
  * 189 -> 191. The canvas mermaid quick-fix added two entries: the blocking
  * `predict_llm` sender (`chatMessages.generateContentBlocking`) and the
