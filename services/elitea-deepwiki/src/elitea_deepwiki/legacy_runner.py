@@ -353,6 +353,29 @@ def _install_postgres_read_path(settings) -> None:
     storage_install.install(lambda: psycopg.connect(dsn))
 
 
+_MODEL_EGRESS_APPLIED = False
+
+
+def _apply_model_egress(settings) -> None:
+    """Decide whether the engine may download models, once, before it runs.
+
+    Before rather than during: ``huggingface_hub`` reads these variables when
+    it is first used, and the engine is a verbatim copy that calls it directly.
+    """
+    global _MODEL_EGRESS_APPLIED
+    if _MODEL_EGRESS_APPLIED:
+        return
+
+    import os  # noqa: PLC0415
+
+    from .security.egress import EgressPolicy, apply_model_egress  # noqa: PLC0415
+
+    apply_model_egress(
+        EgressPolicy.parse(getattr(settings, "model_allowlist", None)), os.environ
+    )
+    _MODEL_EGRESS_APPLIED = True
+
+
 _JOB_PATH_INSTALLED = False
 
 
@@ -440,6 +463,7 @@ class LegacyToolRunner:
         # running it.
         _install_postgres_read_path(settings)
         _install_job_path()
+        _apply_model_egress(settings)
 
         host = _bound_host_class(Method)(settings, context)
         return getattr(host, name)

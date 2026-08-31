@@ -62,6 +62,11 @@ ARTIFACT_ENV_VARS = [
     ARTIFACT_X_SECRET_ENV,
 ]
 
+def _tls_verify():
+    """CA bundle path, or True for the system trust store."""
+    return os.environ.get("ELITEA_DEEPWIKI_TLS_CA_FILE") or True
+
+
 DEFAULT_BUCKET = "wiki-artifacts"
 DEFAULT_API_PATH = "/api/v2"
 
@@ -206,7 +211,6 @@ class PlatformArtifactClient:
     def _headers(self) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "X-SECRET": self.x_secret,
         }
 
     def _artifact_url(self, bucket: str) -> str:
@@ -257,7 +261,7 @@ class PlatformArtifactClient:
 
         files = {"file": (name, data)}
         response = requests.post(
-            url, headers=self._headers(), files=files, verify=False, timeout=300
+            url, headers=self._headers(), files=files, verify=_tls_verify(), timeout=300
         )
 
         if response.status_code == 403:
@@ -303,7 +307,7 @@ class PlatformArtifactClient:
         logger.debug("Downloading artifact: %s/%s", bucket, name)
 
         response = requests.get(
-            url, headers=self._headers(), verify=False, timeout=300
+            url, headers=self._headers(), verify=_tls_verify(), timeout=300
         )
 
         if response.status_code == 403:
@@ -356,7 +360,7 @@ class PlatformArtifactClient:
             url,
             headers=self._headers(),
             params={"filename": name},
-            verify=False,
+            verify=_tls_verify(),
             timeout=60,
         )
         if response.status_code in (200, 204):
@@ -387,7 +391,7 @@ class PlatformArtifactClient:
         logger.debug("Listing artifacts in bucket %s (prefix=%s)", bucket, prefix)
 
         response = requests.get(
-            url, headers=self._headers(), verify=False, timeout=60
+            url, headers=self._headers(), verify=_tls_verify(), timeout=60
         )
 
         if response.status_code == 404:

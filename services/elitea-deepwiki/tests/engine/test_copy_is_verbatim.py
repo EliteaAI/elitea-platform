@@ -76,13 +76,80 @@ def test_no_engine_file_is_outside_the_manifest():
     file count still looked plausible.
     """
     not_copied = set(MANIFEST["not_copied"])
+    # Files transformed IN PLACE are accounted for under transformed_files
+    # instead of files: they carry declared substitutions, so their digest is
+    # deliberately not the legacy one. They are still guarded — see
+    # test_in_place_transforms_match_their_recorded_digest.
+    transformed = {
+        entry["target"].split("engine/", 1)[-1]
+        for entry in MANIFEST.get("transformed_files", {}).values()
+        if entry.get("in_place")
+    }
     present = {
         path.relative_to(ENGINE_DIR).as_posix()
         for path in ENGINE_DIR.rglob("*")
         if path.is_file() and "__pycache__" not in path.parts
     }
-    unaccounted = present - set(MANIFEST["files"]) - not_copied
+    unaccounted = present - set(MANIFEST["files"]) - not_copied - transformed
     assert not unaccounted, f"files in the copy but not in the manifest: {sorted(unaccounted)}"
+
+
+def test_in_place_transforms_match_their_recorded_digest():
+    """A transformed file is guarded too, against its POST-transform digest.
+
+    Otherwise the transform mechanism would be a hole in the copy guard: a
+    file could be edited freely once it was listed as transformed.
+    """
+    entries = {
+        name: entry
+        for name, entry in MANIFEST.get("transformed_files", {}).items()
+        if entry.get("in_place")
+    }
+    assert entries, "no in-place transforms recorded; the mechanism regressed"
+
+    for name, entry in entries.items():
+        path = SERVICE_ROOT / entry["target"]
+        assert path.is_file(), name
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"], (
+            f"{name} does not match its recorded post-transform digest"
+        )
+        assert entry["substitutions"], f"{name} records no substitutions"
+
+
+def test_the_adr_0022_security_retirements_hold_in_the_copy():
+    """ADR-0022 decision 6, checked against the code rather than the README.
+
+    "the legacy X-SECRET shared-string header is retired; no surface of the
+    ported service sends or honours it" and "TLS verification is mandatory on
+    every outbound call. verify=False does not appear in the ported code."
+
+    Both were FALSE of the copied artifact client until it was transformed —
+    the README claimed them while the code still sent the header on every
+    upload. This asserts the code, over the whole tree, so the claim cannot
+    drift from the thing again.
+    """
+    offenders_header, offenders_tls = [], []
+    for path in engine_files() + [
+        SERVICE_ROOT / "src" / "elitea_deepwiki" / "tool_operations.py"
+    ]:
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("--"):
+                continue
+            # A header DICT entry, not a mention in prose or a constant name.
+            if '"X-SECRET":' in line:
+                offenders_header.append(f"{path.name}:{number}")
+            if "verify=False" in line:
+                offenders_tls.append(f"{path.name}:{number}")
+
+    assert not offenders_header, (
+        "X-SECRET is still sent: " + ", ".join(offenders_header)
+    )
+    assert not offenders_tls, (
+        "TLS verification is still disabled: " + ", ".join(offenders_tls)
+    )
 
 
 def test_the_refresh_tool_agrees():

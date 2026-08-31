@@ -71,6 +71,48 @@ TOOLS_HEADER = '''# Copied from deepwiki_plugin methods/tool_operations.py.
 # see elitea_deepwiki.legacy_runner.ToolHost.
 '''
 
+#: Files transformed IN PLACE inside the engine tree. Unlike tool_operations.py
+#: these cannot move: engine modules import them relatively
+#: (``from .artifacts_platform_client import ...``), so relocating one would
+#: break the copy. They are excluded from the verbatim digest set and recorded
+#: under ``transformed_files`` instead, with the substitutions that produced
+#: them, so the edit is auditable rather than invisible.
+#:
+#: ADR-0022 decision 6 is why this one is here: "the legacy X-SECRET
+#: shared-string header is retired; no surface of the ported service sends or
+#: honours it" and "TLS verification is mandatory on every outbound call.
+#: verify=False does not appear in the ported code." Both were still true of
+#: the copied client, which is a violation of the ADR in shipped code — found
+#: by grepping the copy for the claim the README was making about it.
+IN_PLACE_TRANSFORMS = {
+    "artifacts_platform_client.py": (
+        # The X-SECRET header, gone from every outbound artifact call. The
+        # value it carried defaulted to the literal string "secret".
+        (
+            '        return {\n'
+            '            "Authorization": f"Bearer {self.api_key}",\n'
+            '            "X-SECRET": self.x_secret,\n'
+            '        }',
+            '        return {\n'
+            '            "Authorization": f"Bearer {self.api_key}",\n'
+            '        }',
+        ),
+        # TLS verification, on. _TLS_VERIFY is True by default and takes a CA
+        # bundle path from the environment, because an internal mTLS mesh
+        # signs with a private CA that the system trust store does not carry.
+        (
+            'DEFAULT_BUCKET = "wiki-artifacts"',
+            'def _tls_verify():\n'
+            '    """CA bundle path, or True for the system trust store."""\n'
+            '    return os.environ.get("ELITEA_DEEPWIKI_TLS_CA_FILE") or True\n'
+            '\n'
+            '\n'
+            'DEFAULT_BUCKET = "wiki-artifacts"',
+        ),
+        ("verify=False", "verify=_tls_verify()"),
+    ),
+}
+
 TOOLS_SUBSTITUTIONS = (
     (
         "from pylon.core.tools import log, web",
@@ -149,6 +191,7 @@ def copied_files() -> list[Path]:
         if path.is_file()
         and "__pycache__" not in path.parts
         and path.relative_to(ENGINE_DIR).as_posix() not in NOT_COPIED
+        and path.relative_to(ENGINE_DIR).as_posix() not in IN_PLACE_TRANSFORMS
     )
 
 
@@ -172,6 +215,21 @@ def build_manifest(revision: str | None) -> dict:
         entries[relative] = {"bytes": path.stat().st_size, "sha256": sha256(path)}
 
     transformed = {}
+    for relative, substitutions in IN_PLACE_TRANSFORMS.items():
+        target = ENGINE_DIR / relative
+        if not target.is_file():
+            continue
+        transformed[f"plugin_implementation/{relative}"] = {
+            "target": target.relative_to(SERVICE_ROOT).as_posix(),
+            "bytes": target.stat().st_size,
+            "sha256": sha256(target),
+            "in_place": True,
+            "substitutions": [
+                {"from": needle, "to": replacement}
+                for needle, replacement in substitutions
+            ],
+        }
+
     if TOOLS_TARGET.is_file():
         transformed[TOOLS_SOURCE] = {
             "target": TOOLS_TARGET.relative_to(SERVICE_ROOT).as_posix(),
@@ -232,6 +290,18 @@ def do_copy() -> str | None:
         transform_tools((root / TOOLS_SOURCE).read_text(encoding="utf-8")),
         encoding="utf-8",
     )
+
+    for relative, substitutions in IN_PLACE_TRANSFORMS.items():
+        target = ENGINE_DIR / relative
+        text = target.read_text(encoding="utf-8")
+        for needle, replacement in substitutions:
+            if needle not in text:
+                raise SystemExit(
+                    f"{relative} no longer contains {needle!r}; the declared "
+                    "in-place substitutions are stale and must be reviewed"
+                )
+            text = text.replace(needle, replacement)
+        target.write_text(text, encoding="utf-8")
 
     return revision
 

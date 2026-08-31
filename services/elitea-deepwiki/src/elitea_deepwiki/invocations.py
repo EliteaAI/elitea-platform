@@ -120,6 +120,8 @@ class InvocationStore(Protocol):
 
     async def update(self, invocation: Invocation) -> None: ...
 
+    async def append_event(self, invocation_id: str, message: str) -> None: ...
+
     async def drain_events(self, invocation: Invocation) -> list[dict[str, Any]]: ...
 
     async def prune(self, older_than_seconds: float) -> int: ...
@@ -159,6 +161,17 @@ class InMemoryInvocationStore:
         # The dataclass is stored by reference; mutations are already visible.
         # The method exists so a durable implementation has a write point.
         return None
+
+    async def append_event(self, invocation_id: str, message: str) -> None:
+        async with self._lock:
+            for tools in self._state.values():
+                for invocations in tools.values():
+                    invocation = invocations.get(invocation_id)
+                    if invocation is not None:
+                        invocation.custom_events.append(
+                            {"data": {"message": message}}
+                        )
+                        return
 
     async def drain_events(self, invocation: Invocation) -> list[dict[str, Any]]:
         async with self._lock:
@@ -222,9 +235,15 @@ class InvocationContext:
         return self._invocation.tool_name
 
     async def thinking(self, message: str) -> None:
-        """Emit one progress event (legacy ``invocation_thinking``)."""
-        self._invocation.custom_events.append({"data": {"message": message}})
-        await self._manager.store.update(self._invocation)
+        """Emit one progress event (legacy ``invocation_thinking``).
+
+        Through the store rather than onto the dataclass, so a durable store
+        writes a row. The in-memory store appends to the same list it always
+        did, and the two are indistinguishable to a caller.
+        """
+        await self._manager.store.append_event(
+            self._invocation.invocation_id, message
+        )
 
     async def checkpoint(self) -> None:
         """Cooperative cancellation point (legacy ``invocation_stop_checkpoint``).
@@ -294,6 +313,16 @@ class InvocationManager:
     # -- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:
+        # Before accepting anything new: a durable store may hold rows a
+        # previous process left running. Leaving them would make a poll return
+        # InProgress forever for work nobody is doing.
+        reconcile = getattr(self.store, "reconcile_orphans", None)
+        if reconcile is not None:
+            try:
+                await reconcile()
+            except Exception:  # noqa: BLE001 - must not block startup
+                logger.exception("invocation reconciliation failed at startup")
+
         if self._housekeeper is None:
             self._housekeeper = asyncio.create_task(self._housekeeping_loop())
 

@@ -22,6 +22,7 @@ conformance fixtures exist to pin.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import os
@@ -50,6 +51,19 @@ PROVIDER_VERSION = "1.0.0"
 SERVICE_NAME = "elitea-deepwiki"
 
 
+def _build_invocation_store(settings: Settings):
+    """The durable store when a database is configured, else the in-process one.
+
+    A service with no database still boots and serves the whole SPI; it just
+    cannot claim durability, and ``GET /health`` says so.
+    """
+    if not settings.database_url:
+        return None
+    from .storage.invocation_store import build_store  # noqa: PLC0415
+
+    return build_store(settings.database_url)
+
+
 def create_app(
     settings: Settings | None = None,
     runner: ToolRunner | None = None,
@@ -65,7 +79,8 @@ def create_app(
     settings = settings or Settings.from_env()
     runner = runner or build_runner(settings)
     manager = InvocationManager(
-        retention_seconds=settings.invocation_retention_seconds
+        store=_build_invocation_store(settings),
+        retention_seconds=settings.invocation_retention_seconds,
     )
     started_at = time.monotonic()
 
@@ -154,6 +169,46 @@ def create_app(
                     ).describe(),
                 },
             }
+        )
+
+    @app.get("/ready")
+    async def ready() -> JSONResponse:
+        """Readiness, separate from the provider's liveness document.
+
+        ``/health`` is the SPI's own document: a frozen shape the platform
+        polls, which answers "this provider exists and here is its
+        configuration". A Kubernetes readiness probe asks a different
+        question — "can this replica serve traffic right now" — and answering
+        it from /health would mean either widening a frozen contract or having
+        a probe that passes while the service cannot actually work.
+
+        Not ready is 503, which is what takes a replica out of rotation.
+        """
+        checks: dict[str, Any] = {"invocations": True}
+        ok = True
+
+        if settings.database_url:
+            # The read path and the durable store both need it, so a replica
+            # that cannot reach it must not receive queries.
+            try:
+                import psycopg  # noqa: PLC0415
+
+                connection = await asyncio.to_thread(
+                    psycopg.connect, settings.database_url
+                )
+                try:
+                    await asyncio.to_thread(connection.execute, "SELECT 1")
+                finally:
+                    connection.close()
+                checks["database"] = True
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                logger.warning("readiness: database unreachable: %s", exc)
+                checks["database"] = False
+                ok = False
+
+        return JSONResponse(
+            {"status": "READY" if ok else "NOT_READY", "checks": checks},
+            status_code=200 if ok else 503,
         )
 
     # -- slots -------------------------------------------------------------

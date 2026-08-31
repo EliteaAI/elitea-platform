@@ -200,3 +200,61 @@ def check_repo_config(policy: EgressPolicy, repo_config: dict) -> str:
 def allowed_hosts(policies: Iterable[str]) -> EgressPolicy:  # pragma: no cover
     """Convenience for building a policy in tests."""
     return EgressPolicy(tuple(policies))
+
+
+#: The public Hugging Face hub, which ``huggingface_hub`` uses by default.
+HUGGINGFACE_HOST = "huggingface.co"
+
+#: Environment variables ``huggingface_hub`` honours. Setting these is the only
+#: control that actually governs the download: the engine is a verbatim copy
+#: and calls the library directly, so a policy object it never consults would
+#: be decoration.
+HF_ENDPOINT_ENV = "HF_ENDPOINT"
+HF_OFFLINE_ENV = "HF_HUB_OFFLINE"
+
+
+def apply_model_egress(policy: EgressPolicy, environ: dict[str, str]) -> str:
+    """Enforce the model-download allowlist on ``environ``. Returns what it did.
+
+    Three outcomes, and each is a real change to what the process can reach:
+
+    ``offline``
+        No allowlist, or one that does not admit the configured endpoint.
+        ``HF_HUB_OFFLINE=1``, so the library serves from its cache and raises
+        rather than reaching the network. A deployment that has not thought
+        about model egress gets no model egress — the same fail-closed rule as
+        the git allowlist, for the same reason.
+
+    ``mirror``
+        ``HF_ENDPOINT`` already names a host the allowlist admits. Left alone.
+
+    ``allowed``
+        The public hub is on the allowlist. Left alone.
+
+    This does not attempt to police what the library does once it is allowed to
+    reach a host; it decides whether it may reach one at all. That is the
+    boundary this service can actually hold.
+    """
+    endpoint = environ.get(HF_ENDPOINT_ENV, "")
+    host = host_of(endpoint) if endpoint else HUGGINGFACE_HOST
+
+    if policy.permits(host):
+        environ.pop(HF_OFFLINE_ENV, None)
+        outcome = "mirror" if endpoint else "allowed"
+        logger.info("model downloads permitted from %s (%s)", host, outcome)
+        return outcome
+
+    environ[HF_OFFLINE_ENV] = "1"
+    if policy.is_empty:
+        logger.warning(
+            "no model-download allowlist configured: HF_HUB_OFFLINE=1, so the "
+            "engine will use cached models only. Set "
+            "ELITEA_DEEPWIKI_MODEL_ALLOWLIST to permit downloads."
+        )
+    else:
+        logger.warning(
+            "model host %r is not on the allowlist (%s): HF_HUB_OFFLINE=1",
+            host,
+            ", ".join(policy.entries),
+        )
+    return "offline"
