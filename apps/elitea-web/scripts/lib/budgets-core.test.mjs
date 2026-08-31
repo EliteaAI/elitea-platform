@@ -57,7 +57,7 @@ describe('file classification', () => {
     ['src/routeTree.gen.ts', true],
     ['src/shared/types/api.d.ts', true],
     ['src/features/x/ui/A.tsx', false],
-    // [S5] scripts/gen-socket-contract.mjs's two outputs (spec §5.5).
+    // [S5] the socket contract's two catalogue files (spec §5.5).
     ['src/shared/api/socket/events.ts', true],
     ['src/shared/api/socket/messages.ts', true],
     ['src/shared/api/socket/client.ts', false], // hand-written — must stay linted/budgeted

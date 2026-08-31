@@ -37,7 +37,6 @@ func TestCurrentMainRoutePublicRulesMatchPinnedCatalog(t *testing.T) {
 		near    []string
 	}{
 		{"current.admin_ui.assets", `^/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$`, []string{"/admin/app/assets/main.js"}, []string{"/admin/app/config.json", "https://evil.example/admin/app/assets/main.js"}},
-		{"current.elitea_core.socket_io", `^/socket\.io/.*$`, []string{"/socket.io/connect"}, []string{"/socketXio/connect", "https://evil.example/socket.io/connect"}},
 		{"current.elitea_core.robots", `^/robots\.txt$`, []string{"/robots.txt"}, []string{"/robots.txt/extra", "https://evil.example/robots.txt"}},
 		{"current.elitea_core.favicon", `^/favicon\.ico$`, []string{"/favicon.ico"}, []string{"/faviconXico", "https://evil.example/favicon.ico"}},
 		{"current.elitea_core.access_denied", `^/app/access_denied$`, []string{"/app/access_denied"}, []string{"/app/access_denied/extra", "https://evil.example/app/access_denied"}},
@@ -117,6 +116,42 @@ func authorizePublicURI(t *testing.T, kernel *forwardapp.Kernel, uri string) for
 		t.Fatal(err)
 	}
 	return decision
+}
+
+// TestSocketIOIsNoLongerAuthExempt is the negative pin for the rule this
+// catalogue used to carry.
+//
+// `current.elitea_core.socket_io` (`^/socket\.io/.*$`) exempted the whole
+// prefix from authentication for a handler this service never mounted — the
+// Socket.IO prototype server was deleted with #126. Nothing answered there, so
+// nothing was exposed; what was exposed was the STANDING STATE, in which the
+// first person to mount a handler on that path inherited an anonymous entry
+// point without touching this file. The rule is gone, and so are the
+// `/socket.io/` forwards at both browser edges (deploy/traefik/dynamic.yml,
+// deploy/traefik/dynamic.e2e.yml, deploy/gateway-api/httproute.yaml).
+//
+// TestCurrentMainRoutePublicRulesMatchPinnedCatalog would already fail if the
+// rule came back by that name. This test fails for ANY rule, under any name,
+// that makes a cookie-less /socket.io/ request public again.
+func TestSocketIOIsNoLongerAuthExempt(t *testing.T) {
+	policy, err := forwardapp.NewPublicPolicy(CurrentMainRoutePublicRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := forwardapp.NewKernel(unusedPublicRuleCredentials{}, unusedPublicRuleSessions{}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, uri := range []string{"/socket.io/", "/socket.io/connect", "/socket.io/?EIO=4&transport=polling"} {
+		t.Run(uri, func(t *testing.T) {
+			decision := authorizePublicURI(t, kernel, uri)
+			if decision.Kind == forwardapp.DecisionAllow &&
+				decision.Authentication.Type == forwardapp.AuthenticationPublic {
+				t.Fatalf("cookie-less %q is public again: %+v", uri, decision)
+			}
+		})
+	}
 }
 
 // TestRouterPublicRoutesStayPublicInThePolicy pins the pairing between the

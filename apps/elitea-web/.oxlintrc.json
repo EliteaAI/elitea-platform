@@ -42,12 +42,12 @@
     // a tag or `model/` subdirectory) — it is hand-written and stays linted.
     "src/shared/api/generated/*/*",
     "src/shared/api/generated/model/**",
-    // unit S5: scripts/gen-socket-contract.mjs output (spec §5.5). Same
-    // "generated-code conventions apply, contract-tested not line-linted"
-    // rationale as the S4 entries above — these two files are byte-for-byte
-    // reproducible from `node scripts/gen-socket-contract.mjs`
-    // (scripts/lib/socket-contract-render.mjs is the hand-authored,
-    // linted source of truth) and exceed max-lines purely because they
+    // unit S5: the socket contract (spec §5.5). These were generated until
+    // #126 deleted the Go prototype socket.io server the generator read as a
+    // required input; they are hand-maintained source now, and their unit
+    // tests (events.test.ts / messages.test.ts) are the drift guard the
+    // generator's --check used to be. They stay exempt for the one reason
+    // that has not changed: they exceed max-lines purely because they
     // enumerate 43 events / 34 discriminants with evidence comments.
     "src/shared/api/socket/events.ts",
     "src/shared/api/socket/messages.ts"

@@ -9,24 +9,22 @@
  * [fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:209 — each a
  * place a component could unmount (navigate away mid-stream, close a
  * dialog) without ever calling the leave function, leaking the server-side
- * room membership (services/elitea-main/internal/api/socketio/server.go's
- * roomRegistry only clears on an explicit `*_leave_rooms` emit or
- * `disconnect`). These hooks own the whole lifecycle so no caller can
+ * room membership (a socket.io room registry typically clears only on an
+ * explicit `*_leave_rooms` emit or on `disconnect`). These hooks own the whole lifecycle so no caller can
  * forget: leave is issued from the effect's cleanup function, which React
  * guarantees runs on unmount.
  *
- * REFERENCE COUNTING (post-review fix): server.go's handleLeaveRooms
- * (server.go:130-136) IGNORES the payload it receives — it calls
- * `s.rooms.getRooms(clientID)` and leaves EVERY room that socket
- * connection has ever joined, not just the one named in the leave event.
- * Combined with an unconditional leave-on-unmount, two concurrent
- * room-scoped subscribers on the same connection (two chat views on one
- * conversation; a chat room + a canvas room together) would race: the
- * first to unmount evicts BOTH from the server's perspective, silently
- * killing the other's still-mounted subscription. Fixing server.go is out
- * of scope for a UI unit (services/elitea-main, needs a backend decision);
- * client-side ref-counting is the correct mitigation regardless of what
- * the server does with the leave payload — it also just avoids redundant
+ * REFERENCE COUNTING (post-review fix): a leave handler is not required to
+ * honour the payload it receives. The Go prototype server this app was
+ * first measured against (deleted with #126) ignored it outright and left
+ * EVERY room that socket connection had ever joined, not just the one named
+ * in the leave event. Combined with an unconditional leave-on-unmount, two
+ * concurrent room-scoped subscribers on the same connection (two chat views
+ * on one conversation; a chat room + a canvas room together) would race:
+ * the first to unmount evicts BOTH from the server's perspective, silently
+ * killing the other's still-mounted subscription. Client-side ref-counting
+ * is the correct mitigation regardless of what any server does with the
+ * leave payload — it also just avoids redundant
  * leave emits in general. Counts are tracked per SOCKET CLIENT INSTANCE
  * (WeakMap keyed by the client, R-S2-safe: the map itself holds no live
  * state at import time and is populated lazily per instance, so it is not

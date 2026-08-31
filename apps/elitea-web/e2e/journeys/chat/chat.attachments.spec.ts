@@ -335,9 +335,9 @@ test('J13: attach a large file chunked upload with progress', async ({ page }) =
 // RESCOPED (#152). The original acceptance — "socket disconnect → sidebar
 // indicator → reconnect → rooms rejoined" — describes an architecture the
 // product no longer uses for this surface. Chat live-push moved to SSE (#92 /
-// #93); socket.io is retained only for voice and video, neither of which is
-// implemented in the Go stack (internal/api/socketio/server.go still has zero
-// callers). So there are no rooms to rejoin, and asserting the old wording
+// #93); socket.io is retained only for voice and video, neither of which the
+// Go stack implements — the prototype server was deleted with #126 and
+// elitea-main mounts no socket.io path at all. So there are no rooms to rejoin, and asserting the old wording
 // against the new mechanism would be a test that reads as coverage and proves
 // nothing. Rewritten here against SSE reconnect semantics rather than retired,
 // because the underlying user-visible guarantee — "the connection drops, live

@@ -61,10 +61,13 @@ export const DEFAULT_LIMITS = Object.freeze({
 });
 
 const TEST_FILE_RE = /(\.test\.|\.spec\.|\.stories\.)|(^|\/)__tests__\/|(^|\/)__mocks__\/|(^|\/)src\/test\//;
-// [S5] scripts/gen-socket-contract.mjs's two outputs (spec §5.5) — same
-// "generated-code conventions apply" treatment as src/shared/api/generated/
-// above, added because the spec names them events.ts/messages.ts verbatim
-// (not a .gen.ts suffix), so the existing patterns don't reach them.
+// [S5] the socket contract's two catalogue files (spec §5.5). They were
+// generated until #126 deleted the Go socket.io server their generator read;
+// they are hand-maintained now and keep the exemption for the reason that did
+// not change — each is one flat enumeration (43 events / 34 discriminants)
+// with its evidence, not logic a file-length budget says anything useful
+// about. The spec names them events.ts/messages.ts verbatim (not a .gen.ts
+// suffix), so the existing patterns don't reach them.
 const GENERATED_FILE_RE = /(^|\/)src\/shared\/api\/generated\/|\.gen\.tsx?$|\.d\.ts$|(^|\/)src\/shared\/api\/socket\/(events|messages)\.ts$/;
 const SLICE_INDEX_RE = /(^|\/)src\/(features|entities|widgets|processes)\/[^/]+\/index\.tsx?$/;
 const HOOK_WITH_DEPS_RE = /^use[A-Z]|^use(Effect|LayoutEffect|InsertionEffect|Memo|Callback|ImperativeHandle)$/;
