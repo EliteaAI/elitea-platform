@@ -58,6 +58,7 @@
   "/settings/secrets",
   "/settings/tokens",
   "/settings/users",
+  "/shared/chat/:token",
   "/skills",
   "/skills/:tab",
   "/skills/:tab/:skillId",

@@ -186,7 +186,19 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It stores NO request or response content, including no upstream error
 	// text: the failure column is a classification the gateway assigns, so
 	// there is no column a prompt fragment can reach.
-	require.EqualValues(t, 99, Head(shared))
+	// 100: shared/0100_shared_chat_links.sql, the store behind "share a
+	// conversation by link". It is SHARED rather than tenant even though every
+	// other chat object is tenant-scoped, because the anonymous view is handed
+	// a token and nothing else: resolving it against per-project schemas would
+	// mean either scanning every `p_%` schema on each anonymous request, or
+	// encoding the project into the token so a caller could steer which schema
+	// is queried. One central table keyed on the token settles both, and the
+	// project id is a column the reader takes from the resolved row.
+	//
+	// It stores SHA-256 of the token, never the token, so a database dump is
+	// not a set of live links; and expires_at is NOT NULL, so a link with no
+	// end of life is unrepresentable rather than merely un-offered.
+	require.EqualValues(t, 100, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

@@ -25,6 +25,7 @@ import { ConversationItemEditor } from './ConversationItem.editor';
 import { ConversationItemRow } from './ConversationItem.row';
 import type { ConversationWithOwnerMeta } from './ConversationItem.types';
 import { DraggableConversationItem } from './DraggableConversationItem';
+import { ConversationShareDialog } from './ConversationItem.share';
 
 export type { ConversationWithOwnerMeta } from './ConversationItem.types';
 
@@ -201,6 +202,7 @@ export const ConversationItem = memo(function ConversationItem(props: Conversati
   const hasFolderUpdatePermission = useHasPermission(projectId, PERMISSIONS.chat.folders.update);
 
   const [isHovering, setIsHovering] = useState(false);
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(isNew && !isNamingPending);
   const [conversationName, setConversationName] = useState(name);
 
@@ -283,6 +285,7 @@ export const ConversationItem = memo(function ConversationItem(props: Conversati
       onExport,
       onMakePublic: handleMakePublic,
       onShare: () => void handleShareConversation(),
+      onShareByLink: () => setIsShareDialogOpen(true),
       onPlayback: handlePlayback,
       onPin: handlePin,
     }),
@@ -361,16 +364,20 @@ export const ConversationItem = memo(function ConversationItem(props: Conversati
     />
   );
 
-  const content = enableDragAndDrop ? (
-    <DraggableConversationItem
-      conversation={conversation}
-      isActive={isActive}
-      isDragDisabled={isDragDisabled || isEditingCanvas}
-    >
-      {row}
-    </DraggableConversationItem>
-  ) : (
-    row
+  // The share dialog is a SIBLING of the row, never inside it: the row is what
+  // `DraggableConversationItem` wraps, and a dialog mounted inside a drag
+  // source is torn down mid-interaction the moment a drag starts.
+  const content = (
+    <>
+      {enableDragAndDrop ? (
+        <DraggableConversationItem conversation={conversation} isActive={isActive} isDragDisabled={isDragDisabled || isEditingCanvas}>
+          {row}
+        </DraggableConversationItem>
+      ) : (
+        row
+      )}
+      <ConversationShareDialog open={isShareDialogOpen} projectId={projectId} conversationId={conversation.id} conversationName={name} onClose={() => setIsShareDialogOpen(false)} />
+    </>
   );
 
   if (!isEditing) return content;
