@@ -2,7 +2,7 @@
 
 Golden fixtures for porting the legacy `deepwiki_plugin` into
 `services/elitea-deepwiki`, per
-[ADR-0022](../../../../elitea-docs/docs/internal/03-architecture/adrs/adr-0022-deepwiki-provider-service-port.mdx)
+ADR-0022 (`elitea-docs`: `docs/internal/03-architecture/adrs/adr-0022-deepwiki-provider-service-port.mdx`)
 ("DeepWiki Ports as a Standalone Provider Service on PostgreSQL", Approved).
 
 P0 ships **fixtures only**. No engine code moves here (that is P1), and nothing
@@ -89,7 +89,7 @@ rewriting — that is how the legacy plugin is watched while it is still alive.
 
 **1. Descriptor → the legacy-v0 conversion pipeline.**
 `provider_descriptor.json` is the verbatim legacy-v0 input for
-[spec-provider-service](../../../../elitea-docs/docs/internal/03-architecture/cloud-native-migration/spec-provider-service.mdx)'s
+spec-provider-service's (`elitea-docs`: `docs/internal/03-architecture/cloud-native-migration/spec-provider-service.mdx`)
 `legacy descriptor -> v0 validator -> policy overlay ->
 ProviderPublishedManifestV1 -> AdmittedProviderRevisionV1` chain. P1 asserts
 that the ported service's `GET /descriptor` is byte-identical to this file

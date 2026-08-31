@@ -439,6 +439,78 @@ the extension successfully and so could not catch a regression;
 `test_unreadable_vectors_raise_instead_of_publishing_none` forces the
 condition.
 
+## What here is provider-generic
+
+**Read this before porting another provider.** Roughly 29% of the hand-written
+code in this service has nothing to do with DeepWiki: it implements the shared
+provider SPI, and the next provider will want all of it.
+
+Inventory is the specced next port
+(`elitea-docs`:
+`docs/internal/03-architecture/cloud-native-migration/spec-provider-service.mdx`,
+phase PVS-07): 34 unique tools, 36 declarations, the same SPI, the same
+subprocess-and-Jobs execution, the same slot accounting, and a stricter
+durable-state requirement than this service has. Everything in the first table
+below applies to it unchanged.
+
+### Generic — belongs in a shared library
+
+| Module | Lines | What it is |
+| --- | --- | --- |
+| `invocations.py` | 429 | The invocation registry: the `pending`/`running`/`stopped`/`pruned` vocabulary, the `Started`/`InProgress` projection, drain-on-read `custom_events`, cooperative cancel, retention, and the `InvocationStore` seam. Every audited provider has this, and the spec describes it as one shape. |
+| `jobs.py` | 296 | The Kubernetes Job manifest builder. The label, worker module and image are parameters; the structure — no init container, projected-file secrets, no retry — is what ADR-0022 decision 7 requires of any provider. |
+| `app.py` | 236 | The SPI routes themselves. Only the descriptor wiring is provider-specific. |
+| `security/identity.py` | 138 | The HMAC identity scheme. **See the warning below.** |
+| `security/middleware.py` | 142 | mTLS refusal and unconditional identity-header stripping. |
+| `security/egress.py` | 202 | The fail-closed host allowlist. Inventory ingests from sources and needs the same control. |
+| `errors.py` | 131 | The two frozen error shapes and the category classifier. |
+| `toolrunner.py` | 110 | The seam between the SPI and whatever runs the tools. |
+| `config.py` | 157 | Strict-parsed settings; only the variable names are ours. |
+| `slots.py` | 82 | Capacity accounting, including the `canStart` alias. |
+| `storage/migrate.py` | 136 | Versioned, checksummed, service-owned migrations. |
+
+Plus about 1,160 lines of conformance tooling that works on **any** Pylon
+plugin, not just this one: `conformance/tools/_legacy.py` (the stubbed
+`pylon.core.tools` that lets legacy modules be imported and executed offline,
+plus digest pinning), `capture_descriptor.py` and `record_spi.py`. Recording a
+second provider's golden fixtures is a matter of pointing these at it.
+
+### DeepWiki's own
+
+`descriptor.py`, `toolkits.py` (the alias lists), `legacy_runner.py` (dispatch
+and result composition), `repo_config.py`, `publishing.py`, the copied
+`tool_operations.py`, and all of `storage/` except `migrate.py` — the retrieval
+layer is specific to what this engine indexes.
+
+### The identity scheme is now written three times
+
+`security/identity.py` is the **third** implementation of one contract:
+
+    services/elitea-main/internal/llmproxy/identity.go         signs
+    services/elitea-llm-gateway/internal/llmproxy/identity.go  verifies
+    this file                                                  verifies
+
+The Go comment on the canonical string says why that matters: it is duplicated
+across independently deployed modules, so changing it in place fails every
+request in both directions for the length of a rolling deploy. A fourth copy
+for the next provider is not a DRY nicety — it is a rotation hazard. This one
+belongs in a shared library on its own merits, whenever someone next touches
+it.
+
+### Why it was not extracted here
+
+Extracting from a single instance is speculative: the boundaries are guesses
+until a second consumer shows where they actually fall. The recommendation is
+to make the extraction **the first step of the next provider port**, when
+there are two real consumers and the split is evidence rather than
+prediction — and when the code being moved has already been reviewed, which
+this has not.
+
+There is an intended home for it. spec-provider-service names a *Python
+reference adapter* as phase PVS-04, a numbered deliverable in its own right.
+This service was built into `services/elitea-deepwiki/` because that adapter
+does not exist yet; when it does, the first table is its contents.
+
 ## Deliberate differences from the legacy service
 
 Everything else is ported verbatim; these are the exceptions, each one
