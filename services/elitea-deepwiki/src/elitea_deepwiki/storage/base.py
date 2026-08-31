@@ -69,6 +69,12 @@ class Node:
     chunk_type: str | None = None
     macro_cluster: int | None = None
     micro_cluster: int | None = None
+    #: Derived by the legacy writer from ``symbol_type`` and ``rel_path``.
+    #: Carried rather than recomputed, so the publisher can pass through what
+    #: the generation already decided instead of re-deriving it differently.
+    is_architectural: bool = False
+    is_doc: bool = False
+    is_test: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +93,9 @@ class Node:
             "chunk_type": self.chunk_type,
             "macro_cluster": self.macro_cluster,
             "micro_cluster": self.micro_cluster,
+            "is_architectural": self.is_architectural,
+            "is_doc": self.is_doc,
+            "is_test": self.is_test,
         }
 
 

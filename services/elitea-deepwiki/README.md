@@ -32,6 +32,9 @@ services/elitea-deepwiki/
 │       ├── base.py      the RetrievalBackend interface + the frozen RRF
 │       ├── postgres.py  pgvector + tsvector + BM25 term statistics
 │       ├── sqlite.py    the legacy file backend, as the reference
+│       ├── unified_db_adapter.py  the engine's read path, over PostgreSQL
+│       ├── publish.py   move a generated index from scratch into PostgreSQL
+│       ├── install.py   the runtime substitution (readonly reads only)
 │       └── migrate.py   versioned, checksummed migrations
 ├── migrations/          service-owned SQL, applied against the deepwiki DB
 ├── tools/               refresh_engine_copy.py — re-copy and re-digest
@@ -198,9 +201,15 @@ worker itself — which is exactly why this run exists.
 3. **Credentials and artifacts.** The facade has to pass artifact base URL and
    token explicitly (decision 6); nothing here derives them any more, so
    nothing here can currently fetch or store a platform artifact.
-4. **Storage.** The engine still writes its own SQLite/FAISS files. The
-   PostgreSQL backend exists and is parity-gated but is not yet the engine's
-   storage layer — that wiring is the next slice.
+4. **Generation still writes files.** By design — it is bounded by slot
+   accounting and runs on the pod that owns the work — but the `.bm25.sqlite`,
+   docstore and FAISS artefacts it also produces are not published; only the
+   `.wiki.db` is. The BM25 statistics are rebuilt from the node text on
+   publish, which is faithful for a docstore built from the same nodes and is
+   the assumption to revisit if that stops being true.
+5. **Nothing calls `publish_wiki_db` automatically yet.** The generation path
+   has to invoke it (and `register_wiki_path`) when a wiki completes; until
+   then a published wiki is one somebody published.
 
 ## The storage layer
 
@@ -250,6 +259,56 @@ No HNSW index exists yet, deliberately: it is approximate, and adding it in the
 same change would make the fixtures unable to tell a port bug from index
 recall. Exact scan first, parity proven, then HNSW with its own recall
 measurement.
+
+### The engine reads from it
+
+Set `ELITEA_DEEPWIKI_DATABASE_URL` and the engine's **read path** is served
+from PostgreSQL, which is what makes a query replica stateless — ADR-0022's own
+verification for this layer is "an `ask` served by a replica that did not build
+the index returns the fixture answer", and
+`test_a_replica_that_never_built_the_index_can_retrieve` is that test: a
+generation builds an index on its own scratch, publishes it, the scratch is
+deleted, and a second reader answers from the database alone.
+
+The engine is a verbatim copy, so this is a **runtime substitution**, not an
+edit. It is narrow enough to state in one line: `UnifiedWikiDB(path,
+readonly=True)` returns a PostgreSQL-backed reader; every other construction
+keeps the file class. `readonly` is not a proxy for intent — the engine already
+records it at all eleven construction sites, and it splits them exactly:
+
+| `readonly=True` (7 sites) | no flag (3 sites) |
+| --- | --- |
+| both toolkit wrappers, both ask workers, the deep-research worker, the cluster reader, research tools | the filesystem indexer, the clustering pass, cluster expansion |
+
+Query on the left, index build on the right. So generation stays on ephemeral
+scratch and querying does not, which is the split decision 3 asks for.
+
+`UnifiedRetriever` asks its `db` for six things — `search_hybrid`, `get_node`,
+`get_edges_from`, `get_edges_to`, `vec_available`, `close` — and
+`PostgresUnifiedDB` serves all of them. A test derives that list from the
+engine's own AST rather than keeping it by hand, so a future re-sync that
+starts using a seventh method fails in CI rather than in a worker thread. The
+write methods are present but **refuse**: a write reaching the read backend is
+a wiring bug, and silently accepting it would be a generation that appeared to
+succeed and stored nothing.
+
+`publish.py` is the step between the two. It reads a generated `.wiki.db` and
+writes its nodes, edges, embeddings and BM25 statistics into PostgreSQL. It is
+a separate, callable step rather than something bolted into the engine, so a
+publish that fails looks like a publish failure instead of a generation that
+appears to have worked and then cannot be queried.
+
+**A bug worth recording, because it was silent.** `repo_vec` is a sqlite-vec
+*virtual* table: without the extension loaded, every read of it raises. The
+first version of the publisher caught that, logged a warning and published
+**zero vectors** — which at query time is indistinguishable from a wiki that
+never had embeddings. Dense retrieval just returns nothing and fused ranking
+quietly becomes FTS-only. The publisher now loads the extension, and
+distinguishes "no `repo_vec` table" (legitimate; reported as `embeddings: 0`)
+from "`repo_vec` exists and cannot be read" (refused). Every other test loaded
+the extension successfully and so could not catch a regression;
+`test_unreadable_vectors_raise_instead_of_publishing_none` forces the
+condition.
 
 ## Deliberate differences from the legacy service
 
@@ -320,8 +379,10 @@ podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
       legacy filesystem `PYTHONPATH`; drop the licence-credential init
       container; secrets to Jobs via projected files, not environment
       variables.
-- [ ] **Point the engine at the PostgreSQL backend** — it still writes its own
-      per-wiki files; the parity-gated backend is not yet its storage layer.
+- [x] **Point the engine at the PostgreSQL backend** — the read path is served
+      from PostgreSQL and a replica that never built an index can answer.
+- [ ] **Call the publisher from the generation path**, so a completed wiki is
+      queryable from any replica without a manual step.
 - [x] **The storage port** — done for retrieval: the backend interface,
       the PostgreSQL implementation and migration 0001, parity-gated against
       `conformance/fixtures/retrieval/`.

@@ -154,6 +154,9 @@ class PostgresBackend:
                 node.chunk_type,
                 node.macro_cluster,
                 node.micro_cluster,
+                node.is_architectural,
+                node.is_doc,
+                node.is_test,
             )
             for node in nodes
         ]
@@ -164,9 +167,11 @@ class PostgresBackend:
                     wiki_id, node_id, rel_path, file_name, language,
                     start_line, end_line, symbol_name, symbol_type,
                     parent_symbol, source_text, docstring, signature,
-                    chunk_type, macro_cluster, micro_cluster
+                    chunk_type, macro_cluster, micro_cluster,
+                    is_architectural, is_doc, is_test
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s
                 )
                 ON CONFLICT (wiki_id, node_id) DO UPDATE SET
                     rel_path      = EXCLUDED.rel_path,
@@ -182,7 +187,10 @@ class PostgresBackend:
                     signature     = EXCLUDED.signature,
                     chunk_type    = EXCLUDED.chunk_type,
                     macro_cluster = EXCLUDED.macro_cluster,
-                    micro_cluster = EXCLUDED.micro_cluster
+                    micro_cluster = EXCLUDED.micro_cluster,
+                    is_architectural = EXCLUDED.is_architectural,
+                    is_doc = EXCLUDED.is_doc,
+                    is_test = EXCLUDED.is_test
                 """,
                 rows,
             )

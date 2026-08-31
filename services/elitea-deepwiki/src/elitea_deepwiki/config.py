@@ -107,6 +107,14 @@ class Settings:
     #: an image built without it must not silently look like it has an engine.
     runner: str = "unavailable"
 
+    #: DSN for the dedicated ``deepwiki`` database (ADR-0022 decision 3).
+    #: When set, the engine's READ path is served from PostgreSQL and query
+    #: replicas are stateless. When unset, retrieval falls back to the
+    #: per-wiki scratch files, which only the pod that built them can serve —
+    #: correct for a single-pod dev stack, and the thing decision 3 exists to
+    #: remove in production.
+    database_url: str | None = None
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -120,4 +128,5 @@ class Settings:
                 "INVOCATION_RETENTION_SECONDS", 3600, minimum=1
             ),
             runner=_choice("RUNNER", "unavailable", ("unavailable", "legacy")),
+            database_url=_raw("DATABASE_URL") or None,
         )

@@ -331,6 +331,27 @@ class ToolHost:
         future.result()
 
 
+def _install_postgres_read_path(settings) -> None:
+    """Point the engine's read path at PostgreSQL, once, if configured.
+
+    Done here rather than at import time because it needs settings, and at
+    first tool use rather than at startup because a service with no database
+    configured must still boot and serve the SPI.
+    """
+    if not getattr(settings, "database_url", None):
+        return
+
+    from .storage import install as storage_install  # noqa: PLC0415
+
+    if storage_install.is_installed():
+        return
+
+    import psycopg  # noqa: PLC0415
+
+    dsn = settings.database_url
+    storage_install.install(lambda: psycopg.connect(dsn))
+
+
 _BOUND_HOST_CACHE: dict[type, type] = {}
 
 
@@ -396,6 +417,8 @@ class LegacyToolRunner:
         # ``self._run_wiki_job``, ``ask`` calls ``self._run_ask_subprocess``,
         # and binding a single function leaves those unresolvable. Found by
         # running it.
+        _install_postgres_read_path(settings)
+
         host = _bound_host_class(Method)(settings, context)
         return getattr(host, name)
 

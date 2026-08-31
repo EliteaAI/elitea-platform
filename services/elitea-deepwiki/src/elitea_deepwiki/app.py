@@ -128,6 +128,11 @@ def create_app(
                     # lands, this says so rather than being silent about it.
                     "durable_invocations": manager.store.durable,
                     "runner": getattr(runner, "name", type(runner).__name__),
+                    # Whether this replica can answer about a wiki it did not
+                    # build. False means retrieval reads per-wiki scratch
+                    # files, so the replica is NOT stateless — the condition
+                    # ADR-0022 decision 3 exists to remove.
+                    "stateless_reads": bool(settings.database_url),
                 },
             }
         )
