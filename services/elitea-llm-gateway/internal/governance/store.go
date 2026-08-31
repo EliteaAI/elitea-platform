@@ -311,6 +311,11 @@ type usageDimsPayload struct {
 	PromptTokens     int64  `json:"prompt_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
 	OccurredAtUnix   int64  `json:"occurred_at"`
+	// ExecutionID is omitempty because it is absent for most requests, and an
+	// older consumer that does not know the key ignores it — so this field can
+	// ship before the scheduler that reads it without changing what any
+	// existing delta means.
+	ExecutionID string `json:"execution_id,omitempty"`
 }
 
 // usageDimsFor converts the internal dimensions to the wire form, preserving
@@ -326,6 +331,7 @@ func usageDimsFor(dims *failmode.UsageDimensions) *usageDimsPayload {
 		PromptTokens:     dims.PromptTokens,
 		CompletionTokens: dims.CompletionTokens,
 		OccurredAtUnix:   dims.OccurredAtUnix,
+		ExecutionID:      dims.ExecutionID,
 	}
 }
 

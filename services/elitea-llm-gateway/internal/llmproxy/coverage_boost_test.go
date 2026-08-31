@@ -34,7 +34,7 @@ import (
 func TestSignIdentityHeaders_WithSecret(t *testing.T) {
 	secret := []byte("test-secret")
 	h := http.Header{}
-	SignIdentityHeaders(h, secret, "proj-42", "user-7", "tenant-1")
+	SignIdentityHeaders(h, secret, "proj-42", "user-7", "tenant-1", "")
 
 	if got := h.Get(headerProjectID); got != "proj-42" {
 		t.Errorf("X-Elitea-Project-Id = %q, want proj-42", got)
@@ -57,7 +57,7 @@ func TestSignIdentityHeaders_WithSecret(t *testing.T) {
 // signature header (and verifySignature still returns true for empty secrets).
 func TestSignIdentityHeaders_NoSecret(t *testing.T) {
 	h := http.Header{}
-	SignIdentityHeaders(h, nil, "proj-1", "user-1", "tenant-1")
+	SignIdentityHeaders(h, nil, "proj-1", "user-1", "tenant-1", "")
 
 	if got := h.Get(headerSignature); got != "" {
 		t.Errorf("signature header must be absent when secret is empty; got %q", got)
@@ -71,7 +71,7 @@ func TestSignIdentityHeaders_NoSecret(t *testing.T) {
 // values do not produce empty header values (the header is simply not set).
 func TestSignIdentityHeaders_EmptyFieldsOmitHeaders(t *testing.T) {
 	h := http.Header{}
-	SignIdentityHeaders(h, nil, "", "", "")
+	SignIdentityHeaders(h, nil, "", "", "", "")
 
 	if got := h.Get(headerProjectID); got != "" {
 		t.Errorf("empty projectID should not set header; got %q", got)
@@ -88,7 +88,7 @@ func TestSignIdentityHeaders_EmptyFieldsOmitHeaders(t *testing.T) {
 // one secret are rejected when verified with a different secret.
 func TestSignIdentityHeaders_WrongSecretRejected(t *testing.T) {
 	h := http.Header{}
-	SignIdentityHeaders(h, []byte("real"), "p", "u", "t")
+	SignIdentityHeaders(h, []byte("real"), "p", "u", "t", "")
 	if verifySignature(h, []byte("fake")) {
 		t.Error("headers signed with 'real' must not verify under 'fake'")
 	}

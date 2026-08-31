@@ -45,8 +45,8 @@ func (s stubRepo) GetUsageSummary(_ context.Context, _ domain.QueryParams) (doma
 	return s.summary, s.err
 }
 
-func (s stubRepo) GetAgentAnalytics(_ context.Context, _ domain.QueryParams) ([]domain.AgentAnalytics, error) {
-	return nil, s.err
+func (s stubRepo) GetAgentAnalytics(_ context.Context, _ domain.QueryParams) (domain.AgentBreakdown, error) {
+	return domain.AgentBreakdown{}, s.err
 }
 
 func (s stubRepo) GetToolAnalytics(_ context.Context, _ domain.QueryParams) ([]domain.ToolAnalytics, error) {
@@ -401,9 +401,9 @@ func (r recordingRepo) GetUsageSummary(_ context.Context, params domain.QueryPar
 	return domain.UsageSummary{}, nil
 }
 
-func (r recordingRepo) GetAgentAnalytics(_ context.Context, params domain.QueryParams) ([]domain.AgentAnalytics, error) {
+func (r recordingRepo) GetAgentAnalytics(_ context.Context, params domain.QueryParams) (domain.AgentBreakdown, error) {
 	*r.seen = append(*r.seen, params)
-	return nil, nil
+	return domain.AgentBreakdown{}, nil
 }
 
 func (r recordingRepo) GetToolAnalytics(_ context.Context, params domain.QueryParams) ([]domain.ToolAnalytics, error) {

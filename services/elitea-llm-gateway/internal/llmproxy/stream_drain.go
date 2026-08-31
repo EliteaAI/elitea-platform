@@ -342,7 +342,14 @@ type streamSettler struct {
 	// userID is captured with projectID rather than read from the context at
 	// settle time: the detached drain outlives the request, and the member the
 	// call is billed to must be the one who made it (issue #321).
-	userID           string
+	userID string
+	// executionID is captured for the same reason userID is, and it is the
+	// reason the settle below rebuilds a context instead of using
+	// context.Background() directly: the drain settles from a DETACHED context,
+	// so an execution id read at settle time would always be empty and every
+	// streamed agent turn would be missing from the ledger's agent breakdown —
+	// silently, as an absence rather than an error.
+	executionID      string
 	ctx              *schemas.BifrostContext
 	sc               *streamCancel
 	ch               chan *schemas.BifrostStreamChunk
@@ -372,9 +379,10 @@ func (h *Handler) newChatSettler(
 ) *streamSettler {
 	return &streamSettler{
 		h: h, loop: loop, provider: provider, model: model,
-		projectID: identityProjectFromCtx(ctx),
-		userID:    identityUserFromCtx(ctx),
-		ctx:       ctx, sc: sc, ch: ch,
+		projectID:   identityProjectFromCtx(ctx),
+		userID:      identityUserFromCtx(ctx),
+		executionID: identityExecutionFromCtx(ctx),
+		ctx:         ctx, sc: sc, ch: ch,
 		usageFrom: chatUsageFromChunk, deltaFrom: chatDeltaBytes,
 	}
 }
@@ -390,9 +398,10 @@ func (h *Handler) newResponsesSettler(
 ) *streamSettler {
 	return &streamSettler{
 		h: h, loop: loop, provider: provider, model: model,
-		projectID: identityProjectFromCtx(ctx),
-		userID:    identityUserFromCtx(ctx),
-		ctx:       ctx, sc: sc, ch: ch,
+		projectID:   identityProjectFromCtx(ctx),
+		userID:      identityUserFromCtx(ctx),
+		executionID: identityExecutionFromCtx(ctx),
+		ctx:         ctx, sc: sc, ch: ch,
 		usageFrom: responsesUsageFromChunk, deltaFrom: responsesDeltaBytes,
 	}
 }
@@ -673,7 +682,7 @@ func (s *streamSettler) report(reason, outcome string) {
 		// happens the spend is gone, and it must NOT disappear as a lone WARN:
 		// it is exactly the loss this event exists to make alarmable
 		// (gateway-review blocker 1, reproduced on the deploy path).
-		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID, s.userID) {
+		switch s.h.updateUsage(s.billingContext(), s.provider, s.model, s.in, s.out, s.projectID, s.userID) {
 		case billBilled:
 			if partial {
 				// Billed, and STILL reported. A partial count is a floor on
@@ -917,4 +926,18 @@ func (h *Handler) publishStreamLossEvent(p unbilledStreamPayload) {
 	if err := pub.PublishOpsEvent(pubCtx, env); err != nil {
 		h.logger.Warn("unbilled-stream event: publish failed", "project_id", scopeID, "err", err)
 	}
+}
+
+// billingContext is the detached context the settle path bills under.
+//
+// context.Background() with the captured execution id put back on it. The drain
+// deliberately outlives the request — that is what makes a client disconnect
+// still settle the money — so it cannot carry the request's own context. The
+// execution id has to be re-attached rather than re-read, because there is
+// nothing left to read it from.
+func (s *streamSettler) billingContext() context.Context {
+	if s.executionID == "" {
+		return context.Background()
+	}
+	return context.WithValue(context.Background(), contextKeyExecutionID, s.executionID)
 }

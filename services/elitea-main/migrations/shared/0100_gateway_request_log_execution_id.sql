@@ -1,0 +1,75 @@
+-- 0100_gateway_request_log_execution_id.sql
+--
+-- The AGENT dimension for gateway.llm_request_logs.
+--
+-- ## Which history this belongs to, and why
+--
+-- SHARED. `gateway` is a single schema in the shared database — 0084 and 0099
+-- both create their tables there — and this file only adds a column to one of
+-- them. It could not be a tenant migration: the tenant history runs once per
+-- project schema, and running an ALTER against one global table N times is at
+-- best N-1 no-ops and at worst a lock held per project.
+--
+-- It also claims nothing another component owns. gateway.llm_request_logs is
+-- created by 0099 in this same history, so this is not the case that has broken
+-- seeds before (a migration taking ownership of a pylon-owned table, which
+-- fails with 42P07 against a dump-loaded database).
+--
+-- ## What the column is
+--
+-- The runtime EXECUTION this request was made from — the value
+-- elitea_runtime.execution_jobs is keyed by — carried to the gateway as the
+-- signed X-Elitea-Execution-Id header (v2 identity signature) and written by
+-- the gateway's own request-log writer.
+--
+-- IT IS AN EXECUTION ID AND NOT AN AGENT ID, DELIBERATELY.
+--
+-- elitea_runtime.execution_jobs carries TWO project columns —
+-- resource_project_id and projection_project_id — and they can differ. That
+-- disagreement is precisely what 0099 was built to sidestep: this table has one
+-- project column and therefore one answer to "analytics for project N".
+-- Denormalising an agent id onto a row here would have to pick one of those two
+-- project meanings at write time and bake it in, importing the ambiguity into
+-- the one table that did not have it. The agent is resolved at READ time
+-- instead, inside the project the log row already names.
+--
+-- ## Nullable, and NOT backfilled
+--
+-- NULL means "this request was not made from a runtime execution" — which is
+-- most requests: the SDK, an operator's connection check, a direct /llm caller.
+-- It ALSO means "this row predates this migration", and those two are not
+-- distinguishable, which is the honest state of affairs.
+--
+-- THERE IS NO BACKFILL AND THERE CANNOT BE ONE. Nothing on an existing row
+-- identifies an agent: the log stores the model a request addressed, never what
+-- composed it, and no other table records the correlation for a request already
+-- served. That absence IS the gap this migration closes going forward; writing
+-- a value into old rows would be inventing one.
+--
+-- So the read side reports AVAILABILITY rather than zeros — the precedent
+-- usageDimensions.Available already set for a deployment upgraded mid-period
+-- (internal/api/v2/budgets/usage_dimensions.go). A period with no attributable
+-- rows answers "the agent dimension is not available for this window" and omits
+-- the breakdown; it never answers "0 agent runs", which is a count nobody
+-- measured presented as a measurement.
+--
+-- IDEMPOTENCE, as in 0084 and 0099: every statement is guarded, because dev and
+-- dump-loaded databases reach this file in several different states.
+--
+-- No BEGIN/COMMIT: the ledgered runner wraps each file in one transaction with
+-- its ledger row (migrate/runner.go apply).
+
+ALTER TABLE gateway.llm_request_logs
+    ADD COLUMN IF NOT EXISTS execution_id VARCHAR(128);
+
+-- The agent breakdown's question is "every attributable request for THIS
+-- project in this window", so the index leads with project_id and ranges over
+-- occurred_at, exactly like 0099's idx_llm_request_logs_project_time.
+--
+-- PARTIAL on execution_id IS NOT NULL. Attributable rows are the minority — the
+-- majority of /llm traffic is not made from a runtime execution — so indexing
+-- the NULLs would mean carrying an index entry for every row the agent
+-- breakdown can never return.
+CREATE INDEX IF NOT EXISTS idx_llm_request_logs_execution_project_time
+    ON gateway.llm_request_logs (project_id, occurred_at DESC)
+    WHERE execution_id IS NOT NULL;

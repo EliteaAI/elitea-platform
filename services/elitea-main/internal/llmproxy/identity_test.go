@@ -127,8 +127,8 @@ func TestCanonical_NoFieldAmbiguity(t *testing.T) {
 	// project "1" + user "2" must not collide with project "12" + empty user.
 	a := identity{projectID: "1", userID: "2"}
 	b := identity{projectID: "12", userID: ""}
-	if a.canonical() == b.canonical() {
-		t.Errorf("canonical strings collide: %q == %q", a.canonical(), b.canonical())
+	if a.canonical(signatureVersionV1) == b.canonical(signatureVersionV1) {
+		t.Errorf("canonical strings collide: %q == %q", a.canonical(signatureVersionV1), b.canonical(signatureVersionV1))
 	}
 }
 

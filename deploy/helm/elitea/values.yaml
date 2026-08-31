@@ -379,6 +379,10 @@ main:
       - X-Elitea-Project-Id
       - X-Elitea-User-Id
       - X-Elitea-Tenant-Id
+      # The runtime execution a /llm call was made from (shared migration 0100).
+      # Legitimate from the runtime worker, which does not pass this edge; never
+      # from a browser.
+      - X-Elitea-Execution-Id
     # Only consulted when gatewayApi: true — the pre-existing Gateway this
     # HTTPRoute attaches to (not created by this chart).
     gateway:
