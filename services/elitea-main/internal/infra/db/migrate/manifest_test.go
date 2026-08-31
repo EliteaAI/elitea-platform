@@ -278,7 +278,22 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// the projects that carry their own permission rows, because the central
 	// set is discarded wholesale for those callers — see shared/0090's header
 	// and migrations/project_override_reconciliation_test.go.
-	require.EqualValues(t, 105, Head(shared))
+	//
+	// 106: shared/0106_deepwiki_permissions.sql, the two default-mode grants
+	// behind the DeepWiki facade (ADR-0022 phase P2). It is the SECOND file
+	// here — after 0104 — whose strings are chosen rather than recovered, and
+	// for a sharper reason than 0104's: the legacy `deepwiki_plugin` declares
+	// no permissions at all. It has no `api/` package and no `check_api` call;
+	// its five routes were reached by the pylon provider hub over mTLS and
+	// authorised by the HOP. There is nothing in the pylon catalogue to
+	// transcribe, so the pylon-provenance assertion would be false here for the
+	// same reason it is false for 0104. The grant gate still binds.
+	//
+	// The split is read/generate, not read/write: a viewer may see capacity and
+	// follow a running generation, and may not start one or cancel someone
+	// else's. Like 0102, 0104 and 0105 it grants centrally AND delivers to the
+	// projects carrying their own permission rows.
+	require.EqualValues(t, 106, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

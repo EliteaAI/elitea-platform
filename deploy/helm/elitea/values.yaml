@@ -856,6 +856,30 @@ main:
     # collector deployed at all.
     OTEL_SDK_DISABLED: ""
 
+    # --- DeepWiki facade (ADR-0022 P2) -------------------------------------
+    #
+    # Off by default: a deployment that does not run the elitea-deepwiki
+    # provider must not register the four /api/v2/deepwiki routes at all.
+    # Turning this on WITHOUT the three mTLS files below is a startup failure,
+    # not a degraded mount — the provider terminates mTLS with CERT_REQUIRED
+    # and would refuse every request, so a facade that came up anyway would be
+    # four routes answering 503 while the flag says the feature is on.
+    ELITEA_DEEPWIKI_ENABLED: ""
+    # The provider's origin. Must be https: it serves nothing over plain HTTP.
+    ELITEA_DEEPWIKI_BASE_URL: ""
+    # Client certificate material for the hop, mounted from a Secret by the
+    # operator (see mTLS mounts for the gateway hop, which these mirror).
+    # These are PATHS, not key material, so they belong in env and not in
+    # `secrets:` below.
+    ELITEA_DEEPWIKI_CLIENT_CERT_FILE: ""
+    ELITEA_DEEPWIKI_CLIENT_KEY_FILE: ""
+    ELITEA_DEEPWIKI_CA_FILE: ""
+    # Overrides the SNI/verification name when the Service DNS name differs
+    # from the certificate's subject. Empty means "use the base URL's host",
+    # which is right whenever the certificate was issued for that name.
+    ELITEA_DEEPWIKI_SERVER_NAME: ""
+    ELITEA_DEEPWIKI_TIMEOUT_SECONDS: ""
+
   # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
   # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
   # above — mirrors this file's `llmGateway:` block `secrets:`
@@ -887,6 +911,16 @@ main:
   #     --from-literal=s3-access-key=... --from-literal=s3-secret-key=... \
   #     --from-literal=azure-storage-key=...
   secrets:
+    # The DeepWiki identity secret. It signs the X-Elitea-* headers the
+    # provider verifies and must hold the SAME value on both sides, exactly as
+    # GATEWAY_IDENTITY_SECRET does for the /llm hop. `optional: true` because
+    # a deployment with ELITEA_DEEPWIKI_ENABLED off has no provider to sign
+    # for; when the facade IS on, an absent secret means unsigned identity
+    # headers, and the provider then has only the mTLS hop to go on.
+    ELITEA_DEEPWIKI_IDENTITY_SECRET:
+      secretName: elitea-deepwiki-secrets
+      key: identity-secret
+      optional: true
     S3_ACCESS_KEY:
       secretName: elitea-main-storage-secrets
       key: s3-access-key
