@@ -186,7 +186,13 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It stores NO request or response content, including no upstream error
 	// text: the failure column is a classification the gateway assigns, so
 	// there is no column a prompt fragment can reach.
-	require.EqualValues(t, 99, Head(shared))
+	// 100: shared/0100_skill_icon_permissions.sql, the four default-mode grants
+	// the skill icon route family is gated on. It is a separate file rather
+	// than four more rows in 0068 because a migration is checksum-immutable
+	// once it has run, and it is not optional: 0063's header records that
+	// gating a route on a permission nothing grants is 403-for-everyone, which
+	// reads as a broken page rather than as a missing grant.
+	require.EqualValues(t, 100, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

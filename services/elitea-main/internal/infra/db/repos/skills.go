@@ -29,7 +29,7 @@ func NewSkillsRepo(pool *pgxpool.Pool) *SkillsRepo {
 // still returns a row, just with a NULL version id and empty tags.
 const skillsSelectColumns = `
 	sk.id, sk.name, COALESCE(sk.description, ''), sk.owner_id, sk.created_at,
-	sv.id, COALESCE(sv.instructions, ''),
+	sv.id, COALESCE(sv.instructions, ''), sv.meta,
 	COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}')`
 
 func skillsFromJoin(s string) string {
@@ -44,8 +44,9 @@ func scanSkillRow(row pgx.Row, projectID string) (skills.Skill, error) {
 	var ownerID int
 	var versionID *int
 	var instructions string
+	var meta map[string]any
 	var tags []string
-	if err := row.Scan(&sk.ID, &sk.Name, &sk.Description, &ownerID, &sk.CreatedAt, &versionID, &instructions, &tags); err != nil {
+	if err := row.Scan(&sk.ID, &sk.Name, &sk.Description, &ownerID, &sk.CreatedAt, &versionID, &instructions, &meta, &tags); err != nil {
 		return skills.Skill{}, err
 	}
 	sk.ProjectID = projectID
@@ -53,7 +54,13 @@ func scanSkillRow(row pgx.Row, projectID string) (skills.Skill, error) {
 	sk.Instructions = instructions
 	sk.Tags = tags
 	if versionID != nil {
-		v := skills.SkillVersion{ID: strconv.Itoa(*versionID), Name: "base", Instructions: instructions, Tags: tags}
+		// meta carries icon_meta. An empty map is omitted rather than sent as
+		// `{}`, so a skill with no icon reads the same as it did before the
+		// column was projected.
+		if len(meta) == 0 {
+			meta = nil
+		}
+		v := skills.SkillVersion{ID: strconv.Itoa(*versionID), Name: "base", Instructions: instructions, Tags: tags, Meta: meta}
 		sk.Versions = []skills.SkillVersion{v}
 		sk.VersionDetails = &v
 	}

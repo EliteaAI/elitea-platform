@@ -1,22 +1,26 @@
 /**
- * ProjectIconItem — clickable wrapper for a project icon.
- * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectIconItem.jsx`.
+ * IconTile — clickable wrapper for one icon in an icon picker's grid.
+ *
+ * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectIconItem.jsx`
+ * and lifted out of `features/settings` when the SKILL icon picker needed the
+ * same grid: a feature may not import another feature (R-L1), and the tile has
+ * never held anything project-specific, so `shared/ui` is where it belongs.
  */
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { ReactNode } from 'react';
 
-export interface ProjectIconItemProps {
+export interface IconTileProps {
   isSelected: boolean;
   onClick?: () => void;
   children: ReactNode;
 }
 
-export function ProjectIconItem({
+export function IconTile({
   isSelected,
   onClick,
   children,
-}: ProjectIconItemProps) {
+}: IconTileProps) {
   return (
     <Box
       onClick={onClick}

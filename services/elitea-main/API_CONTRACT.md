@@ -44,7 +44,15 @@ This document defines the exact response shapes expected by the EliteaUI SPA for
 |----------|-----------|-------------------|--------|
 | `GET /upload_icon/prompt_lib/{pid}` | `coreHandler.ListUploadedIcons` | `{"rows": [...], "total": N}` | ✅ FIXED |
 | `GET /default_icons/prompt_lib/{pid}` | `coreHandler.DefaultIcons` | **Plain array** `[...]` | ✅ FIXED |
-| `GET /upload_skill_icon/prompt_lib/{pid}` | (not yet implemented) | `{"rows": [...], "total": N}` | ❌ MISSING |
+| `GET /upload_skill_icon/prompt_lib/{pid}` | `coreHandler.ListSkillIcons` | `{"rows": [...], "total": N}` | ✅ FIXED |
+| `POST /upload_skill_icon/prompt_lib/{pid}[/{vid}]` | `coreHandler.UploadSkillIcon` | icon_meta object `{name, url, size, ...}` | ✅ FIXED |
+| `PUT /upload_skill_icon/prompt_lib/{pid}/{vid}` | `coreHandler.UpdateSkillIcon` | `{"updated": true}` | ✅ FIXED |
+| `DELETE /upload_skill_icon/prompt_lib/{pid}/{name}` | `coreHandler.DeleteSkillIcon` | `{"ok": true}` | ✅ FIXED |
+
+Skill icons share the agent icons' `icons` bucket and their public
+`/icons/{pid}/{filename}` download route; a `skill_` filename prefix separates
+the two galleries. See `internal/api/v2/eliteacore/skill_icon.go` for why the
+prefix lives in the filename rather than in a key directory.
 
 ### Skills (`/elitea_core/skills/...`)
 

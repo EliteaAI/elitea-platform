@@ -2370,6 +2370,28 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(projectPermission("models.applications.upload_icon.delete")).
 					Delete("/upload_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteIcon)
 
+				// Skill icons. upload_skill_icon.py declares the same four verbs
+				// as upload_icon.py under its own permission family
+				// (`models.applications.skills.upload_icon.*`), and the legacy
+				// matrix withholds all four from a viewer — the GET included,
+				// exactly as it does for the agent listing. 0100 grants them.
+				//
+				// The POST is registered twice for the same reason the agent one
+				// is: pylon's url_params carry an OPTIONAL trailing version id,
+				// and with it the upload binds the icon to that skill version in
+				// one call.
+				requireSkillIconUpload := projectPermission("models.applications.skills.upload_icon.post")
+				r.With(projectPermission("models.applications.skills.upload_icon.get")).
+					Get("/upload_skill_icon/prompt_lib/{projectID}", coreHandler.ListSkillIcons)
+				r.With(requireSkillIconUpload).
+					Post("/upload_skill_icon/prompt_lib/{projectID}", coreHandler.UploadSkillIcon)
+				r.With(requireSkillIconUpload).
+					Post("/upload_skill_icon/prompt_lib/{projectID}/{versionId}", coreHandler.UploadSkillIcon)
+				r.With(projectPermission("models.applications.skills.upload_icon.update")).
+					Put("/upload_skill_icon/prompt_lib/{projectID}/{versionId}", coreHandler.UpdateSkillIcon)
+				r.With(projectPermission("models.applications.skills.upload_icon.delete")).
+					Delete("/upload_skill_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteSkillIcon)
+
 				// Export/Import. export_import.py declares `get` — the EXPORT —
 				// and nothing else; the POST beside it is an import, and
 				// import_wizard.py declares exactly that string for exactly that

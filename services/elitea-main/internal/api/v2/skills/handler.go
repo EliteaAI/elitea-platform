@@ -25,6 +25,17 @@ type SkillVersion struct {
 	Name         string   `json:"name"`
 	Instructions string   `json:"instructions"`
 	Tags         []string `json:"tags"`
+	// Meta is skill_versions.meta. It carries `icon_meta`, the {name,url}
+	// pair the skill icon routes write
+	// (internal/api/v2/eliteacore/skill_icon.go).
+	//
+	// WITHOUT THIS FIELD the icon is written and never read. The web client
+	// renders `version_details.meta.icon_meta` — it is the shape the old
+	// app's own optimistic update patches — so a read path that drops `meta`
+	// turns a working write into an invisible one: the PUT answers
+	// `{"updated": true}`, the row holds the icon, and the form still shows
+	// the placeholder. Omitted when the column is NULL or `{}`.
+	Meta map[string]any `json:"meta,omitempty"`
 }
 
 type Skill struct {

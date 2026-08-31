@@ -7,7 +7,7 @@ import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
-import { EditSkill, skillVersionKey, toSkillForm } from './EditSkill';
+import { EditSkill, skillIconVersionId, skillVersionKey, toSkillForm, toSkillIconMeta } from './EditSkill';
 import { renderSkillsRoute } from './__tests__/testRouter';
 
 const BASE = '/api/v2';
@@ -71,11 +71,46 @@ describe('EditSkill', () => {
     expect(skillVersionKey({ id: 2, name: 'named', instructions: '', tags: [] })).toBe('2');
   });
 
+  it('reads the icon out of version_details.meta.icon_meta, and refuses a half-filled one', () => {
+    const withIcon = {
+      ...detail,
+      version_details: {
+        ...detail.version_details,
+        meta: { icon_meta: { name: 'skill_a.png', url: '/icons/7/skill_a.png' } },
+      },
+    };
+    expect(toSkillIconMeta(withIcon)).toEqual({ name: 'skill_a.png', url: '/icons/7/skill_a.png' });
+
+    // Everything the reset and the absent cases produce must read as "no icon":
+    // returning a half-filled meta would draw a broken image.
+    for (const iconMeta of [{}, { name: '', url: '' }, { name: 'a' }, { url: '/icons/7/a' }, null]) {
+      expect(
+        toSkillIconMeta({
+          ...detail,
+          version_details: { ...detail.version_details, meta: { icon_meta: iconMeta } },
+        }),
+      ).toBeNull();
+    }
+    expect(toSkillIconMeta(undefined)).toBeNull();
+    expect(toSkillIconMeta(detail)).toBeNull();
+  });
+
+  it('binds an icon to the route version when it names one, else to the skill default', () => {
+    expect(skillIconVersionId(detail, '9')).toBe('9');
+    // A named (non-numeric) version cannot address a skill_versions row, so the
+    // default version id is used instead of sending the name to the server.
+    expect(skillIconVersionId(detail, 'base')).toBe('v1');
+    expect(skillIconVersionId(detail, undefined)).toBe('v1');
+    expect(skillIconVersionId(undefined, undefined)).toBeUndefined();
+  });
+
   it('loads the form and ephemeral test panel', async () => {
     renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
     expect(await screen.findByTestId('skill-name-input')).toHaveValue('Reviewer');
     expect(screen.getByTestId('skill-test-panel')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Icon' })).toBeDisabled();
+    // The icon control is live now that the route family exists: the fixture
+    // skill has a version id, so there is something for the bind to address.
+    expect(screen.getByTestId('skill-icon-button')).toBeEnabled();
   });
 
   it('saves edits through the version-aware endpoint', async () => {

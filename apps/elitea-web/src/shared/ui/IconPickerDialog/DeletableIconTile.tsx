@@ -1,6 +1,9 @@
 /**
- * UserIconItem — project icon item with a delete button.
+ * DeletableIconTile — an IconTile with a delete button and its confirmation.
+ *
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/UserIconItem.jsx`.
+ * See IconTile for why it lives in `shared/ui` rather than in the settings
+ * feature it was first written for.
  */
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -11,22 +14,22 @@ import { useCallback, useState } from 'react';
 import CloseIcon from '@mui/icons-material/Close';
 
 import { BaseModal } from '@/shared/ui/BaseModal';
-import { ProjectIconItem } from './ProjectIconItem';
+import { IconTile } from './IconTile';
 import { t } from '@/shared/i18n';
 
-export interface UserIconItemProps {
+export interface DeletableIconTileProps {
   isSelected: boolean;
   onClick?: () => void;
   onDelete?: () => void | Promise<void>;
   children: ReactNode;
 }
 
-export function UserIconItem({
+export function DeletableIconTile({
   isSelected,
   onClick,
   onDelete,
   children,
-}: UserIconItemProps) {
+}: DeletableIconTileProps) {
 
   const [openAlert, setOpenAlert] = useState(false);
 
@@ -51,21 +54,21 @@ export function UserIconItem({
     <>
       <Box sx={sx.wrapper}>
         {onClick ? (
-          <ProjectIconItem
+          <IconTile
             isSelected={isSelected}
             onClick={onClick}
           >
             {children}
-          </ProjectIconItem>
+          </IconTile>
         ) : (
-          <ProjectIconItem isSelected={isSelected}>
+          <IconTile isSelected={isSelected}>
             {children}
-          </ProjectIconItem>
+          </IconTile>
         )}
         {onDelete && (
           <IconButton
             color="error"
-            aria-label={t('entities.projectContext.userIcon.deleteAriaLabel', 'Delete the icon')}
+            aria-label={t('shared.iconPicker.tile.deleteAriaLabel', 'Delete the icon')}
             onClick={handleDeleteClick}
             sx={sx.deleteButton}
           >
@@ -77,14 +80,14 @@ export function UserIconItem({
         open={openAlert}
         onClose={handleClose}
         onConfirm={handleConfirm}
-        title={t('entities.projectContext.userIconItem.confirmDeleteTitle', 'Warning')}
+        title={t('shared.iconPicker.tile.confirmDeleteTitle', 'Warning')}
         content={t(
-          'entities.projectContext.userIconItem.confirmDeleteMessage',
+          'shared.iconPicker.tile.confirmDeleteMessage',
           'Are you sure to delete this icon?',
         )}
         actions={{
-          confirmText: t('entities.projectContext.userIconItem.confirmDeleteConfirm', 'Delete'),
-          cancelText: t('entities.projectContext.userIconItem.confirmDeleteCancel', 'Cancel'),
+          confirmText: t('shared.iconPicker.tile.confirmDeleteConfirm', 'Delete'),
+          cancelText: t('shared.iconPicker.tile.confirmDeleteCancel', 'Cancel'),
           alarm: true,
         }}
       />
