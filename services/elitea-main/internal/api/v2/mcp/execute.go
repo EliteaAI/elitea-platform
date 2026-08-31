@@ -41,6 +41,31 @@ package mcp
 // client that calls a tool a hundred times leaves a hundred conversations. They
 // are marked `source = 'mcp'` so they can be told apart from what a person
 // typed, and they are NOT hidden — a hidden conversation would defeat reason 2.
+//
+// # What is SYNTHESISED, on the record
+//
+// `SubmitRequest.Validate` requires `ClientStreamID`, `ClientMessageID` and
+// `SIOEvent`, all three of which exist for a BROWSER: they are how a socket.io
+// frame finds the tab that is waiting for it. An MCP client has no socket and
+// no tab. They are supplied anyway, by the use case rather than by this file —
+// the conversation uuid, the question-derived response message uuid, and the
+// literal `chat_predict` — and this run does not read any of them back.
+//
+// That is a synthesis and not a fact about the caller, and it is worth knowing
+// because it is load-bearing elsewhere: `chat_predict` is one of only two
+// values `AgentExecutionDispatch.Validate` accepts, and the terminal projection
+// matches the response group on `client_message_id` and `client_stream_id`, so
+// an MCP turn is indistinguishable from a chat turn to everything downstream.
+// The bridge below relies on exactly that — it reads the same projected row the
+// browser would have streamed.
+//
+// The question id is minted SERVER-SIDE (a fresh uuid per call), which differs
+// from every other caller of this use case: the browser and the support widget
+// send their own, so a retried POST resumes the same turn instead of starting a
+// second one. MCP has no equivalent — `tools/call` carries no idempotency key —
+// so a client that retries a call gets a second run. Inventing a key from the
+// tool name and arguments would be worse: two deliberate identical calls would
+// then silently return the first one's answer.
 
 import (
 	"context"
