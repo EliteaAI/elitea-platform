@@ -19,6 +19,16 @@ import { readMermaidThemeSettings } from './mermaidTheme';
 export interface MermaidDiagramProps {
   /** Mermaid diagram source, e.g. `graph TD;\n A-->B;`. Empty renders nothing. */
   readonly code: string;
+  /**
+   * Reports the render outcome as text: the error summary when the diagram
+   * fails, `''` when it renders (or when `code` is empty). The component still
+   * renders its own error message either way — this is for a CALLER that needs
+   * to know, e.g. `features/chat-messages`'s canvas, which only offers its
+   * "Quick Fix" control for a diagram that actually failed. Without it a caller
+   * cannot tell a broken diagram from a good one, and an always-on repair
+   * button next to a correct diagram is noise.
+   */
+  readonly onError?: (summary: string) => void;
   readonly sx?: SxProps<Theme>;
   readonly 'data-testid'?: string;
 }
@@ -48,7 +58,7 @@ export interface MermaidDiagramProps {
  * `sanitizeDiagramSvg` runs DOMPurify over the finished markup before it is
  * injected. See `mermaidLoader.ts` for the full rationale.
  */
-export function MermaidDiagram({ code, sx, 'data-testid': dataTestId }: MermaidDiagramProps): ReactNode {
+export function MermaidDiagram({ code, onError, sx, 'data-testid': dataTestId }: MermaidDiagramProps): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState<MermaidDiagramError | null>(null);
@@ -60,12 +70,24 @@ export function MermaidDiagram({ code, sx, 'data-testid': dataTestId }: MermaidD
   const { colorScheme } = useColorScheme();
   const graphId = `mermaid-${useId().replaceAll(':', '')}`;
 
+  /*
+   * `onError` is held in a ref, not read in the effect's dep list. Callers pass
+   * an inline arrow far more often than not, and a new identity every parent
+   * render would re-run the whole async mermaid render — including its DOM
+   * measuring pass — for no reason.
+   */
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
     if (code.trim() === '') {
       setSvg('');
       setError(null);
+      onErrorRef.current?.('');
       return;
     }
 
@@ -91,10 +113,13 @@ export function MermaidDiagram({ code, sx, 'data-testid': dataTestId }: MermaidD
         if (cancelled) return;
         setSvg(sanitizeDiagramSvg(rendered));
         setError(null);
+        onErrorRef.current?.('');
       } catch (caught) {
         if (cancelled) return;
         setSvg('');
-        setError(toDiagramError(caught));
+        const diagramError = toDiagramError(caught);
+        setError(diagramError);
+        onErrorRef.current?.(diagramError.summary);
       }
     };
 

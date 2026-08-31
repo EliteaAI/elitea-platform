@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { renderWithTheme } from '../lib/testTheme';
 import { MermaidDiagram } from '.';
@@ -79,6 +79,56 @@ describe('MermaidDiagram — rendering', () => {
     }, { timeout: 15000 });
     expect(queryByRole('alert')).toBeNull();
   }, 30000);
+});
+
+/**
+ * `onError` exists for a caller that must distinguish a broken diagram from a
+ * good one — `features/chat-messages`'s canvas only offers its "Quick Fix"
+ * control for a diagram that actually failed. The component renders its own
+ * error message either way; this is the reporting channel, and the empty
+ * string is a real value (it means "this one renders"), not "nothing happened".
+ */
+describe('MermaidDiagram — onError reporting', () => {
+  it('reports the error summary for a broken diagram', async () => {
+    const onError = vi.fn();
+    renderWithTheme(<MermaidDiagram code={INVALID} onError={onError} data-testid="diagram" />);
+
+    await waitFor(() => expect(onError).toHaveBeenCalled(), { timeout: 15000 });
+    const summary = onError.mock.calls.at(-1)?.[0] as string;
+    expect(summary).not.toBe('');
+  }, 20000);
+
+  it('reports the empty string for a diagram that renders', async () => {
+    const onError = vi.fn();
+    const { getByTestId } = renderWithTheme(
+      <MermaidDiagram code={VALID} onError={onError} data-testid="diagram" />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId('diagram').querySelector('svg')).not.toBeNull();
+    }, { timeout: 15000 });
+    expect(onError.mock.calls.at(-1)?.[0]).toBe('');
+  }, 20000);
+
+  it('clears a previously reported error when the diagram is fixed', async () => {
+    const onError = vi.fn();
+    const { rerender, queryByRole } = renderWithTheme(
+      <MermaidDiagram code={INVALID} onError={onError} data-testid="diagram" />,
+    );
+    await waitFor(() => expect(queryByRole('alert')).not.toBeNull(), { timeout: 15000 });
+    expect(onError.mock.calls.at(-1)?.[0]).not.toBe('');
+
+    rerender(<MermaidDiagram code={VALID} onError={onError} data-testid="diagram" />);
+    await waitFor(() => expect(queryByRole('alert')).toBeNull(), { timeout: 15000 });
+    expect(onError.mock.calls.at(-1)?.[0]).toBe('');
+  }, 30000);
+
+  it('reports the empty string for an empty diagram without loading the engine', async () => {
+    const onError = vi.fn();
+    renderWithTheme(<MermaidDiagram code="   " onError={onError} data-testid="diagram" />);
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(''));
+  });
 });
 
 describe('sanitizeDiagramSvg', () => {

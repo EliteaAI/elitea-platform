@@ -2950,5 +2950,15 @@
   "features.toolkits.indexingReport.andMore": "… and {{count}} more",
   "features.toolkits.indexingReport.andMoreErrors": "… and {{count}} more distinct errors",
   "features.toolkits.indexingReport.errors": "Errors",
-  "agents.compareVersions.close": "Close"
+  "agents.compareVersions.close": "Close",
+  "features.chatMessages.canvas.mermaid.quickFix": "Quick Fix",
+  "features.chatMessages.canvas.table.cellContent": "Cell content",
+  "features.chatMessages.canvas.table.columnHeader": "Column header",
+  "features.chatMessages.canvas.table.deleteColumns": "Are you sure to delete the selected columns?",
+  "features.chatMessages.canvas.table.deleteRows": "Are you sure to delete the selected rows?",
+  "features.chatMessages.canvas.table.deleteTitle": "Warning",
+  "features.chatMessages.canvas.table.import": "Import table (CSV or TSV)",
+  "features.chatMessages.canvas.table.sortColumn": "Sort column",
+  "features.chatMessages.canvas.table.viewLess": "view less",
+  "features.chatMessages.canvas.table.viewMore": "view more"
 }

@@ -124,8 +124,34 @@ export { PlaybackChatBox } from './ui/playback/PlaybackChatBox';
 export type { PlaybackChatBoxHandle, PlaybackChatBoxProps, PlaybackChatMessage } from './ui/playback/PlaybackChatBox';
 
 // ---------------------------------------------------------------------------
-// Canvas
+// Canvas — the editor shell, the markdown table editor (slice 3) and the
+// mermaid quick-fix (slice 2b).
+//
+// Same gap as Playback above: Canvas/CanvasEditHeader were listed in this
+// file's own header and exported by nobody. Over the ≤20 export budget with
+// the rest of this barrel; waived in `scripts/lib/budgets-core.mjs`'s
+// BUDGET_WAIVERS.
 // ---------------------------------------------------------------------------
-/* Same gap as Playback above: listed in the header, exported by nobody. */
+export { Canvas, extraCodeFromBlock } from './ui/canvas/Canvas';
+export type { CanvasProps, CodeBlockInfo, CanvasEditPayload } from './ui/canvas/Canvas';
 export { CanvasEditor } from './ui/canvas/CanvasEditor';
 export type { CanvasEditorHandle, CanvasEditorProps } from './ui/canvas/CanvasEditor';
+export { CanvasEditHeader } from './ui/canvas/CanvasEditHeader';
+export type {
+  CanvasEditHeaderProps,
+  CanvasEditHeaderActions,
+  CanvasEditHeaderTable,
+  CanvasEditHeaderLangSelect,
+} from './ui/canvas/CanvasEditHeader';
+export { MarkdownTableEditor } from './ui/canvas/table/MarkdownTableEditor';
+export type { MarkdownTableEditorHandle, MarkdownTableEditorProps } from './ui/canvas/table/MarkdownTableEditor';
+export { ImportTableButton } from './ui/canvas/table/ImportTableButton';
+export { MermaidQuickFixButton } from './ui/canvas/MermaidQuickFixButton';
+export { parseDelimitedText, parseMarkdownTable, serialiseMarkdownTable } from './lib/markdownTable';
+export type { MarkdownTableData } from './lib/markdownTable';
+export { useMermaidQuickFix } from './model/useMermaidQuickFix';
+export type {
+  MermaidQuickFixCapability,
+  MermaidQuickFixUnavailableReason,
+  UseMermaidQuickFixResult,
+} from './model/useMermaidQuickFix';
