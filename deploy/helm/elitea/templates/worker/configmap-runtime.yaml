@@ -34,4 +34,24 @@ data:
       "agent_checkpoint_connection_path" (printf "%s/agent-checkpoint-connection" $material)
       "limits" $r.limits
     ) }}
+  {{- if eq (include "elitea-worker.isRust" .) "true" }}
+  # The Rust worker's second mandatory file. It carries the rule the Python
+  # worker reads from ELITEA_SENSITIVE_TOOLS, so `sensitiveTools` stays the one
+  # place an operator writes it for either implementation.
+  #
+  # `fromJson` is what makes that possible: the value is a JSON STRING because
+  # an environment variable can hold nothing else, and this file needs the
+  # decoded object. A malformed string fails the render here, which is where an
+  # operator can still see it — the Rust worker would instead reject the file at
+  # startup and CrashLoopBackOff.
+  #
+  # The `toolkit_security` key must be present even when it is empty: the
+  # worker refuses a document without it (execution/production.rs). Its own
+  # accepted keys are a closed set — blocked_toolkits, blocked_tools,
+  # sensitive_tools, sensitive_action_company_name,
+  # sensitive_action_message_template — and anything else is rejected, so this
+  # writes only what the operator actually set.
+  toolkit-security.json: |
+    {{ toJson (dict "toolkit_security" (dict "sensitive_tools" (fromJson $r.sensitiveTools))) }}
+  {{- end }}
 {{- end }}

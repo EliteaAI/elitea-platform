@@ -13,6 +13,26 @@
 {{- fail "worker.enabled=true needs main.runtime.enabled=true. The worker dials elitea-main's control, output and content listeners, and those exist only when the runtime plane is composed. Without them every chat turn is admitted over HTTP, never claimed, and durably quarantined by the worker — with nothing logged on either side. Set main.runtime.enabled=true (and its fileConfig.authConfig), or set worker.enabled=false." }}
 {{- end }}
 
+{{- if and .Values.worker.enabled (not (has .Values.worker.implementation (list "python" "rust"))) }}
+{{- fail (printf "worker.implementation must be \"python\" or \"rust\", got %q. It is not a free-form label: it selects the image, the argument list and the environment, and every value other than these two would silently render the Python shape — a Rust image started with the Python argument list exits immediately with worker_serve.invalid_configuration, which reads as a crash-looping worker rather than as a typo in a values file." .Values.worker.implementation) }}
+{{- end }}
+
+{{- /*
+  Guarded, and this one is easy to get wrong from a values file that predates
+  the Rust worker: the log levels are only read when `implementation: rust`,
+  and the worker refuses an unrecognised level at startup rather than defaulting.
+  A pod that will not start because of a typo'd log level is the least
+  informative failure in this chart.
+*/ -}}
+{{- if and .Values.worker.enabled (eq .Values.worker.implementation "rust") }}
+{{- range $key := list "logLevel" "traceLevel" }}
+{{- $level := index $.Values.worker $key }}
+{{- if not (has $level (list "off" "error" "warn" "info" "debug" "trace")) }}
+{{- fail (printf "worker.%s must be one of off, error, warn, info, debug, trace, got %q. The Rust worker validates this at startup and exits; it does not fall back to a default." $key $level) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{- if and .Values.worker.enabled (not .Values.runtimeRedis.enabled) }}
 {{- fail "worker.enabled=true needs runtimeRedis.enabled=true, unless you are pointing worker.runtime.redisUrl at a runtime Redis outside this release. The worker reads its commands from that bus and nothing else; with no bus it starts, reports Ready, and consumes nothing forever. Set runtimeRedis.enabled=true, or point worker.runtime.redisUrl elsewhere and set this guard's expectation by disabling the worker." }}
 {{- end }}

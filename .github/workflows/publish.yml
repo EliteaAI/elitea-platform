@@ -169,10 +169,10 @@ jobs:
   #   WHICH IMAGE GATE 2 READS. It pulls the tag this workflow pushed, so it
   #   reads the artefact the release publishes and not a rebuild of it. The
   #   alternative — build every image a second time to scan it — costs a second
-  #   build of seven images and still scans a different artefact.
+  #   build of every image and still scans a different artefact.
   #
   #   The image list below is not free-form. ci-image-scan.yml reads it and
-  #   fails when it ships an image that no scan covers, so an eighth entry
+  #   fails when it ships an image that no scan covers, so a new entry
   #   cannot arrive unscanned in silence. It also compares its own scan matrix
   #   with the `scan` matrix below, entry by entry, so the release gate cannot
   #   quietly exempt an image or expect a target type the merge gate does not.
@@ -245,6 +245,19 @@ jobs:
           - name: elitea-worker-python
             context: .
             dockerfile: ./services/elitea-worker-python/Containerfile
+          # The native Rust worker, and the chart's DEFAULT worker.runtime.
+          # Repo ROOT context, like the Python worker: the Containerfile COPYs
+          # libs/proto from outside the service directory.
+          #
+          # It had a Containerfile, a CI workflow and a compose overlay naming
+          # `ghcr.io/eliteaai/elitea-worker-rust:standalone` long before it had
+          # this entry, so the tag the overlay names had never been pushed and
+          # `docker pull` of it has never worked. Only a local `--build` run
+          # produced that image. The chart cannot default to a worker nobody
+          # can pull, so the image is built and signed here with the rest.
+          - name: elitea-worker-rust
+            context: .
+            dockerfile: ./services/elitea-worker-rust/Containerfile
         platform:
           - runner: ubuntu-latest
             arch: linux/amd64
@@ -372,6 +385,18 @@ jobs:
           - name: elitea-worker-python
             expect_type: python-pkg
             blocking: false
+          # `rustbinary`, not `debian`: the Containerfile builds with
+          # cargo-auditable so trivy can see the crate graph, and this value is
+          # what makes a report that only reached the distroless base FAIL
+          # instead of reading as clean.
+          #
+          # blocking: true — measured on the built image, the base contributes
+          # 29 findings and NONE are HIGH or CRITICAL, and the Rust binary
+          # itself reports zero. There is nothing here to exempt, so it is held
+          # to the same threshold as the Go images.
+          - name: elitea-worker-rust
+            expect_type: rustbinary
+            blocking: true
 
     steps:
       # The gate script is read from the released tree, not from the default
@@ -451,6 +476,7 @@ jobs:
           - name: pylon-indexer
           - name: elitea-llm-gateway
           - name: elitea-worker-python
+          - name: elitea-worker-rust
 
     steps:
       - name: Set up Docker Buildx
@@ -494,6 +520,7 @@ jobs:
           - name: pylon-indexer
           - name: elitea-llm-gateway
           - name: elitea-worker-python
+          - name: elitea-worker-rust
 
     steps:
       - name: Install cosign
@@ -801,7 +828,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python")
+          # Must list exactly the images the `build` matrix pushes — the same
+          # rule as the chart array below, and held by the same gate in
+          # helm-lint.yml.
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"
 
@@ -839,7 +869,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          CHARTS=("elitea-main" "elitea-scheduler" "elitea-web" "elitea-llm-gateway" "pylon-indexer" "nats" "nats-bootstrap" "otel-collector")
+          # Must list exactly the charts the `chart` job pushes. It listed the
+          # per-service charts long after #598 replaced them with the single
+          # `elitea` chart, so a rollback warned about six charts that no longer
+          # exist and left the one chart this release actually published in
+          # place — pointing at images the step above had just deleted.
+          CHARTS=("elitea" "nats" "nats-bootstrap")
           ORG="eliteaai"
 
           # Report what could not be deleted. Every call here used to end in

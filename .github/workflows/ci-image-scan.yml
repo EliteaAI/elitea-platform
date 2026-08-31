@@ -93,6 +93,7 @@ on:
       # Sources of the shipped binaries and assets.
       - "services/elitea-main/**"
       - "services/elitea-worker-python/**"
+      - "services/elitea-worker-rust/**"
       - "services/elitea-scheduler/**"
       - "services/elitea-llm-gateway/**"
       - "services/pylon-indexer/**"
@@ -124,6 +125,7 @@ on:
     paths:
       - "services/elitea-main/**"
       - "services/elitea-worker-python/**"
+      - "services/elitea-worker-rust/**"
       - "services/elitea-scheduler/**"
       - "services/elitea-llm-gateway/**"
       - "services/pylon-indexer/**"
@@ -381,6 +383,16 @@ jobs:
             target: ""
             expect_type: python-pkg
             blocking: false
+          # Repo root for the same reason: the Containerfile COPYs libs/proto
+          # from outside the service directory. `expect_type: rustbinary` is
+          # readable ONLY because that Containerfile builds with
+          # cargo-auditable — read the comment there before changing either.
+          - name: elitea-worker-rust
+            context: .
+            dockerfile: ./services/elitea-worker-rust/Containerfile
+            target: ""
+            expect_type: rustbinary
+            blocking: true
 
     steps:
       - uses: actions/checkout@v7

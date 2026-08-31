@@ -110,7 +110,7 @@ spec:
               mountPath: /spool
       containers:
         - name: worker
-          image: "{{ .Values.worker.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "elitea-worker.imageRepository" . }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           securityContext:
             runAsUser: {{ .Values.worker.runAsUser }}
@@ -118,11 +118,48 @@ spec:
             {{- with .Values.worker.securityContext }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if eq (include "elitea-worker.isRust" .) "true" }}
+          # The Rust worker's argument list is matched as an EXACT five-token
+          # slice (services/elitea-worker-rust/src/lib.rs). Both paths must be
+          # absolute, and a four-token `serve --config <path>` — the Python
+          # shape below — is not a degraded mode: it is
+          # `worker_serve.invalid_configuration` and an immediate exit.
+          args:
+            - serve
+            - --config
+            - /run/elitea/runtime.json
+            - --toolkit-security-config
+            - /run/elitea/toolkit-security.json
+          {{- else }}
           # The only supported command shape: one JSON config, no env-var
           # settings. Capabilities are compiled in, and the Go side decides
           # which of them it will accept.
           args: ["serve", "--config", "/run/elitea/runtime.json"]
+          {{- end }}
           env:
+            {{- if eq (include "elitea-worker.isRust" .) "true" }}
+            # The Rust worker hands the runtime CA to every internal client
+            # EXPLICITLY in code, so the process-wide trust store governs
+            # exactly one client: the remote-MCP one, which is reqwest/rustls
+            # and resolves to SSL_CERT_FILE on Linux.
+            #
+            # It must stay the BUNDLE the init container built — the runtime CA
+            # AND the public roots. This variable REPLACES the platform trust
+            # store rather than adding to it, so a private-CA-only value would
+            # strip the public roots that every outbound toolkit verifies
+            # against, and each one would fail as
+            # `native_agent.dependency_unavailable` — indistinguishable from
+            # the remote server being down.
+            - name: SSL_CERT_FILE
+              value: /run/elitea-runtime/trust-bundle.crt
+            # ELITEA_DISABLE_SYSTEM_CA and REQUESTS_CA_BUNDLE are deliberately
+            # absent: both are SDK settings, and nothing in the Rust worker
+            # reads either name.
+            - name: ELITEA_RUST_LOG
+              value: {{ .Values.worker.logLevel | quote }}
+            - name: ELITEA_RUST_TRACE
+              value: {{ .Values.worker.traceLevel | quote }}
+            {{- else }}
             # TLS trust for platform_origin. The SDK routes verification
             # through the OS trust store on import, which cannot contain a CA
             # minted for this cluster, so that injection is disabled and the
@@ -141,9 +178,12 @@ spec:
               value: /run/elitea-runtime/trust-bundle.crt
             - name: SSL_CERT_FILE
               value: /run/elitea-runtime/trust-bundle.crt
-            # The one environment variable the worker itself reads.
+            # The one environment variable the worker itself reads. The Rust
+            # worker carries the same rule in its toolkit-security file
+            # instead; see the ConfigMap.
             - name: ELITEA_SENSITIVE_TOOLS
               value: {{ .Values.worker.runtime.sensitiveTools | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           volumeMounts:
@@ -151,6 +191,12 @@ spec:
               mountPath: /run/elitea/runtime.json
               subPath: runtime.json
               readOnly: true
+            {{- if eq (include "elitea-worker.isRust" .) "true" }}
+            - name: runtime-config
+              mountPath: /run/elitea/toolkit-security.json
+              subPath: toolkit-security.json
+              readOnly: true
+            {{- end }}
             - name: material
               mountPath: /run/elitea-runtime
             - name: spool

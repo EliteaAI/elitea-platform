@@ -38,3 +38,35 @@ a file the worker silently ignores.
 {{- define "elitea-worker-python.materialFiles" -}}
 runtime-ca.crt agent-worker-client.crt agent-worker-client.key command-signing-keyring.json redis-worker-password worker-output-spool-key agent-checkpoint-connection
 {{- end }}
+
+{{/*
+Which worker image this release runs.
+
+`worker.image.repository` wins when set, and that is the documented way to pin
+either implementation — including pinning back to the Python worker without
+touching `worker.implementation`. Empty (the default) derives the repository
+from `worker.implementation`.
+
+The helper names are NOT renamed to match. `elitea-worker-python.name` feeds
+app.kubernetes.io/name, which is in the Deployment's selector and immutable
+after install: renaming it turns every upgrade into an unrecoverable "field is
+immutable" error. The names are historical, the images are not.
+*/}}
+{{- define "elitea-worker.imageRepository" -}}
+{{- if .Values.worker.image.repository -}}
+{{- .Values.worker.image.repository -}}
+{{- else if eq .Values.worker.implementation "rust" -}}
+ghcr.io/eliteaai/elitea-worker-rust
+{{- else -}}
+ghcr.io/eliteaai/elitea-worker-python
+{{- end -}}
+{{- end }}
+
+{{/*
+True when this release runs the native Rust worker. One place, because four
+templates branch on it and a values path repeated four times is four chances
+to typo a key that Helm resolves to empty and reads as `false`.
+*/}}
+{{- define "elitea-worker.isRust" -}}
+{{- eq .Values.worker.implementation "rust" -}}
+{{- end }}

@@ -1911,16 +1911,53 @@ worker:
   # in a terminal failure: Go admits and projects executions but has no
   # agent-token producer of its own.
 
+  # Which worker this release runs: `rust` (default) or `python`.
+  #
+  # NOT named `runtime` — that key is taken, by the deployment configuration
+  # block further down that becomes the worker's runtime.json.
+  #
+  # The two are not interchangeable at the values level, and the chart handles
+  # the differences rather than leaving them to the operator:
+  #
+  #   * The Rust worker REQUIRES `--toolkit-security-config`. Its argument
+  #     parser matches an exact five-token command line and exits
+  #     `worker_serve.invalid_configuration` on anything else, so a Rust image
+  #     started with the Python worker's argument list CrashLoopBackOffs
+  #     immediately. The chart writes that second file and passes the flag.
+  #   * `sensitiveTools` below reaches Python as the ELITEA_SENSITIVE_TOOLS
+  #     environment variable and Rust as `toolkit_security.sensitive_tools`
+  #     inside that file. One value, two carriers.
+  #   * ELITEA_DISABLE_SYSTEM_CA and REQUESTS_CA_BUNDLE are SDK settings with
+  #     no reader in the Rust worker, and are omitted for it.
+  #
+  # runtime.json itself is identical for both: its 21 fields and 21 `limits`
+  # entries are the same set on either side, and the Rust struct is
+  # deny_unknown_fields, so any drift fails at startup rather than silently.
+  implementation: rust
+
   image:
     # Built, signed and published by this repository's own release workflow
     # (.github/workflows/publish.yml), and public, so no pull secret is needed.
     # The tag is stamped to the release version at package time — the default
     # here only applies to a chart installed straight from the working tree.
-    repository: ghcr.io/eliteaai/elitea-worker-python
+    #
+    # Empty derives the repository from `implementation` above. Setting it wins
+    # over `implementation`, and is how you pin an image by digest or run the
+    # worker from a mirror. To stay on the Python worker, either set
+    # `implementation: python` or pin this to
+    # `ghcr.io/eliteaai/elitea-worker-python`.
+    repository: ""
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
   imagePullSecrets: []
+
+  # Rust worker only (ELITEA_RUST_LOG / ELITEA_RUST_TRACE). Each must be one of
+  # off, error, warn, info, debug, trace — the worker refuses anything else at
+  # startup rather than falling back to a default. Ignored by the Python worker,
+  # which takes no log level from the environment.
+  logLevel: info
+  traceLevel: info
 
   replicaCount: 1
 

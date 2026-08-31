@@ -130,6 +130,22 @@ jobs:
       - name: The charts do not ship the LLM path off, and the guards refuse
         run: bash deploy/helm/tests/render-llm-path.sh
 
+      # The worker templates were rendered by NOTHING before this step: every
+      # other render script here, and the template matrix below, set
+      # `worker.enabled=false`, and `helm lint` does not enter a body its
+      # condition excludes. That was tolerable with one worker image. It stopped
+      # being tolerable when `worker.implementation` arrived and the default
+      # became the Rust worker, whose argument list the Python shape does not
+      # satisfy — a mismatch that reaches an operator as a CrashLoopBackOff and
+      # not as a configuration error.
+      #
+      # It needs PyYAML like render-bf0-2b.sh does, and installs it the same way.
+      - name: The agent worker renders for both implementations
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          bash deploy/helm/tests/render-worker.sh
+
       # The BF0.2b render assertions (#485). This file was `deploy/test_bf0_2b.sh`
       # and no workflow, Taskfile task or script called it. Wiring it found two
       # defects on the first run:
@@ -208,7 +224,7 @@ jobs:
       - name: Every chart is published or excluded on purpose
         run: |
           # Charts deliberately not pushed to the OCI registry, with the
-          # reason. Empty today: all eight charts are published.
+          # reason. Empty today: all three charts are published.
           excluded=""
           published="$(grep -oE '^ +- chart: [a-z0-9-]+' .github/workflows/publish.yml \
                         | awk '{print $3}' | tr '\n' ' ')"
@@ -236,6 +252,85 @@ jobs:
             exit 1
           fi
           echo "publish coverage: $found chart(s), all published or excluded on purpose"
+
+      # The check above runs one way only: every chart directory is in the
+      # publish matrix. It cannot see the two other ways the same three lists
+      # drift apart, and both had already happened by the time it was written:
+      #
+      #   * The publish matrix names a chart with no directory. #598 replaced
+      #     six per-service charts with one, and a matrix left behind would
+      #     fail the release at `helm package` on a path that does not exist.
+      #
+      #   * The ROLLBACK array in publish.yml disagrees with the matrix. This
+      #     one was real and silent for twelve releases: after #598 the array
+      #     still listed the six deleted charts and did NOT list `elitea`, so a
+      #     failed release deleted its images, warned about six charts that no
+      #     longer exist, and left the one chart it had actually published
+      #     pointing at images it had just removed — a chart that installs into
+      #     a permanent ImagePullBackOff, which is the precise state the
+      #     rollback step's own header says it exists to prevent. Nothing was
+      #     red. The array is the only hardcoded chart list left in this
+      #     repository that no glob derives, so it is the only one that can go
+      #     stale without a file being deleted, and it is checked here.
+      #
+      # deploy/helm/*/Chart.yaml is the single source. Both lists in publish.yml
+      # are compared against it, and against each other.
+      - name: The publish matrix and the rollback array both match deploy/helm
+        run: |
+          # Must hold the same entries as `excluded` in the step above: a chart
+          # that no release publishes on purpose is also a chart no rollback
+          # deletes. Empty today.
+          excluded=""
+          dirs=""
+          found=0
+          for chart in deploy/helm/*/Chart.yaml; do
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            name="$(basename "$(dirname "$chart")")"
+            case " $excluded " in
+              *" $name "*) continue ;;
+            esac
+            dirs="$dirs $name"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this check measured nothing"
+            exit 1
+          fi
+
+          published="$(grep -oE '^ +- chart: [a-z0-9-]+' .github/workflows/publish.yml \
+                        | awk '{print $3}' | tr '\n' ' ')"
+          if [ -z "$published" ]; then
+            echo "::error::read no chart name out of the publish matrix — this check measured nothing"
+            exit 1
+          fi
+
+          # The rollback array is a single bash line: CHARTS=("a" "b" "c").
+          # Anchored on the assignment so a chart name in a comment nearby
+          # cannot be mistaken for a member of it.
+          rollback="$(grep -oE '^ +CHARTS=\(.*\)' .github/workflows/publish.yml \
+                        | sed -E 's/^ +CHARTS=\(//; s/\)$//; s/"//g')"
+          if [ -z "$rollback" ]; then
+            echo "::error::read no chart name out of the rollback CHARTS array — this check measured nothing"
+            exit 1
+          fi
+
+          # Compare as sorted sets: order in either list is not a defect.
+          normalise() { printf '%s\n' $1 | sort -u | tr '\n' ' '; }
+          dirs="$(normalise "$dirs")"
+          published="$(normalise "$published")"
+          rollback="$(normalise "$rollback")"
+
+          status=0
+          if [ "$published" != "$dirs" ]; then
+            echo "::error::publish matrix is [${published}], deploy/helm holds [${dirs}]"
+            status=1
+          fi
+          if [ "$rollback" != "$published" ]; then
+            echo "::error::rollback CHARTS array is [${rollback}], publish matrix is [${published}] — a failed release would leave a published chart behind, or warn about a chart that does not exist"
+            status=1
+          fi
+          [ "$status" -eq 0 ] || exit 1
+          echo "chart lists agree: [${dirs}]"
 
   template:
     name: Helm Template (${{ matrix.chart }})

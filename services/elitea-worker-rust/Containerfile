@@ -8,10 +8,29 @@ COPY libs/proto ./libs/proto
 COPY services/elitea-worker-rust ./services/elitea-worker-rust
 
 WORKDIR /src/services/elitea-worker-rust
+
+# `cargo auditable`, not plain `cargo`, and it is a SCAN requirement rather than
+# a preference.
+#
+# A release Rust binary carries no record of what went into it. Trivy's
+# `rustbinary` analyzer reads the audit-data section that cargo-auditable
+# embeds, and finds nothing without it — so a scan of this image reports the
+# distroless Debian base and stops there. Measured on this image: with
+# cargo-auditable trivy returns two results, `debian` (os-pkgs) and
+# `rustbinary` (lang-pkgs) covering all 418 crates; without it, only `debian`.
+#
+# That difference is the whole gate. `expect_type: rustbinary` in the two scan
+# matrices FAILS a report that never reached the application content, which is
+# what a scan of the base layers alone is. Dropping this line would not turn
+# the scan red — it would make it pass while measuring the base image, which is
+# the exact "absence reads as correctness" shape #433 was about.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install cargo-auditable --locked --version 0.7.5
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/cargo-target \
-    CARGO_TARGET_DIR=/cargo-target cargo build --locked --release && \
+    CARGO_TARGET_DIR=/cargo-target cargo auditable build --locked --release && \
     cp /cargo-target/release/elitea-worker-rust /usr/local/bin/elitea-worker-rust
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
