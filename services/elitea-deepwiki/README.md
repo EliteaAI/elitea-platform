@@ -27,6 +27,7 @@ services/elitea-deepwiki/
 │   ├── legacy_runner.py dispatch + result composition (perform_invoke_request)
 │   ├── repo_config.py   repository-config extraction, copied from the handler
 │   ├── publishing.py    publish a completed generation into PostgreSQL
+│   ├── security/        the mTLS terminus, identity headers, egress allowlist
 │   ├── config.py        strict-parsed settings
 │   ├── engine/          the analysis engine — 101 files, plain copy, digest-guarded
 │   └── storage/
@@ -185,6 +186,73 @@ So the frozen artifact set decision 2 pins is produced **only** by the
 out-of-process path. The composition fixtures would not catch a regression
 here, because they test the composer *given* a worker result rather than the
 worker itself — which is exactly why this run exists.
+
+## The security boundary
+
+ADR-0022 decisions 5 and 6. Both controls report themselves in `GET /health`
+(`mtls_required`, `identity_verified`, `git_egress`), because both off is a
+valid dev stack and an invalid production one, and an operator should be able
+to tell which they have without reading the deployment.
+
+### mTLS and identity
+
+`ELITEA_DEEPWIKI_TLS_CERTFILE` / `_TLS_KEYFILE` / `_TLS_CA_FILE` terminate mTLS
+in uvicorn with `CERT_REQUIRED` — the actual terminus. `MutualTLSMiddleware`
+then refuses any request that reached the app without a verified client
+certificate, which is the misconfiguration case: TLS terminated somewhere that
+did not verify a client, or plain HTTP forwarded in. `/health` stays reachable,
+because a readiness probe has no certificate.
+
+`IdentityMiddleware` **strips every identity header unconditionally**, then
+re-derives the identity only from a valid HMAC signature. Stripping first is
+what makes the order safe: no handler can read a header a client set, because
+by the time anything else runs it is gone. The only way to see an identity is
+`request.state.identity`, which exists only when a signature was checked.
+
+The signing scheme is a **third implementation** of one that already exists
+twice in Go — elitea-main signs, the LLM gateway verifies — and it must agree
+byte for byte or every facade request fails. The canonical string, header names
+and the version rule are transcribed, not designed:
+
+```
+canonical(v1) = "v1\n" + project + "\n" + user + "\n" + tenant
+canonical(v2) = same with "v2", + "\n" + execution
+signature     = "sha256=" + hex(HMAC-SHA256(secret, canonical))
+```
+
+Verification accepts v2 always and v1 **only when no execution id is present** —
+falling back to v1 for a request that carries one would make that id
+caller-attachable, which is what signing it prevents. That asymmetry is easy to
+get wrong and has its own test.
+
+### Git-host egress
+
+`ELITEA_DEEPWIKI_GIT_ALLOWLIST` names the hosts this deployment may clone from,
+and it is **fail-closed: unset refuses every clone.** Treating "unset" as "allow
+everything" would be an egress control that silently does nothing, which is
+worse than not having one because it looks like it is there. `*` disables the
+control, but only by saying so in configuration a reviewer can see. Nothing
+depends on the permissive behaviour yet, so this is the cheapest this decision
+will ever be.
+
+The check runs in the runner **before the engine sees the request**, and
+therefore before the token in it is ever written into a clone URL. That
+ordering is the point: the legacy engine embedded credentials directly into
+clone URLs (`https://{token}@host/owner/repo.git`), so a mistyped or
+attacker-influenced host meant handing a live token to whoever answered.
+ADR-0022's criterion is "refused before any credential is decrypted" — the
+facade does the pre-decrypt half with the vault in reach (P2); this is the half
+that governs the socket.
+
+Matching is exact hostnames plus an optional leading `*.` for **direct**
+subdomains only: `*.github.com` matches `api.github.com`, not `github.com` and
+not `a.b.github.com`. A wildcard that spans labels would let anyone who
+controls one subdomain reach the rest. Ports are ignored — the control is about
+destination, and `:443` vs `:8443` on one host is one host.
+
+Registry-only tools (`wiki_query`) clone nothing and are not subject to it;
+refusing them for want of a repository would break a toolkit for a control that
+does not apply.
 
 ## What is not wired yet
 

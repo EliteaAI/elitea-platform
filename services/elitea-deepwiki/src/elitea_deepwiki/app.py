@@ -34,9 +34,11 @@ from fastapi.responses import JSONResponse
 
 from . import errors
 from .config import Settings
+from .security.egress import EgressPolicy
 from .descriptor import provider_descriptor
 from .toolrunner import ToolRunner, build_runner
 from .invocations import InvocationManager
+from .security.middleware import IdentityMiddleware, MutualTLSMiddleware
 from .slots import current_slots
 from .toolkits import resolve_family, validate_tool
 
@@ -95,6 +97,16 @@ def create_app(
     app.state.runner = runner
     app.state.invocations = manager
 
+    # Order matters and is outermost-first: identity headers are stripped
+    # before anything downstream can read one, and the transport is checked
+    # before the identity is even considered. Starlette applies middleware in
+    # reverse-registration order, so MutualTLS is added last to run first.
+    secret = (settings.identity_secret or "").encode()
+    app.add_middleware(
+        IdentityMiddleware, secret=secret, required=bool(settings.tls_ca_file)
+    )
+    app.add_middleware(MutualTLSMiddleware, required=bool(settings.tls_ca_file))
+
     # -- descriptor --------------------------------------------------------
 
     @app.get("/descriptor")
@@ -133,6 +145,13 @@ def create_app(
                     # files, so the replica is NOT stateless — the condition
                     # ADR-0022 decision 3 exists to remove.
                     "stateless_reads": bool(settings.database_url),
+                    # The security boundary, reported rather than assumed. Both
+                    # false is a valid dev stack and an invalid production one.
+                    "mtls_required": bool(settings.tls_ca_file),
+                    "identity_verified": bool(settings.identity_secret),
+                    "git_egress": EgressPolicy.parse(
+                        settings.git_allowlist
+                    ).describe(),
                 },
             }
         )

@@ -306,7 +306,14 @@ async def test_the_runner_dispatches_and_composes():
         calls.append(kwargs)
         return worker_result()
 
-    runner = LegacyToolRunner(tools={"generate_wiki": generate_wiki})
+    # An allowlist is required now: an unset one refuses every clone
+    # (ADR-0022 decision 6, fail-closed). See test_security.py.
+    from elitea_deepwiki.config import Settings
+
+    runner = LegacyToolRunner(
+        settings=Settings(git_allowlist="github.com"),
+        tools={"generate_wiki": generate_wiki},
+    )
     manager = InvocationManager()
     invocation = await manager.submit("Wikis", "generate_wiki", lambda _c: None)
     context_holder = {}

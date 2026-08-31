@@ -20,6 +20,10 @@ warnings.filterwarnings("ignore")
 
 os.environ.setdefault("ELITEA_DEEPWIKI_RUNNER", "legacy")
 os.environ.setdefault("ELITEA_DEEPWIKI_SCRATCH_PATH", sys.argv[1])
+# The egress allowlist is FAIL-CLOSED: unset refuses every clone. The harness
+# clones from the local git daemon, so that host is what it permits.
+os.environ.setdefault("ELITEA_DEEPWIKI_GIT_ALLOWLIST", "127.0.0.1")
+
 os.environ["GIT_CONFIG_COUNT"] = "1"
 # git daemon, not dumb HTTP: the engine clones with --depth, and dumb HTTP
 # transport does not support shallow capabilities. insteadOf can rewrite the

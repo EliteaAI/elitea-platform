@@ -35,6 +35,10 @@ python services/elitea-deepwiki/e2e/llm_stub.py &
 python services/elitea-deepwiki/e2e/run_generate_wiki.py /tmp/dwe2e/scratch
 ```
 
+The runner sets `ELITEA_DEEPWIKI_GIT_ALLOWLIST=127.0.0.1` for itself. The
+allowlist is fail-closed — unset refuses every clone — so any other harness
+has to name the hosts it clones from.
+
 The runner rewrites `https://127.0.0.1:18900/` to `git://127.0.0.1:19418/`
 through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`, which is process-scoped — no
 global git configuration is touched.

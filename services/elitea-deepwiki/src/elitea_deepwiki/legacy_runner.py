@@ -50,6 +50,7 @@ from typing import Any, Callable, Sequence
 
 from .invocations import InvocationContext
 from .repo_config import _extract_repo_config_from_toolkit
+from .security.egress import EgressPolicy, check_repo_config
 from .toolkits import ToolkitFamily, validate_tool
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,17 @@ class LegacyToolRunner:
 
         params = merge_parameters(request_data)
 
+        # BEFORE the engine sees the request, and therefore before the token in
+        # it is ever written into a clone URL. ADR-0022 decision 6: "a clone to
+        # a non-allowlisted git host is refused before any credential is
+        # decrypted". The facade does the pre-decrypt half with the vault in
+        # reach; this is the half that governs the socket.
+        #
+        # It runs for every tool, not just generate_wiki: ask and deep_research
+        # take the same expanded code_toolkit and can re-clone when their cache
+        # is cold.
+        self._check_egress(params)
+
         await context.checkpoint()
         await context.thinking(f"Starting {tool_name}")
 
@@ -460,6 +472,32 @@ class LegacyToolRunner:
             "result": json.dumps(compose_result_objects(tool_name, result)),
             "result_type": "String",
         }
+
+    def _check_egress(self, params: dict[str, Any]) -> None:
+        """Refuse a clone destination that is not on the allowlist.
+
+        Raises ``EgressRefused``, a ValueError, which the legacy classifier
+        maps to ``invalid_input`` — the right category for a request naming a
+        forbidden host, and one the caller already knows how to read.
+        """
+        settings = self._settings
+        if settings is None:
+            from .config import Settings  # noqa: PLC0415
+
+            settings = Settings.from_env()
+
+        repo_config = _extract_repo_config_from_toolkit(params)
+        if not repo_config.get("provider_config") and not repo_config.get(
+            "repository"
+        ):
+            # No repository in the request at all: the wiki_query tools operate
+            # on the registry and clone nothing. Nothing to check, and refusing
+            # would break them.
+            return
+
+        policy = EgressPolicy.parse(settings.git_allowlist)
+        host = check_repo_config(policy, repo_config)
+        logger.info("clone destination %s permitted by the egress allowlist", host)
 
     async def _publish(
         self, result: dict[str, Any], context: InvocationContext

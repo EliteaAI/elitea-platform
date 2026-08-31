@@ -83,6 +83,9 @@ def _bool(name: str, default: bool) -> bool:
 class Settings:
     """Everything the SPI shell reads from the environment."""
 
+    # -- security ---------------------------------------------------------
+
+
     #: Advertised in the descriptor. Deployment configuration, not contract.
     service_location_url: str = "http://127.0.0.1:8080"
 
@@ -107,6 +110,23 @@ class Settings:
     #: an image built without it must not silently look like it has an engine.
     runner: str = "unavailable"
 
+    #: mTLS terminus (ADR-0022 decision 5). With a CA file the server demands
+    #: and verifies a client certificate, and the middleware refuses any hop
+    #: that reached it unauthenticated.
+    tls_certfile: str | None = None
+    tls_keyfile: str | None = None
+    tls_ca_file: str | None = None
+
+    #: Shared secret for the HMAC identity signature. The same scheme
+    #: elitea-main signs with and the LLM gateway verifies.
+    identity_secret: str | None = None
+
+    #: Git hosts this deployment may clone from (ADR-0022 decision 6).
+    #: UNSET REFUSES EVERY CLONE — an egress control that silently allows
+    #: everything is worse than none, because it looks like it is there. Use
+    #: '*' to disable the control explicitly.
+    git_allowlist: str | None = None
+
     #: DSN for the dedicated ``deepwiki`` database (ADR-0022 decision 3).
     #: When set, the engine's READ path is served from PostgreSQL and query
     #: replicas are stateless. When unset, retrieval falls back to the
@@ -129,4 +149,9 @@ class Settings:
             ),
             runner=_choice("RUNNER", "unavailable", ("unavailable", "legacy")),
             database_url=_raw("DATABASE_URL") or None,
+            tls_certfile=_raw("TLS_CERTFILE") or None,
+            tls_keyfile=_raw("TLS_KEYFILE") or None,
+            tls_ca_file=_raw("TLS_CA_FILE") or None,
+            identity_secret=_raw("IDENTITY_SECRET") or None,
+            git_allowlist=_raw("GIT_ALLOWLIST") or None,
         )
