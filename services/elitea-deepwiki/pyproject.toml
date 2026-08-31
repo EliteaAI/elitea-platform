@@ -19,6 +19,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The PostgreSQL backend (ADR-0022 decision 3). Required in production once
+# the engine lands; optional today so the SPI shell image stays small.
+storage-postgres = [
+  "psycopg[binary]>=3.2,<4",
+]
+# The verbatim legacy storage modules and their closure. This is the
+# *reference* implementation the PostgreSQL backend is measured against, not a
+# production dependency — ADR-0022 retires it.
+storage-legacy = [
+  "langchain-community>=0.3,<1",
+  "langchain-core>=0.3,<2",
+  "networkx>=3.0,<4",
+  "sqlite-vec>=0.1.6,<1",
+]
 test = [
   "httpx>=0.27,<1",
   "pytest>=8.3,<10",

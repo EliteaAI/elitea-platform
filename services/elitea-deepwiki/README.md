@@ -3,10 +3,11 @@
 The standalone DeepWiki provider service — the ADR-0022 port of the legacy
 `deepwiki_plugin` Pylon module.
 
-**Status: the SPI shell. The analysis engine has not moved yet.** This service
-serves the whole frozen provider contract and refuses every actual tool
-invocation with a readable error. That is deliberate — see
-[The engine seam](#the-engine-seam).
+**Status: the SPI shell plus the storage layer.** The service serves the whole
+frozen provider contract and refuses every actual tool invocation with a
+readable error — see [The engine seam](#the-engine-seam). The retrieval
+storage layer (ADR-0022 decision 3) is ported and parity-gated; the rest of the
+analysis engine has not moved yet.
 
 ## What is here
 
@@ -20,9 +21,17 @@ services/elitea-deepwiki/
 │   ├── slots.py         GET /slots capacity accounting
 │   ├── errors.py        the two error shapes
 │   ├── engine.py        the seam the analysis engine plugs into
-│   └── config.py        strict-parsed settings
+│   ├── config.py        strict-parsed settings
+│   └── storage/
+│       ├── base.py      the RetrievalBackend interface + the frozen RRF
+│       ├── postgres.py  pgvector + tsvector + BM25 term statistics
+│       ├── sqlite.py    the legacy file backend, as the reference
+│       ├── migrate.py   versioned, checksummed migrations
+│       └── legacy/      verbatim copies of four legacy storage modules
+├── migrations/          service-owned SQL, applied against the deepwiki DB
 ├── tests/
-│   ├── conformance/     replays the P0 fixtures against the real app
+│   ├── conformance/     replays the P0 SPI fixtures against the real app
+│   ├── storage/         retrieval parity: both backends, live, side by side
 │   └── unit/            settings parsing, invocation lifecycle
 ├── conformance/         the phase-P0 golden fixtures (see its own README)
 └── Containerfile
@@ -67,6 +76,55 @@ against a fake success and look finished. Refusing makes the missing engine
 visible in every response and in `GET /health`
 (`extra_info.engine == "unavailable"`).
 
+## The storage layer
+
+ADR-0022 decision 3 replaces the legacy per-wiki files — a SQLite `.wiki.db`
+(nodes, edges, FTS5, sqlite-vec), a separate BM25 SQLite, an mmap docstore,
+FAISS binaries — with PostgreSQL, so query replicas are stateless.
+`storage/base.py` is the seam; two implementations satisfy it.
+
+`storage/legacy/` holds **verbatim copies** of four legacy modules
+(`constants.py`, `unified_db.py`, `bm25_disk.py`, `docstore.py`) at revision
+`ce679f11`, guarded by digest. `storage/sqlite.py` wraps them as a live
+backend. They are not the target — ADR-0022 retires them — they are the
+*control*: a parity run compares two working implementations rather than a new
+one against a JSON file, and can be re-queried with new queries on new corpora.
+
+### Parity, branch by branch
+
+| branch | parity | why |
+| --- | --- | --- |
+| dense | **exact** — order and L2 distances | pgvector `<->` is the same metric as sqlite-vec's KNN, and search is an exact scan |
+| bm25 | **exact** — order and scores | the tokenizer is a whitespace split and the formula is written down, so both are reproduced over term-statistics tables |
+| fts | match set and ordering | PostgreSQL has neither FTS5's tokenizer nor its `bm25()`; magnitudes differ by design and the divergence is reported |
+| fused | follows from the components | RRF is arithmetic over two ranked lists, and both backends share one implementation |
+
+Three things this surfaced that were not visible from reading the code:
+
+1. **PostgreSQL's parser eats identifiers.** `self.connection.execute` lexes as
+   a single `host` token, so `connection` is never indexed and a query for it
+   finds nothing. FTS5's `unicode61` splits on every non-alphanumeric. Both the
+   generated `fts` column and `search_fts` therefore fold non-alphanumerics to
+   spaces first. The fixture query `connection` matched 5 rows under FTS5 and 2
+   without the fold — that is what caught it.
+2. **The FTS fixtures were nearly vacuous.** Of the original seven queries, six
+   returned 0 or 1 FTS rows and the seventh returned a 13-row block whose FTS5
+   ranks all sat within 2.7e-7 of each other (FTS5 clamps a common term's idf
+   to 1e-6, leaving only length normalisation to order by). Four discriminating
+   queries were added to the P0 fixtures, and the parity report now asserts at
+   least four exist.
+3. **Weighted RRF makes the fused order undetermined when a component ties.**
+   Fusion scores by *position*, so two documents with identical dense distances
+   get different combined scores purely from scan order. The legacy engine had
+   the same property; three fixture queries hit it. Making the fused order
+   deterministic would be a ranking change needing its own fixtures, not part
+   of a storage port.
+
+No HNSW index exists yet, deliberately: it is approximate, and adding it in the
+same change would make the fixtures unable to tell a port bug from index
+recall. Exact scan first, parity proven, then HNSW with its own recall
+measurement.
+
 ## Deliberate differences from the legacy service
 
 Everything else is ported verbatim; these are the exceptions, each one
@@ -100,8 +158,22 @@ keeps working through cutover; the `ELITEA_DEEPWIKI_*` names take precedence.
 ## Running
 
 ```bash
-cd services/elitea-deepwiki && python -m pip install -e ".[test]" && python -m pytest
+cd services/elitea-deepwiki && python -m pip install -e ".[test]" && python -m pytest tests/unit tests/conformance
 ```
+
+The storage-parity suite needs PostgreSQL with pgvector:
+
+```bash
+podman run -d --name dwpg -e POSTGRES_USER=deepwiki -e POSTGRES_PASSWORD=deepwiki -e POSTGRES_DB=deepwiki -p 15434:5432 pgvector/pgvector:0.8.5-pg16
+```
+
+```bash
+cd services/elitea-deepwiki && python -m pip install -e ".[test,storage-postgres,storage-legacy]" && DEEPWIKI_TEST_DSN=postgresql://deepwiki:deepwiki@127.0.0.1:15434/deepwiki python -m pytest tests/storage -q -rs
+```
+
+Without `DEEPWIKI_TEST_DSN` those tests skip. CI sets `DEEPWIKI_REQUIRE_POSTGRES=1`,
+which turns the skip into a failure so a misconfigured workflow cannot report a
+parity run it never performed.
 
 ```bash
 cd services/elitea-deepwiki && python -m elitea_deepwiki
@@ -116,12 +188,13 @@ podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
 - [ ] **Move the engine** — `plugin_implementation/` plus its tests, wired
       behind the `Engine` seam. The composed `generate_wiki` result set is
       already pinned by `conformance/fixtures/generation/composed_result.json`.
-- [ ] **The storage port** — a backend interface over `unified_db.py` /
-      `bm25_disk.py` / the docstore, then the PostgreSQL implementation
-      (pgvector HNSW, `tsvector` + GIN, tables keyed by `wiki_id`, a `wikis`
-      registry table) with service-owned migrations against a dedicated
-      `deepwiki` database. Ranking parity is gated by
+- [x] **The storage port** — done for retrieval: the backend interface,
+      the PostgreSQL implementation and migration 0001, parity-gated against
       `conformance/fixtures/retrieval/`.
+- [ ] **HNSW** — `vector(n)` per deployment plus the index, with a recall
+      measurement against the now-trusted exact backend.
+- [ ] **Wire the registry table** — `wikis` exists in migration 0001 but
+      nothing writes it yet; that lands with the generation path.
 - [ ] **Durable invocation state** — a PostgreSQL `InvocationStore`, so a
       restart does not lose accepted operations and `custom_events` survive a
       missed poll.

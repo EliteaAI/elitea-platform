@@ -10,6 +10,10 @@ name: CI — DeepWiki
 #   * "Service conformance" drives the ported ASGI service and compares its
 #     answers with those same fixtures. This is what makes "the SPI is a frozen
 #     contract" (decision 2) mean something: moving the contract fails a build.
+#   * "Storage parity" runs the legacy file backend and the PostgreSQL backend
+#     side by side over the P0 retrieval fixtures. This is the gate on decision
+#     3 — the SQLite/FAISS to pgvector/tsvector port — which ADR-0022 names as
+#     carrying the largest share of port risk.
 #
 # Re-recording the fixtures from the legacy deepwiki_plugin checkout
 # (conformance/tools/record_*.py) is a local step — the legacy plugin is not
@@ -68,7 +72,57 @@ jobs:
 
       - name: Replay the SPI fixtures against the service
         working-directory: services/elitea-deepwiki
-        run: python -m pytest -q
+        # Scoped deliberately. tests/storage needs a database and would SKIP
+        # here, which would let this job's green tick look like it covered
+        # storage parity. That gate is the storage-parity job below.
+        run: python -m pytest tests/unit tests/conformance -q
+
+  storage-parity:
+    name: Storage parity (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    # The gate on ADR-0022 decision 3. It compares the PostgreSQL backend with
+    # the legacy file backend, both live, over the P0 retrieval fixtures.
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg16
+        env:
+          POSTGRES_USER: deepwiki
+          POSTGRES_PASSWORD: deepwiki
+          POSTGRES_DB: deepwiki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U deepwiki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DEEPWIKI_TEST_DSN: postgresql://deepwiki:deepwiki@127.0.0.1:5432/deepwiki
+      # Without this the suite SKIPS when it cannot reach a database, and a
+      # broken service block would report a green parity run that never
+      # connected. This turns that into a failure.
+      DEEPWIKI_REQUIRE_POSTGRES: "1"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the service with both storage backends
+        working-directory: services/elitea-deepwiki
+        run: |
+          python -m pip install --disable-pip-version-check \
+            -e ".[test,storage-postgres,storage-legacy]"
+
+      - name: Compare the backends against the P0 retrieval fixtures
+        working-directory: services/elitea-deepwiki
+        # -rs prints the skip reasons: a skipped parity case must be visible in
+        # the log, not inferred from a green tick.
+        run: python -m pytest tests/storage -q -rs
 
   image:
     name: Container builds
