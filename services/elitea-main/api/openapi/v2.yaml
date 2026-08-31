@@ -215,6 +215,17 @@ components:
             numbers, so an outage cannot read as healthy capacity.
       required: [available, total, active, can_start, mode]
       additionalProperties: true
+      x-elitea-passthrough: >-
+        NOTE(W2): the provider's /slots body is forwarded VERBATIM by
+        internal/api/v2/deepwiki/proxy.go:127 — the facade is an mTLS hop and
+        rewrites nothing on this route. The properties above are the shape the
+        recorded fixture pins
+        (services/elitea-deepwiki/conformance/fixtures/spi/slots.get.json), and
+        the permissive tail exists because the provider's own
+        `_normalize_slots_payload` adds mode-dependent keys (`namespace` in
+        jobs mode, `note` in subprocess mode) and may add more without this
+        spec changing. Constraining it would make the facade reject a body it
+        does not interpret.
 
     DeepWikiInvokeRequest:
       type: object
@@ -233,11 +244,38 @@ components:
             parameters:
               type: object
               additionalProperties: true
+              x-elitea-passthrough: >-
+                NOTE(W2): toolkit-level configuration, whose key set is the
+                PROVIDER's descriptor and not this spec's. The facade reads
+                exactly four names out of it — code_toolkit, llm_model,
+                max_tokens and the repository/branch pair — and re-encodes the
+                rest untouched
+                (internal/api/v2/deepwiki/invoke.go:118-157). A closed shape
+                here would drop a field the provider's own toolkit_config
+                declares, which is a payload the caller wrote correctly and
+                the facade silently truncated.
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the envelope around `parameters`. The facade replaces
+            only that key and re-encodes every sibling verbatim
+            (internal/api/v2/deepwiki/invoke.go:159-163), so a sibling the
+            provider gains later travels without a change here.
         parameters:
           type: object
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the TOOL's own arguments, whose names come from the
+            provider descriptor's args_schema (query, planner_type,
+            exclude_tests for generate_wiki) and differ per tool. The facade
+            forwards them untouched; only `configuration.parameters` is
+            rewritten (internal/api/v2/deepwiki/invoke.go:145-151).
       additionalProperties: true
+      x-elitea-passthrough: >-
+        NOTE(W2): the provider's frozen invocation envelope. Unrecognised
+        top-level keys are re-encoded verbatim rather than dropped
+        (internal/api/v2/deepwiki/invoke.go:165-169), which is what makes this
+        facade a proxy rather than a re-serialiser — the shape is recorded in
+        services/elitea-deepwiki/conformance/fixtures/spi/invoke.post.json.
 
     DeepWikiInvocationAccepted:
       type: object
@@ -286,6 +324,16 @@ components:
                   message: { type: string }
       required: [status]
       additionalProperties: true
+      x-elitea-passthrough: >-
+        NOTE(W2): the poll body is forwarded VERBATIM
+        (internal/api/v2/deepwiki/proxy.go:127); this route does no rewriting
+        at all. The three shapes are recorded in
+        services/elitea-deepwiki/conformance/fixtures/spi/invocations.get.json,
+        and the permissive tail exists because the terminal projection varies
+        by tool — `result_type` is absent while running, `custom_events`
+        appears only on a poll that drained some, and a tool may add its own
+        keys. Constraining it would make the facade reject a body it only
+        relays.
 
     # NOTE(W2): the former `Struct` / `GenericResponse` / `PaginatedResponse` /
     # `AdminPaginatedResponse` / `ArrayResponse` generic shells and the

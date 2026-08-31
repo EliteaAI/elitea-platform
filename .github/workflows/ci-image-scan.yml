@@ -401,9 +401,19 @@ jobs:
           # closure nobody publishes, which is a scan of something that does not
           # ship — the shape this gate exists to avoid in the other direction.
           #
-          # blocking: false to start, and publish.yml carries the same value and
-          # the same note: measure it against the first published image and
-          # tighten it if the count allows.
+          # BLOCKING, and it starts that way rather than being tightened later.
+          #
+          # It shipped as `blocking: false` and the coverage check refused it:
+          # an image stops blocking only when .github/image-scan-exempt.txt
+          # ALSO says so, and that register demands a findings issue and a
+          # retirement issue. There are neither, because this image has never
+          # been scanned — an exemption written on that basis would be an
+          # invention, and the register exists to stop exactly that.
+          #
+          # So it blocks, and the first scan is what measures it. If the count
+          # turns out to be dominated by the Debian base the way
+          # elitea-worker-python's is, THAT measurement is what earns an entry
+          # in the register, with the numbers in it.
           - name: elitea-deepwiki
             context: .
             dockerfile: ./services/elitea-deepwiki/Containerfile
@@ -411,7 +421,7 @@ jobs:
             build_args: |
               EXTRAS=[storage-postgres]
             expect_type: python-pkg
-            blocking: false
+            blocking: true
 
     steps:
       - uses: actions/checkout@v7

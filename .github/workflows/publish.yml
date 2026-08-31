@@ -417,20 +417,17 @@ jobs:
           - name: elitea-worker-rust
             expect_type: rustbinary
             blocking: true
-          # python-pkg, like the other two Python images, and NOT blocking for
-          # the same reason they are not: a Debian-slim base with a pip closure
-          # carries base-image findings this repository does not control, and
-          # .github/image-scan-exempt.txt is where a measured exemption is
-          # recorded. `blocking: false` reports the count and does not stop the
-          # release; it relaxes no threshold and no dormancy guard.
+          # python-pkg, and BLOCKING — unlike the other two Python images.
           #
-          # It is NOT a permanent posture. This value should be measured
-          # against the first published image and tightened to `true` if the
-          # count allows, exactly as elitea-worker-rust's comment above
-          # records having been.
+          # Their exemptions are measured: .github/image-scan-exempt.txt names
+          # the finding counts and the issues that end them. This image has
+          # never been scanned, so it has no such measurement, and an exemption
+          # written without one would be an invention. It blocks until a real
+          # count says otherwise; ci-image-scan.yml carries the same value and
+          # the same reasoning.
           - name: elitea-deepwiki
             expect_type: python-pkg
-            blocking: false
+            blocking: true
 
     steps:
       # The gate script is read from the released tree, not from the default
