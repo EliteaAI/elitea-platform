@@ -92,4 +92,19 @@ export interface AgentPipelineVersionOption {
   readonly name: string;
   readonly created_at?: string | undefined;
   readonly status?: string | undefined;
+  /**
+   * Whether this is the application's default version, as the SERVER reports
+   * it: `GET /application/...`'s `versions[].is_default`, derived by
+   * `services/elitea-main/internal/api/v2/applications/handler.go`'s
+   * `getVersions` from `applications.meta.default_version_id`.
+   *
+   * This is what lets the version bar show the default on FIRST render.
+   * Before the read existed, `AgentVersionControls` could only know the
+   * default it had itself just set, so a reload lost it.
+   *
+   * Optional because not every list that feeds this option shape carries it —
+   * `undefined` means "this list cannot say", which the selector treats the
+   * same as `false` rather than as "no default exists".
+   */
+  readonly is_default?: boolean | undefined;
 }

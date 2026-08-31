@@ -170,7 +170,7 @@ type Repository interface {
 	Get(ctx context.Context, projectID, conversationID string) (Conversation, error)
 	Create(ctx context.Context, projectID string, conv Conversation) (Conversation, error)
 	Update(ctx context.Context, projectID, conversationID string, conv Conversation) (Conversation, error)
-	Delete(ctx context.Context, projectID, conversationID string) error
+	Delete(ctx context.Context, projectID, conversationID string) ([]AttachmentRef, error)
 	ListMessages(ctx context.Context, projectID, conversationID string, query MessagesQuery) (MessagesListResponse, error)
 	ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
 	ListParticipants(ctx context.Context, projectID, conversationID string) ([]Participant, error)
@@ -466,14 +466,53 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// Delete removes a conversation and, with it, the stored bytes of every
+// attachment its messages carried.
+//
+// The byte cleanup is NOT opt-in here, and that is the one place this route
+// deliberately differs from DeleteMessage's `delete_attachment` flag. A message
+// delete leaves the rest of the conversation standing, so keeping the files is
+// a defensible choice a client can make; deleting the conversation removes
+// every row that named them — the groups, the items, the
+// chat_messages_attachment rows — so there is nothing left in the product that
+// could ever show, download or delete those files again. Leaving them was not
+// "keeping" them, it was leaking them until the retention sweeper
+// (internal/runtimecomposition/artifact_retention_sweep.go) happened to expire
+// them.
+//
+// The ORDER is the one Handler.DeleteMessage explains at length: the repository
+// applies its guards, collects the refs inside its transaction and commits, and
+// only then are the bytes touched. Pylon's opposite order destroys files for
+// requests that go on to refuse; the cost of this one — rows gone, bytes not —
+// is bounded, because the objects are still recorded in
+// `elitea_storage.objects` and the sweeper still finds them.
+//
+// KNOWN RESIDUE, stated rather than implied: this collects the attachments
+// reachable from message items. Bytes uploaded into a conversation that were
+// never sent with a message have no item row, so they are not among the refs
+// and still fall to the sweeper. `DeleteAttachments` (the explicit
+// per-conversation attachment route) is the path that sweeps those by key
+// prefix.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 
-	if err := h.repo.Delete(r.Context(), projectID, conversationID); err != nil {
+	attachments, err := h.repo.Delete(r.Context(), projectID, conversationID)
+	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
+
+	if len(attachments) > 0 {
+		if err := h.deleteAttachmentObjects(r.Context(), projectID, attachments); err != nil {
+			// 500, not 204. The conversation rows are already gone, so
+			// answering success would claim a cleanup that did not happen and
+			// nothing would ever retry it.
+			apierr.Write(w, err)
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

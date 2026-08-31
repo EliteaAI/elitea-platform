@@ -115,7 +115,7 @@ func TestDeleteConversationRemovesTheWholeGraph(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	_, conversationUUID, _ := seedConversationWithParticipant(t, repo, "question", "answer")
 
-	if err := repo.Delete(context.Background(), "1", conversationUUID); err != nil {
+	if _, err := repo.Delete(context.Background(), "1", conversationUUID); err != nil {
 		t.Fatalf("delete conversation: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestDeleteConversationAcceptsTheNumericID(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	numericID, _, _ := seedConversationWithParticipant(t, repo, "question")
 
-	if err := repo.Delete(context.Background(), "1", numericID); err != nil {
+	if _, err := repo.Delete(context.Background(), "1", numericID); err != nil {
 		t.Fatalf("delete conversation by numeric id: %v", err)
 	}
 	if conversations, _, _, _, _ := countConversationRows(t, repo); conversations != 0 {
@@ -150,7 +150,7 @@ func TestDeleteConversationRejectsAnUnknownConversation(t *testing.T) {
 		"e0ac9d1e-06e4-4d3f-9e39-1f3a1c7f6d55",
 		"not-an-identifier",
 	} {
-		if err := repo.Delete(context.Background(), "1", identifier); err == nil {
+		if _, err := repo.Delete(context.Background(), "1", identifier); err == nil {
 			t.Errorf("deleting conversation %q succeeded, want an error", identifier)
 		}
 	}

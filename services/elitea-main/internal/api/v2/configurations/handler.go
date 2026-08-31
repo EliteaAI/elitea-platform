@@ -275,8 +275,8 @@ func (h *Handler) Routes() chi.Router {
 	// still gated, and on the list string, because a gate must match what the
 	// route is for and not what its body does today: the reference reads the
 	// project's tts configuration row, which is the same inventory access every
-	// other read here takes. When #323 gives it a real body the gate is already
-	// the right one.
+	// other read here takes. When a voice listing exists upstream to give this
+	// route a real body, the gate is already the right one.
 	r.With(list).Get("/tts_voices/{projectID}", h.TTSVoices)
 	r.With(list).Get("/tts_voices/{mode}/{projectID}", h.TTSVoices)
 	return r
@@ -1625,24 +1625,29 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 //     that cache with a provider round trip when the configuration is saved.
 //   - the provider itself, on `refresh=true`.
 //
-// This platform makes no audio call to any provider. The gateway serves no audio
-// route (#323), no code path writes `meta.voices`, and the create path stores
-// only the `meta` object the client sends. Both sources are therefore empty by
-// construction, for every project, forever.
+// Neither source has anything in it, and the reason is no longer "there is no
+// audio at all". Issue #323 landed: the gateway now serves synthesis and
+// transcription (`POST /llm/v1/audio/speech`, `/audio/transcriptions`,
+// `/audio/translations` — services/elitea-llm-gateway/internal/api/router.go,
+// with model mapping and budget gating). What it does NOT serve, in any
+// dialect, is a voice-LISTING route: nothing here can ask a provider "which
+// voices do you have". And no code path writes `meta.voices` — the create path
+// stores only the `meta` object the client sends — so the cache the reference
+// falls back on is empty by construction, for every project.
 //
-// Reading the cache anyway would restore the same defect in a longer form: the
+// Reading that cache anyway would restore the same defect in a longer form: the
 // answer would still be an empty list, and the caller still could not tell an
 // empty cache from a route that does no work. So the route reports the missing
 // capability instead.
 //
-// Do not restore the 200 with an empty list. Issue #323 owns the audio data
-// plane; when a synthesis route exists, this handler serves the real voices and
-// this constant goes with the stub.
+// Do not restore the 200 with an empty list. When a voice-listing route exists
+// upstream — or something starts filling `meta.voices` from one — this handler
+// serves the real voices and this constant goes with the stub.
 const ttsVoicesUnavailable = "the TTS voice list is not available in this platform. The reference reads voices " +
 	"from the TTS provider, and caches them on the configuration row from the same provider call. This platform " +
-	"serves no audio route to any provider (issue #323), so neither source holds data. This route reports the " +
-	"missing capability rather than answering an empty list, which a caller cannot tell from a project that has " +
-	"no voices."
+	"serves audio synthesis and transcription (issue #323) but no voice-listing audio route to any provider, and " +
+	"nothing fills that cache, so neither source holds data. This route reports the missing capability rather " +
+	"than answering an empty list, which a caller cannot tell from a project that has no voices."
 
 // TTSVoices refuses. It answered 200 with `{"voices": []}` for every project
 // until #466 — see ttsVoicesUnavailable for why that answer was worse than a
