@@ -40,7 +40,7 @@ import {
  */
 
 /** The service-prompt key the agent-instructions edit is steered by. */
-export const AI_EDIT_INSTRUCTIONS_PROMPT_KEY = 'edit_application_draft';
+const AI_EDIT_INSTRUCTIONS_PROMPT_KEY = 'edit_application_draft';
 
 export interface UseAiEditAvailabilityOptions {
   readonly projectId: string | undefined;

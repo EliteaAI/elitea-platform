@@ -10,7 +10,7 @@
  * the other from a single pass.
  */
 
-export type TextDiffSegmentType = 'equal' | 'added' | 'removed';
+type TextDiffSegmentType = 'equal' | 'added' | 'removed';
 
 export interface TextDiffSegment {
   readonly type: TextDiffSegmentType;

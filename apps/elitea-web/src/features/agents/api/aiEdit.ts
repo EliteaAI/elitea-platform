@@ -86,7 +86,7 @@ export function servicePromptDefaultsByKey(
 
 /* ── GET /configurations/configurations/{projectId} (service prompts) ────── */
 
-export interface AiEditConfigurationWire {
+interface AiEditConfigurationWire {
   readonly type?: string;
   readonly data?: Readonly<Record<string, unknown>>;
   readonly elitea_title?: string;
@@ -104,7 +104,7 @@ export interface AiEditConfigurationPageWire {
 
 const SERVICE_PROMPT_PAGE_SIZE = 100;
 
-export function buildServicePromptsUrl(projectId: string | number): string {
+function buildServicePromptsUrl(projectId: string | number): string {
   const search = new URLSearchParams();
   search.append('include_shared', 'true');
   search.append('shared_offset', '0');

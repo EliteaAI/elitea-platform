@@ -41,7 +41,7 @@ export const INDEXING_REPORT_KIND_ORDER: readonly IndexingReportKindValue[] = [
 ];
 
 /** MUI palette key a category's headline is tinted with. */
-export type IndexingReportTone = 'success' | 'warning' | 'error';
+type IndexingReportTone = 'success' | 'warning' | 'error';
 
 export interface IndexingReportKindPresentation {
   readonly icon: string;

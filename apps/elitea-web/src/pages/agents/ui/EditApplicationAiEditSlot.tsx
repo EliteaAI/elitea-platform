@@ -19,7 +19,7 @@ import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
  * the one setter it writes. Structural, not the bridge's own type: the slot
  * has no business with the rest of it.
  */
-export interface EditApplicationAiEditEditor {
+interface EditApplicationAiEditEditor {
   readonly values: {
     readonly version_details: {
       readonly instructions?: string | undefined;

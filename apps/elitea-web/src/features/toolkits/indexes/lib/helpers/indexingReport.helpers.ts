@@ -26,7 +26,7 @@ export function pickItemNoun(count: number, labels: IndexingItemLabels): string 
  * of an up-to-date run and are already in its headline, so repeating them as
  * "skipped" there would contradict it.
  */
-export function visibleCategoryGroups(category: IndexingReportCategory): IndexingReportGroup[] {
+function visibleCategoryGroups(category: IndexingReportCategory): IndexingReportGroup[] {
   return category.groups.filter((group) => group.count > 0 && group.reason !== 'unchanged');
 }
 
