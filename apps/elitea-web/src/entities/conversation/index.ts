@@ -100,11 +100,8 @@ import {
 } from './lib/chat.helpers';
 import { extractFirstName, extractHumanReadableName, getChatUserSettings, setUserLLmSettings } from './lib/newConversation.helpers';
 
-export type { Conversation, ConversationParticipantRef, DraftConversation } from './model/types';
-export { hasPlaybackConversation, isPinnedConversation, sortConversations } from './model/selectors';
-export { createDraftConversation } from './lib/normalise';
-
-export type { ConversationWire } from './api/conversationApi';
+export type { Conversation} from './model/types';
+export { hasPlaybackConversation} from './model/selectors';
 
 /** Conversation + message CRUD (`../api/conversationApi.ts`, `../api/messageApi.ts`) — TanStack hooks (`use*`) and their underlying plain-async fetchers, bundled. */
 export const conversationApi = {
@@ -180,8 +177,6 @@ export const conversationNavigation = {
   buildResetSearchParams,
 } as const;
 
-export { useUpdateConversationTimestamp } from './lib/hooks/useUpdateConversationTimestamp';
-export { useHighlightUserMessage } from './lib/hooks/useHighlightUserMessage';
 export { useChatStreaming } from './lib/hooks/useChatStreaming';
 export { useAttachmentState } from './lib/hooks/useAttachmentState';
 export { useUploadAttachments } from './lib/hooks/useUploadAttachments';
@@ -207,3 +202,16 @@ export const newConversationHelpers = {
   getChatUserSettings,
   setUserLLmSettings,
 } as const;
+
+/**
+ * Share a conversation by link. Exported from the slice's PUBLIC API because
+ * `features/chat-conversation-list` owns the affordance and must not reach past
+ * this barrel — `no-deep-slice-import-cross-slice` rejects that, and rightly:
+ * a deep import binds a consumer to this slice's file layout.
+ */
+export {
+  SHARED_CHAT_LINKS_QUERY_KEY,
+  useCreateShareLinkMutation,
+  useRevokeShareLinkMutation,
+  useShareLinksQuery} from './api/sharedLinksApi';
+export type { ShareLinkExpiry, SharedChatLink } from './api/sharedLinksApi';

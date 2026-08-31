@@ -28,7 +28,7 @@
  * one another).
  */
 
-export interface ConversationParticipantRef {
+interface ConversationParticipantRef {
   readonly id: string;
   readonly entityName: string;
 }

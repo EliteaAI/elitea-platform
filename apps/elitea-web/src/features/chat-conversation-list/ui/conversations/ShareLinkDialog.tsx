@@ -24,7 +24,7 @@ import Typography from '@mui/material/Typography';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
 
-import { SHARED_CHAT_LINKS_QUERY_KEY, useCreateShareLinkMutation, useRevokeShareLinkMutation, useShareLinksQuery, type ShareLinkExpiry, type SharedChatLink } from '@/entities/conversation/api/sharedLinksApi';
+import { SHARED_CHAT_LINKS_QUERY_KEY, useCreateShareLinkMutation, useRevokeShareLinkMutation, useShareLinksQuery, type ShareLinkExpiry, type SharedChatLink } from '@/entities/conversation';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { BaseModal } from '@/shared/ui/BaseModal';

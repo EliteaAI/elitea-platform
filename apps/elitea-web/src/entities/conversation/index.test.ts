@@ -11,21 +11,34 @@ import * as entity from './index';
  * src/shared/brand/index.test.ts. Also gives knip a live import edge into
  * this slice ahead of its Wave-2 consumers.
  */
+/*
+ * CURATED, not a barrel (§3.3, budget 20). Four runtime symbols left when the
+ * share-by-link hooks joined: `createDraftConversation`, `isPinnedConversation`,
+ * `sortConversations`, `useUpdateConversationTimestamp` and
+ * `useHighlightUserMessage` were exported here but imported from here by
+ * NOTHING — every consumer reaches them inside the slice. Re-exporting them
+ * bought no caller anything and spent the budget that the share surface needs,
+ * so they came off rather than the budget being waived.
+ *
+ * The share hooks are on the barrel because `features/chat-conversation-list`
+ * owns that affordance and `no-deep-slice-import-cross-slice` forbids it
+ * reaching past this file — a deep import would bind that feature to this
+ * slice's layout.
+ */
 const PUBLIC_SURFACE = [
-  'createDraftConversation',
+  'SHARED_CHAT_LINKS_QUERY_KEY',
   'hasPlaybackConversation',
-  'isPinnedConversation',
-  'sortConversations',
   'conversationApi',
   'contextManagementApi',
   'useChatSessionStore',
   'useConversationLifecycle',
   'conversationNavigation',
-  'useUpdateConversationTimestamp',
-  'useHighlightUserMessage',
   'useChatStreaming',
   'useAttachmentState',
   'useUploadAttachments',
+  'useShareLinksQuery',
+  'useCreateShareLinkMutation',
+  'useRevokeShareLinkMutation',
   'chatHelpers',
   'newConversationHelpers',
 ] as const;

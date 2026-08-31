@@ -313,7 +313,19 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * entries are handwritten, carrying operationIds for the reverse check.
  */
 const GENERATED_OPERATION_COUNT = 162;
-const MANIFEST_ENTRY_COUNT = 189;
+/*
+ * 189 -> 191. The canvas mermaid quick-fix added two entries: the blocking
+ * `predict_llm` sender (`chatMessages.generateContentBlocking`) and the
+ * configuration read its capability gate gets the service prompt from.
+ *
+ * Worth recording next to the number: the quick-fix control renders in NO
+ * build today, because `predict_llm` is unrouted — router.go's NOTE(#126)
+ * records the whole Predict/LLM group standing behind a nil RouterConfig
+ * .Predictor gate nothing ever assigned, so it 404s everywhere. The manifest
+ * entry describes a sender that exists and is gated off, which is why it is
+ * counted rather than withheld.
+ */
+const MANIFEST_ENTRY_COUNT = 191;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {

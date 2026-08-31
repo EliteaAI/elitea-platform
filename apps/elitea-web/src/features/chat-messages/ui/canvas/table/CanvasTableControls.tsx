@@ -11,7 +11,7 @@
  */
 import { IconButton, Tooltip } from '@mui/material';
 
-import type { CanvasEditHeaderTable } from '../CanvasEditHeader';
+import type { CanvasEditHeaderTable } from './canvasTableTypes';
 
 import { ImportTableButton } from './ImportTableButton';
 

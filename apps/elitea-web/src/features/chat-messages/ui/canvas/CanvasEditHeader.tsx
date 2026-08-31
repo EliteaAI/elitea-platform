@@ -15,10 +15,10 @@ const IconButtonAny = IconButton as React.ComponentType<
 
 import Tooltip from '@mui/material/Tooltip';
 
-import type { MarkdownTableData } from '../../lib/markdownTable';
 
 import { CANVAS_LANGUAGE_OPTIONS } from './canvasLanguageOptions';
 import { CanvasTableControls } from './table/CanvasTableControls';
+import type { CanvasEditHeaderTable } from './table/canvasTableTypes';
 
 /** Action callbacks grouped to stay within §3.5 prop budget. */
 export interface CanvasEditHeaderActions {
@@ -33,19 +33,6 @@ export interface CanvasEditHeaderActions {
 }
 
 /** Table-editing actions grouped to stay within §3.5 prop budget. */
-export interface CanvasEditHeaderTable {
-  readonly isTableEditing?: boolean | undefined;
-  readonly hasSelectedRowsColumns?: {
-    readonly hasSelectedRows: boolean;
-    readonly hasSelectedColumns: boolean;
-  } | undefined;
-  readonly onClickAddColumn?: (() => void) | undefined;
-  readonly onClickAddRow?: (() => void) | undefined;
-  readonly onDeleteSelectedRowsOrColumns?: (() => void) | undefined;
-  readonly onImportTableData?: ((data: MarkdownTableData) => void) | undefined;
-  /** Surfaces a failed CSV/TSV read from the import picker (this app has no toast hook yet). */
-  readonly onImportError?: ((error: unknown) => void) | undefined;
-}
 
 /** Language select config grouped to stay within §3.5 prop budget. */
 export interface CanvasEditHeaderLangSelect {
@@ -317,3 +304,5 @@ export function CanvasEditHeader({
     </Box>
   );
 }
+
+export type { CanvasEditHeaderTable } from './table/canvasTableTypes';
