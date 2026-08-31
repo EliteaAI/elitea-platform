@@ -15,9 +15,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 // maxRequestBytes bounds one JSON-RPC message. MCP messages are tool names and
@@ -193,22 +196,28 @@ func (h *Handler) listTools(r *http.Request, schema string, s scope, message rpc
 	return newResult(message.ID, map[string]any{"tools": tools})
 }
 
-// ToolExecutionUnavailableReason is what a `tools/call` gets back.
+// ToolExecutionUnavailableReason is what a `tools/call` gets back on a
+// deployment with NO AGENT RUNTIME — `runtime.enabled` off, so the composition
+// root has no `AgentStart` use case to hand this package and `h.start` is nil.
 //
 // Exported so the acceptance tests pin the stated reason, not just the shape.
 //
-// This is the one capability issue 252 explicitly allows to be unwired ("actual
-// tool execution behind tools_call may depend on the agent-runtime work … must
-// at minimum serve real tool listings and return honest errors for execution
-// paths not yet wired, never fake 200s"). Both execution paths pylon has are
-// out of reach from this service today:
+// IT IS UNCHANGED, byte for byte, from before agent execution was wired, and
+// that is deliberate rather than incidental: on a runtime-less deployment
+// nothing about what this server can do has changed, so the sentence its
+// clients already have must not change either. Both execution paths pylon has
+// are still out of reach there:
 //
 //   - an AGENT tool runs `do_predict`, the pylon prediction entry point. The
 //     transport that reached it from Go was removed in issue 126 and its
 //     replacement — the Redis command stream and the Python worker — is not
-//     wired to this endpoint.
+//     running at all on such a deployment.
 //   - a TOOLKIT tool runs `do_runtool`, which dispatches into the SDK toolkit
 //     the worker holds. Same transport, same state.
+//
+// With the runtime ENABLED the two halves separate: an agent tool runs (see
+// execute.go), and a toolkit tool gets ToolkitExecutionUnavailableReason, which
+// refuses only the half that is genuinely still missing.
 //
 // It is returned as a CallToolResult with `isError: true` rather than a
 // JSON-RPC error because that is what the specification reserves for a tool
@@ -220,7 +229,16 @@ const ToolExecutionUnavailableReason = "this MCP server can list this project's 
 
 func (h *Handler) callTool(r *http.Request, schema string, s scope, message rpcMessage) rpcResponse {
 	var params struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Arguments struct {
+			// The agent tool schema every listing advertises has exactly one
+			// property, `task`, and it is required (agentTaskSchema). Decoding
+			// only that is not a shortcut: an unknown argument is IGNORED by
+			// the specification's own reading of a tool's input schema, and
+			// silently forwarding one into the agent's prompt would make the
+			// tool's advertised contract a lie.
+			Task string `json:"task"`
+		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(message.Params, &params); err != nil || strings.TrimSpace(params.Name) == "" {
 		return newError(message.ID, codeInvalidParams, "tools/call requires a 'name' parameter")
@@ -234,9 +252,11 @@ func (h *Handler) callTool(r *http.Request, schema string, s scope, message rpcM
 	if err != nil {
 		return newError(message.ID, codeInternalError, "tool lookup is temporarily unavailable")
 	}
+	var target Tool
 	found := false
 	for _, tool := range tools {
 		if tool.Name == params.Name {
+			target = tool
 			found = true
 			break
 		}
@@ -248,13 +268,112 @@ func (h *Handler) callTool(r *http.Request, schema string, s scope, message rpcM
 		return newError(message.ID, codeInvalidParams, "unknown tool: "+params.Name)
 	}
 
-	return newResult(message.ID, map[string]any{
-		"isError": true,
-		"content": []map[string]any{{
-			"type": "text",
-			"text": ToolExecutionUnavailableReason,
-		}},
-	})
+	// NO RUNTIME. The composition root had no AgentStart use case to give this
+	// handler, which is what `runtime.enabled` being off looks like from here.
+	// The answer is the sentence this endpoint has always given, unchanged —
+	// see ToolExecutionUnavailableReason.
+	if h.start == nil {
+		return newResult(message.ID, errorResult(ToolExecutionUnavailableReason))
+	}
+	// A TOOLKIT tool. The half this change does not attempt.
+	if !target.runnableAgent() {
+		return newResult(message.ID, errorResult(ToolkitExecutionUnavailableReason))
+	}
+
+	task := strings.TrimSpace(params.Arguments.Task)
+	if task == "" {
+		// `task` is `required` in the schema this very server published, so an
+		// empty one is the request being wrong rather than the tool failing.
+		return newError(message.ID, codeInvalidParams,
+			"tools/call on an agent requires a non-empty 'task' argument")
+	}
+
+	projectID, ok := runProjectID(r)
+	if !ok {
+		// Unreachable in practice: Endpoint already refused a project id that
+		// is not a plain positive integer before this handler was reached.
+		return newError(message.ID, codeInvalidParams, "invalid project id")
+	}
+	actorUserID, refusal := h.authorizeRun(r, projectID)
+	if refusal != nil {
+		return newResult(message.ID, refusal)
+	}
+
+	return newResult(message.ID, h.runAgentTool(r.Context(), schema, projectID, actorUserID, target, task))
+}
+
+// authorizeRun decides whether this caller may EXECUTE in this project, and
+// resolves the user the turn is attributed to.
+//
+// It returns either an actor id or a CallToolResult to send instead. The
+// refusal is a result rather than a JSON-RPC error on purpose: the request was
+// well formed and the model driving the client is the one that has to read why
+// nothing ran.
+//
+// The permission is `models.chat.messages.create` in the DEFAULT mode — the
+// same string and the same mode the chat start route requires
+// (agentexecution.CurrentApplicationStartPermission /
+// CurrentApplicationStartMode), restated here rather than imported because
+// importing the route package from this one would point the dependency the
+// wrong way. If those constants ever change, TestMCPRunUsesTheChatStartPermission
+// fails.
+func (h *Handler) authorizeRun(r *http.Request, projectID int64) (int64, map[string]any) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		return 0, errorResult("running an agent requires an authenticated caller; nothing was executed")
+	}
+	if h.permissions == nil {
+		// FAIL CLOSED. A handler with no resolver cannot decide, and "cannot
+		// decide" must not mean "allowed" for the one capability on this
+		// endpoint that spends money and drives tools.
+		return 0, errorResult("this deployment cannot authorize an MCP agent run, so nothing was executed")
+	}
+	resolution, err := h.permissions.ResolvePermissions(
+		r.Context(), user, runPermissionMode, strconv.FormatInt(projectID, 10),
+	)
+	if err != nil {
+		return 0, errorResult("your permissions for this project could not be resolved, so nothing was executed")
+	}
+	allowed := false
+	for _, permission := range resolution.Permissions {
+		if permission == runPermission {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return 0, errorResult("running an agent in this project requires the '" + runPermission +
+			"' permission, which this caller does not hold. Nothing was executed.")
+	}
+	if resolution.UserID <= 0 {
+		// The resolver's contract is to populate this on success. A zero here
+		// is a resolver bug, and admitting a turn authored by user 0 would
+		// write chat rows nobody can be held to.
+		return 0, errorResult("your user identity could not be resolved, so nothing was executed")
+	}
+	return resolution.UserID, nil
+}
+
+const (
+	// runPermission and runPermissionMode are agentexecution's
+	// CurrentApplicationStartPermission and CurrentApplicationStartMode. See
+	// authorizeRun for why they are restated rather than imported.
+	runPermission     = "models.chat.messages.create"
+	runPermissionMode = auth.PermissionModeDefault
+)
+
+// runProjectID re-reads the project id from the URL as a number.
+//
+// The handler chain carries the tenant SCHEMA, which is a quoted identifier and
+// cannot be turned back into an id; the admission contract needs the number.
+// Both come from the same URL parameter through the same validation, so they
+// cannot name different projects.
+func runProjectID(r *http.Request) (int64, bool) {
+	parsed, err := strconv.ParseInt(chi.URLParam(r, "projectID"), 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func writeRPC(w http.ResponseWriter, status int, response rpcResponse) {

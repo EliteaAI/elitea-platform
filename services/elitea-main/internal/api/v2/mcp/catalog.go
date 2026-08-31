@@ -30,10 +30,47 @@ import (
 
 // Tool is one MCP tool descriptor. The JSON tags are the protocol's, including
 // the camelCase `inputSchema`.
+//
+// # The unexported target discriminator
+//
+// The three exported fields are the whole of the wire shape, and they are not
+// enough to RUN anything. `toolIdentifier` is lossy (every character outside
+// `[A-Za-z0-9_\-]` becomes `_`) and `dedupeByName` drops collisions, so a name
+// cannot be mapped back to the row it came from: two differently-named agents
+// can collapse to one identifier, and the listing keeps whichever the SELECT
+// emitted first. Re-deriving a call target from the name would therefore be
+// able to run an agent the caller was never shown.
+//
+// So the descriptor carries its own target, populated by the SAME SELECTs that
+// build the listing (`agentTools` already selected `application.id` and threw
+// it away). The fields are UNEXPORTED, which is what keeps this internal:
+// encoding/json never marshals an unexported field, so the `tools/list`
+// response is byte-identical to what it was before this existed. That is
+// pinned by TestToolWireShapeExcludesTargetDiscriminator — a serialised
+// discriminator would change every existing client's tool list.
+//
+// Zero means "not an agent": a toolkit tool has no application behind it, and
+// callTool uses exactly that to tell the two halves apart.
 type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
+
+	// applicationID is the `applications` row this tool runs.
+	applicationID int64
+	// applicationVersionID is the `application_versions` row the run is pinned
+	// to. It is REQUIRED alongside applicationID rather than optional: the turn
+	// resolver joins `application_versions` through the participant mapping's
+	// `entity_settings ->> 'version_id'` (internal/db/queries/agent_chat.sql,
+	// ResolveCurrentApplicationTurn), so a target with no version cannot be
+	// admitted at all.
+	applicationVersionID int64
+}
+
+// runnableAgent reports whether this descriptor names an agent this service can
+// execute. A toolkit tool answers false — see ToolkitExecutionUnavailableReason.
+func (t Tool) runnableAgent() bool {
+	return t.applicationID > 0 && t.applicationVersionID > 0
 }
 
 // toolSource is the seam the HTTP layer depends on, so the protocol handling in
@@ -115,14 +152,20 @@ func (p postgresToolSource) agentTools(ctx context.Context, schema string) ([]To
 	if p.handler.pool == nil {
 		return nil, errNoPool
 	}
+	// `version.id` is selected for the target discriminator, and the ORDER BY
+	// gained `version.id DESC` so DISTINCT ON picks a DEFINED row — the newest
+	// tagged version — rather than whichever one the plan happened to emit
+	// first. Neither changes the listing: `Name` and `Description` come from
+	// `application`, which DISTINCT ON already collapsed to one row per id.
 	rows, err := p.handler.pool.Query(ctx, fmt.Sprintf(`
-		SELECT DISTINCT ON (application.id) application.id, application.name, COALESCE(application.description, '')
+		SELECT DISTINCT ON (application.id)
+		       application.id, version.id, application.name, COALESCE(application.description, '')
 		FROM %[1]s.applications AS application
 		JOIN %[1]s.application_versions AS version ON version.application_id = application.id
 		JOIN %[1]s.application_version_tag_association AS association ON association.version_id = version.id
 		JOIN %[1]s.tags AS tag ON tag.id = association.tag_id
 		WHERE tag.name = 'mcp'
-		ORDER BY application.id`, schema))
+		ORDER BY application.id, version.id DESC`, schema))
 	if err != nil {
 		return nil, err
 	}
@@ -130,15 +173,17 @@ func (p postgresToolSource) agentTools(ctx context.Context, schema string) ([]To
 
 	var tools []Tool
 	for rows.Next() {
-		var id int64
+		var id, versionID int64
 		var name, description string
-		if err := rows.Scan(&id, &name, &description); err != nil {
+		if err := rows.Scan(&id, &versionID, &name, &description); err != nil {
 			return nil, err
 		}
 		tools = append(tools, Tool{
-			Name:        toolIdentifier(name),
-			Description: description,
-			InputSchema: agentTaskSchema(),
+			Name:                 toolIdentifier(name),
+			Description:          description,
+			InputSchema:          agentTaskSchema(),
+			applicationID:        id,
+			applicationVersionID: versionID,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -161,12 +206,13 @@ func (p postgresToolSource) agentToolForVersion(ctx context.Context, schema stri
 	if p.handler.pool == nil {
 		return nil, errNoPool
 	}
+	var applicationID int64
 	var name, description string
 	err := p.handler.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT application.name, COALESCE(application.description, '')
+		SELECT application.id, application.name, COALESCE(application.description, '')
 		FROM %[1]s.application_versions AS version
 		JOIN %[1]s.applications AS application ON application.id = version.application_id
-		WHERE version.id = $1`, schema), versionID).Scan(&name, &description)
+		WHERE version.id = $1`, schema), versionID).Scan(&applicationID, &name, &description)
 	if err != nil {
 		if isNoRows(err) {
 			// An id that names nothing in this project is an empty listing, not
@@ -181,6 +227,11 @@ func (p postgresToolSource) agentToolForVersion(ctx context.Context, schema stri
 		Name:        toolIdentifier(name),
 		Description: description,
 		InputSchema: agentTaskSchema(),
+		// The version is the one the CALLER named in the URL, not a
+		// project-wide pick — which is the whole point of this scope, and the
+		// reason a resource-scoped call runs exactly the version addressed.
+		applicationID:        applicationID,
+		applicationVersionID: versionID,
 	}}, nil
 }
 

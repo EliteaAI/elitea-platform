@@ -40,13 +40,22 @@
 //     `meta.mcp_options.available_by_mcp` — by catalog.go. The REST `tools_list`
 //     reads the durable MCP server store (registry.go, issue 335). Nothing
 //     about either is hardcoded or invented.
-//   - HONEST PROTOCOL ERROR. `tools/call`. Listing a tool and running it are
-//     different capabilities: running an agent needs the agent runtime, and
-//     running a toolkit tool needs the Python worker's toolkit dispatch.
-//     Neither is reachable from this service yet, so a call returns a
-//     CallToolResult with `isError: true` naming exactly what is missing (see
-//     server.go). It never returns an empty successful result, which is what
-//     an agent host would read as "the tool ran and produced nothing".
+//   - REAL, ON A DEPLOYMENT WITH THE RUNTIME. `tools/call` on an AGENT tool.
+//     It admits an ordinary agent turn through the same use case the chat
+//     start route drives, waits for it, bounded, and answers with the text the
+//     projection settled on (execute.go). It is authorized per call on
+//     `models.chat.messages.create`, the permission chat itself requires, so
+//     this endpoint is not a way around it.
+//   - HONEST PROTOCOL ERROR, in two shapes now that the halves have separated.
+//     A TOOLKIT tool still cannot run — that needs the Python worker's toolkit
+//     dispatch, which this service does not have — and answers
+//     ToolkitExecutionUnavailableReason. A deployment with no agent runtime at
+//     all (`runtime.enabled` off) answers the original
+//     ToolExecutionUnavailableReason, unchanged, for both kinds. Either way it
+//     is a CallToolResult with `isError: true` naming exactly what is missing,
+//     and NEVER an empty successful result — which is what an agent host would
+//     read as "the tool ran and produced nothing". That rule also governs a
+//     run that finishes with no text, fails, or pauses: see execute.go.
 //   - HONEST 501. `tools_call`, the one remaining REST refusal. It dispatches a
 //     tool invocation to the server that publishes the tool. This service does
 //     not store that server's credentials, and it runs no socket.io server to
@@ -112,6 +121,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 
@@ -141,6 +152,40 @@ type Handler struct {
 	// personal resolves the caller's personal project, whose registered servers
 	// pylon unions into every listing.
 	personal PersonalProjectResolver
+	// start admits one agent turn. NIL on a deployment whose runtime plane is
+	// off (`runtime.enabled`), which is why every use of it is guarded — see
+	// callTool, which then answers the untouched ToolExecutionUnavailableReason.
+	start AgentStartUseCase
+	// permissions authorizes an EXECUTION, and only an execution.
+	//
+	// The endpoint as a whole is gated at the MEMBERSHIP tier
+	// (apimw.RequireProjectAccess), which is the right tier for reading a tool
+	// listing and is what pylon applies to the whole surface. RUNNING an agent
+	// is a different act — it spends the project's model budget and can drive
+	// the agent's toolkits — and the chat surface requires
+	// `models.chat.messages.create` for exactly that. Executing through MCP at
+	// a weaker tier than through chat would make this endpoint a way around
+	// that permission, so the check lives HERE, per call, rather than on the
+	// route: a route-level gate would also refuse `tools/list` to a viewer,
+	// which is a read they are entitled to.
+	permissions auth.PermissionResolver
+}
+
+// AgentStartUseCase is the narrow slice of
+// `internal/api/v2/agentexecution.StartUseCase` this package needs: admitting
+// the first turn of a configured application.
+//
+// It is declared here rather than imported so the dependency points one way,
+// the same reason PersonalProjectResolver is. The production implementation is
+// `runtimecomposition.PublicRoutes.AgentStart`, the SAME use case the chat
+// start route and the support assistant drive — not a second pipeline. Giving
+// an MCP run its own executor is how the two would drift apart on tracing,
+// budgets and cancellation.
+type AgentStartUseCase interface {
+	StartCurrentApplication(
+		context.Context,
+		agentexecutionapp.CurrentApplicationStartRequest,
+	) (agentexecutionapp.CurrentApplicationStartOutcome, error)
 }
 
 // PersonalProjectResolver reports a user's personal project id.
@@ -155,12 +200,28 @@ type PersonalProjectResolver interface {
 
 // NewHandler builds the MCP handler.
 //
-// personal is a required argument rather than an optional setter. A listing
-// built without it silently drops the caller's own registered servers, and this
-// repository has shipped that failure before: a builder method that no
-// composition root called (issue 128). An argument cannot be forgotten.
-func NewHandler(pool *pgxpool.Pool, personal PersonalProjectResolver) *Handler {
-	handler := &Handler{pool: pool, personal: personal}
+// personal and start are required ARGUMENTS rather than optional setters. A
+// listing built without personal silently drops the caller's own registered
+// servers, and a handler built without start silently refuses every execution;
+// this repository has shipped exactly that failure before, as a builder method
+// that no composition root called (issue 128). An argument cannot be forgotten.
+//
+// start is required AND NILABLE, which is not a contradiction: it comes from
+// `publicRoutes.AgentStart`, which is nil whenever `runtime.enabled` is off, so
+// nil is a real deployment state rather than a mistake. Passing it explicitly
+// is what makes the composition root state which one it is. When it is nil,
+// callTool answers the same ToolExecutionUnavailableReason it always has.
+//
+// permissions is required for the opposite reason: it FAILS CLOSED. A handler
+// built without it refuses every execution, so forgetting it cannot widen what
+// a caller may run.
+func NewHandler(
+	pool *pgxpool.Pool,
+	personal PersonalProjectResolver,
+	start AgentStartUseCase,
+	permissions auth.PermissionResolver,
+) *Handler {
+	handler := &Handler{pool: pool, personal: personal, start: start, permissions: permissions}
 	handler.source = postgresToolSource{handler: handler}
 	if pool != nil {
 		handler.registry = mcpregistry.NewStore(pool)
