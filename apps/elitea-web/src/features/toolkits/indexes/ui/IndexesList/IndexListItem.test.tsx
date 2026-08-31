@@ -31,10 +31,38 @@ describe('IndexListItem', () => {
     expect(getByText('5 / 42')).toBeInTheDocument();
   });
 
+  /**
+   * The badge counts everything the run LEFT OUT (`report.totals.leftOut`),
+   * not one summary key off the raw blob. The old `skipped.total_skipped`
+   * read reported 0 for every row whose indexer wrote a canonical `report`.
+   */
   it('shows a skipped-count badge when documents were skipped', () => {
-    const index: IndexRow = { id: '1', metadata: { collection: 'my-index', indexed: 10, skipped: { total_skipped: 3 } } };
+    const index: IndexRow = {
+      id: '1',
+      metadata: {
+        collection: 'my-index',
+        indexed: 10,
+        skipped: {
+          documents_skipped: { filtered_count: 2, filtered: ['x.md', 'y.md'] },
+          files_skipped: { unsupported_extension_count: 1, unsupported_extension: ['a.bin'] },
+        },
+      },
+    };
     const { getByText } = renderWithTheme(<IndexListItem index={index} />);
     expect(getByText('3')).toBeInTheDocument();
+  });
+
+  it('counts a canonical report\'s left-out total, which the old skipped-blob read could not see', () => {
+    const index: IndexRow = {
+      id: '1',
+      metadata: {
+        collection: 'my-index',
+        indexed: 10,
+        report: { status: 'partly_indexed', totals: { indexed: 10, skipped: 4, not_indexed: 1, failed: 2 } },
+      },
+    };
+    const { getByText } = renderWithTheme(<IndexListItem index={index} />);
+    expect(getByText('7')).toBeInTheDocument();
   });
 
   it('keeps the red error/stale styling even when the row is also selected (baseline: error wins over selected)', () => {

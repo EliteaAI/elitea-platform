@@ -24,6 +24,7 @@ import { useEditApplicationVersionFields } from './lib/useEditApplicationVersion
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditApplicationActions } from './ui/EditApplicationActions';
+import { EditApplicationAiEditSlot } from './ui/EditApplicationAiEditSlot';
 import { EditApplicationConfigurationPanel } from './ui/EditApplicationConfigurationPanel';
 import { EditApplicationEditorTabs } from './ui/EditApplicationEditorTabs';
 import { EditApplicationSaveBar } from './ui/EditApplicationSaveBar';
@@ -373,6 +374,9 @@ export function EditApplication(): ReactNode {
                 isDirty={isDirty}
                 isReadOnly={isReadOnlyView}
                 onModelSettingsChange={handleModelSettingsChange}
+                instructionsAiEditSlot={
+                  <EditApplicationAiEditSlot editor={editor} projectId={projectId} disabled={isEditorDisabled} />
+                }
               />
             }
           />

@@ -28,7 +28,7 @@ import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { unwrapListPage } from '@/shared/api/unwrap';
 
 /** One entry of the uploaded-icon gallery. */
-export interface SkillIcon {
+interface SkillIcon {
   readonly name: string;
   readonly url: string;
 }

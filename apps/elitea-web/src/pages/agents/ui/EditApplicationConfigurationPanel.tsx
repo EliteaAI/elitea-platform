@@ -29,6 +29,12 @@ export interface EditApplicationConfigurationPanelProps {
   readonly isDirty: boolean;
   readonly isReadOnly: boolean;
   readonly onModelSettingsChange: (next: AgentLlmSettings) => void;
+  /**
+   * The AI-assisted instructions edit. Passed IN rather than built here: that
+   * affordance gates itself on backend capability, and this panel has no
+   * business knowing the rule.
+   */
+  readonly instructionsAiEditSlot?: ReactNode | undefined;
 }
 
 export function EditApplicationConfigurationPanel(props: EditApplicationConfigurationPanelProps): ReactNode {
@@ -53,6 +59,7 @@ export function EditApplicationConfigurationPanel(props: EditApplicationConfigur
         /* #345 — the tag control. It reaches the wire through
            `toVersionSaveBody`'s `tags`, which `UpdateVersion` now
            writes as association rows. */
+        instructionsAiEditSlot={props.instructionsAiEditSlot}
         tagsSlot={
           <AgentTagEditor
             projectId={projectId}

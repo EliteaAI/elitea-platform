@@ -8,6 +8,7 @@ export function normaliseBucket(wire: BucketWire): Bucket {
     name: wire.name,
     isPinned: wire.is_pinned,
     createdAt: wire.created_at,
+    retentionDays: wire.retention_days ?? null,
   };
 }
 

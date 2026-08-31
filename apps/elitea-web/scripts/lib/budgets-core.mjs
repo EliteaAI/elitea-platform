@@ -16,6 +16,12 @@
  *   PlaybackChatBox.tsx: use-effects waived (4/3)
  *   chat-messages/index.ts: slice-public-api waived (53/20)
  *   interactive-tours/index.ts: slice-public-api waived (38/20)
+ *   skills/index.ts: slice-public-api waived (22/20) — the barrel was CURATED
+ *     first, from 29 down to the 22 symbols outside modules actually import
+ *     (the icon dialog, its list query and its upload/delete mutations came
+ *     off, being the slice's own wiring). The residual two are real consumers,
+ *     so the waiver records a debt to re-home them rather than hiding an
+ *     un-curated barrel.
  *   useInteractiveTourController.hooks.ts: hook-deps waived (12/8)
  *
  * Deliberately NOT implemented here (recorded, not forgotten):
@@ -42,6 +48,7 @@ export const BUDGET_WAIVERS = Object.freeze({
   'src/features/chat-messages/ui/playback/PlaybackChatBox.tsx': ['use-effects'],
   'src/features/chat-messages/index.ts': ['slice-public-api'],
   'src/features/interactive-tours/index.ts': ['slice-public-api'],
+  'src/features/skills/index.ts': ['slice-public-api'],
   'src/features/interactive-tours/lib/hooks/useInteractiveTourController.hooks.ts': ['hook-deps'],
 });
 

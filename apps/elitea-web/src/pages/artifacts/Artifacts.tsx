@@ -193,6 +193,9 @@ export function Artifacts(): ReactNode {
         onCreate={() => requestNavigation(() => {
           void navigate({ to: '/artifacts/create-bucket' });
         })}
+        onEdit={(bucket) => requestNavigation(() => {
+          void navigate({ to: '/artifacts/create-bucket', search: { bucket: bucket.name } });
+        })}
         onPin={async (bucket) => {
           try {
             await mutations.pinBucket.mutateAsync({ name: bucket.name, isPinned: !bucket.isPinned });

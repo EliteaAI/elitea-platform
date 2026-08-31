@@ -26,7 +26,7 @@ import { createHttpClient, type HttpFailure } from '@/shared/api/http';
 import { getConfig } from '@/shared/config';
 
 /** One part of a shared message: text/canvas content, or a named attachment. */
-export interface SharedChatItem {
+interface SharedChatItem {
   readonly type: string;
   readonly content?: string;
   /**
@@ -58,7 +58,7 @@ export interface SharedChatMessage {
   readonly items: readonly SharedChatItem[];
 }
 
-export interface SharedChatConversation {
+interface SharedChatConversation {
   readonly conversation_name: string;
   readonly expires_at: string;
   readonly messages: readonly SharedChatMessage[];

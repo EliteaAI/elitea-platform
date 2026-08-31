@@ -16,6 +16,7 @@ import { InfoTooltip } from '@/shared/ui/InfoTooltip';
 import { StopIcon } from '@/shared/ui/icons/stop-icon';
 
 import { IndexStatuses } from '../../lib/constants/indexDetails.constants';
+import { normalizeIndexingReport } from '../../lib/helpers/indexingReport.serialize';
 import { toDisplayString } from '../../lib/helpers/displayString.local';
 import type { IndexRow } from '../../model/indexesStore';
 
@@ -32,26 +33,10 @@ export interface IndexListItemProps {
   readonly useMock?: boolean | undefined;
 }
 
-interface SkippedMeta {
-  readonly total_skipped?: number;
-}
-
 /** Extracted to a standalone function (not inlined in JSX) — matches `features/pipelines/ui/state/RunStateDialog.tsx`'s identical `format(...)` extraction, which keeps the date-fns pattern string out of a JSX expression container. */
 function formatCreatedOn(createdOn: number | undefined): string {
   if (createdOn === undefined) return '–';
   return format(new Date(createdOn * 1000), 'dd.MM.yyyy');
-}
-
-function parseSkipped(raw: unknown): SkippedMeta {
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw) as SkippedMeta;
-    } catch {
-      return { total_skipped: 0 };
-    }
-  }
-  if (raw && typeof raw === 'object') return raw;
-  return { total_skipped: 0 };
 }
 
 export function IndexListItem(props: IndexListItemProps): ReactNode {
@@ -63,16 +48,22 @@ export function IndexListItem(props: IndexListItemProps): ReactNode {
     const metadata = index.metadata;
     if (!metadata || Object.keys(metadata).length === 0) return { tooltip: '-', count: '–', skipped: 0 };
 
-    const skipped = parseSkipped(metadata['skipped']);
+    // Everything the run left out of the index, however it was left out —
+    // the same number the baseline switched this badge to
+    // (`IndexListItem.jsx:78`, `report?.totals?.leftOut`). The previous
+    // `skipped.total_skipped` read one summary key off the raw blob and
+    // therefore reported 0 for every row whose indexer wrote a canonical
+    // `report` instead of the pre-report `skipped` stats.
+    const leftOut = normalizeIndexingReport(metadata)?.totals.leftOut ?? 0;
     const history = metadata['history'] as readonly unknown[] | undefined;
     const updated = metadata['updated'];
     const indexed = metadata['indexed'];
 
     if (history && history.length > 1 && updated !== undefined) {
-      return { tooltip: 'reindexed / total indexed', count: `${toDisplayString(updated)} / ${toDisplayString(indexed)}`, skipped: skipped.total_skipped ?? 0 };
+      return { tooltip: 'reindexed / total indexed', count: `${toDisplayString(updated)} / ${toDisplayString(indexed)}`, skipped: leftOut };
     }
 
-    return { tooltip: 'total indexed', count: indexed !== undefined ? toDisplayString(indexed) : '–', skipped: skipped.total_skipped ?? 0 };
+    return { tooltip: 'total indexed', count: indexed !== undefined ? toDisplayString(indexed) : '–', skipped: leftOut };
   }, [index]);
 
   if (useMock) {

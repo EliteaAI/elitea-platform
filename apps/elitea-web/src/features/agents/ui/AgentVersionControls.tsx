@@ -10,6 +10,7 @@ import { useSetDefaultVersion } from '../model/useSetDefaultVersion';
 import type { AgentPipelineVersionOption } from '../lib/types';
 
 import { AgentPipelineVersionSelector } from './AgentPipelineVersionSelector';
+import { CompareVersionsButton } from './compare-versions/CompareVersionsButton';
 import { DeleteVersionButton } from './DeleteVersionButton';
 import { SaveNewVersionButton } from './SaveNewVersionButton';
 import { SetDefaultVersionDialog } from './SetDefaultVersionDialog';
@@ -195,6 +196,17 @@ export function AgentVersionControls({
 
   return (
     <Box sx={wrapperSx}>
+      {/* #compare-versions — offered from the version bar, the same place the
+          baseline offers it (`ApplicationControls.jsx:172`'s dropdown item,
+          gated there on `versions.length >= 2`). Read-only, so unlike the
+          baseline's item it is NOT additionally gated on the update
+          permission. */}
+      <CompareVersionsButton
+        projectId={projectId}
+        applicationId={Number(applicationId)}
+        versions={versions}
+        activeVersionId={activeVersionId}
+      />
       <AgentPipelineVersionSelector
         applicationVersionId={activeVersionId}
         versions={versions}

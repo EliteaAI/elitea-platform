@@ -55,7 +55,11 @@ export interface ListShareLinksParams {
   readonly conversationId: string | number;
 }
 
-export async function listShareLinks(params: ListShareLinksParams): Promise<readonly SharedChatLink[]> {
+// The three raw fetchers are module-private on purpose: the HOOKS below are
+// this module's public surface, and every caller goes through them. Exporting
+// both invites a second call path that skips the query-key invalidation the
+// hooks own.
+async function listShareLinks(params: ListShareLinksParams): Promise<readonly SharedChatLink[]> {
   const { projectId, conversationId } = params;
   return fetchData<readonly SharedChatLink[]>(`/elitea_core/shared_chat_links/prompt_lib/${String(projectId)}/${String(conversationId)}`);
 }
@@ -84,7 +88,7 @@ export interface CreateShareLinkParams {
   readonly message_group_ids?: readonly number[];
 }
 
-export async function createShareLink(params: CreateShareLinkParams): Promise<SharedChatLinkCreated> {
+async function createShareLink(params: CreateShareLinkParams): Promise<SharedChatLinkCreated> {
   const { projectId, conversationId, ...body } = params;
   return fetchData<SharedChatLinkCreated>(`/elitea_core/shared_chat_links/prompt_lib/${String(projectId)}/${String(conversationId)}`, {
     method: 'POST',
@@ -112,7 +116,7 @@ export interface RevokeShareLinkParams {
  * answers 204 with no body, so unwrapping a `{data}` envelope would fail on
  * success.
  */
-export async function revokeShareLink(params: RevokeShareLinkParams): Promise<void> {
+async function revokeShareLink(params: RevokeShareLinkParams): Promise<void> {
   const { projectId, conversationId, linkId } = params;
   await eliteaFetch<unknown>(`/elitea_core/shared_chat_link/prompt_lib/${String(projectId)}/${String(conversationId)}/${String(linkId)}`, { method: 'DELETE' });
 }

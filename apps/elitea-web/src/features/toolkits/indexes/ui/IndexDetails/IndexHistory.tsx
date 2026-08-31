@@ -11,6 +11,10 @@ import { SortArrowsIcon } from '@/shared/ui/icons/sort-arrows-icon';
 import { IndexHistoryItemsLabels } from '../../lib/constants/indexDetails.constants';
 import { useIndexesStore } from '../../model/indexesStore';
 
+import { resolveIndexingReport } from '../../lib/helpers/indexingReport.serialize';
+
+import { IndexingReportSummary } from './IndexingReportSummary';
+
 /**
  * Port of `apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/
  * IndexDetails/IndexHistory.jsx` (unit A4a) — the "History" tab's sortable
@@ -25,6 +29,16 @@ import { useIndexesStore } from '../../model/indexesStore';
  * `RunHistorySortableHeader` is likewise inlined as a small local,
  * non-exported component (its only dependency, `sort_arrows.svg`, is
  * already ported at `shared/ui/icons/sort-arrows-icon.tsx`).
+ *
+ * INDEXING REPORT. The baseline shows a run's outcome breakdown in a
+ * separate `run-history/IndexRunDetail.jsx` pane, part of a two-column
+ * run-history layout this app does not have (`entities/run-history` was
+ * never promoted — see above). The report itself is worth having and its
+ * data already arrives on every row here, so `IndexingReportSummary` is
+ * mounted beneath this list against the SELECTED run instead of behind a
+ * layout that does not exist. `error` is rendered above it for the same
+ * reason `IndexRunDetail` does: a stored error can survive a report that
+ * lists no errors of its own.
  */
 export interface IndexHistoryItem {
   readonly state?: string;
@@ -145,10 +159,24 @@ const wrapperSx: SxProps<Theme> = {
 };
 
 const scrollableContentSx: SxProps<Theme> = { flex: 1, width: '100%', overflowY: 'auto' };
+const reportSx: SxProps<Theme> = (theme) => ({
+  width: '100%',
+  flexShrink: 0,
+  marginTop: '.5rem',
+  paddingTop: '.75rem',
+  borderTop: `.0625rem solid ${theme.vars.palette.divider}`,
+});
 
 /** Extracted to a standalone function (not inlined in JSX) — matches `features/pipelines/ui/state/RunStateDialog.tsx`'s identical `format(...)` extraction, which keeps the date-fns pattern string out of a JSX expression container. */
 function formatHistoryTimestamp(updatedOn: number): string {
   return format(new Date(fromUnixTime(updatedOn)), 'dd-MM-yyyy, hh:mm a');
+}
+
+/** `IndexRunDetail.jsx`'s `showStoredError` — see the file header. */
+function showStoredError(entry: Record<string, unknown>): boolean {
+  const error = entry['error'];
+  if (typeof error !== 'string' || error.trim() === '') return false;
+  return (resolveIndexingReport(entry)?.errors.length ?? 0) === 0;
 }
 
 export function IndexHistory(props: IndexHistoryProps): ReactNode {
@@ -233,6 +261,19 @@ export function IndexHistory(props: IndexHistoryProps): ReactNode {
           );
         })}
       </Box>
+      {selectedHistoryItem !== null && (
+        <Box sx={reportSx}>
+          {showStoredError(selectedHistoryItem) && (
+            <Typography
+              variant="bodyMedium"
+              color="error.main"
+            >
+              {selectedHistoryItem['error'] as string}
+            </Typography>
+          )}
+          <IndexingReportSummary source={selectedHistoryItem} />
+        </Box>
+      )}
     </Box>
   );
 }
