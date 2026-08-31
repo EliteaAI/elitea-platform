@@ -247,6 +247,27 @@ export interface CreateAgentFormProps {
   readonly sx?: SxProps<Theme> | undefined;
 }
 
+/**
+ * The Instructions block's action row. The wrapper carries its own bottom margin, so
+ * it must not render at all when the slot is empty -- an empty row would still push
+ * the editor down. That is the common case rather than the exception: the "Edit with
+ * AI" trigger is backed by an endpoint no deployment routes today, so the caller
+ * frequently has nothing to mount here.
+ */
+function InstructionsAiEditRow({ slot }: { readonly slot?: ReactNode | undefined }) {
+  if (!slot) {
+    return null;
+  }
+  return (
+    <Box
+      data-testid="agent-instructions-ai-edit-slot"
+      sx={instructionsAiEditSlotSx}
+    >
+      {slot}
+    </Box>
+  );
+}
+
 export function CreateAgentForm({
   values,
   onFieldChange,
@@ -334,17 +355,7 @@ export function CreateAgentForm({
       />
       {showInstructions && (
         <Box sx={instructionsContainerSx}>
-          {/* The wrapper carries its own margin, so it must not render when the slot is
-              empty -- an empty action row would still push the editor down. The button
-              itself also renders nothing where the backend cannot serve it. */}
-          {instructionsAiEditSlot ? (
-            <Box
-              data-testid="agent-instructions-ai-edit-slot"
-              sx={instructionsAiEditSlotSx}
-            >
-              {instructionsAiEditSlot}
-            </Box>
-          ) : null}
+          <InstructionsAiEditRow slot={instructionsAiEditSlot} />
           <InstructionsInput
             instructions={versionDetails?.instructions}
             onInstructionsChange={state.onInstructionsChange}
