@@ -129,7 +129,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	versions := h.getVersions(r.Context(), projectID, applicationID)
+	versions, defaultVersionID := h.getVersions(r.Context(), projectID, applicationID)
 	result := map[string]any{
 		"id":          app.ID,
 		"name":        app.Name,
@@ -138,6 +138,20 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		"owner_id":    app.CreatedBy,
 		"created_at":  app.CreatedAt,
 		"versions":    versions,
+		// `meta` carries the one key this service actually records on an
+		// application: which of its versions is the default
+		// (repos/applications.go's defaultVersionMetaKey, written by
+		// SetDefaultVersion).
+		//
+		// The write half of that has existed since #147 and the read half did
+		// not, so nothing a client could fetch ever said which version was the
+		// default: the version bar in the web app remembered the id it had just
+		// set and lost it on reload. Emitted ALWAYS, and as the empty string
+		// when no default is recorded, because "" and a missing `meta` are
+		// different answers — the first is "no default recorded", the second is
+		// "this response cannot tell you", and it was the second that made the
+		// affordance guess.
+		"meta": map[string]any{"default_version_id": defaultVersionID},
 	}
 
 	// Include version_details for the first (latest) version — matches pylon response contract.
@@ -151,38 +165,67 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) getVersions(ctx context.Context, projectID, applicationID string) []map[string]any {
+// getVersions returns the application's version summaries and the id of the
+// version its `meta.default_version_id` names ("" when none is recorded).
+//
+// The default is joined in rather than fetched separately so the flag on each
+// row and the id the caller is told about come from ONE read of the
+// applications row: two reads could disagree, and a client that trusted the
+// per-row flag over the id (or the other way round) would render a version bar
+// that contradicts itself.
+//
+// `is_default` is derived here, not stored: application_versions has no such
+// column, and the fact lives on the owning applications row. That is the same
+// derivation repos/applications.go's scanVersion applies — this hand-written
+// projection exists only because Get needs the summary shape, not the full
+// Version.
+//
+// LEFT JOIN, not JOIN: this reads a version LIST, and an inner join would make
+// a missing applications row silently shorten it. "The default is unknown" is
+// the right degradation for that; "these versions do not exist" is not.
+func (h *Handler) getVersions(ctx context.Context, projectID, applicationID string) ([]map[string]any, string) {
 	s, ok := tenantSchema(projectID)
 	if !ok {
-		return []map[string]any{}
+		return []map[string]any{}, ""
 	}
-	q := fmt.Sprintf(`SELECT id, name, status, agent_type, created_at FROM %s.application_versions WHERE application_id = $1 ORDER BY id`, s)
+	q := fmt.Sprintf(`SELECT v.id, v.name, v.status, v.agent_type, v.created_at,
+		COALESCE(a.meta->>'`+defaultVersionMetaKey+`', '')
+		FROM %s.application_versions v
+		LEFT JOIN %s.applications a ON a.id = v.application_id
+		WHERE v.application_id = $1 ORDER BY v.id`, s, s)
 	rows, err := h.pool.Query(ctx, q, applicationID)
 	if err != nil {
-		return []map[string]any{}
+		return []map[string]any{}, ""
 	}
 	defer rows.Close()
 
 	var versions []map[string]any
+	var defaultVersionID string
 	for rows.Next() {
 		var id int
-		var name, status, agentType string
+		var name, status, agentType, rowDefaultVersionID string
 		var createdAt any
-		if err := rows.Scan(&id, &name, &status, &agentType, &createdAt); err != nil {
+		if err := rows.Scan(&id, &name, &status, &agentType, &createdAt, &rowDefaultVersionID); err != nil {
 			continue
 		}
+		defaultVersionID = rowDefaultVersionID
+		versionID := strconv.Itoa(id)
 		versions = append(versions, map[string]any{
-			"id":         strconv.Itoa(id),
+			"id":         versionID,
 			"name":       name,
 			"status":     status,
 			"agent_type": agentType,
 			"created_at": createdAt,
+			// Compared against the empty string as well as the row id so an
+			// application with no default recorded flags no version, rather
+			// than flagging one whose id happens to stringify to "".
+			"is_default": rowDefaultVersionID != "" && rowDefaultVersionID == versionID,
 		})
 	}
 	if versions == nil {
 		versions = []map[string]any{}
 	}
-	return versions
+	return versions, defaultVersionID
 }
 
 // fetchVersionDetails returns full version details for a single version, or nil on error.

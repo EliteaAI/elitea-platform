@@ -126,8 +126,8 @@ describe('useEditApplicationVersionControls', () => {
   it("narrows the API's string version ids to the numbers the selector compares against", async () => {
     const { findByTestId, getByTestId } = renderProbe();
     expect(JSON.parse((await findByTestId('options')).textContent ?? '')).toEqual([
-      { id: 1, name: 'base', created_at: '2026-01-01T00:00:00Z', status: 'draft' },
-      { id: 2, name: 'v1', created_at: '2026-01-02T00:00:00Z', status: 'draft' },
+      { id: 1, name: 'base', created_at: '2026-01-01T00:00:00Z', status: 'draft', is_default: false },
+      { id: 2, name: 'v1', created_at: '2026-01-02T00:00:00Z', status: 'draft', is_default: false },
     ]);
     expect(getByTestId('active').textContent).toBe('1');
   });

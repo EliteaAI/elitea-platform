@@ -1046,8 +1046,9 @@ func TestListTypes_Success(t *testing.T) {
 // Both directions of #466. The route answered 200 with `{"voices": []}` for
 // every project and every model, and the test below asserted only that the
 // `voices` key was present — so it passed on the defect. The route now reports
-// the missing capability: this platform serves no audio route to any provider
-// (#323), and no code path fills the `meta.voices` cache the reference reads.
+// the missing capability: the gateway serves audio synthesis and transcription
+// (#323 landed) but no voice-LISTING route in any dialect, and no code path
+// fills the `meta.voices` cache the reference falls back on.
 
 // TestTTSVoicesReportsTheMissingCapability — direction one. The refusal must
 // carry a reason the caller can act on, not a bare status.

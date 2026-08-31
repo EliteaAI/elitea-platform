@@ -238,6 +238,7 @@ export interface EditPipelineVersionOption {
   readonly name: string;
   readonly created_at?: string | undefined;
   readonly status?: string | undefined;
+  readonly is_default?: boolean | undefined;
 }
 
 /**
@@ -253,6 +254,17 @@ export function toVersionOptions(versions: readonly ApplicationVersionSummary[])
     name: version.name,
     created_at: version.created_at,
     status: version.status,
+    /*
+     * The server's default-version flag, carried through so the pipeline
+     * editor's version bar marks the default on first render like the agent
+     * one does. Read off the wire rather than off the generated type: the Go
+     * handler emits `versions[].is_default` but `ApplicationVersionSummary`
+     * is generated from `api/openapi/v2.yaml`, which another stream owns —
+     * see `pages/agents/lib/editApplicationMappers.ts`'s `readIsDefault` for
+     * the full note, duplicated here rather than imported for the same
+     * `no-sideways-*` reason this file already duplicates the option type.
+     */
+    is_default: (version as { readonly is_default?: unknown }).is_default === true,
   }));
 }
 

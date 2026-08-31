@@ -47,20 +47,24 @@ import { SetDefaultVersionDialog } from './SetDefaultVersionDialog';
  * affordance is mounted here, gated on the same `canSaveNewVersion` flag the
  * other two write controls use.
  *
- * **DISCLOSED GAP — the current default is not readable, so it is
- * remembered, not fetched.** `applications.meta.default_version_id` is
- * written by `SetDefaultVersion` (`repos/applications.go:650-682`) and
- * emitted by NO documented response: the `Get` handler builds its map from
- * seven keys and `meta` is not one of them
- * (`applications/handler.go:121-152`), `ApplicationVersionSummary` carries
- * no `is_default`, and the 2-segment `GET /default_version/...` that would
- * answer the question is deliberately absent from the contract
- * (`api/openapi/v2.yaml:7048-7052` — "no API item calls it, do not add
- * unused surface"). So on first render this component does not know which
- * version is the default, which is exactly the state the baseline's own
- * `disableSetAsADefault` already handles ("no default recorded -> treat
- * `base` as it"), and after a successful PATCH it knows because it just set
- * it. Closing this properly is a backend/spec change, not a UI one.
+ * **The current default IS readable now — it is fetched, and only
+ * remembered as an override.** `applications.meta.default_version_id` is
+ * written by `SetDefaultVersion` (`repos/applications.go:650-682`) and, since
+ * the read half landed, reported by `GET /application/...` in two places:
+ * `meta.default_version_id` on the application and `is_default` on each
+ * `versions[]` entry (`applications/handler.go`'s `Get`/`getVersions`). The
+ * options this component is handed carry that flag through
+ * (`AgentPipelineVersionOption.is_default`), so the default shows on FIRST
+ * render and survives a reload.
+ *
+ * The remembered id below is now an OVERRIDE for the window between a
+ * successful PATCH and the next detail fetch, not the only source. It wins
+ * while set, because in that window the server flag this component was
+ * rendered with is known-stale by exactly the write it just made.
+ *
+ * The one thing still not readable is a default recorded for a version the
+ * list does not contain; the list is the whole version set, so that is a
+ * database inconsistency rather than a gap.
  */
 export interface AgentVersionControlsProps {
   readonly applicationId: string;
@@ -113,6 +117,31 @@ export interface AgentVersionControlsProps {
 
 const wrapperSx: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: '0.75rem' };
 
+/**
+ * Which version the menu marks as the default.
+ *
+ * `justSet` — the id of a PATCH this component has already seen succeed — wins
+ * over the flag on the options, because in the window before the detail is
+ * re-fetched those options are stale by exactly that write. With no such write,
+ * the server's own answer decides.
+ *
+ * `find` rather than `filter`: exactly one version may carry the flag (the Go
+ * handler derives every row's from the single `applications.meta.
+ * default_version_id`), so a second one would be a database inconsistency, not
+ * a case to render. `=== true` so an option list that omits the field reads as
+ * "this list cannot say" rather than as a truthiness accident.
+ *
+ * Module-level, not inline: `AgentVersionControls` sits on oxlint's
+ * `complexity` budget (§3.5, ≤12) and the predicate alone put it over.
+ */
+function resolveDefaultVersionId(
+  versions: readonly AgentPipelineVersionOption[],
+  justSet: number | undefined,
+): number | undefined {
+  if (justSet !== undefined) return justSet;
+  return versions.find((version) => version.is_default === true)?.id;
+}
+
 export function AgentVersionControls({
   applicationId,
   projectId,
@@ -127,9 +156,12 @@ export function AgentVersionControls({
   versionDelete,
 }: AgentVersionControlsProps): ReactNode {
   /* #147 — the version awaiting confirmation, and the default this component
-     has itself set (see the module doc: the server never reports one back). */
+     has itself just set (see the module doc: an override over the server's
+     own flag, for the window before the detail is re-fetched). */
   const [pendingDefault, setPendingDefault] = useState<AgentPipelineVersionOption | undefined>(undefined);
-  const [defaultVersionId, setDefaultVersionId] = useState<number | undefined>(undefined);
+  const [justSetDefaultId, setJustSetDefaultId] = useState<number | undefined>(undefined);
+
+  const defaultVersionId = resolveDefaultVersionId(versions, justSetDefaultId);
 
   // The hook's ids are non-optional; the item is only offered once `projectId`
   // resolves, so the placeholder below is never the one a request is made with
@@ -157,7 +189,7 @@ export function AgentVersionControls({
     // Left open on failure: the default is unchanged, and closing the dialog
     // would read as "done". `errorMessage` carries the server's own refusal.
     if (!ok) return;
-    setDefaultVersionId(pendingDefault.id);
+    setJustSetDefaultId(pendingDefault.id);
     setPendingDefault(undefined);
   }, [doSetDefaultVersion, pendingDefault]);
 

@@ -57,8 +57,12 @@ type mockRepo struct {
 	// groups had stored, which the handler only acts on when the request asks
 	// for it with `delete_attachment`.
 	deleteMessageAttachments []conversations.AttachmentRef
-	listMessageGroupsFn      func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
-	listParticipantsFn       func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
+	// deleteConversationAttachments is what a conversation delete reports it
+	// removed rows for. The handler acts on it unconditionally — deleting the
+	// conversation leaves nothing that could ever name those files again.
+	deleteConversationAttachments []conversations.AttachmentRef
+	listMessageGroupsFn           func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
+	listParticipantsFn            func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
 }
 
 func (m *mockRepo) List(ctx context.Context, projectID string, page, pageSize int) (conversations.ListResponse, error) {
@@ -77,8 +81,19 @@ func (m *mockRepo) Update(ctx context.Context, projectID, conversationID string,
 	return m.updateFn(ctx, projectID, conversationID, conv)
 }
 
-func (m *mockRepo) Delete(ctx context.Context, projectID, conversationID string) error {
-	return m.deleteFn(ctx, projectID, conversationID)
+// Delete reports the attachments the deleted conversation carried, the way the
+// real repository does. `deleteFn` stays error-only because every existing
+// caller only ever wanted to choose between success and a refusal; a nil
+// `deleteFn` is a plain success, so a test that cares only about the
+// attachments does not have to state one.
+func (m *mockRepo) Delete(ctx context.Context, projectID, conversationID string) ([]conversations.AttachmentRef, error) {
+	if m.deleteFn != nil {
+		if err := m.deleteFn(ctx, projectID, conversationID); err != nil {
+			// Nothing to clean up: the row delete never became a fact.
+			return nil, err
+		}
+	}
+	return m.deleteConversationAttachments, nil
 }
 
 func (m *mockRepo) ListMessages(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {

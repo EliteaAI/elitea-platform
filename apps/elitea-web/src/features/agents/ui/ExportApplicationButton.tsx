@@ -34,23 +34,22 @@ export interface ExportApplicationButtonProps {
  *    — that function IS the already-ported, already-tested copy of exactly
  *    that branch (`useExport.js:78-101`, cited in `download.ts`'s own doc
  *    comment), so re-deriving it here would duplicate rather than reuse.
- *  - **Real, pre-existing backend/porting inconsistency, surfaced not
- *    invented:** the endpoint both `exportMarkdown` and the OLD app's own
- *    `useExport.js` target
- *    (`/elitea_core/export_import/prompt_lib/{projectId}/{applicationId}`)
- *    is documented on the generated client's `exportApplication` as
- *    `NOTE(W2): internal/api/v2/eliteacore/handler.go:2480-2727 ... format
- *    and follow_version_ids are accepted for old-SPA parity but not read —
- *    markdown export is NOT implemented on the Go router` (`@summary Export
- *    an application (with toolkits) as JSON`). `exportMarkdown` (unit S6)
- *    was built assuming MD export still works; W2's later handler
- *    enrichment found it doesn't. This component still calls the
- *    already-designated shared primitive for this old-app source line
- *    rather than picking a side of that inconsistency itself — if the Go
- *    handler really ignores `format=md`, the browser will download whatever
- *    bytes the handler actually returns (most likely a JSON export) under a
- *    `.md`-suffixed filename, a known gap that belongs to S6/W2's
- *    reconciliation, not a new one introduced here.
+ *  - **The markdown branch is real; an older note here said it was not.**
+ *    The endpoint both `exportMarkdown` and the OLD app's own `useExport.js`
+ *    target (`/elitea_core/export_import/prompt_lib/{projectId}/
+ *    {applicationId}`) DOES honour `format=md`:
+ *    `services/elitea-main/internal/api/v2/eliteacore/handler.go` branches on
+ *    it into `writeMarkdownExport` before it considers `as_file`, and
+ *    `export_markdown.go` renders one document per version (zipped when there
+ *    is more than one) with its own unit and Postgres tests. The generated
+ *    client's `NOTE(W2)` on `exportApplication` says the same thing
+ *    (`applicationExportResponse.zod.ts`: "with ?format=md it is rendered as
+ *    markdown instead"). The claim that the Go router ignored the parameter —
+ *    and the worry that the browser would save a JSON body under a `.md`
+ *    filename — was true of an earlier handler and is not true now. This
+ *    component calls the already-designated shared primitive
+ *    (`shared/lib/download.ts`'s `exportMarkdown`, unit S6) and gets a real
+ *    markdown file.
  *  - `useIsFromPipelineDetail()` dropped — agents-only scope, same as
  *    `DeleteApplicationButton`'s doc comment.
  *  - `useToast()` replaced with `onError` — same as `DeleteApplicationButton`.

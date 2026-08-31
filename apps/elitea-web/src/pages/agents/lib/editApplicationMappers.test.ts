@@ -20,8 +20,23 @@ describe('toVersionOptions', () => {
       { id: '7', name: 'base', status: 'draft', agent_type: 'classic', created_at: '2026-01-01T00:00:00Z' },
     ];
     expect(toVersionOptions(wire)).toEqual([
-      { id: 7, name: 'base', status: 'draft', created_at: '2026-01-01T00:00:00Z' },
+      // `is_default` is false, not absent: the wire row above carries no such
+      // key, and "this list cannot say" must read as "not the default" rather
+      // than leaving the version bar with an undefined to interpret.
+      { id: 7, name: 'base', status: 'draft', created_at: '2026-01-01T00:00:00Z', is_default: false },
     ]);
+  });
+
+  // The default-version flag the Go handler emits (`versions[].is_default`,
+  // derived from `applications.meta.default_version_id`) has to survive the
+  // mapping, or the version bar is back to only knowing a default it set
+  // itself and losing it on reload.
+  it("carries the server's default-version flag through", () => {
+    const wire = [
+      { id: '7', name: 'base', status: 'draft', agent_type: 'classic', created_at: '2026-01-01T00:00:00Z', is_default: false },
+      { id: '8', name: 'v1', status: 'draft', agent_type: 'classic', created_at: '2026-02-01T00:00:00Z', is_default: true },
+    ] as unknown as readonly ApplicationVersionSummary[];
+    expect(toVersionOptions(wire).map((option) => option.is_default)).toEqual([false, true]);
   });
 
   it('maps an empty list to an empty list', () => {

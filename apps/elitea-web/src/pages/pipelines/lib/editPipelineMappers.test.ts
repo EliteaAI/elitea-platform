@@ -220,6 +220,15 @@ describe('toVersionOptions', () => {
     expect(option?.id).toBe(7);
     expect(typeof option?.id).toBe('number');
     expect(option?.name).toBe('v1');
+    // Absent on the wire reads as "not the default", never as undefined.
+    expect(option?.is_default).toBe(false);
+  });
+
+  it("carries the server's default-version flag through", () => {
+    const wire = [
+      { id: '7', name: 'v1', status: 'draft', agent_type: 'pipeline', created_at: '2026-02-01T00:00:00Z', is_default: true },
+    ] as unknown as readonly ApplicationVersionSummary[];
+    expect(toVersionOptions(wire)[0]?.is_default).toBe(true);
   });
 });
 
