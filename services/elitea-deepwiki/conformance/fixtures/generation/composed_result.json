@@ -1,0 +1,160 @@
+{
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "plugin_implementation/artifact_export.py",
+        "bytes": 21481,
+        "sha256": "dbd1d618c62c8056d03cf50add847ad3320e900ef1d4a99aa4af666f97a7e9a4"
+      },
+      {
+        "path": "plugin_implementation/registry_manager.py",
+        "bytes": 15798,
+        "sha256": "7b0bea20cd1fabf2ebf8a744d22e9cdc9b1b86542e13fec24977dfba838721cf"
+      },
+      {
+        "path": "plugin_implementation/repository_identity.py",
+        "bytes": 3572,
+        "sha256": "e434370577fce2f50f04e47150e95e952f639e4f17a268083c273a6fe6b2ae37"
+      },
+      {
+        "path": "plugin_implementation/wiki_subprocess_worker.py",
+        "bytes": 27752,
+        "sha256": "03cd4bb936f131fb41ffa883a5307023b8202f97aef4a8df3542366807f2eed1"
+      }
+    ]
+  },
+  "producer": "methods/invoke.py::perform_invoke_request",
+  "how_recorded": "self.generate_wiki stubbed to return a canned worker result; every line of the composition path below it is legacy code",
+  "engine_call": {
+    "query": "Document the notes service",
+    "llm_settings": {
+      "model_name": "gpt-4o",
+      "api_base": "http://elitea/llm/v1",
+      "api_key": "<redacted>",
+      "organization": "42"
+    },
+    "embedding_model": {
+      "model_name": "text-embedding-3-small"
+    },
+    "repo_config": {
+      "provider_type": "github",
+      "provider_config": {
+        "url": "https://github.com",
+        "repository": "acme/notes-service",
+        "active_branch": "main"
+      },
+      "repository": null,
+      "branch": "main",
+      "project": null,
+      "is_cloud": null
+    },
+    "active_branch": "main",
+    "force_rebuild_index": true,
+    "indexing_method": "filesystem",
+    "planner_mode": null,
+    "exclude_tests": null,
+    "run_in_subprocess": true
+  },
+  "response": {
+    "invocation_id": "invocation_0000000000000000",
+    "status": "Completed",
+    "result_type": "String"
+  },
+  "result_objects": [
+    {
+      "object_type": "message",
+      "result_target": "response",
+      "result_encoding": "plain",
+      "data": "Wiki generated: 5 pages across 2 sections"
+    },
+    {
+      "name": "acme--notes-service--main/analysis/wiki_structure_TIMESTAMP.json",
+      "object_type": "wiki_structure",
+      "result_target": "artifact",
+      "result_extension": "json",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "{\n    \"wiki_title\": \"notes-service\",\n    \"sections\": [\n        {\n            \"section_name\": \"Overview\",\n            \"pages\": [\n                {\n                    \"page_name\": \"getting-started.md\",\n                    \"page_content\": \"# Overview\\n\\nThe notes service stores notes and answers search queries.\\n\"\n                },\n                {\n                    \"page_name\": \"architecture-data-flow.md\",\n                    \"page_content\": \"# Architecture & Data Flow\\n\\n`api.py` authenticates, then delegates to the store.\\n\"\n                }\n            ]\n        },\n        {\n            \"section_name\": \"Components\",\n            \"pages\": [\n                {\n                    \"page_name\": \"note-storage.md\",\n                    \"page_content\": \"# Note Storage\\n\\n`NoteStore` wraps a SQLite connection.\\n\"\n                },\n                {\n                    \"page_name\": \"search-ranking.md\",\n                    \"page_content\": \"# Search Ranking\\n\\n`rank_notes` scores by term overlap.\\n\"\n                },\n                {\n                    \"page_name\": \"bearer-tokens.md\",\n                    \"page_content\": \"# Bearer Tokens\\n\\n`issue_token` and `verify_token` sign and check subjects.\\n\"\n                }\n            ]\n        }\n    ]\n}"
+    },
+    {
+      "name": "acme--notes-service--main/wiki_pages/overview/getting-started.md",
+      "object_type": "wiki_page",
+      "result_target": "artifact",
+      "result_extension": "md",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "# Overview\n\nThe notes service stores notes and answers search queries.\n"
+    },
+    {
+      "name": "acme--notes-service--main/wiki_pages/overview/architecture-data-flow.md",
+      "object_type": "wiki_page",
+      "result_target": "artifact",
+      "result_extension": "md",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "# Architecture & Data Flow\n\n`api.py` authenticates, then delegates to the store.\n"
+    },
+    {
+      "name": "acme--notes-service--main/wiki_pages/components/note-storage.md",
+      "object_type": "wiki_page",
+      "result_target": "artifact",
+      "result_extension": "md",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "# Note Storage\n\n`NoteStore` wraps a SQLite connection.\n"
+    },
+    {
+      "name": "acme--notes-service--main/wiki_pages/components/search-ranking.md",
+      "object_type": "wiki_page",
+      "result_target": "artifact",
+      "result_extension": "md",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "# Search Ranking\n\n`rank_notes` scores by term overlap.\n"
+    },
+    {
+      "name": "acme--notes-service--main/wiki_pages/components/bearer-tokens.md",
+      "object_type": "wiki_page",
+      "result_target": "artifact",
+      "result_extension": "md",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "# Bearer Tokens\n\n`issue_token` and `verify_token` sign and check subjects.\n"
+    },
+    {
+      "name": "acme--notes-service--main/wiki_manifest_20260101T000000Z-0000000a.json",
+      "object_type": "wiki_manifest",
+      "result_target": "artifact",
+      "result_extension": "json",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "{\n  \"schema_version\": 2,\n  \"wiki_id\": \"acme--notes-service--main\",\n  \"wiki_title\": \"notes-service\",\n  \"description\": \"A small notes service with SQLite persistence. Store, search and authorise access to notes.\",\n  \"wiki_version_id\": \"20260101T000000Z-0000000a\",\n  \"created_at\": \"2026-01-01T00:00:00+00:00\",\n  \"canonical_repo_identifier\": \"acme/notes-service:main:0000000\",\n  \"repository\": \"acme/notes-service\",\n  \"branch\": \"main\",\n  \"commit_hash\": \"0000000deadbeef0000000deadbeef0000000000\",\n  \"analysis_key\": \"acme/notes-service:main:0000000@20260101T000000Z-0000000a\",\n  \"pages\": [\n    \"acme--notes-service--main/wiki_pages/overview/getting-started.md\",\n    \"acme--notes-service--main/wiki_pages/overview/architecture-data-flow.md\",\n    \"acme--notes-service--main/wiki_pages/components/note-storage.md\",\n    \"acme--notes-service--main/wiki_pages/components/search-ranking.md\",\n    \"acme--notes-service--main/wiki_pages/components/bearer-tokens.md\"\n  ],\n  \"provider_type\": \"github\",\n  \"faiss_cache_key\": \"<md5>\",\n  \"graph_cache_key\": \"<md5>\",\n  \"docstore_cache_key\": \"<md5>\",\n  \"docstore_files\": [\n    \"<md5>.docstore.bin\",\n    \"<md5>.doc_index.json\"\n  ],\n  \"bm25_cache_key\": \"<md5>\",\n  \"bm25_files\": [\n    \"<md5>.bm25.sqlite\"\n  ],\n  \"unified_db_key\": \"<md5>\",\n  \"unified_db_files\": [\n    \"<md5>.wiki.db\"\n  ],\n  \"analysis_cache_key\": \"<md5 of analysis_key>\"\n}"
+    },
+    {
+      "name": "acme--notes-service--main/repository_context.txt",
+      "object_type": "repository_context",
+      "result_target": "artifact",
+      "result_extension": "txt",
+      "result_encoding": "plain",
+      "result_bucket": "wiki-artifacts",
+      "data": "{\n  \"executive_summary\": \"A small notes service with SQLite persistence.\",\n  \"core_purpose\": \"Store, search and authorise access to notes.\"\n}"
+    }
+  ],
+  "composition_rules": [
+    "result is a JSON *string* holding the list of result objects; result_type is always 'String'.",
+    "object[0] is always the response message (result['result']).",
+    "Partial failures append extra response messages: a '⚠️ Partial issues detected' summary, then a 'Failed pages:' list, then an 'Errors:' list.",
+    "JSON artifacts are classified wiki_manifest when the name contains 'wiki_manifest_', else wiki_structure; a nameless JSON body with wiki_version_id + pages is sniffed as a manifest.",
+    "Markdown artifacts become wiki_page objects with the md extension.",
+    "repository_context is appended as a repository_context artifact at {wiki_id}/repository_context.txt (or uploaded directly in jobs mode, where Pylon would strip the directory prefix).",
+    "Artifacts flagged _uploaded_directly are skipped so the worker's own upload is not duplicated.",
+    "Every artifact object carries result_bucket 'wiki-artifacts' — the descriptor advertises bucket 'wiki'. The two disagree and the invoke-time value wins."
+  ]
+}

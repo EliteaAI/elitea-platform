@@ -1,0 +1,96 @@
+{
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "plugin_implementation/artifact_export.py",
+        "bytes": 21481,
+        "sha256": "dbd1d618c62c8056d03cf50add847ad3320e900ef1d4a99aa4af666f97a7e9a4"
+      },
+      {
+        "path": "plugin_implementation/registry_manager.py",
+        "bytes": 15798,
+        "sha256": "7b0bea20cd1fabf2ebf8a744d22e9cdc9b1b86542e13fec24977dfba838721cf"
+      },
+      {
+        "path": "plugin_implementation/repository_identity.py",
+        "bytes": 3572,
+        "sha256": "e434370577fce2f50f04e47150e95e952f639e4f17a268083c273a6fe6b2ae37"
+      },
+      {
+        "path": "plugin_implementation/wiki_subprocess_worker.py",
+        "bytes": 27752,
+        "sha256": "03cd4bb936f131fb41ffa883a5307023b8202f97aef4a8df3542366807f2eed1"
+      }
+    ]
+  },
+  "producer": "WikiRegistryManager.register_wiki",
+  "registry_path": "wiki-artifacts/_registry/wikis.json",
+  "entry": {
+    "id": "acme--notes-service--main",
+    "repo": "acme/notes-service",
+    "branch": "main",
+    "provider": "github",
+    "host": "github.com",
+    "display_name": "notes-service",
+    "description": "A small notes service with SQLite persistence. Store, search and authorise access to notes.",
+    "topics": [],
+    "folder_path": "acme--notes-service--main/",
+    "commit_hash": "0000000deadbeef0000000deadbeef0000000000",
+    "canonical_repo_identifier": "acme/notes-service:main:0000000",
+    "analysis_key": "acme/notes-service:main:0000000@20260101T000000Z-0000000a",
+    "artifact_status": {
+      "graph": true,
+      "vectorstore": true,
+      "bm25": true,
+      "wiki_pages": true
+    },
+    "stats": {
+      "page_count": 5
+    },
+    "updated_at": "<timestamp>",
+    "created_at": "<timestamp>"
+  },
+  "registry_body": {
+    "schema_version": 1,
+    "wikis": [
+      {
+        "id": "acme--notes-service--main",
+        "repo": "acme/notes-service",
+        "branch": "main",
+        "provider": "github",
+        "host": "github.com",
+        "display_name": "notes-service",
+        "description": "A small notes service with SQLite persistence. Store, search and authorise access to notes.",
+        "topics": [],
+        "folder_path": "acme--notes-service--main/",
+        "commit_hash": "0000000deadbeef0000000deadbeef0000000000",
+        "canonical_repo_identifier": "acme/notes-service:main:0000000",
+        "analysis_key": "acme/notes-service:main:0000000@20260101T000000Z-0000000a",
+        "artifact_status": {
+          "graph": true,
+          "vectorstore": true,
+          "bm25": true,
+          "wiki_pages": true
+        },
+        "stats": {
+          "page_count": 5
+        },
+        "updated_at": "<timestamp>",
+        "created_at": "<timestamp>"
+      }
+    ],
+    "updated_at": "<timestamp>"
+  },
+  "notes": [
+    "The whole registry is one mutable JSON blob in the artifact bucket: register_wiki does read-modify-write with no locking, so two concurrent generations lose one of the entries. ADR-0022 decision 3 replaces it with a `wikis` table.",
+    "artifact_status is written as all-true unconditionally — it records intent, not the presence of the artifacts.",
+    "created_at is preserved on update; updated_at is rewritten. Both are naive datetime.utcnow() + 'Z'."
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "source_repository": "deepwiki_plugin",
+  "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+  "files": [
+    {
+      "path": "methods/descriptor.py",
+      "bytes": 28462,
+      "sha256": "607f0967996fdba1174f043c4d3a345b58177894de5326ed11520fc9bc8eaaea"
+    }
+  ],
+  "pinned_service_location_url": "http://127.0.0.1:8080",
+  "legacy_v0_schema_documents": [
+    {
+      "path": "elitea_core/data/ExternalServiceProviderDescriptor.json",
+      "bytes": 9943,
+      "sha256": "fd9168a1540b6541b7c4f3f1138123f753a95472003d54a00b63fe627243445a",
+      "target": "libs/provider/legacy/v0/ExternalServiceProviderDescriptor.json"
+    },
+    {
+      "path": "elitea_core/data/epam_ai_run.spi.json",
+      "bytes": 8089,
+      "sha256": "76bc4869491ddb016192a82ce309ab24469665bbc8e7dc3ad09a78d0d065183f",
+      "target": "libs/provider/legacy/v0/epam_ai_run.spi.json"
+    },
+    {
+      "path": "elitea_core/data/epam_ai_run.spi.schema.json",
+      "bytes": 3993,
+      "sha256": "fad716eccb0f82f7ff22b278704314d0a27e460affd00f706d35075d748583df",
+      "target": "libs/provider/legacy/v0/epam_ai_run.spi.schema.json"
+    }
+  ]
+}

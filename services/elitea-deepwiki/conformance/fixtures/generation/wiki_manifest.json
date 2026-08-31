@@ -1,0 +1,79 @@
+{
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "plugin_implementation/artifact_export.py",
+        "bytes": 21481,
+        "sha256": "dbd1d618c62c8056d03cf50add847ad3320e900ef1d4a99aa4af666f97a7e9a4"
+      },
+      {
+        "path": "plugin_implementation/registry_manager.py",
+        "bytes": 15798,
+        "sha256": "7b0bea20cd1fabf2ebf8a744d22e9cdc9b1b86542e13fec24977dfba838721cf"
+      },
+      {
+        "path": "plugin_implementation/repository_identity.py",
+        "bytes": 3572,
+        "sha256": "e434370577fce2f50f04e47150e95e952f639e4f17a268083c273a6fe6b2ae37"
+      },
+      {
+        "path": "plugin_implementation/wiki_subprocess_worker.py",
+        "bytes": 27752,
+        "sha256": "03cd4bb936f131fb41ffa883a5307023b8202f97aef4a8df3542366807f2eed1"
+      }
+    ]
+  },
+  "producer": "wiki_subprocess_worker.py (inline manifest build)",
+  "restated": true,
+  "artifact_name": "acme--notes-service--main/wiki_manifest_20260101T000000Z-0000000a.json",
+  "body": {
+    "schema_version": 2,
+    "wiki_id": "acme--notes-service--main",
+    "wiki_title": "notes-service",
+    "description": "A small notes service with SQLite persistence. Store, search and authorise access to notes.",
+    "wiki_version_id": "20260101T000000Z-0000000a",
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "canonical_repo_identifier": "acme/notes-service:main:0000000",
+    "repository": "acme/notes-service",
+    "branch": "main",
+    "commit_hash": "0000000deadbeef0000000deadbeef0000000000",
+    "analysis_key": "acme/notes-service:main:0000000@20260101T000000Z-0000000a",
+    "pages": [
+      "acme--notes-service--main/wiki_pages/overview/getting-started.md",
+      "acme--notes-service--main/wiki_pages/overview/architecture-data-flow.md",
+      "acme--notes-service--main/wiki_pages/components/note-storage.md",
+      "acme--notes-service--main/wiki_pages/components/search-ranking.md",
+      "acme--notes-service--main/wiki_pages/components/bearer-tokens.md"
+    ],
+    "provider_type": "github",
+    "faiss_cache_key": "<md5>",
+    "graph_cache_key": "<md5>",
+    "docstore_cache_key": "<md5>",
+    "docstore_files": [
+      "<md5>.docstore.bin",
+      "<md5>.doc_index.json"
+    ],
+    "bm25_cache_key": "<md5>",
+    "bm25_files": [
+      "<md5>.bm25.sqlite"
+    ],
+    "unified_db_key": "<md5>",
+    "unified_db_files": [
+      "<md5>.wiki.db"
+    ],
+    "analysis_cache_key": "<md5 of analysis_key>"
+  },
+  "notes": [
+    "schema_version 2 means folder-structured artifacts ({wiki_id}/...); version 1 wikis are flat.",
+    "wiki_version_id is '%Y%m%dT%H%M%SZ-<uuid4[:8]>' and every generation writes a NEW manifest — manifests accumulate.",
+    "analysis_key is '{repo}:{branch}:{commit8}@{wiki_version_id}'; ask/deep_research pin a wiki version through it.",
+    "Every *_cache_key / *_files entry names a per-wiki file that ADR-0022 decision 3 replaces with PostgreSQL rows; the port must decide, per key, whether the manifest still carries it."
+  ]
+}

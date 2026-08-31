@@ -1,0 +1,87 @@
+{
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "methods/invoke.py",
+        "bytes": 82868,
+        "sha256": "959f745102c8500df69ae657d99565f7da16348cba2d913b9bad2ff5b896f253"
+      },
+      {
+        "path": "plugin_implementation/artifact_export.py",
+        "bytes": 21481,
+        "sha256": "dbd1d618c62c8056d03cf50add847ad3320e900ef1d4a99aa4af666f97a7e9a4"
+      },
+      {
+        "path": "plugin_implementation/registry_manager.py",
+        "bytes": 15798,
+        "sha256": "7b0bea20cd1fabf2ebf8a744d22e9cdc9b1b86542e13fec24977dfba838721cf"
+      },
+      {
+        "path": "plugin_implementation/repository_identity.py",
+        "bytes": 3572,
+        "sha256": "e434370577fce2f50f04e47150e95e952f639e4f17a268083c273a6fe6b2ae37"
+      },
+      {
+        "path": "plugin_implementation/wiki_subprocess_worker.py",
+        "bytes": 27752,
+        "sha256": "03cd4bb936f131fb41ffa883a5307023b8202f97aef4a8df3542366807f2eed1"
+      }
+    ]
+  },
+  "producer": "ArtifactExporter._export_json_format",
+  "artifact": {
+    "name": "acme--notes-service--main/analysis/wiki_structure_TIMESTAMP.json",
+    "type": "application/json",
+    "data": "{\n    \"wiki_title\": \"notes-service\",\n    \"sections\": [\n        {\n            \"section_name\": \"Overview\",\n            \"pages\": [\n                {\n                    \"page_name\": \"getting-started.md\",\n                    \"page_content\": \"# Overview\\n\\nThe notes service stores notes and answers search queries.\\n\"\n                },\n                {\n                    \"page_name\": \"architecture-data-flow.md\",\n                    \"page_content\": \"# Architecture & Data Flow\\n\\n`api.py` authenticates, then delegates to the store.\\n\"\n                }\n            ]\n        },\n        {\n            \"section_name\": \"Components\",\n            \"pages\": [\n                {\n                    \"page_name\": \"note-storage.md\",\n                    \"page_content\": \"# Note Storage\\n\\n`NoteStore` wraps a SQLite connection.\\n\"\n                },\n                {\n                    \"page_name\": \"search-ranking.md\",\n                    \"page_content\": \"# Search Ranking\\n\\n`rank_notes` scores by term overlap.\\n\"\n                },\n                {\n                    \"page_name\": \"bearer-tokens.md\",\n                    \"page_content\": \"# Bearer Tokens\\n\\n`issue_token` and `verify_token` sign and check subjects.\\n\"\n                }\n            ]\n        }\n    ]\n}"
+  },
+  "body": {
+    "wiki_title": "notes-service",
+    "sections": [
+      {
+        "section_name": "Overview",
+        "pages": [
+          {
+            "page_name": "getting-started.md",
+            "page_content": "# Overview\n\nThe notes service stores notes and answers search queries.\n"
+          },
+          {
+            "page_name": "architecture-data-flow.md",
+            "page_content": "# Architecture & Data Flow\n\n`api.py` authenticates, then delegates to the store.\n"
+          }
+        ]
+      },
+      {
+        "section_name": "Components",
+        "pages": [
+          {
+            "page_name": "note-storage.md",
+            "page_content": "# Note Storage\n\n`NoteStore` wraps a SQLite connection.\n"
+          },
+          {
+            "page_name": "search-ranking.md",
+            "page_content": "# Search Ranking\n\n`rank_notes` scores by term overlap.\n"
+          },
+          {
+            "page_name": "bearer-tokens.md",
+            "page_content": "# Bearer Tokens\n\n`issue_token` and `verify_token` sign and check subjects.\n"
+          }
+        ]
+      }
+    ]
+  },
+  "naming": {
+    "template": "{wiki_id}/analysis/wiki_structure_{YYYYmmdd_HHMMSS}.json",
+    "note": "the timestamp is local wall clock, so the artifact name is not reproducible; the port should make it deterministic (wiki_version_id) and the fixture pins the body, not the name"
+  },
+  "shape": {
+    "wiki_title": "str",
+    "sections": "[{section_name, pages: [{page_name, page_content}]}]"
+  },
+  "notes": [
+    "Sections with no matching generated page are dropped entirely.",
+    "Pages are matched to the structure by the page_id '{section}#{page}'; a title match is the fallback.",
+    "page_content is embedded in full — the structure JSON duplicates every page's markdown."
+  ]
+}
