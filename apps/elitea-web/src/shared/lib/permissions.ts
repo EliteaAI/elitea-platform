@@ -103,6 +103,25 @@ export const PERMISSIONS = {
   index: {
     schedule: 'models.applications.index_meta.edit',
   },
+  /**
+   * Agent Evaluation — the DIMENSION LIBRARY only.
+   *
+   * The baseline's `EVAL_PERMISSIONS` block carries seventeen strings across
+   * dimensions, suites, datasets, runs and human scores. The other thirteen are
+   * not declared here: no route in this deployment gates on them, nothing
+   * grants them, and a constant with no reader is what the dead-code gate
+   * exists to catch.
+   *
+   * Gated in `internal/api/router.go`, granted by
+   * `migrations/shared/0100_evaluation_dimension_permissions.sql` — reads to
+   * admin/editor/viewer, writes to admin/editor.
+   */
+  evaluation: {
+    dimensionRead: 'models.applications.evaluation.dimension.read',
+    dimensionCreate: 'models.applications.evaluation.dimension.create',
+    dimensionUpdate: 'models.applications.evaluation.dimension.update',
+    dimensionDelete: 'models.applications.evaluation.dimension.delete',
+  },
 } as const;
 
 /** `constants.js:609-616` — the permission a nav entity needs at minimum to render. */

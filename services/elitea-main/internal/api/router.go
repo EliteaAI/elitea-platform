@@ -28,6 +28,7 @@ import (
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	v2core "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
+	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
@@ -201,6 +202,12 @@ type RouterConfig struct {
 	WebhookRepo          webhook.Repository
 	RedisClient          *goredis.Client
 	EventSource          v2events.EventSource
+	// EvalDimensionsRepo backs the Agent Evaluation DIMENSION LIBRARY — the
+	// first and, for now, only slice of that feature. Unassigned, the four
+	// routes are not registered at all, which answers 404: a stubbed 200 with
+	// an empty list would be indistinguishable, in the browser, from a working
+	// library that happens to be empty.
+	EvalDimensionsRepo v2evaluation.Repository
 	// ProjectVectorStore provisions a new project's PgVector credentials and
 	// its `vectorstorage` configuration row (#371). It is injected because the
 	// composition needs the Configurations runtime's finder, unsecreter and
@@ -2117,6 +2124,58 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					// this as a product decision rather than a transcription.
 					r.With(projectScoped).Post("/tags/prompt_lib/{projectID}", tagHandler.Create)
 					r.With(projectScoped).Delete("/tags/prompt_lib/{projectID}/{tagID}", tagHandler.Delete)
+				}
+
+				// Agent Evaluation — the DIMENSION LIBRARY, and nothing else.
+				//
+				// The baseline UI spans 19 `eval_*` path families. Four routes
+				// are registered here and the other 34 operations are NOT: no
+				// suites, bindings, datasets, cases, runs, results, human
+				// scores, platform catalogue or `generate_eval_dimensions`.
+				// They are absent rather than stubbed, so they answer 404 —
+				// a 200 with an empty body is indistinguishable, in a browser,
+				// from a feature that works and has no data.
+				//
+				// WHY THESE FOUR GATES DO NOT USE `projectPermission`.
+				//
+				// They build the identical middleware — same resolver, same
+				// DEFAULT mode — and differ only in that the permission comes
+				// from a package constant rather than a string literal.
+				// router_elitea_core_permission_map_test.go asserts that every
+				// literal handed to `projectPermission` appears in
+				// testdata/legacy/legacy-rbac-static-catalog.json, and that
+				// assertion is exactly right for a PORTED pylon route: a name
+				// the catalogue does not know is a typo, and a typo ships as a
+				// permanent 403 nobody can clear. Agent Evaluation is not in
+				// the pylon corpus this repository carries — there is no
+				// evaluation module in legacy/plugins/elitea_core/api/v2/ — so
+				// these four names have no `check_api` to be transcribed from.
+				// Routing them through that helper would make a provenance
+				// claim that is false; the names come from the product's own UI
+				// constants instead (see the package doc in
+				// internal/api/v2/evaluation).
+				//
+				// The check that MATTERS still binds:
+				// router_permission_grant_gate_test.go resolves these constants
+				// through the AST and fails unless a shared migration grants
+				// each of them in `default` mode.
+				// shared/0100_evaluation_dimension_permissions.sql is that
+				// grant, and it lands with this registration rather than after
+				// it — either alone is the #354/#359 defect.
+				if cfg.EvalDimensionsRepo != nil {
+					evaluationHandler := v2evaluation.NewHandler(cfg.EvalDimensionsRepo)
+					evaluationGate := func(permission string) func(http.Handler) http.Handler {
+						return apimw.RequireResolvedPermissions(
+							coreResolver, platformauth.PermissionModeDefault, permission)
+					}
+					r.With(evaluationGate(v2evaluation.PermissionDimensionRead)).
+						Get("/eval_dimensions/prompt_lib/{projectID}", evaluationHandler.List)
+					r.With(evaluationGate(v2evaluation.PermissionDimensionCreate)).
+						Post("/eval_dimensions/prompt_lib/{projectID}", evaluationHandler.Create)
+					r.With(evaluationGate(v2evaluation.PermissionDimensionUpdate)).
+						Put("/eval_dimension/prompt_lib/{projectID}/{dimensionID}", evaluationHandler.Update)
+					r.With(evaluationGate(v2evaluation.PermissionDimensionDelete)).
+						Delete("/eval_dimension/prompt_lib/{projectID}/{dimensionID}", evaluationHandler.Delete)
 				}
 
 				// Conversations

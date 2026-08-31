@@ -26,6 +26,7 @@ import (
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
@@ -1552,6 +1553,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		FoldersRepo:          foldersRepository(pool),
 		TagsRepo:             tagsRepository(pool),
 		AnalyticsRepo:        analyticsRepository(pool),
+		// The Agent Evaluation dimension library. Wired here, at the
+		// composition root, in the SAME change as the routes and the RBAC
+		// grant: a handler written and never composed is the shape #597
+		// records — both halves correct, the wiring the defect, and 2475 green
+		// unit tests unable to see it.
+		EvalDimensionsRepo: evalDimensionsRepository(pool),
 		// WebhookRepo is the sixth instance of the same defect, and it hid one
 		// step deeper than the other five. Its gate mounts a subrouter —
 		// `r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(...).Routes())`
@@ -1664,6 +1671,13 @@ func webhooksRepository(pool *pgxpool.Pool) webhook.Repository {
 		return nil
 	}
 	return dbrepos.NewWebhooksRepo(pool)
+}
+
+func evalDimensionsRepository(pool *pgxpool.Pool) v2evaluation.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewEvalDimensionsRepo(pool)
 }
 
 func tagsRepository(pool *pgxpool.Pool) v2tags.Repository {

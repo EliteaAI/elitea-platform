@@ -239,7 +239,25 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	//
 	// RENUMBERED from 0100 at merge, for the same reason 0102 was: three
 	// streams authored a 0100 in parallel and each was correct at the time.
-	require.EqualValues(t, 103, Head(shared))
+	//
+	// 104: shared/0104_evaluation_dimension_permissions.sql, the four
+	// default-mode grants the evaluation dimension library needs. It is the
+	// RBAC half of the first Agent Evaluation slice; the table itself is
+	// tenant/0130, because a dimension is one project's authored content and
+	// these four strings are central role grants.
+	//
+	// It is the first file in this corpus to seed a permission the pylon
+	// catalogue does not declare, and it says why in its own header: Agent
+	// Evaluation is not in the plugin corpus this repository carries, so the
+	// names come from the product's own UI constants rather than from a
+	// `check_api` transcription, and the routes therefore gate through
+	// exported constants instead of router.go's `projectPermission` helper.
+	// The grant gate (router_permission_grant_gate_test.go) still binds; only
+	// the pylon-provenance assertion, which would be false, does not.
+	//
+	// RENUMBERED from 0100 at merge — the FOURTH stream to claim that
+	// number, each correct when it was written. Only the merge sees it.
+	require.EqualValues(t, 104, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
@@ -282,7 +300,16 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// never touched, and GetMessageByUUID's unconditional LEFT JOIN would have
 	// done the same for every message read once its GET was bound, which the
 	// same session did.
-	require.EqualValues(t, 129, Head(tenant))
+	//
+	// 130: tenant/0130_eval_dimensions.sql, the evaluation dimension library —
+	// the FIRST and, for now, the ONLY Agent Evaluation table. The baseline UI
+	// spans 19 `eval_*` path families; the library is the one with no
+	// orchestrator, judge model or code sandbox behind it, so it is the one
+	// that can ship correct while the run engine is unbuilt. `eval_suites`,
+	// `eval_bindings`, `eval_datasets`, `eval_dataset_cases`, `eval_runs`,
+	// `eval_results` and `eval_human_scores` are deliberately absent and must
+	// arrive with the code that reads them.
+	require.EqualValues(t, 130, Head(tenant))
 
 	// The agentstate scope is this branch's, and it is counted separately: the
 	// native runtime's ADK sessions and graph checkpoints live in their own
