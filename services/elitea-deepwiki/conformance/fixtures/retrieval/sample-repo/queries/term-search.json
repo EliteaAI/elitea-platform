@@ -1,0 +1,410 @@
+{
+  "query": "search",
+  "query_embedding": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "rankings": {
+    "fts": {
+      "producer": "UnifiedWikiDB.search_fts5",
+      "backend": "SQLite FTS5, tokenize='porter unicode61', ORDER BY rank (bm25)",
+      "target": "PostgreSQL tsvector + GIN",
+      "scores": {
+        "fts_rank": "raw FTS5 bm25() rank; more negative is better",
+        "score_norm": "1 / (1 + exp(fts_rank)) — monotone in rank"
+      },
+      "match_semantics": "FTS5 MATCH is CONJUNCTIVE: every bare term must appear in the row, so a multi-word natural language question usually matches 0-1 rows. A tsvector port must reproduce this (plainto_tsquery, not websearch_to_tsquery/OR) or the fused ranking shifts. On an FTS5 syntax error the legacy code retries once with the query suffixed by '*' and then returns [].",
+      "results": [
+        {
+          "node_id": "notes/search.py::module",
+          "rel_path": "notes/search.py",
+          "symbol_name": "search",
+          "symbol_type": "module_doc",
+          "fts_rank": -2.430192363,
+          "score_norm": 0.919100837
+        },
+        {
+          "node_id": "api.py::handle_search",
+          "rel_path": "api.py",
+          "symbol_name": "handle_search",
+          "symbol_type": "function",
+          "fts_rank": -2.086123328,
+          "score_norm": 0.889547106
+        },
+        {
+          "node_id": "api.py::module",
+          "rel_path": "api.py",
+          "symbol_name": "api",
+          "symbol_type": "module_doc",
+          "fts_rank": -1.454573946,
+          "score_norm": 0.810701371
+        },
+        {
+          "node_id": "README.md::module",
+          "rel_path": "README.md",
+          "symbol_name": "README",
+          "symbol_type": "file_doc",
+          "fts_rank": -1.43934989,
+          "score_norm": 0.808353958
+        }
+      ],
+      "total_matches": 4
+    },
+    "dense": {
+      "producer": "UnifiedWikiDB.search_vec",
+      "backend": "sqlite-vec vec0 KNN, float32[64], L2 distance",
+      "target": "pgvector HNSW",
+      "scores": {
+        "vec_distance": "lower is better"
+      },
+      "results": [
+        {
+          "node_id": "notes/search.py::module",
+          "rel_path": "notes/search.py",
+          "symbol_name": "search",
+          "symbol_type": "module_doc",
+          "vec_distance": 0.89442718
+        },
+        {
+          "node_id": "api.py::handle_search",
+          "rel_path": "api.py",
+          "symbol_name": "handle_search",
+          "symbol_type": "function",
+          "vec_distance": 1.232726693
+        },
+        {
+          "node_id": "README.md::module",
+          "rel_path": "README.md",
+          "symbol_name": "README",
+          "symbol_type": "file_doc",
+          "vec_distance": 1.314471722
+        },
+        {
+          "node_id": "api.py::module",
+          "rel_path": "api.py",
+          "symbol_name": "api",
+          "symbol_type": "module_doc",
+          "vec_distance": 1.344451189
+        },
+        {
+          "node_id": "notes/store.py::module",
+          "rel_path": "notes/store.py",
+          "symbol_name": "store",
+          "symbol_type": "module_doc",
+          "vec_distance": 1.414213061
+        },
+        {
+          "node_id": "notes/store.py::NoteStore.delete_note",
+          "rel_path": "notes/store.py",
+          "symbol_name": "delete_note",
+          "symbol_type": "method",
+          "vec_distance": 1.414213181
+        },
+        {
+          "node_id": "notes/store.py::NoteStore",
+          "rel_path": "notes/store.py",
+          "symbol_name": "NoteStore",
+          "symbol_type": "class",
+          "vec_distance": 1.414213181
+        },
+        {
+          "node_id": "auth/tokens.py::module",
+          "rel_path": "auth/tokens.py",
+          "symbol_name": "tokens",
+          "symbol_type": "module_doc",
+          "vec_distance": 1.414213181
+        },
+        {
+          "node_id": "notes/search.py::SearchIndex.__init__",
+          "rel_path": "notes/search.py",
+          "symbol_name": "__init__",
+          "symbol_type": "method",
+          "vec_distance": 1.4142133
+        },
+        {
+          "node_id": "auth/tokens.py::verify_token",
+          "rel_path": "auth/tokens.py",
+          "symbol_name": "verify_token",
+          "symbol_type": "function",
+          "vec_distance": 1.4142133
+        },
+        {
+          "node_id": "notes/search.py::rank_notes",
+          "rel_path": "notes/search.py",
+          "symbol_name": "rank_notes",
+          "symbol_type": "function",
+          "vec_distance": 1.414213419
+        },
+        {
+          "node_id": "auth/tokens.py::issue_token",
+          "rel_path": "auth/tokens.py",
+          "symbol_name": "issue_token",
+          "symbol_type": "function",
+          "vec_distance": 1.414213419
+        },
+        {
+          "node_id": "auth/tokens.py::TokenError",
+          "rel_path": "auth/tokens.py",
+          "symbol_name": "TokenError",
+          "symbol_type": "class",
+          "vec_distance": 1.414213419
+        },
+        {
+          "node_id": "notes/store.py::NoteStore.save_note",
+          "rel_path": "notes/store.py",
+          "symbol_name": "save_note",
+          "symbol_type": "method",
+          "vec_distance": 1.414213538
+        },
+        {
+          "node_id": "notes/store.py::NoteStore.__init__",
+          "rel_path": "notes/store.py",
+          "symbol_name": "__init__",
+          "symbol_type": "method",
+          "vec_distance": 1.414213538
+        },
+        {
+          "node_id": "notes/search.py::tokenize",
+          "rel_path": "notes/search.py",
+          "symbol_name": "tokenize",
+          "symbol_type": "function",
+          "vec_distance": 1.414213777
+        },
+        {
+          "node_id": "notes/search.py::SearchIndex.add",
+          "rel_path": "notes/search.py",
+          "symbol_name": "add",
+          "symbol_type": "method",
+          "vec_distance": 1.414213777
+        },
+        {
+          "node_id": "api.py::handle_create_note",
+          "rel_path": "api.py",
+          "symbol_name": "handle_create_note",
+          "symbol_type": "function",
+          "vec_distance": 1.414213777
+        },
+        {
+          "node_id": "notes/store.py::NoteStore.load_note",
+          "rel_path": "notes/store.py",
+          "symbol_name": "load_note",
+          "symbol_type": "method",
+          "vec_distance": 1.414213896
+        },
+        {
+          "node_id": "notes/search.py::SearchIndex",
+          "rel_path": "notes/search.py",
+          "symbol_name": "SearchIndex",
+          "symbol_type": "class",
+          "vec_distance": 1.414213896
+        }
+      ],
+      "total_matches": 20
+    },
+    "bm25": {
+      "producer": "bm25_disk.BM25SqliteIndex.search",
+      "backend": "standalone SQLite postings index over the mmap docstore; k1=1.5, b=0.75, whitespace tokenizer",
+      "target": "PostgreSQL term-statistics tables or ts_rank substitution (ADR-0022 Consequences)",
+      "scores": {
+        "bm25_score": "higher is better"
+      },
+      "results": [
+        {
+          "node_id": "notes/search.py::module",
+          "bm25_score": 3.099885458
+        },
+        {
+          "node_id": "README.md::module",
+          "bm25_score": 2.217704616
+        }
+      ],
+      "total_matches": 2
+    },
+    "fused": {
+      "producer": "UnifiedWikiDB.search_hybrid",
+      "formula": "combined_score(id) = fts_weight/(k + fts_rank_pos) + vec_weight/(k + vec_rank_pos), 1-based positions, k=60.0, fts_weight=0.4, vec_weight=0.6",
+      "note": "this is a *weighted* RRF over the FTS and dense lists only — the standalone BM25 index is not an input; ties are broken by Python's stable sort on combined_score, so equal scores keep set iteration order and are NOT a stable contract",
+      "scores": {
+        "combined_score": "higher is better"
+      },
+      "results": [
+        {
+          "node_id": "notes/search.py::module",
+          "rel_path": "notes/search.py",
+          "symbol_name": "search",
+          "symbol_type": "module_doc",
+          "combined_score": 0.016393443,
+          "fts_rank": -2.430192363
+        },
+        {
+          "node_id": "api.py::handle_search",
+          "rel_path": "api.py",
+          "symbol_name": "handle_search",
+          "symbol_type": "function",
+          "combined_score": 0.016129032,
+          "fts_rank": -2.086123328
+        },
+        {
+          "node_id": "README.md::module",
+          "rel_path": "README.md",
+          "symbol_name": "README",
+          "symbol_type": "file_doc",
+          "combined_score": 0.01577381,
+          "fts_rank": -1.43934989
+        },
+        {
+          "node_id": "api.py::module",
+          "rel_path": "api.py",
+          "symbol_name": "api",
+          "symbol_type": "module_doc",
+          "combined_score": 0.015724206,
+          "fts_rank": -1.454573946
+        },
+        {
+          "node_id": "notes/store.py::module",
+          "rel_path": "notes/store.py",
+          "symbol_name": "store",
+          "symbol_type": "module_doc",
+          "combined_score": 0.009230769,
+          "vec_distance": 1.414213061
+        },
+        {
+          "node_id": "notes/store.py::NoteStore.delete_note",
+          "rel_path": "notes/store.py",
+          "symbol_name": "delete_note",
+          "symbol_type": "method",
+          "combined_score": 0.009090909,
+          "vec_distance": 1.414213181
+        },
+        {
+          "node_id": "notes/store.py::NoteStore",
+          "rel_path": "notes/store.py",
+          "symbol_name": "NoteStore",
+          "symbol_type": "class",
+          "combined_score": 0.008955224,
+          "vec_distance": 1.414213181
+        },
+        {
+          "node_id": "auth/tokens.py::module",
+          "rel_path": "auth/tokens.py",
+          "symbol_name": "tokens",
+          "symbol_type": "module_doc",
+          "combined_score": 0.008823529,
+          "vec_distance": 1.414213181
+        },
+        {
+          "node_id": "notes/search.py::SearchIndex.__init__",
+          "rel_path": "notes/search.py",
+          "symbol_name": "__init__",
+          "symbol_type": "method",
+          "combined_score": 0.008695652,
+          "vec_distance": 1.4142133
+        },
+        {
+          "node_id": "auth/tokens.py::verify_token",
+          "rel_path": "auth/tokens.py",
+          "symbol_name": "verify_token",
+          "symbol_type": "function",
+          "combined_score": 0.008571429,
+          "vec_distance": 1.4142133
+        }
+      ]
+    }
+  },
+  "_source": {
+    "source_repository": "deepwiki_plugin",
+    "source_revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "files": [
+      {
+        "path": "plugin_implementation/unified_db.py",
+        "bytes": 60494,
+        "sha256": "1d2a44e6317effbd9806a539ea30fdd7f15e49140551f5f5d2a6426840e9a3c5"
+      },
+      {
+        "path": "plugin_implementation/bm25_disk.py",
+        "bytes": 15579,
+        "sha256": "beac75986d86a776a52d9402fda8859e8b43f73ea9efb02a8c491e799c7b744e"
+      },
+      {
+        "path": "plugin_implementation/docstore.py",
+        "bytes": 8285,
+        "sha256": "7fb251ab3b51e13eaabb3f2104c5077fc88a81dfaebb1664186cfa14dc9450c1"
+      },
+      {
+        "path": "plugin_implementation/unified_retriever.py",
+        "bytes": 15772,
+        "sha256": "a42c605f4bfb8c83d3098515419a7e9f9c86170ea74862d946ed1b0405bc5ae1"
+      }
+    ]
+  },
+  "parameters": {
+    "top_k": 10,
+    "fts_pool": 30,
+    "vec_pool": 30,
+    "fts_weight": 0.4,
+    "vec_weight": 0.6,
+    "rrf_constant": 60.0
+  }
+}

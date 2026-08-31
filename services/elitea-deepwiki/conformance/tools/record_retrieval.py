@@ -102,6 +102,18 @@ QUERIES = [
     ("search index", "term-search-index"),
     # A query with no lexical or dense support anywhere in the corpus.
     ("kubernetes scheduler", "no-match"),
+    # Queries chosen so the FTS branch returns SEVERAL rows with genuinely
+    # SEPARATED scores. Without these the FTS ranking is barely gated: the
+    # queries above yield 0, 1, or (for "note") a block of 13 rows whose FTS5
+    # ranks all sit within 3e-7 of each other, because the term is common
+    # enough that FTS5 clamps its idf to 1e-6 and only length normalisation
+    # is left to order by. A port could reorder that block freely and no
+    # assertion would notice. These four have spreads of 0.5-1.4, so their
+    # ordering is real evidence.
+    ("search", "term-search"),
+    ("connection", "term-connection"),
+    ("store note", "phrase-store-note"),
+    ("note body author", "phrase-note-body-author"),
 ]
 
 
