@@ -17,7 +17,34 @@ WORKDIR /src
 
 # Cache module downloads separately from source.
 COPY go.mod go.sum ./
-RUN go mod download
+# A TRANSIENT proxy.golang.org failure must not fail the build.
+#
+# Observed in CI: `read "https://proxy.golang.org/.../@v/vX.Y.Z.zip": stream
+# error: stream ID 509; INTERNAL_ERROR; received from peer` — the proxy
+# accepted the request and then broke the HTTP/2 stream mid-body. Go does not
+# retry that on its own, and `direct` is not a fallback for it either: Go falls
+# through to `direct` on a 404/410 from the proxy, never on a broken stream.
+#
+# So the retry is here, bounded and LOUD. Each failure prints, so a permanent
+# error — a module that genuinely does not exist — is five identical messages
+# and a non-zero exit rather than a silent stall.
+#
+# The cache mount is what makes a retry cheap: without it every attempt
+# re-downloads the whole module graph. It is BuildKit scratch space and NOT a
+# layer cache — it cannot make a stale layer be reused, and the module cache is
+# content-addressed and verified against go.sum — so it does not weaken
+# ci-web-e2e.yml's recorded "no buildx/gha layer cache here on purpose".
+# `go build` below mounts the same cache; without that the modules this step
+# fetched would not be visible to it.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    for attempt in 1 2 3 4 5; do \
+        go mod download && exit 0; \
+        echo "go mod download failed (attempt ${attempt}/5)" >&2; \
+        sleep $((attempt * 5)); \
+    done; \
+    echo "go mod download failed after 5 attempts" >&2; \
+    exit 1
 
 COPY . .
 
@@ -28,7 +55,9 @@ ARG TARGETARCH=amd64
 ARG VERSION=dev
 # GOFLAGS=-mod=mod keeps the standalone module build independent of any parent
 # go.work the host may set; GOWORK=off guarantees the workspace is not consulted.
-RUN CGO_ENABLED=0 GOWORK=off GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOWORK=off GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/elitea-llm-gateway ./cmd/elitea-llm-gateway
 
 # ── final runtime image ───────────────────────────────────────────────────────

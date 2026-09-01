@@ -1612,8 +1612,46 @@ ENDFIXTURE
     echo "→ Seed complete."
     ;;
 
+  logs)
+    # Every service's log, for a failure that only the SERVER can explain.
+    #
+    # WHY THIS EXISTS. A journey failed with "Failed to load users." on the
+    # screen after a write, and the job captured a screenshot, a video and an
+    # accessibility tree — none of which can say whether the listing answered
+    # 500, timed out, or was refused. The stack was torn down in the next step
+    # and the answer went with it. A failure nobody can diagnose gets retried
+    # until it passes, which is how a real defect becomes "flaky".
+    #
+    # Written to a FILE rather than the job log: `docker compose logs` for a
+    # nine-service stack is tens of thousands of lines, and burying the
+    # Playwright output under it costs more than it gives. The file is uploaded
+    # beside the report.
+    #
+    # NEVER FATAL. This runs on the failure path, and a diagnostic that can fail
+    # the job it is diagnosing would replace one unexplained failure with
+    # another. Every branch ends in `|| true`.
+    # APP_ROOT is set inside the `seed` branch, so it is derived here rather
+    # than borrowed: a default that silently resolved to "." would write the
+    # file next to wherever the caller happened to stand.
+    LOGS_APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    OUT="${2:-${LOGS_APP_ROOT}/playwright-results/stack-logs.txt}"
+    mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
+    echo "→ Collecting stack logs into ${OUT}…"
+    {
+      echo "=== compose ps ==="
+      $COMPOSE_BIN $COMPOSE_F ps 2>&1 || true
+      echo
+      echo "=== compose logs (--no-color, timestamps) ==="
+      $COMPOSE_BIN $COMPOSE_F logs --no-color --timestamps 2>&1 || true
+    } > "$OUT" 2>&1 || true
+    # The count is printed so a caller can tell "collected nothing" from
+    # "collected and there was nothing wrong" — an empty file that nobody
+    # noticed is the same dead end this command exists to remove.
+    echo "  ✓ $(wc -l < "$OUT" 2>/dev/null || echo 0) line(s) collected"
+    ;;
+
   *)
-    echo "Usage: $0 {up|down|seed}" >&2
+    echo "Usage: $0 {up|down|seed|logs [outfile]}" >&2
     exit 1
     ;;
 esac
