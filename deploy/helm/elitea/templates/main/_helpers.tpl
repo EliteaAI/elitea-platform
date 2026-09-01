@@ -133,6 +133,7 @@ because it passes a manifest the binary then rejects.
 {{- include "elitea-main.validateDeepWiki" . -}}
 {{- include "elitea-main.validateSelfLLMOrigins" . -}}
 {{- include "elitea-main.validateRuntime" . -}}
+{{- include "elitea-main.validateConnectionBudget" . -}}
 {{- include "elitea-main.validateAuthMaterial" . -}}
 {{- end }}
 
@@ -507,6 +508,71 @@ cannot boot.
 
 This helper refuses that values file at render time instead.
 */}}
+{{/*
+elitea-main.validateConnectionBudget — the ceiling nothing enforced.
+
+elitea-main opens the six runtime-plane pools per replica when the runtime
+plane is on (36 connections, and validateDependencies forbids them sharing
+capacity) PLUS its primary pool. Multiplied by the HPA's ceiling that is ~400
+against a stock max_connections of 100, and the chart set no pool size at all.
+
+TWO CHECKS, and the first matters more than the arithmetic.
+
+`ELITEA_DATABASE_MAX_CONNS` unset does not mean "small". cmd/elitea-main's
+databasePoolConfig returns EARLY when it is unset, so pgx applies its own
+default of max(4, numCPU) — a number that depends on the node the pod lands on
+and which this chart cannot know. A budget computed around an unknowable term
+is a budget that reports a number it cannot stand behind, so the guard refuses
+to compute one instead.
+
+The count is deliberately for elitea-main alone. The scheduler, gateway and
+worker hold one pool each and do not autoscale; they are covered by
+`reservedConnections`, along with the Jobs and anything else sharing the
+server. Modelling every component here would drift the moment one changes,
+and the term that actually moves is the one this counts.
+
+The replica count is the HPA's maxReplicas when autoscaling is on, because the
+question is what this release may consume WITHOUT anybody doing anything —
+`replicaCount` would check a state the autoscaler is free to leave.
+*/}}
+{{- define "elitea-main.validateConnectionBudget" -}}
+{{- $main := .Values.main -}}
+{{- $pg := .Values.postgresql | default dict -}}
+{{- $env := $main.env | default dict -}}
+{{- $runtimeOn := and $main.runtime $main.runtime.enabled -}}
+
+{{- $primary := get $env "ELITEA_DATABASE_MAX_CONNS" | toString -}}
+{{- if and $runtimeOn (not $primary) -}}
+{{- fail "main.runtime.enabled is true but main.env.ELITEA_DATABASE_MAX_CONNS is unset, so this release's connection use cannot be computed. cmd/elitea-main/database_pool.go returns early when it is unset and pgx then applies max(4, numCPU) — a value that depends on the node the pod lands on. With the runtime plane on, each replica ALSO opens 36 isolated runtime-plane connections that may not share capacity, so at autoscaling.maxReplicas the total is the number that exhausts the server. Set it explicitly (1..64)." -}}
+{{- end -}}
+
+{{- if $primary -}}
+{{- $perReplica := int $primary -}}
+{{- if $runtimeOn -}}
+{{/* The compiled phase-one limits, overridable per pool. Kept in the same
+     order as PhaseOneDatabasePoolLimits so a reader can diff the two. */}}
+{{- $perReplica = add $perReplica
+      (int (default 10 (get $env "ELITEA_RUNTIME_DB_ADMISSION_MAX_CONNS")))
+      (int (default 8  (get $env "ELITEA_RUNTIME_DB_CONTROL_MAX_CONNS")))
+      (int (default 8  (get $env "ELITEA_RUNTIME_DB_OUTPUT_MAX_CONNS")))
+      (int (default 4  (get $env "ELITEA_RUNTIME_DB_REPLAY_MAX_CONNS")))
+      (int (default 2  (get $env "ELITEA_RUNTIME_DB_TERMINAL_MAX_CONNS")))
+      (int (default 4  (get $env "ELITEA_RUNTIME_DB_CONTENT_MAX_CONNS"))) -}}
+{{- end -}}
+
+{{- $replicas := int (default 1 $main.replicaCount) -}}
+{{- if and $main.autoscaling $main.autoscaling.enabled -}}
+{{- $replicas = int $main.autoscaling.maxReplicas -}}
+{{- end -}}
+
+{{- $total := mul $perReplica $replicas -}}
+{{- $available := sub (int (default 100 $pg.maxConnections)) (int (default 25 $pg.reservedConnections)) -}}
+{{- if gt $total $available -}}
+{{- fail (printf "this release can open %d PostgreSQL connections (%d per elitea-main replica x %d replicas) but only %d are available (postgresql.maxConnections %d minus reservedConnections %d). Exhaustion does not surface on the replica that caused it: the next component to connect — usually a migration Job or the scheduler — fails with 'sorry, too many clients already'. Lower main.env.ELITEA_DATABASE_MAX_CONNS or the ELITEA_RUNTIME_DB_*_MAX_CONNS pools, lower autoscaling.maxReplicas, or raise postgresql.maxConnections to match the server you actually run." $total $perReplica $replicas $available (int (default 100 $pg.maxConnections)) (int (default 25 $pg.reservedConnections))) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{- define "elitea-main.validateRuntime" -}}
 {{- $runtime := .Values.main.runtime | default dict -}}
 {{- $agent := $runtime.agentExecutionDispatch | default dict -}}
