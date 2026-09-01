@@ -27,6 +27,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	v2deepwiki "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
+	v2deepwikiui "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwikiui"
 	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
@@ -1046,6 +1047,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// degraded mount. The alternative is four routes that answer 503 to every
 	// caller while the operator's flag says the feature is on.
 	var deepwikiRoute *v2deepwiki.Route
+	var deepwikiUIHandler *v2deepwikiui.Handler
 	deepwikiConfig, err := v2deepwiki.ConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("read DeepWiki facade configuration: %w", err)
@@ -1105,6 +1107,34 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			pool, deepwikiSigner, []byte(os.Getenv("APPLICATION_SECRET_KEY")))
 		if minterErr != nil {
 			return fmt.Errorf("compose DeepWiki callback token minter: %w", minterErr)
+		}
+
+		// The vendored SPA, composed only when the image carries a bundle.
+		//
+		// Two separate conditions, deliberately: the facade being ON does not
+		// mean this image has a UI in it (the hybrid target sets no bundle
+		// directory at all), and mounting a page with no bundle behind it
+		// renders an empty document that reports nothing anywhere.
+		if bundleDir := strings.TrimSpace(os.Getenv(v2deepwikiui.StaticDirEnv)); bundleDir != "" {
+			deepwikiUI, uiErr := v2deepwikiui.NewHandler(
+				v2deepwikiui.Config{StaticDir: bundleDir},
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					// A browser loads this page with a session cookie and
+					// nothing else, exactly as it loads the admin console.
+					SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if uiErr != nil {
+				return fmt.Errorf("compose DeepWiki UI: %w", uiErr)
+			}
+			deepwikiUIHandler = deepwikiUI
+		} else {
+			logger.Info("DeepWiki facade enabled without a UI bundle",
+				"variable", v2deepwikiui.StaticDirEnv)
 		}
 
 		deepwikiRoute, err = v2deepwiki.NewRoute(
@@ -1623,6 +1653,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
 		DeepWiki:                      deepwikiRoute,
+		DeepWikiUI:                    deepwikiUIHandler,
 		CurrentAgentStart:             currentAgentStart,
 		// The support assistant's predict route delegates to the SAME
 		// agent-execution use case CurrentAgentStart's HTTP route drives — not a

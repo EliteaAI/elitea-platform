@@ -27,6 +27,30 @@ COPY apps/elitea-web/src/ ./src/
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN npm run build:admin
 
+# ── Stage 1b: the vendored DeepWiki SPA ───────────────────────────────────────
+# ADR-0022 decision 8. A SEPARATE stage from the admin builder above, because
+# it is a separate npm project with its own dependency tree — MUI 5 and React
+# 18, against elitea-web's own versions — and merging them would make one
+# `npm ci` resolve both. It is interim by declaration: the target is a native
+# elitea-web feature, and this stage is expected to be deleted rather than
+# maintained.
+#
+# It runs unconditionally, and the bundle is ~4MB in the final image. That is
+# the cost of the interim; gating it behind a build argument would mean an
+# image whose /app/deepwiki serves a page that renders nothing, which is worse
+# than either shipping it or not.
+FROM node:24-alpine AS deepwiki-ui-builder
+
+WORKDIR /build
+
+COPY apps/deepwiki-ui/package.json apps/deepwiki-ui/package-lock.json ./
+RUN npm ci
+
+COPY apps/deepwiki-ui/index.html apps/deepwiki-ui/vite.config.js ./
+COPY apps/deepwiki-ui/src/ ./src/
+
+RUN npm run build
+
 # ── Stage 2: Go builder ───────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS builder
 
@@ -88,6 +112,11 @@ COPY --from=builder /out/ /
 
 ENV ADMIN_UI_STATIC_DIR=/data/admin_ui/static/dist
 
+# The DeepWiki SPA. Empty in this shared stage and filled by the stages that
+# carry a bundle, so an image without one serves a page that says the bundle is
+# missing rather than an empty document with no error anywhere.
+ENV DEEPWIKI_UI_STATIC_DIR=""
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
@@ -113,6 +142,8 @@ ENV ADMIN_UI_STATIC_DIR=/nonexistent
 FROM runtime AS e2e
 
 COPY --from=admin-builder /build/dist/admin /data/admin_ui/static/dist
+COPY --from=deepwiki-ui-builder /build/dist /data/deepwiki_ui/dist
+ENV DEEPWIKI_UI_STATIC_DIR=/data/deepwiki_ui/dist
 
 # ── Stage 6: standalone final image (default target) ──────────────────────────
 # Last stage, so a `docker build` with no --target still produces the shipping
