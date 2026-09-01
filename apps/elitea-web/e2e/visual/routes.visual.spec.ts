@@ -132,6 +132,14 @@ interface VisualRoute {
  */
 async function selectProject(page: Page, route: VisualRoute): Promise<string> {
   const project = route.project;
+  // The early return is for the routes that want the persona's own project,
+  // which is nearly all of them. It is also how this helper silently did
+  // nothing for a whole run: the route entry lost its `project` field to a
+  // careless `git checkout`, every call took this branch, and the shot was
+  // photographed against the wrong project with no assertion able to say so.
+  // `shellSettled` is given the name this returns, so the two can no longer
+  // disagree — a route that fails to switch now fails on the switcher's own
+  // name rather than twenty seconds later on its landmark.
   if (!project) return 'Default Project';
 
   await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
@@ -438,6 +446,12 @@ const ROUTES: readonly VisualRoute[] = [
     // @covers /deepwiki
     name: 'deepwiki-browser',
     path: '/app/deepwiki',
+    // The wiki's own project, not the persona's. The seeded wiki cannot live in
+    // the shared project 1 — a permanent toolkit there makes J17.1's empty-list
+    // premise unreachable — so this shot switches to the project the fixture is
+    // in. Without it the baseline photographs a project with no wiki toolkit,
+    // and `selectProject` below returns early with the default name.
+    project: { id: '90200', name: 'e2e-deepwiki' },
     // THE SEEDED WIKI'S TITLE, which lives only in a manifest object in the
     // artifact store. Every other candidate on this screen fails the rule:
     // the page has no static heading of its own, the toolkit chooser does not
