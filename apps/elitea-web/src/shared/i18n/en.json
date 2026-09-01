@@ -2960,5 +2960,9 @@
   "features.chatMessages.canvas.table.import": "Import table (CSV or TSV)",
   "features.chatMessages.canvas.table.sortColumn": "Sort column",
   "features.chatMessages.canvas.table.viewLess": "view less",
-  "features.chatMessages.canvas.table.viewMore": "view more"
+  "features.chatMessages.canvas.table.viewMore": "view more",
+  "deepwiki.list.empty": "No wiki has been generated for this project yet.",
+  "deepwiki.list.noneForThisRepository": "No wiki has been generated for this repository and branch yet. Other wikis exist in this project; check the repository and branch in the toolkit settings.",
+  "deepwiki.loadFailed": "The wikis for this project could not be loaded.",
+  "deepwiki.loading": "Loading wikis…"
 }
