@@ -310,7 +310,19 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It claims no pylon-owned table. Every name is new, in a new schema, so
 	// it cannot collide with a seeded fixture at 42P07 the way three earlier
 	// migrations did.
-	require.EqualValues(t, 107, Head(shared))
+	//
+	// 108: shared/0108_inventory_permissions.sql, the two default-mode grants
+	// behind the Inventory facade — the SECOND provider, and ADR-0012's
+	// falsification test for the runner generalisation. It is the third file
+	// here whose strings are chosen rather than recovered, for 0106's reason:
+	// the legacy inventory_plugin has no api/ package and no check_api call,
+	// so the pylon catalogue has nothing to transcribe.
+	//
+	// Its grant blocks are 0106's with two strings substituted, copied rather
+	// than factored out: each migration names the permissions it grants
+	// inline, and a shared procedure would put them somewhere a reader of that
+	// migration cannot see.
+	require.EqualValues(t, 108, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

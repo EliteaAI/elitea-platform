@@ -1,0 +1,1156 @@
+{
+  "provider_name": "inventory",
+  "provided_ui": [
+    {
+      "name": "ui",
+      "path": "/ui",
+      "headers": {
+        "X-User-Id": {
+          "type": "user_id"
+        },
+        "X-Project-Id": {
+          "type": "project_id"
+        }
+      }
+    }
+  ],
+  "toolkit_count": 2,
+  "declared_tool_count": 35,
+  "unique_tool_count": 33,
+  "unique_tool_names": [
+    "cleanup_cache",
+    "connect_orphan_nodes",
+    "delta_update",
+    "get_cache_stats",
+    "get_cross_source_relations",
+    "get_entity",
+    "get_entity_content",
+    "get_entity_details",
+    "get_graph_info",
+    "get_preset_info",
+    "get_related_entities",
+    "get_sources_status",
+    "get_stats",
+    "get_type_stats",
+    "impact_analysis",
+    "investigate",
+    "link_toolkits_to_tools",
+    "list_entities_by_layer",
+    "list_entities_by_source",
+    "list_entities_by_type",
+    "list_entity_types",
+    "list_graphs",
+    "list_ingested_sources",
+    "list_presets",
+    "load_graph",
+    "normalize_types",
+    "query_graph",
+    "rebuild_indices",
+    "remove_source_entities",
+    "run_ingestion",
+    "search_graph",
+    "search_knowledge_graph",
+    "validate_relationships"
+  ],
+  "tool_declarations": {
+    "cleanup_cache": [
+      "inventory"
+    ],
+    "connect_orphan_nodes": [
+      "inventory"
+    ],
+    "delta_update": [
+      "inventory"
+    ],
+    "get_cache_stats": [
+      "inventory"
+    ],
+    "get_cross_source_relations": [
+      "inventory"
+    ],
+    "get_entity": [
+      "inventory"
+    ],
+    "get_entity_content": [
+      "inventory"
+    ],
+    "get_entity_details": [
+      "inventory_search"
+    ],
+    "get_graph_info": [
+      "inventory"
+    ],
+    "get_preset_info": [
+      "inventory"
+    ],
+    "get_related_entities": [
+      "inventory",
+      "inventory_search"
+    ],
+    "get_sources_status": [
+      "inventory"
+    ],
+    "get_stats": [
+      "inventory"
+    ],
+    "get_type_stats": [
+      "inventory"
+    ],
+    "impact_analysis": [
+      "inventory"
+    ],
+    "investigate": [
+      "inventory_search"
+    ],
+    "link_toolkits_to_tools": [
+      "inventory"
+    ],
+    "list_entities_by_layer": [
+      "inventory"
+    ],
+    "list_entities_by_source": [
+      "inventory"
+    ],
+    "list_entities_by_type": [
+      "inventory"
+    ],
+    "list_entity_types": [
+      "inventory_search"
+    ],
+    "list_graphs": [
+      "inventory"
+    ],
+    "list_ingested_sources": [
+      "inventory"
+    ],
+    "list_presets": [
+      "inventory"
+    ],
+    "load_graph": [
+      "inventory"
+    ],
+    "normalize_types": [
+      "inventory"
+    ],
+    "query_graph": [
+      "inventory",
+      "inventory_search"
+    ],
+    "rebuild_indices": [
+      "inventory"
+    ],
+    "remove_source_entities": [
+      "inventory"
+    ],
+    "run_ingestion": [
+      "inventory"
+    ],
+    "search_graph": [
+      "inventory"
+    ],
+    "search_knowledge_graph": [
+      "inventory_search"
+    ],
+    "validate_relationships": [
+      "inventory"
+    ]
+  },
+  "toolkits": [
+    {
+      "name": "inventory",
+      "type_override": "inventory",
+      "application": true,
+      "required_context": [],
+      "config_type": "Inventory Knowledge Graph Configuration",
+      "fields_order": [
+        "bucket",
+        "llm_model",
+        "embedding_model",
+        "sources"
+      ],
+      "config_parameters": {
+        "bucket": {
+          "type": "String",
+          "required": true,
+          "default": null,
+          "json_schema_extra": null
+        },
+        "llm_model": {
+          "type": "String",
+          "required": true,
+          "default": null,
+          "json_schema_extra": {
+            "configuration_model": "llm"
+          }
+        },
+        "embedding_model": {
+          "type": "String",
+          "required": false,
+          "default": "",
+          "json_schema_extra": {
+            "configuration_model": "embedding"
+          }
+        },
+        "sources": {
+          "type": "JSON",
+          "required": false,
+          "default": [],
+          "json_schema_extra": {
+            "toolkit_types": [
+              "github",
+              "ado_repos",
+              "gitlab",
+              "bitbucket"
+            ]
+          }
+        },
+        "source_configs": {
+          "type": "JSON",
+          "required": false,
+          "default": {},
+          "json_schema_extra": {
+            "hidden": true
+          }
+        }
+      },
+      "declared_tools": [
+        {
+          "name": "run_ingestion",
+          "tool_result_type": "String",
+          "sync_invocation_supported": false,
+          "async_invocation_supported": true,
+          "result_composition": "list_of_objects",
+          "result_object_types": [
+            "message"
+          ],
+          "args_schema": {
+            "toolkit_id": {
+              "type": "Integer",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "branch": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "file_patterns": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "exclude_patterns": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "full_rebuild": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": false
+            }
+          }
+        },
+        {
+          "name": "delta_update",
+          "tool_result_type": "String",
+          "sync_invocation_supported": false,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "toolkit_id": {
+              "type": "Integer",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "file_paths": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "branch": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            }
+          }
+        },
+        {
+          "name": "remove_source_entities",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "toolkit_id": {
+              "type": "Integer",
+              "required": true,
+              "has_default": false,
+              "default": null
+            }
+          }
+        },
+        {
+          "name": "list_ingested_sources",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "list_graphs",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "load_graph",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "graph_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            }
+          }
+        },
+        {
+          "name": "get_graph_info",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "search_graph",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "query": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "entity_type": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "layer": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "source_toolkit": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "file_pattern": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "top_k": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 10
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "get_entity",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "include_relations": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": true
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "get_entity_content",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            }
+          }
+        },
+        {
+          "name": "impact_analysis",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "direction": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "downstream"
+            },
+            "max_depth": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 3
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "get_related_entities",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "relation_type": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "direction": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "both"
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "query_graph",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "query": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "types": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "layers": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "files": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "name": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "related_to": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "relation_types": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "direction": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "both"
+            },
+            "has_relations": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "limit": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 30
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "get_cross_source_relations",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "get_stats",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "list_entities_by_type",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_type": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "source_toolkit": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "limit": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 50
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "list_entities_by_layer",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "layer": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "source_toolkit": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "limit": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 50
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "list_entities_by_source",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "source_toolkit": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "entity_type": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "limit": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 50
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "list_presets",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {}
+        },
+        {
+          "name": "get_preset_info",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "preset_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            }
+          }
+        },
+        {
+          "name": "get_cache_stats",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "cleanup_cache",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        },
+        {
+          "name": "get_sources_status",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            }
+          }
+        },
+        {
+          "name": "normalize_types",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            }
+          }
+        },
+        {
+          "name": "rebuild_indices",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            }
+          }
+        },
+        {
+          "name": "get_type_stats",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            },
+            "show_all": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": false
+            }
+          }
+        },
+        {
+          "name": "link_toolkits_to_tools",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "dry_run": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": false
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            }
+          }
+        },
+        {
+          "name": "connect_orphan_nodes",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "min_score": {
+              "type": "Number",
+              "required": false,
+              "has_default": true,
+              "default": 0.3
+            },
+            "max_connections": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 3
+            },
+            "dry_run": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": false
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            }
+          }
+        },
+        {
+          "name": "validate_relationships",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "fix_issues": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": false
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "json"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "inventory_search",
+      "type_override": "inventory_search",
+      "application": false,
+      "required_context": [
+        "project_id"
+      ],
+      "config_type": "Inventory Search Tools",
+      "fields_order": [
+        "inventory_toolkit"
+      ],
+      "config_parameters": {
+        "inventory_toolkit": {
+          "type": "Integer",
+          "required": true,
+          "default": null,
+          "json_schema_extra": {
+            "toolkit_types": [
+              "inventory"
+            ],
+            "application": true,
+            "label": "Inventory Toolkit"
+          }
+        }
+      },
+      "declared_tools": [
+        {
+          "name": "search_knowledge_graph",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "query": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "top_k": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 20
+            },
+            "entity_type": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "layer": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            }
+          }
+        },
+        {
+          "name": "get_entity_details",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "include_relations": {
+              "type": "Boolean",
+              "required": false,
+              "has_default": true,
+              "default": true
+            }
+          }
+        },
+        {
+          "name": "get_related_entities",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "entity_name": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "relation_type": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "direction": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "both"
+            }
+          }
+        },
+        {
+          "name": "query_graph",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "query": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "types": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "layers": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "related_to": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "limit": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 30
+            }
+          }
+        },
+        {
+          "name": "list_entity_types",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {}
+        },
+        {
+          "name": "investigate",
+          "tool_result_type": "String",
+          "sync_invocation_supported": true,
+          "async_invocation_supported": true,
+          "result_composition": null,
+          "result_object_types": [],
+          "args_schema": {
+            "question": {
+              "type": "String",
+              "required": true,
+              "has_default": false,
+              "default": null
+            },
+            "entity_types": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "sources": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "layers": {
+              "type": "String",
+              "required": false,
+              "has_default": false,
+              "default": null
+            },
+            "depth": {
+              "type": "Integer",
+              "required": false,
+              "has_default": true,
+              "default": 2
+            },
+            "output_format": {
+              "type": "String",
+              "required": false,
+              "has_default": true,
+              "default": "text"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
