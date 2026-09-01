@@ -353,3 +353,36 @@ func TestMetricsRoute_ServesThePriceCatalogSchemaControls(t *testing.T) {
 		}
 	}
 }
+
+// TestMetricsRoute_ServesTheMetricTheHPAScalesOn closes the loop between the
+// chart and this process (O3).
+//
+// deploy/helm/elitea/values.yaml's llmGateway.autoscaling.sseConnectionMetric
+// has named `gateway_llm_sse_active_connections` since the HPA was written,
+// and nothing published it: /metrics is an explicit allowlist and no entry
+// produced it. The HPA therefore reported FailedGetPodsMetric, which neither
+// scales nor complains — the deployment pinned at minReplicas while its
+// dashboard said autoscaling was on.
+//
+// The name is spelled out here rather than read from the package constant. A
+// test that compares the constant to itself would keep passing through a
+// rename, and the thing that breaks on a rename is the CHART, which cannot be
+// imported.
+func TestMetricsRoute_ServesTheMetricTheHPAScalesOn(t *testing.T) {
+	srv := newMetricsServer(t)
+	status, body := scrape(t, srv.URL+"/metrics")
+	if status != http.StatusOK {
+		t.Fatalf("GET /metrics = %d, want 200", status)
+	}
+
+	const hpaMetric = "gateway_llm_sse_active_connections"
+	if !strings.Contains(body, hpaMetric) {
+		t.Fatalf("/metrics does not serve %q, which the chart's HPA scales on:\n%s", hpaMetric, body)
+	}
+	// Declared a gauge, and that is not cosmetic: a Prometheus Adapter rule
+	// written for a counter would rate() this into a number bearing no
+	// relation to concurrent streams.
+	if !strings.Contains(body, "# TYPE "+hpaMetric+" gauge") {
+		t.Fatalf("%q is not declared a gauge on /metrics:\n%s", hpaMetric, body)
+	}
+}

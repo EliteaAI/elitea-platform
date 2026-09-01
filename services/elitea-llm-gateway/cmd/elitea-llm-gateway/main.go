@@ -861,6 +861,18 @@ func gatewayMetrics() []gatewayMetric {
 		help: "1 when this gateway enforces budgets. 0 when enforcement is off.",
 		v:    budgetEnforcementEnabled,
 	}}
+	// The SSE gauge the HPA has always named and nothing ever published.
+	// `kind: "gauge"` is load-bearing: every other entry here is a counter, and
+	// a Prometheus Adapter rule that rate()s a gauge produces a number that
+	// bears no relation to concurrent streams.
+	for _, name := range llmproxy.SSEMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "gauge",
+			help: "Concurrent /llm SSE streams this process is serving. The signal llmGateway.autoscaling scales on.",
+			v:    expvar.Get(name),
+		})
+	}
 	for _, name := range llmproxy.ModelMapMetricNames() {
 		metrics = append(metrics, gatewayMetric{
 			name: name,

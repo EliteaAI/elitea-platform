@@ -156,6 +156,14 @@ jobs:
       - name: The connection budget is enforced, and permits a sane topology
         run: bash deploy/helm/tests/render-connection-budget.sh
 
+      # The workload session that expires and the CronJob that is the only
+      # thing stopping it (O2b). Both directions, and the assertions turn the
+      # worker ON — these guards live inside `if .Values.worker.enabled`, which
+      # is false in the shipped defaults, so a suite that forgot would pass
+      # against a guard that never ran.
+      - name: Workload-session renewal cannot be switched off silently
+        run: bash deploy/helm/tests/render-workload-session.sh
+
       - name: The DeepWiki component renders, and its guards refuse
         run: bash deploy/helm/tests/render-deepwiki.sh
 

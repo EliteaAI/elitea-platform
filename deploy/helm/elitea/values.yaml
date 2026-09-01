@@ -2058,7 +2058,18 @@ llmGateway:
     minReplicas: 1
     maxReplicas: 10
     # Pods-metric name the Prometheus Adapter must expose (concurrent /llm SSE
-    # connections per pod). The gateway emits the underlying gauge in BF0.4/§10.
+    # connections per pod).
+    #
+    # The gateway DOES emit this now. It did not when this HPA was written —
+    # the comment here claimed BF0.4/§10 published it, and nothing did: the
+    # /metrics surface is an explicit allowlist and no entry produced the
+    # gauge. Enabling autoscaling therefore gave ScalingActive=False /
+    # FailedGetPodsMetric, which neither scales nor complains, so the
+    # deployment silently pinned at minReplicas.
+    #
+    # It is a GAUGE and the only one on that surface; every other gateway
+    # metric is a counter. A Prometheus Adapter rule that rate()s it produces a
+    # number unrelated to concurrent streams.
     sseConnectionMetric: gateway_llm_sse_active_connections
     # Scale out when average concurrent streams per pod approaches the tuned
     # provider Concurrency budget (GATEWAY_PROVIDER_CONCURRENCY=50).
@@ -2440,6 +2451,13 @@ worker:
     # identical to the outage this whole Job exists to prevent.
     renew:
       enabled: true
+
+      # Set true ONLY when something outside this chart re-stamps
+      # workload_sessions.expires_at. With renew.enabled=false and this unset,
+      # templates/guards.yaml refuses the release: the row would then be
+      # renewed by nothing but `helm upgrade`, and an expiry refuses every
+      # agent execution while the worker still reports Ready.
+      acknowledgeManualRenewal: false
 
       # Roughly ttl/3 (default ttl is 2160h = 90 days, so every ~10 days here),
       # not exactly a third: Kubernetes CronJob schedules are calendar cron, not
