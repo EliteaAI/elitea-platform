@@ -6,7 +6,16 @@ metadata:
   labels:
     {{- include "elitea-worker-python.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicaCount }}
+  {{- else }}
+  # replicas is OMITTED, not set, while KEDA owns this Deployment.
+  #
+  # A `replicas:` field here is not inert: every `helm upgrade` writes it back,
+  # so the fleet snaps to worker.replicaCount and KEDA scales it out again. The
+  # visible symptom is a burst of terminations at each deploy, each one waiting
+  # out an in-flight agent execution.
+  {{- end }}
   # RollingUpdate, and the identity work that makes it correct is described in
   # the "Per-replica consumer identity" block below.
   #

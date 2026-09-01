@@ -174,6 +174,16 @@ jobs:
       - name: Every worker replica gets its own Redis consumer name
         run: bash deploy/helm/tests/render-worker-consumer-identity.sh
 
+      # The worker's KEDA autoscaling (O2c). The refusal is the important half:
+      # this chart already shipped an autoscaler that could not scale, so
+      # `worker.autoscaling.enabled=true` on a cluster with no KEDA must fail
+      # the install rather than create an object no controller reads. The suite
+      # also proves the scaler watches the same stream and group the worker
+      # consumes — a scaler on the wrong queue reports zero depth, and zero
+      # depth scales the fleet DOWN while the backlog grows.
+      - name: The worker's autoscaling refuses when it cannot work
+        run: bash deploy/helm/tests/render-worker-autoscaling.sh
+
       - name: The DeepWiki component renders, and its guards refuse
         run: bash deploy/helm/tests/render-deepwiki.sh
 
