@@ -51,6 +51,7 @@ func TestToolkitsRouteServesTheTypeCatalogueNotTheInstanceList(t *testing.T) {
 	router := NewRouter(RouterConfig{
 		SkillsRepo:             struct{ v2skills.Repository }{},
 		AuthValidator:          testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:     testPrincipalValidator{},
 		ToolkitArgumentSchemas: snapshot,
 	})
 

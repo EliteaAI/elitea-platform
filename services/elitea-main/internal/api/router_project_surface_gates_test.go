@@ -176,6 +176,7 @@ func newProjectSurfaceRouter(resolver fakePermissionResolver, source closedEvent
 	return NewRouter(RouterConfig{
 		SkillsRepo:                struct{ v2skills.Repository }{},
 		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:        testPrincipalValidator{},
 		WebhookRepo:               emptyWebhookRepo{},
 		EventSource:               source,
 		ProjectPermissionResolver: resolver,
@@ -359,6 +360,7 @@ func TestConfigurationWritesFallThroughToTheGatedMountWhenOnlyTheReadIsComposed(
 	router := NewRouter(RouterConfig{
 		SkillsRepo:                struct{ v2skills.Repository }{},
 		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:        testPrincipalValidator{},
 		CurrentConfigurationRead:  reviewedRead,
 		ProjectPermissionResolver: fakePermissionResolver{},
 	})

@@ -42,8 +42,9 @@ func (r *routerAuditRecorder) all() []audit.Event {
 
 func auditWiringRouter(recorder audit.Recorder) http.Handler {
 	return NewRouter(RouterConfig{
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
-		AuditRecorder: recorder,
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AuditRecorder:      recorder,
 	})
 }
 

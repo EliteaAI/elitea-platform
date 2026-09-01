@@ -52,8 +52,9 @@ func (refusingSharedChatStore) RecordAccess(context.Context, int64) error { retu
 
 func sharedChatRouter() http.Handler {
 	return NewRouter(RouterConfig{
-		AuthValidator:   testTokenValidator{user: authenticatedTestUser()},
-		SharedChatStore: refusingSharedChatStore{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		SharedChatStore:    refusingSharedChatStore{},
 	})
 }
 
@@ -144,7 +145,8 @@ func TestSharedChatOwnerRoutesRequireAuthentication(t *testing.T) {
 // mean it: never a 200, and never a body from the shared-chat handler.
 func TestSharedChatRoutesAreAbsentWithoutAStore(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
 	})
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/v2/elitea_core/shared_chat_view/prompt_lib/AAAAAAAAAAAA", nil)

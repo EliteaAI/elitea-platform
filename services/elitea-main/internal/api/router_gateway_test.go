@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,11 +13,28 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
+// testPrincipalValidator passes the authenticated principal through.
+//
+// This file is in the EXTERNAL test package, so it cannot see the identical
+// double in artifact_rbac_test_doubles_test.go. Duplicated rather than
+// exported from production code: a pass-through principal validator is a test
+// affordance, and putting one where non-test code can reach it is how it ends
+// up composed by accident.
+//
+// It is needed because validatePrincipal fails closed — a router with a token
+// validator and no principal validator now refuses every request.
+type testPrincipalValidator struct{}
+
+func (testPrincipalValidator) ValidatePrincipal(_ context.Context, user auth.User) (auth.User, error) {
+	return user, nil
+}
+
 func buildGatewayRouterConfig(t *testing.T, validator apimw.TokenValidator, resolver apimw.PersonalProjectResolver, proxy http.Handler) api.RouterConfig {
 	t.Helper()
 	return api.RouterConfig{
 		AuthClient:             newTestAuthClient(t),
 		AuthValidator:          validator,
+		PrincipalValidator:     testPrincipalValidator{},
 		GatewayProxy:           proxy,
 		GatewayProjectResolver: resolver,
 	}

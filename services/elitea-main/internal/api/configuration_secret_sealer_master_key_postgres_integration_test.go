@@ -50,10 +50,11 @@ func TestACredentialSaveWorksWithAWrappedMasterKeyAndNoVault(t *testing.T) {
 	seedCredentialJourneyMember(t, pool)
 
 	router := NewRouter(RouterConfig{
-		Pool:          pool,
-		AuthValidator: apimw.TokenValidator(credentialJourneyValidator{}),
-		WebhookRepo:   emptyWebhookRepo{},
-		EventSource:   newEventSource(),
+		Pool:               pool,
+		AuthValidator:      apimw.TokenValidator(credentialJourneyValidator{}),
+		PrincipalValidator: testPrincipalValidator{},
+		WebhookRepo:        emptyWebhookRepo{},
+		EventSource:        newEventSource(),
 	})
 
 	status, body := serveJourney(t, router, http.MethodPost,

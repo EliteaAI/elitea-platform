@@ -149,6 +149,13 @@ jobs:
       # image starts the SERVER by default, so a Job that forgets the override
       # runs a second copy of the service instead of migrating, and Helm waits
       # for it forever.
+      # The PostgreSQL connection ceiling (O1a). Both directions: the guard
+      # refuses an over-budget topology AND permits one inside the budget — a
+      # one-directional check cannot tell a working guard from a template that
+      # refuses everything.
+      - name: The connection budget is enforced, and permits a sane topology
+        run: bash deploy/helm/tests/render-connection-budget.sh
+
       - name: The DeepWiki component renders, and its guards refuse
         run: bash deploy/helm/tests/render-deepwiki.sh
 

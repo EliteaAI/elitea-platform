@@ -97,8 +97,9 @@ func serveStatus(t *testing.T, router chi.Router, method, path string) int {
 func newSecretsTestRouter(t *testing.T) chi.Router {
 	t.Helper()
 	return NewRouter(RouterConfig{
-		SkillsRepo:    struct{ v2skills.Repository }{},
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		SkillsRepo:         struct{ v2skills.Repository }{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
 	})
 }
 

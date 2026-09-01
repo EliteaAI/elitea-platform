@@ -297,3 +297,22 @@ func (alwaysSucceedsArtifactStore) AbortMultipart(context.Context, storage.Objec
 func (alwaysSucceedsArtifactStore) Capabilities() storage.Capabilities { return storage.Capabilities{} }
 
 var _ storage.ObjectStore = alwaysSucceedsArtifactStore{}
+
+// testPrincipalValidator passes the authenticated principal through unchanged.
+//
+// It exists because validatePrincipal FAILS CLOSED: a router composed with a
+// token validator and no principal validator now refuses every request, which
+// is the point of that change. Before it, these harnesses authenticated
+// through the open default — 43 RouterConfig literals across 23 files set
+// `AuthValidator` and none set this, so every one of them was exercising a
+// deployment shape that should not exist.
+//
+// Pass-through is the right double here and not a weakening: these suites test
+// ROUTING and RBAC, and the real validator's job is to reload the principal
+// from a database they do not have. What it must not do is accept a principal
+// the test did not authenticate, which is why it echoes rather than invents.
+type testPrincipalValidator struct{}
+
+func (testPrincipalValidator) ValidatePrincipal(_ context.Context, user auth.User) (auth.User, error) {
+	return user, nil
+}

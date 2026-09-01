@@ -81,6 +81,37 @@ postgresql:
   existingSecret: "elitea-main-db"
   key: "database-url"
 
+  # ── The connection budget ──────────────────────────────────────────────────
+  #
+  # WHY THIS EXISTS. elitea-main opens SIX isolated runtime-plane pools per
+  # replica when main.runtime.enabled is true — Admission 10, Control 8,
+  # Output 8, Replay 4, TerminalEffects 2, Content 4 = 36
+  # (internal/runtimecomposition/database_pools.go), and
+  # validateDependencies FORBIDS them sharing capacity — plus the primary
+  # pool on top. At main.autoscaling.maxReplicas: 10 that is roughly 400
+  # connections against a stock PostgreSQL's max_connections of 100, and the
+  # chart set no limit at all.
+  #
+  # Measured on the E2E stack with the runtime plane OFF: 6 connections for one
+  # replica. The runtime pools are the whole of the problem, which is why the
+  # guard below counts them only when that plane is on.
+  #
+  # HOW IT FAILS WITHOUT THIS. Exhaustion surfaces as
+  # `FATAL: sorry, too many clients already` on whichever component connects
+  # NEXT — typically a migration Job or the scheduler, not the replica whose
+  # scale-up consumed the last slot. The cause and the symptom land in
+  # different pods.
+  #
+  # The chart cannot read `max_connections` off the server, so the operator
+  # states it and elitea-main.validateConnectionBudget refuses to render a
+  # topology that would exceed it.
+  maxConnections: 100
+
+  # Connections to leave for everything this chart does not model: interactive
+  # psql, backup tooling, the migration and dbInit Jobs, and whatever else
+  # shares the server. Subtracted from maxConnections before the check.
+  reservedConnections: 25
+
 # ── NATS ────────────────────────────────────────────────────────────────────
 #
 # The gateway's budget counters and the scheduler both dial it, and they MUST
@@ -914,6 +945,24 @@ main:
     # (so the credential is never written into one). Two allowlists that could
     # disagree would mean an invocation that starts and then fails.
     ELITEA_DEEPWIKI_GIT_ALLOWLIST: ""
+
+    # The primary pgxpool size, per elitea-main replica.
+    #
+    # The chart set NOTHING here, and cmd/elitea-main/database_pool.go returns
+    # early when it is unset — so pgx applied max(4, numCPU), a number that
+    # varied with the node the pod landed on and that no operator could read
+    # off a values file.
+    #
+    # 6 is measured, not guessed: one replica with the runtime plane OFF uses 6
+    # connections against the E2E stack. It also has to satisfy the budget at
+    # autoscaling.maxReplicas — 6 x 10 = 60, inside the 75 that
+    # postgresql.maxConnections minus reservedConnections leaves.
+    #
+    # Turning the runtime plane ON adds 36 per replica, which does NOT fit at
+    # ten replicas. That is not a defect in this default: it is the arithmetic
+    # elitea-main.validateConnectionBudget exists to make visible, and the
+    # deployment has to answer it with a bigger server or fewer replicas.
+    ELITEA_DATABASE_MAX_CONNS: "6"
     # The vendored DeepWiki SPA's bundle directory (ADR-0022 decision 8).
     # The published image bakes this in, so it is normally left alone; set it
     # to "" to serve no UI while keeping the facade's API routes.
