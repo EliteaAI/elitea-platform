@@ -25,7 +25,10 @@
       },
       "unit": "DW2",
       "status": "todo",
-      "coverage": { "file": "src/pages/deepwiki/ui/DeepWikiPage.tsx", "min": 90 },
+      "coverage": {
+        "file": "src/pages/deepwiki/ui/DeepWikiPage.tsx",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -34,7 +37,9 @@
       "kind": "behaviour",
       "priority": "must",
       "title": "The wiki list is loaded from the project's artifact bucket",
-      "source": ["apps/deepwiki-ui/src/DeepWikiApp.jsx:1229-1381"],
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1229-1381"
+      ],
       "acceptance": [
         "GIVEN a project with at least one generated wiki",
         "WHEN the wiki browser opens",
@@ -48,7 +53,10 @@
       },
       "unit": "DW1",
       "status": "todo",
-      "coverage": { "file": "src/entities/wiki/api/wikiArtifactsApi.ts", "min": 90 },
+      "coverage": {
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -74,7 +82,10 @@
       },
       "unit": "DW2",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-browser/model/usePage.ts", "min": 90 },
+      "coverage": {
+        "file": "src/features/wiki-browser/model/usePage.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -101,7 +112,10 @@
       },
       "unit": "DW0",
       "status": "waived",
-      "coverage": { "file": "src/entities/wiki/api/wikiArtifactsApi.ts", "min": 0 },
+      "coverage": {
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "min": 0
+      },
       "waiver": {
         "reason": "elitea-main serves no such route. The path family /api/v2/artifacts/artifact(s)/default/... exists only in pylon, so on the standalone Go stack these fifteen call sites answer 404. Reproducing them natively would port a defect. See parity/notes/deepwiki-artifact-store.md for the proof.",
         "decidedBy": "P2.P0 artifact-store proof",
@@ -133,7 +147,10 @@
       },
       "unit": "DW4",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-generation/model/reducer.ts", "min": 95 },
+      "coverage": {
+        "file": "src/features/wiki-generation/model/reducer.ts",
+        "min": 95
+      },
       "waiver": null
     },
     {
@@ -159,7 +176,10 @@
       },
       "unit": "DW4",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-generation/model/persistence.ts", "min": 90 },
+      "coverage": {
+        "file": "src/features/wiki-generation/model/persistence.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -186,7 +206,10 @@
       },
       "unit": "DW6",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-editing/lib/mermaidBlocks.ts", "min": 95 },
+      "coverage": {
+        "file": "src/features/wiki-editing/lib/mermaidBlocks.ts",
+        "min": 95
+      },
       "waiver": null
     },
     {
@@ -195,7 +218,9 @@
       "kind": "behaviour",
       "priority": "must",
       "title": "An accepted quick fix can be undone",
-      "source": ["apps/deepwiki-ui/src/DeepWikiApp.jsx:3352-3405"],
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3352-3405"
+      ],
       "acceptance": [
         "GIVEN a quick fix that has been accepted",
         "WHEN undo is requested",
@@ -209,7 +234,10 @@
       },
       "unit": "DW6",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-editing/model/useQuickFix.ts", "min": 90 },
+      "coverage": {
+        "file": "src/features/wiki-editing/model/useQuickFix.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -235,7 +263,10 @@
       },
       "unit": "DW5",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-editing/api/saveMarkdown.ts", "min": 90 },
+      "coverage": {
+        "file": "src/features/wiki-editing/api/saveMarkdown.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -261,7 +292,10 @@
       },
       "unit": "DW5",
       "status": "todo",
-      "coverage": { "file": "src/features/wiki-settings/model/useSettingsForm.ts", "min": 90 },
+      "coverage": {
+        "file": "src/features/wiki-settings/model/useSettingsForm.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -287,7 +321,10 @@
       },
       "unit": "DW5",
       "status": "todo",
-      "coverage": { "file": "src/entities/wiki/api/wikiArtifactsApi.ts", "min": 90 },
+      "coverage": {
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "min": 90
+      },
       "waiver": null
     },
     {
@@ -297,7 +334,8 @@
       "priority": "must",
       "title": "The wiki chat answers questions about the generated wiki",
       "source": [
-        "apps/deepwiki-ui/src/DeepWikiApp.jsx:690",
+        "apps/deepwiki-ui/src/components/ChatDrawer.jsx:1229-1565",
+        "apps/deepwiki-ui/src/components/ChatDrawer.jsx:1643-1761",
         "apps/deepwiki-ui/src/DeepWikiApp.jsx:3097-3176"
       ],
       "acceptance": [
@@ -308,12 +346,15 @@
       ],
       "verify": {
         "type": "vitest",
-        "command": "npm run test -- src/features/wiki-chat",
+        "command": "npm run test -- src/features/wiki-chat src/widgets/deepwiki",
         "testId": "DWIKI-012"
       },
       "unit": "DW7",
-      "status": "todo",
-      "coverage": { "file": "src/features/wiki-chat/model/useWikiChat.ts", "min": 90 },
+      "status": "in-progress",
+      "coverage": {
+        "file": "src/features/wiki-chat/model/reducer.ts",
+        "min": 90
+      },
       "waiver": null
     }
   ]

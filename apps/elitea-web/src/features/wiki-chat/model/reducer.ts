@@ -23,29 +23,35 @@
  * is the dispatch and the stream-level rule; each family owns how its own
  * frames are read.
  *
- * ── THE DELIBERATE DIVERGENCE: THERE IS NO `pendingAnswer` ───────────────────
+ * ── THE DELIBERATE DIVERGENCE: THE STREAM IS ACTUALLY SHOWN ─────────────────
  *
  * The legacy reducer accumulates every `chunk` / `AIMessageChunk` /
  * `agent_llm_chunk` into a `pendingAnswer` state variable. NOTHING READS IT.
- * `grep pendingAnswer ChatDrawer.jsx` returns exactly two lines — the `useState`
- * that declares it and the setter call here — so no component renders it, no
- * terminal branch consumes it, and nothing clears it between turns.
+ * `grep pendingAnswer ChatDrawer.jsx` returns exactly two lines — the
+ * `useState` that declares it and the setter call — so no component renders it,
+ * no terminal branch consumes it, and nothing clears it between turns. The chat
+ * had no streaming at all: a spinner, then the whole answer at once.
  *
- * The recording proves the consequence rather than asserting it: in
+ * The recording proves it rather than asserting it: in
  * `order-chunks-then-response` the legacy reducer ends with
  * `pendingAnswer: "partial text"` sitting beside an answer of
- * `"the real answer"`, and the accumulated text is never shown.
+ * `"the real answer"`, never shown.
  *
- * So the chunk frames are reduced to NOTHING here, and the state has no field
- * for them. Carrying a write-only accumulator across the port would reproduce
- * a dead allocation and invite the next reader to render it — which would
- * change what the screen shows, from a port that claimed to change nothing.
- * Filed as issue #700; the streaming preview is a FEATURE to add deliberately,
- * not a line to restore quietly.
+ * DWIKI-012's acceptance says the answer streams, and that an interrupted
+ * stream leaves the partial text visible. That criterion is the spec; the
+ * legacy behaviour was the defect. So this port keeps the accumulator, names it
+ * `streamingText`, and the drawer renders it. Two rules make it correct where
+ * the original was not:
  *
- * `chunk-accumulates` and `order-chunks-then-response` stay in the oracle and
- * are replayed with that one field excluded, named in the replay test. An
- * excluded field that nobody names is how a divergence becomes a silent one.
+ *   - a COMPLETED turn clears it, because the finished answer replaces it and
+ *     leaving it shows the same text twice;
+ *   - a FAILED turn does not, because that is the interrupted stream the
+ *     criterion is about.
+ *
+ * The accumulation itself is unchanged, and the replay asserts `streamingText`
+ * against the recorded `pendingAnswer` frame for frame — so the one thing the
+ * legacy did right here is still pinned to the original. Issue #700 records
+ * why the field was dead.
  */
 import { ChatFrameType, type ChatFrame, type ChatResult, type ChatState } from './types';
 import { reduceDirectTodoUpdate, reduceThinkingFrame } from './frames/thinkingFrames';
@@ -93,9 +99,12 @@ export function reduceChatFrame(
   if (ERROR_FRAMES.has(frame.type)) {
     return reduceErrorFrame(state, frame);
   }
+  if (CHUNK_FRAMES.has(frame.type)) {
+    return { state: appendChunk(state, frame.content), effects: [] };
+  }
 
-  // Everything else — the chunk frames above and every type this screen has no
-  // reading for — returns the state UNCHANGED BY IDENTITY. That is the legacy
+  // Everything else — every type this screen has no reading for — returns the
+  // state UNCHANGED BY IDENTITY. That is the legacy
   // `default:` with only a log in it, and it is not an error: the stream is
   // shared with the generation screen and carries types this one has no use for
   // (`references`, `agent_llm_start`). Refusing them would turn a broader
@@ -118,6 +127,27 @@ const THINKING_FRAMES: ReadonlySet<string> = new Set([
  * the stream would be handled as an UNKNOWN frame — silently, leaving the user
  * watching a spinner — until it is added here.
  */
+/**
+ * Append one streamed fragment.
+ *
+ * A non-string chunk carries no text. The legacy guard was
+ * `content && typeof content === 'string'`, and it matters: appending
+ * `[object Object]` to a live answer is worse than dropping the frame. The
+ * state comes back BY IDENTITY when there is nothing to append.
+ */
+function appendChunk(state: ChatState, content: unknown): ChatState {
+  return typeof content === 'string' && content !== ''
+    ? { ...state, streamingText: state.streamingText + content }
+    : state;
+}
+
+/** The three spellings of a streamed fragment. */
+const CHUNK_FRAMES: ReadonlySet<string> = new Set([
+  ChatFrameType.Chunk,
+  ChatFrameType.AIMessageChunk,
+  ChatFrameType.AgentLlmChunk,
+]);
+
 const ERROR_FRAMES: ReadonlySet<string> = new Set([
   ChatFrameType.AgentToolError,
   ChatFrameType.AgentException,

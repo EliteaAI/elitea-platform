@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { reduceChatFrame, reduceChatFrames } from './reducer';
+import { openTurn } from './turn';
 import {
   MAX_THINKING_STEPS_PER_RUN,
   isThinkingBlock,
@@ -23,6 +24,14 @@ import {
 
 const NOW = () => 1767225600000;
 const BLOCK = 'block-1';
+
+const NEXT_TURN = {
+  question: 'and the middleware?',
+  capability: 'ask',
+  blockId: 'block-2',
+  streamId: 'stream-2',
+  messageId: 'message-2',
+} as const;
 
 function stateWithOpenBlock(overrides: Partial<ChatState> = {}): ChatState {
   return {
@@ -35,6 +44,7 @@ function stateWithOpenBlock(overrides: Partial<ChatState> = {}): ChatState {
     mode: 'ask',
     isLoading: true,
     error: null,
+    streamingText: '',
     ...overrides,
   };
 }
@@ -174,8 +184,56 @@ describe('frames this screen has no reading for', () => {
     expect(reduceChatFrame(before, { type: 'references', content: [] }, { now: NOW }).state).toBe(
       before,
     );
-    expect(reduceChatFrame(before, { type: 'chunk', content: 'x' }, { now: NOW }).state).toBe(
-      before,
+    // A chunk with nothing to append is one of them: it has a branch of its
+    // own, and that branch must still change nothing.
+    expect(
+      reduceChatFrame(before, { type: 'chunk', content: { not: 'text' } }, { now: NOW }).state,
+    ).toBe(before);
+    expect(reduceChatFrame(before, { type: 'chunk', content: '' }, { now: NOW }).state).toBe(before);
+  });
+});
+
+describe('the streamed answer (DWIKI-012)', () => {
+  // The legacy accumulated exactly this text into a variable nothing rendered.
+  // These are the two rules that were missing, not the accumulation.
+  const chunks = [
+    { type: 'chunk', content: 'The router ' },
+    { type: 'AIMessageChunk', content: 'is in ' },
+    { type: 'agent_llm_chunk', content: 'api/router.go' },
+  ] satisfies ChatFrame[];
+
+  it('accumulates every spelling of a chunk, in order', () => {
+    const { state } = reduceChatFrames(stateWithOpenBlock(), chunks, { now: NOW });
+    expect(state.streamingText).toBe('The router is in api/router.go');
+  });
+
+  it('is CLEARED by the finished answer, which replaces it', () => {
+    const { state } = reduceChatFrames(
+      stateWithOpenBlock(),
+      [...chunks, { type: 'agent_response', content: 'The router is in api/router.go.' }],
+      { now: NOW },
     );
+    // Otherwise the same sentence renders twice, once partial and once whole.
+    expect(state.streamingText).toBe('');
+    expect(state.messages.at(-1)).toMatchObject({ content: 'The router is in api/router.go.' });
+  });
+
+  it('SURVIVES a failure, so an interrupted stream is not discarded', () => {
+    const { state } = reduceChatFrames(
+      stateWithOpenBlock(),
+      [...chunks, { type: 'error', content: 'the model dropped the connection' }],
+      { now: NOW },
+    );
+    expect(state.streamingText).toBe('The router is in api/router.go');
+    expect(state.messages.at(-1)).toMatchObject({ isError: true });
+  });
+
+  it('starts empty for the next question', () => {
+    const interrupted = reduceChatFrames(
+      stateWithOpenBlock(),
+      [...chunks, { type: 'error', content: 'broke' }],
+      { now: NOW },
+    ).state;
+    expect(openTurn(interrupted, NEXT_TURN).streamingText).toBe('');
   });
 });

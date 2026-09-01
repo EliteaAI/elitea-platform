@@ -86,7 +86,8 @@ export function isThinkingBlock(message: ChatMessage): message is ChatThinkingBl
  * not merely around it — a ref made them invisible to any test that did not
  * mount the component.
  *
- * There is no `pendingAnswer`. See the reducer's note on the divergence.
+ * `streamingText` is the answer AS IT ARRIVES. See the reducer's note: the
+ * legacy component accumulated the same text into state nothing rendered.
  */
 export interface ChatState {
   readonly messages: readonly ChatMessage[];
@@ -98,6 +99,15 @@ export interface ChatState {
   readonly mode: ChatCapability;
   readonly isLoading: boolean;
   readonly error: string | null;
+  /**
+   * The partial answer the provider has streamed so far.
+   *
+   * Cleared when a turn opens and when one COMPLETES — the finished answer
+   * replaces it, and leaving it would show the same text twice. It is NOT
+   * cleared by a failure: an interrupted stream leaving the partial text
+   * visible is the whole point of keeping it (DWIKI-012).
+   */
+  readonly streamingText: string;
 }
 
 /**
@@ -125,6 +135,7 @@ export const initialChatState: ChatState = {
   mode: 'ask',
   isLoading: false,
   error: null,
+  streamingText: '',
 };
 
 /**

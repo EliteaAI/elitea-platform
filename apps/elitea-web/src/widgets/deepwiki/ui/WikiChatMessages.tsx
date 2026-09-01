@@ -22,10 +22,20 @@ import { ThinkingStepsBlock } from './ThinkingStepsBlock';
 
 export interface WikiChatMessagesProps {
   readonly messages: readonly ChatMessage[];
+  /**
+   * The answer as it arrives, rendered under the conversation.
+   *
+   * It is NOT a message: it has no turn of its own until the run finishes, and
+   * appending it as one would leave a duplicate behind when the real answer
+   * lands. After a failure it stays — an interrupted stream leaving what
+   * arrived visible is DWIKI-012's second criterion.
+   */
+  readonly streamingText: string;
 }
 
 export const WikiChatMessages = memo(function WikiChatMessages({
   messages,
+  streamingText,
 }: WikiChatMessagesProps) {
   return (
     <Stack data-testid="wiki-chat-messages" sx={{ gap: 1, flex: 1, overflowY: 'auto', p: 1.5 }}>
@@ -70,6 +80,12 @@ export const WikiChatMessages = memo(function WikiChatMessages({
           </Box>
         );
       })}
+
+      {streamingText === '' ? null : (
+        <Box data-testid="wiki-chat-streaming" sx={{ maxWidth: '95%' }}>
+          <Markdown>{streamingText}</Markdown>
+        </Box>
+      )}
     </Stack>
   );
 });

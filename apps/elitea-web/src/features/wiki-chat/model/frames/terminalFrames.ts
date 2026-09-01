@@ -20,10 +20,17 @@ const DEFAULT_CAPABILITY: ChatCapability = 'ask';
  * accepted; the unsubscribe effect is what stops this turn's frames from
  * reaching the next one.
  */
-function settle(state: ChatState, capability: ChatCapability): ChatResult {
+function settle(
+  state: ChatState,
+  capability: ChatCapability,
+  keepStreamingText: boolean,
+): ChatResult {
   return {
     state: {
       ...state,
+      // The finished answer REPLACES the streamed text; a failure does not, so
+      // an interrupted stream leaves what arrived visible (DWIKI-012).
+      streamingText: keepStreamingText ? state.streamingText : '',
       mode: capability,
       pendingCapability: null,
       isLoading: false,
@@ -169,6 +176,7 @@ export function reduceAgentResponse(state: ChatState, frame: ChatFrame): ChatRes
       ],
     },
     capability,
+    false,
   );
 }
 
@@ -199,5 +207,6 @@ export function reduceErrorFrame(state: ChatState, frame: ChatFrame): ChatResult
       ],
     },
     capability,
+    true,
   );
 }

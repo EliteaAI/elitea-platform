@@ -104,7 +104,7 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
 
       <ResearchTodosPanel todos={chat.state.todos} />
 
-      {chat.state.messages.length === 0 ? (
+      {chat.state.messages.length === 0 && chat.state.streamingText === '' ? (
         <Box sx={{ p: 2, flex: 1 }}>
           <Typography variant="body2" color="text.secondary">
             {t(
@@ -114,7 +114,10 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
           </Typography>
         </Box>
       ) : (
-        <WikiChatMessages messages={chat.state.messages} />
+        <WikiChatMessages
+          messages={chat.state.messages}
+          streamingText={chat.state.streamingText}
+        />
       )}
 
       {/* The error is shown ALONGSIDE the failed turn, not instead of it. The

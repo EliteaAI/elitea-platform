@@ -45,6 +45,7 @@ function initialState(seedRefs: Record<string, unknown>): ChatState {
     mode: 'ask',
     isLoading: false,
     error: null,
+    streamingText: '',
   };
 }
 
@@ -124,28 +125,58 @@ describe('the chat reducer reproduces the legacy one', () => {
   });
 
   /**
-   * The ONE recorded field this port does not reproduce, asserted rather than
-   * omitted. `pendingAnswer` is write-only in the legacy component: the chunks
-   * accumulate and nothing renders them. See the reducer's divergence note.
+   * The accumulation is pinned to the original FRAME FOR FRAME; only the two
+   * rules around it differ.
    *
-   * The test states BOTH halves — that the recording really does accumulate,
-   * and that the port really does drop it — so the divergence cannot quietly
-   * become "the recording was empty anyway".
+   * The legacy `pendingAnswer` was write-only — nothing rendered it and nothing
+   * cleared it — so its recorded value is a clean record of what the provider
+   * streamed. This port renders that text (DWIKI-012), which forces one change:
+   * a COMPLETED turn clears it, because the finished answer replaces it. Every
+   * other sequence must match the recording exactly, including the ones that
+   * end in a failure.
    */
-  it('drops the write-only pendingAnswer accumulator, and the recording shows why', () => {
+  it('accumulates exactly what the legacy did, and clears it only on a completed turn', () => {
+    let compared = 0;
+    for (const [name, recorded] of cases) {
+      const completed = recorded.frames.some((frame) => frame.type === 'agent_response');
+      const { state } = reduceChatFrames(initialState(recorded.seedRefs), recorded.frames, {
+        now: () => FIXED_NOW,
+      });
+      expect(state.streamingText, name).toBe(
+        completed ? '' : (recorded.observed['pendingAnswer'] as string),
+      );
+      compared += 1;
+    }
+    expect(compared).toBe(cases.length);
+  });
+
+  it('really does have something to compare — the recording is not all empty', () => {
+    // Without this the assertion above passes vacuously: every sequence
+    // recording `pendingAnswer: ""` would match a port that never accumulated.
     const recorded = (oracle as Record<string, { frames: ChatFrame[]; observed: Record<string, unknown> }>)[
       'order-chunks-then-response'
     ];
-    expect(recorded).toBeDefined();
     expect(recorded?.observed['pendingAnswer']).toBe('partial text');
 
+    // And that sequence COMPLETES, so the port shows the answer and not the
+    // fragments — which is what the legacy displayed too, for the wrong reason.
     const { state } = reduceChatFrames(initialState({}), recorded?.frames ?? [], {
       now: () => FIXED_NOW,
     });
-    expect(state).not.toHaveProperty('pendingAnswer');
-    // And the answer the user sees is the response, not the chunks — which is
-    // exactly what the legacy code did too.
+    expect(state.streamingText).toBe('');
     const last = state.messages[state.messages.length - 1];
     expect(last && !isThinkingBlock(last) ? last.content : null).toBe('the real answer');
+  });
+
+  it('keeps an interrupted stream visible, which the legacy could not', () => {
+    const { state } = reduceChatFrames(
+      initialState({}),
+      [
+        { type: 'chunk', content: 'half an ans' },
+        { type: 'error', content: 'the connection dropped' },
+      ],
+      { now: () => FIXED_NOW },
+    );
+    expect(state.streamingText).toBe('half an ans');
   });
 });

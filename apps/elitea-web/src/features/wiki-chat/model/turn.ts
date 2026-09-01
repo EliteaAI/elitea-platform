@@ -47,6 +47,10 @@ export function openTurn(state: ChatState, input: OpenTurnInput): ChatState {
     messageId: input.messageId,
     isLoading: true,
     error: null,
+    // A new question starts with no answer. Carrying the previous turn's
+    // streamed text would show it under the new question as though the model
+    // had already begun answering it.
+    streamingText: '',
   };
 }
 

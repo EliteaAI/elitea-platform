@@ -22,6 +22,21 @@
  *
  * EVENTS ARE READ-ONCE. `custom_events` arrives only on the poll that drained
  * it. Every event must become a frame HERE or it is gone.
+ *
+ * NO FRAME HERE CARRIES A TOKEN FRAGMENT, and that is a property of the SPI
+ * rather than an omission. The provider has one event channel —
+ * `thinking(message: str)` in `elitea_deepwiki/invocations.py` — and the frozen
+ * envelope (`conformance/fixtures/spi/custom_events.json`) is
+ * `{"custom_events": [{"data": {"message": str}}]}`: progress text, never a
+ * partial answer. The `chunk` / `AIMessageChunk` / `agent_llm_chunk` frames the
+ * reducer handles came from the socket.io transport ADR-0022 removed.
+ *
+ * So the reducer's streaming support is CORRECT AND INERT: it is what a token
+ * channel would feed, and nothing feeds it today. Issue #701 tracks giving the
+ * SPI one — a second event kind inside this same envelope is enough, and this
+ * file is the only place the browser would change. DWIKI-012 stays
+ * `in-progress` until then, because a criterion nothing can satisfy is not
+ * satisfied by the half of it that is ready.
  */
 import { ChatFrameType, type ChatFrame } from '../model/types';
 
