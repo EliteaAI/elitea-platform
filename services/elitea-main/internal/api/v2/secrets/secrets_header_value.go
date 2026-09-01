@@ -138,6 +138,29 @@ type SecretsHeaderBackfillReport struct {
 // the same one. Advisory locks are per-database, which is the scope wanted
 // here: two replicas share a database, and it is the database's rows they race
 // on.
+//
+// THIS LOCK REQUIRES A SESSION. A session-scoped advisory lock belongs to the
+// PostgreSQL backend that took it, and a connection pooler in transaction mode
+// hands that backend to somebody else between statements. Put a pgbouncer with
+// `pool_mode = transaction` in front of this deployment and the lock stops
+// serialising — not with an error, but by letting every replica through, which
+// is the exact defect it was added to close.
+//
+// MEASURED, not inferred (2026-09-01), against this package's own Postgres
+// integration tests:
+//
+//	direct connection                                          PASS
+//	pgbouncer transaction mode, max_prepared_statements = 0     FAIL, 42P05
+//	pgbouncer transaction mode, max_prepared_statements = 200   FAIL, the lock
+//	                                                            stopped
+//	                                                            serialising
+//	pgbouncer session mode                                      PASS
+//
+// So a pooler is not free here. If one is ever introduced, either keep it in
+// session mode, or replace this lock first — a row in a locks table taken with
+// SELECT ... FOR UPDATE, or moving the whole pass out of the boot path into a
+// Job, which needs no lock at all. Do not simply add the pooler and watch this
+// package's tests, because they run against a direct connection.
 const backfillLockKey int64 = 0x5EC5E7BF // "SECSETBF"
 
 // BackfillProjectSecretsHeaderValues writes an X-SECRET value into every

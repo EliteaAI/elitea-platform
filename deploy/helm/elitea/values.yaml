@@ -106,6 +106,31 @@ postgresql:
   # states it and elitea-main.validateConnectionBudget refuses to render a
   # topology that would exceed it.
   maxConnections: 100
+  #
+  # A CONNECTION POOLER IS NOT THE ANSWER TO THIS TODAY, and the reason is
+  # measured rather than assumed (2026-09-01). pgbouncer in front of this
+  # deployment was tried against elitea-main's own Postgres integration tests:
+  #
+  #   direct connection                                        PASS
+  #   pgbouncer transaction mode, max_prepared_statements = 0   FAIL. pgx caches
+  #     named prepared statements per connection and no code here sets
+  #     DefaultQueryExecMode, so a shared backend answers 42P05 "prepared
+  #     statement already exists". The worst of it is the shape: the secrets
+  #     backfill LOGS the failure and continues, leaving projects on the
+  #     guessable X-SECRET default. It degrades quietly rather than crashing.
+  #   pgbouncer transaction mode, max_prepared_statements = 200 FAIL. The 42P05
+  #     errors go, and a deeper one appears: the backfill's session-scoped
+  #     advisory lock stops serialising, because a transaction-mode pooler hands
+  #     the backend to another client between statements. Every replica runs the
+  #     backfill — the defect the lock exists to close.
+  #   pgbouncer session mode                                    PASS, and buys
+  #     almost nothing: each client connection pins a server connection for its
+  #     life, and the clients here are pgxpools that hold MaxConns open.
+  #
+  # So the ceiling below is the control, not a stopgap for a pooler that is
+  # coming. A pooler becomes available after the session-scoped advisory locks
+  # are replaced — a locks table taken with SELECT ... FOR UPDATE, or moving the
+  # backfill out of the boot path into a Job.
 
   # Connections to leave for everything this chart does not model: interactive
   # psql, backup tooling, the migration and dbInit Jobs, and whatever else
