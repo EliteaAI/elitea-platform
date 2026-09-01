@@ -165,6 +165,82 @@ describe('AdminServiceDescriptors', () => {
     expect(screen.queryByText('Yes')).toBeNull();
   });
 
+  it('shows a REVOKED provider as revoked rather than as one more live row', async () => {
+    // The listing is driven by every origin ever registered, and DELETE revokes
+    // instead of deleting, so a revoked provider STAYS in the table. Without an
+    // admission column it stays there looking exactly like a live one — and an
+    // operator who revokes it, reloads, and sees no change concludes the revoke
+    // did not work.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 3,
+          provider_name: 'retired',
+          service_location_url: 'https://provider.example.com/retired',
+          healthy: null,
+          status: 'revoked',
+          reason: 'superseded',
+        },
+        {
+          project_id: 3,
+          provider_name: 'recorded',
+          service_location_url: 'https://provider.example.com/recorded',
+          healthy: true,
+          status: 'inactive',
+          reason: 'no admission overlay',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByText('Revoked')).toBeVisible();
+    expect(screen.getByText('Inactive')).toBeVisible();
+    // Both rows are still listed; the revoke did not remove one.
+    expect(screen.getByText('retired')).toBeVisible();
+    expect(screen.getByText('recorded')).toBeVisible();
+  });
+
+  it('reads a row with no admission as not registered', async () => {
+    // An origin with no admitted revision is a real state, and the one an
+    // operator is usually looking for. The server sends `unregistered`.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 3,
+          provider_name: 'origin-only',
+          service_location_url: 'https://provider.example.com/origin-only',
+          healthy: null,
+          status: 'unregistered',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+    expect(await screen.findByText('Not registered')).toBeVisible();
+  });
+
+  it('shows an admission state this build does not know VERBATIM', async () => {
+    // The plane can gain a state before this page does. Mapping an unfamiliar
+    // one onto a default would be a confident wrong answer where the raw word
+    // is a correct one.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 3,
+          provider_name: 'future',
+          service_location_url: 'https://provider.example.com/future',
+          healthy: null,
+          status: 'quarantined',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+    expect(await screen.findByText('quarantined')).toBeVisible();
+    expect(screen.queryByText('Not registered')).toBeNull();
+  });
+
   it('reports an unprobed provider as Unknown, not as unhealthy', async () => {
     // THE THREE-STATE CONTRACT, and the one state pylon could not express.
     // `provider_health_projection` is a separate table with its own timestamp,

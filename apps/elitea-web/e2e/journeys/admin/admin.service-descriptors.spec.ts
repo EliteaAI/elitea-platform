@@ -211,11 +211,24 @@ adminTest('J35d: a registration is recorded as inactive, with a reason', async (
   // cannot prove.
   await page.reload({ waitUntil: 'domcontentloaded' });
   await openServiceDescriptors(page);
-  await expect(page.getByText(provider, { exact: false })).toHaveCount(1);
+  const recordedRow = page.getByRole('row').filter({ hasText: provider });
+  await expect(recordedRow).toHaveCount(1);
+  // INACTIVE on the screen too, not merely in the 202 body: a page that showed
+  // it as live would be the lie the 202 exists to avoid.
+  await expect(recordedRow.getByText('Inactive')).toBeVisible({ timeout: 15_000 });
 
-  // And revoking it removes it from the listing. DELETE never deletes the row —
-  // an admission that was once in force is a fact about what this deployment
-  // ran — so what is asserted is the listing, not the table.
+  // REVOKING DOES NOT REMOVE THE ROW, and this assertion is the corrected one.
+  //
+  // The first version expected the provider to disappear. It does not: the
+  // listing is driven by `provider_origin_registration` — every origin ever
+  // registered — and DELETE sets the latest revision's status to `revoked`
+  // rather than deleting anything, because an admission that was once in force
+  // is a fact about what this deployment ran.
+  //
+  // Which makes the ADMISSION COLUMN the thing to assert. Without it a revoked
+  // provider sits in the table looking exactly like a live one, and an operator
+  // who revokes it, reloads, and sees no change concludes the revoke failed.
+  // That column did not exist until this journey's first version failed here.
   const revoked = await page.evaluate(
     async ({ endpoint, name }) => {
       const response = await fetch(
@@ -230,7 +243,21 @@ adminTest('J35d: a registration is recorded as inactive, with a reason', async (
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await openServiceDescriptors(page);
-  await expect(page.getByText(provider, { exact: false })).toHaveCount(0);
+  const revokedRow = page.getByRole('row').filter({ hasText: provider });
+  await expect(revokedRow).toHaveCount(1);
+  await expect(revokedRow.getByText('Revoked')).toBeVisible({ timeout: 15_000 });
+
+  // And the SERVER agrees, which is what says the column is reading storage
+  // rather than remembering the click that produced it.
+  const afterRevoke = await page.evaluate(
+    async ({ endpoint, name }) => {
+      const response = await fetch(endpoint, { credentials: 'include' });
+      const body = (await response.json()) as { rows?: { provider_name?: string; status?: string }[] };
+      return (body.rows ?? []).find((row) => row.provider_name === name)?.status ?? null;
+    },
+    { endpoint: DESCRIPTORS_ENDPOINT, name: provider },
+  );
+  expect(afterRevoke).toBe('revoked');
 });
 
 adminTest('J35d1: a registration missing what admission needs is refused, not stored', async ({

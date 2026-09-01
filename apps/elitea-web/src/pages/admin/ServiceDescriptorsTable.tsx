@@ -99,6 +99,49 @@ function healthChip(value: boolean | null | undefined) {
   return HEALTH_CHIPS.unknown;
 }
 
+/**
+ * The admission states, and the one column that makes a REVOKE visible.
+ *
+ * The listing is driven by every origin ever registered, and DELETE revokes
+ * rather than deleting — an admission that was once in force is a fact about
+ * what this deployment ran. So a revoked provider stays in the table. Without
+ * this column it stays there looking exactly like a live one, and an operator
+ * who revokes it, reloads, and sees no change concludes the revoke failed.
+ *
+ * `unregistered` is not an error: it is an origin with no admitted revision
+ * yet, which is a real state and the one an operator is usually looking for.
+ */
+const STATUS_CHIPS: Record<string, { readonly color: 'success' | 'warning' | 'error' | 'default'; readonly label: () => string }> = {
+  active: {
+    color: 'success',
+    label: () => t('pages.admin.serviceDescriptors.status.active', 'Active'),
+  },
+  inactive: {
+    color: 'warning',
+    label: () => t('pages.admin.serviceDescriptors.status.inactive', 'Inactive'),
+  },
+  revoked: {
+    color: 'error',
+    label: () => t('pages.admin.serviceDescriptors.status.revoked', 'Revoked'),
+  },
+  unregistered: {
+    color: 'default',
+    label: () => t('pages.admin.serviceDescriptors.status.unregistered', 'Not registered'),
+  },
+};
+
+/**
+ * A state this build does not know is shown VERBATIM rather than mapped to a
+ * default. The admission plane can gain a state before this page does, and
+ * rendering an unfamiliar one as "Not registered" would be a confident wrong
+ * answer where the raw word is a correct one.
+ */
+function statusChip(value: unknown): { color: 'success' | 'warning' | 'error' | 'default'; label: string } {
+  const key = typeof value === 'string' && value !== '' ? value : 'unregistered';
+  const known = STATUS_CHIPS[key];
+  return known ? { color: known.color, label: known.label() } : { color: 'default', label: key };
+}
+
 export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptorsTable({
   descriptors,
 }: AdminServiceDescriptorsTableProps) {
@@ -125,6 +168,24 @@ export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptor
         headerName: t('pages.admin.serviceDescriptors.column.url', 'Service URL'),
         flex: 2,
         minWidth: 240,
+      },
+      {
+        field: 'status',
+        headerName: t('pages.admin.serviceDescriptors.column.status', 'Admission'),
+        width: 140,
+        sortable: true,
+        renderCell: (params: GridRenderCellParams<DescriptorGridRow, string | undefined>) => {
+          const status = statusChip(params.value);
+          return (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={status.color}
+              label={status.label}
+              title={params.row.reason === undefined || params.row.reason === '' ? undefined : params.row.reason}
+            />
+          );
+        },
       },
       {
         field: 'healthy',

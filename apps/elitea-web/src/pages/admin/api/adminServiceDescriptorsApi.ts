@@ -63,6 +63,22 @@ export interface AdminServiceDescriptor {
   readonly provider_name: string;
   readonly service_location_url: string;
   readonly healthy: boolean | null;
+  /**
+   * The latest admission's state: `active`, `inactive`, `revoked`, or
+   * `unregistered` when no revision has ever been recorded.
+   *
+   * IT IS NOT OPTIONAL DECORATION. The listing is driven by
+   * `provider_origin_registration` — every origin ever registered — so a
+   * REVOKED provider stays in it. That is deliberate: an admission that was
+   * once in force is a fact about what this deployment ran, and DELETE never
+   * removes the row. But it means a listing that does not render this column
+   * shows a revoked provider identically to a live one, and an operator who
+   * revokes one, reloads, and sees no change concludes the revoke did not work.
+   */
+  readonly status?: string;
+  /** Why the latest admission is in that state; empty when it says nothing. */
+  readonly reason?: string;
+  readonly published_manifest_digest?: string | null;
 }
 
 /** The listing body pylon returns. `rows` is what the reference client reads. */
