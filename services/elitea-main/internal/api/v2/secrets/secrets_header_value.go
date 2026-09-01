@@ -103,6 +103,10 @@ type SecretsHeaderBackfillReport struct {
 	// with its vault id. A value greater than zero means those projects still
 	// accept the literal "secret", so the count must never be read as noise.
 	Skipped int
+	// SkippedLocked reports that another replica held the advisory lock and
+	// this pass did nothing at all. Without it, "another replica is doing it"
+	// and "every vault already had a value" are the same all-zero report.
+	SkippedLocked bool
 }
 
 // BackfillProjectSecretsHeaderValues gives a `secrets_header_value` to every
@@ -128,11 +132,73 @@ type SecretsHeaderBackfillReport struct {
 // vault that fails while the pool does not answer is the deployment's. Without
 // that split, a database that goes away in the middle of the pass would report
 // every remaining project as skipped and the pass as a success.
+// backfillLockKey keys the advisory lock this pass serialises on.
+//
+// A constant, so every replica of every elitea-main in the cluster contends on
+// the same one. Advisory locks are per-database, which is the scope wanted
+// here: two replicas share a database, and it is the database's rows they race
+// on.
+const backfillLockKey int64 = 0x5EC5E7BF // "SECSETBF"
+
+// BackfillProjectSecretsHeaderValues writes an X-SECRET value into every
+// project vault that has none.
+//
+// IT RUNS ON EXACTLY ONE REPLICA AT A TIME, and the lock is not an
+// optimisation. EnsureProjectSecretsHeaderValue below is a read-modify-write
+// of the WHOLE vault: it decrypts, checks one key, and re-encrypts everything
+// back. Two replicas doing that concurrently do not merely duplicate work —
+// they lose writes. Each generates a DIFFERENT random value and the last write
+// wins, so a project's header value depends on which replica finished second
+// and any client that read the first is refused. Worse, a legitimate secret
+// written through the secrets API between one replica's read and its write is
+// clobbered entirely.
+//
+// This runs before listeners bind, on every replica, and the chart's default
+// is two with an autoscaler that may add eight more. So the race is the
+// ordinary case on a cold start, not an unlucky one.
+//
+// TRY, NOT WAIT. A replica that loses the race skips the pass and starts
+// serving; it does not queue behind the winner. The backfill is best-effort by
+// contract — its caller logs and continues — and blocking here would put an
+// O(projects) sequence of Fernet operations on the readiness path of every
+// replica an autoscaler adds, which is exactly when latency is least
+// affordable. The winner's writes are visible to the losers immediately; there
+// is nothing for them to redo.
 func (h *Handler) BackfillProjectSecretsHeaderValues(ctx context.Context) (SecretsHeaderBackfillReport, error) {
 	var report SecretsHeaderBackfillReport
 	if h == nil || h.pool == nil {
 		return report, errors.New("backfill the secrets header values: there is no database pool")
 	}
+
+	conn, err := h.pool.Acquire(ctx)
+	if err != nil {
+		return report, fmt.Errorf("backfill the secrets header values: acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	// A SESSION lock on a pinned connection: the pass is many statements over
+	// its own pool connections and cannot run inside one transaction.
+	var acquired bool
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_catalog.pg_try_advisory_lock($1)`, backfillLockKey).Scan(&acquired); err != nil {
+		return report, fmt.Errorf("backfill the secrets header values: lock: %w", err)
+	}
+	if !acquired {
+		// Reported, not silent. "Another replica is doing it" and "there was
+		// nothing to do" produce the same counts, and only this field tells
+		// them apart in a log.
+		report.SkippedLocked = true
+		return report, nil
+	}
+	defer func() {
+		if _, err := conn.Exec(context.WithoutCancel(ctx),
+			`SELECT pg_catalog.pg_advisory_unlock($1)`, backfillLockKey); err != nil {
+			slog.WarnContext(ctx,
+				"the secrets header backfill lock was not released; it clears when this connection closes",
+				"error", err)
+		}
+	}()
+
 	projectIDs, err := h.projectVaultProjectIDs(ctx)
 	if err != nil {
 		return report, err
