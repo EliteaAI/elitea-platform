@@ -67,14 +67,24 @@ export function volatileRegions(page: Page): Locator[] {
  * The ADMIN SPA does NOT use this — its nav is not query-driven, so it has a
  * different guard of its own (`adminShellSettled` in `../admin.visual.spec.ts`).
  */
-export async function shellSettled(page: Page): Promise<void> {
+export async function shellSettled(
+  page: Page,
+  projectName = 'Default Project',
+): Promise<void> {
   await expect(page.getByRole('link', { name: 'Credentials', exact: true })).toBeVisible({
     timeout: 20_000,
   });
-  // The seeded tenant's only project (`scripts/e2e-stack.sh seed`). Asserting
-  // the NAME, not merely that the switcher exists: the switcher renders either
-  // way, and its loading text is the literal "No projects".
-  await expect(page.locator('button').filter({ hasText: 'Default Project' }).first()).toBeVisible({
+  // The selected project's NAME, not merely that the switcher exists: the
+  // switcher renders either way, and its loading text is the literal
+  // "No projects".
+  //
+  // PARAMETERISED, because the name was hardcoded to 'Default Project' with the
+  // comment "the seeded tenant's only project" — true when written and no
+  // longer. A route photographed with a different project selected (see
+  // `VisualRoute.project`) would have waited twenty seconds for a name that was
+  // never going to appear, and then failed on its landmark instead, which
+  // reports the wrong cause.
+  await expect(page.locator('button').filter({ hasText: projectName }).first()).toBeVisible({
     timeout: 20_000,
   });
 }
