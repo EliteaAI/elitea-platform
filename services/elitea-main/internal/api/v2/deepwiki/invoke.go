@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -126,11 +127,28 @@ func (rw *InvokeRewriter) Rewrite(
 		return nil, CallbackGrant{}, err
 	}
 
+	// The project id, narrowed at the point of narrowing.
+	//
+	// The route already bounds it (validProjectID), and this is deliberate
+	// defence in depth for the reason repos.narrowRowID gives: it covers a
+	// caller that does not come through that route — Rewrite is exported —
+	// and unlike the boundary check it is local enough for CodeQL's dataflow
+	// to see (go/incorrect-integer-conversion).
+	//
+	// Refusing rather than clamping: the configuration columns are Postgres
+	// `integer`, so a value above MaxInt32 cannot name a row, and truncating
+	// would silently resolve a DIFFERENT project's credentials.
+	narrowedProject, ok := narrowProjectID(projectID)
+	if !ok {
+		return nil, CallbackGrant{}, fmt.Errorf(
+			"%w: project %d is out of range", ErrToolkitNotResolvable, projectID)
+	}
+
 	// The credentials come first, and the token second. Resolution is the
 	// step that refuses — an unknown toolkit, a host off the allowlist — and
 	// minting before it would leave a live bearer behind for every refused
 	// request, which is a credential issued for work that never happened.
-	resolved, err := rw.credentials.Resolve(ctx, int32(projectID), toolkitID,
+	resolved, err := rw.credentials.Resolve(ctx, narrowedProject, toolkitID,
 		stringParameter(parameters, "repository"),
 		firstStringParameter(parameters, "active_branch", "branch", "base_branch"))
 	if err != nil {
@@ -246,6 +264,15 @@ func codeToolkitID(parameters map[string]json.RawMessage) (int32, error) {
 		return 0, fmt.Errorf("%w: code_toolkit %d is not a configuration id", ErrInvokeRejected, id)
 	}
 	return id, nil
+}
+
+// narrowProjectID converts to the width the configuration columns use, or
+// refuses. See the call site for why refusing is the only correct answer.
+func narrowProjectID(value int64) (int32, bool) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func stringParameter(parameters map[string]json.RawMessage, key string) string {

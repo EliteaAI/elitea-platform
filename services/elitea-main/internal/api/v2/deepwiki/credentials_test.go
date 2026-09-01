@@ -677,6 +677,42 @@ func TestAnOutOfRangeProjectDoesNotAliasARealOne(t *testing.T) {
 	}
 }
 
+// The rewriter is exported and must not assume its caller bounded the id.
+//
+// TestAnOutOfRangeProjectDoesNotAliasARealOne covers the route; this covers
+// the seam a different caller would come through, which is the reason
+// repos.narrowRowID exists in the same shape.
+func TestTheRewriterRefusesAnOutOfRangeProjectOnItsOwn(t *testing.T) {
+	// The configuration lives in project FIVE, and 4294967301 truncates to 5.
+	//
+	// That placement is the whole test. With the toolkit in any OTHER project
+	// this passes whether or not the bound exists — the resolve simply misses
+	// — and the assertion would be measuring nothing. Here, a missing bound
+	// RESOLVES: it reads project 5's credentials and mints a token for them.
+	credentials, unsecreter := testResolver(t, map[int32]configurationapp.CurrentConfiguration{
+		42: githubToolkit(42, 5, "https://api.github.com"),
+	}, "api.github.com")
+	minter := &recordingMinter{}
+	built, err := deepwiki.NewInvokeRewriter(
+		credentials, minter, "https://elitea.test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = built.Rewrite(context.Background(),
+		strings.NewReader(`{"configuration":{"parameters":{"code_toolkit":42}}}`),
+		4294967301, 11)
+	if !errors.Is(err, deepwiki.ErrToolkitNotResolvable) {
+		t.Fatalf("an out-of-range project was accepted: %v", err)
+	}
+	if unsecreter.opens != 0 {
+		t.Fatal("project 5's vault was opened for project 4294967301")
+	}
+	if minted, _ := minter.snapshot(); len(minted) != 0 {
+		t.Fatalf("a token was minted: %v", minted)
+	}
+}
+
 // Only the invoke path is rewritten. Poll and cancel carry no body worth
 // touching, and a rewrite there would mint a token per poll.
 func TestPollingMintsNothing(t *testing.T) {
