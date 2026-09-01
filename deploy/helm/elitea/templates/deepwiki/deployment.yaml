@@ -12,11 +12,7 @@
   below makes it so, but it is a separate setting because it is separate
   ownership — the service migrates it and the platform does not.
 */ -}}
-{{- $secrets := .Values.deepwiki.secrets | default dict }}
-{{- $pg := .Values.postgresql | default dict }}
-{{- if and $pg.existingSecret (not (hasKey $secrets "ELITEA_DEEPWIKI_DATABASE_URL")) }}
-{{- $secrets = merge (deepCopy $secrets) (dict "ELITEA_DEEPWIKI_DATABASE_URL" (dict "secretName" $pg.existingSecret "key" (required "postgresql.key is required when postgresql.existingSecret is set" $pg.key))) }}
-{{- end }}
+{{- $secrets := fromJson (include "elitea.provider.databaseSecret" (dict "ctx" . "provider" "deepwiki" "urlKey" "ELITEA_DEEPWIKI_DATABASE_URL")) }}
 {{- include "elitea-deepwiki.validateGuards" . -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -84,16 +80,9 @@ spec:
             - name: ELITEA_DEEPWIKI_TLS_CA_FILE
               value: {{ .Values.deepwiki.mtls.mountPath }}/ca.crt
             {{- end }}
-            {{- range $name, $ref := $secrets }}
             # Sensitive vars from Kubernetes Secrets, never plaintext in the
             # env map above.
-            - name: {{ $name }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $ref.secretName }}
-                  key: {{ $ref.key }}
-                  optional: {{ $ref.optional | default false }}
-            {{- end }}
+            {{- with (include "elitea.provider.secretEnv" (dict "secrets" $secrets) | trim) }}{{- . | nindent 12 }}{{- end }}
           # tcpSocket, not httpGet, and for the reason the gateway's deployment
           # spells out at length: with mTLS on, this listener requires and
           # verifies a client certificate, and the kubelet presents none. An
@@ -139,22 +128,14 @@ spec:
             # mid-generation loses only work that is being redone anyway.
             - name: scratch
               mountPath: {{ .Values.deepwiki.scratch.mountPath }}
-            {{- if .Values.deepwiki.mtls.enabled }}
-            - name: mtls
-              mountPath: {{ .Values.deepwiki.mtls.mountPath }}
-              readOnly: true
-            {{- end }}
+            {{- with (include "elitea.provider.mtlsVolumeMount" (dict "ctx" . "provider" "deepwiki") | trim) }}{{- . | nindent 12 }}{{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
         - name: scratch
           emptyDir:
             sizeLimit: {{ .Values.deepwiki.scratch.sizeLimit | quote }}
-        {{- if .Values.deepwiki.mtls.enabled }}
-        - name: mtls
-          secret:
-            secretName: {{ .Values.deepwiki.mtls.serverSecretName }}
-        {{- end }}
+        {{- with (include "elitea.provider.mtlsVolume" (dict "ctx" . "provider" "deepwiki") | trim) }}{{- . | nindent 8 }}{{- end }}
       {{- with .Values.deepwiki.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
