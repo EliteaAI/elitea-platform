@@ -24,7 +24,7 @@
         "testId": "DWIKI-001"
       },
       "unit": "DW2",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
         "file": "src/pages/deepwiki/ui/DeepWikiPage.tsx",
         "min": 90
@@ -52,7 +52,7 @@
         "testId": "DWIKI-002"
       },
       "unit": "DW1",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
         "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
         "min": 90
@@ -81,7 +81,7 @@
         "testId": "DWIKI-003"
       },
       "unit": "DW2",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
         "file": "src/features/wiki-browser/model/usePage.ts",
         "min": 90
