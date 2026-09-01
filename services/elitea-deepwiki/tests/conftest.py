@@ -15,7 +15,18 @@ from elitea_deepwiki.config import Settings
 
 #: The phase-P0 golden fixtures. These tests are the reason they exist: they
 #: turn the recorded legacy behaviour into a gate on the ported service.
-CONFORMANCE = Path(__file__).resolve().parents[1] / "conformance" / "fixtures"
+#:
+#: They live OUTSIDE this service since P1.0, at conformance/provider/, because
+#: the SPI contract belongs to no single provider. This service's recordings
+#: are one profile under fixtures/<provider>/. parents[3] is the repository
+#: root: tests -> elitea-deepwiki -> services -> root.
+CONFORMANCE = (
+    Path(__file__).resolve().parents[3]
+    / "conformance"
+    / "provider"
+    / "fixtures"
+    / "deepwiki"
+)
 
 
 def load_fixture(*parts: str) -> Any:

@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "THE PROVIDER SPI, frozen. This file belongs to no provider.",
+    "",
+    "Until P1.0 the only written form of this contract lived inside one",
+    "provider's test directory, as fixtures/deepwiki/spi/routes.json — a",
+    "recording of what the legacy DeepWiki plugin happened to serve, mixed with",
+    "that plugin's own handler file names. You cannot generalise a runner",
+    "against a contract that is indistinguishable from one implementation's",
+    "notes, so the generic half is lifted out here and the recording stays where",
+    "it was.",
+    "",
+    "WHAT MAKES A PATH GENERIC. It is in this file when every provider must",
+    "serve it to be admitted. /ui/<path> is NOT here: it is DeepWiki's vendored",
+    "SPA, and ADR-0022 decision 8 moved it behind an authenticated elitea-main",
+    "handler.",
+    "",
+    "THE PLATFORM SERVES A SUBSET, and that is recorded rather than smoothed",
+    "over. elitea-main's facade proxies three of these five paths. /descriptor",
+    "and /health are consumed by the admission and health planes, which answer",
+    "501 today (internal/api/v2/.../service_descriptors.go). Listing them as",
+    "`facade: null` is what makes implementing one a deliberate act: the parity",
+    "gate fails when the Go side grows a path this file does not describe, AND",
+    "when a path here claims a facade route the OpenAPI document does not",
+    "declare."
+  ],
+  "version": "provider.spi.v0",
+  "source": {
+    "recorded_from": "deepwiki_plugin",
+    "revision": "ce679f11dc31c209cc67f13565b286d5bb28ce58",
+    "recording": "conformance/provider/fixtures/deepwiki/spi/routes.json"
+  },
+  "paths": [
+    {
+      "path": "/descriptor",
+      "methods": ["GET"],
+      "purpose": "the provider's self-description: toolkits, tools, argument schemas",
+      "facade": null,
+      "facade_absent_because": "consumed by the admission plane, which answers 501 today"
+    },
+    {
+      "path": "/health",
+      "methods": ["GET"],
+      "purpose": "liveness plus which runner is active",
+      "facade": null,
+      "facade_absent_because": "consumed by the health projection, which does not exist yet"
+    },
+    {
+      "path": "/slots",
+      "methods": ["GET"],
+      "purpose": "the provider's per-project capacity and current occupancy",
+      "facade": "/deepwiki/slots/{project_id}"
+    },
+    {
+      "path": "/tools/{toolkit_name}/{tool_name}/invoke",
+      "methods": ["POST"],
+      "purpose": "start one invocation",
+      "facade": "/deepwiki/tools/{project_id}/{toolkit_name}/{tool_name}/invoke"
+    },
+    {
+      "path": "/tools/{toolkit_name}/{tool_name}/invocations/{invocation_id}",
+      "methods": ["GET", "DELETE"],
+      "purpose": "read or cancel one invocation",
+      "facade": "/deepwiki/invocations/{project_id}/{toolkit_name}/{tool_name}/{invocation_id}"
+    }
+  ]
+}

@@ -52,7 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _legacy import install_pylon_stub, legacy_root, source_pin  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "fixtures" / "generation"
+FIXTURES = ROOT / "fixtures" / "deepwiki" / "generation"
 
 SOURCE_FILES = [
     "methods/invoke.py",

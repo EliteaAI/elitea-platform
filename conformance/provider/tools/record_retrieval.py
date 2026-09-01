@@ -59,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _legacy import legacy_root, source_pin  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "fixtures" / "retrieval" / "sample-repo"
+FIXTURES = ROOT / "fixtures" / "deepwiki" / "retrieval" / "sample-repo"
 CORPUS = FIXTURES / "corpus"
 
 SOURCE_FILES = [

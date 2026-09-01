@@ -220,7 +220,7 @@ components:
         internal/api/v2/deepwiki/proxy.go:127 — the facade is an mTLS hop and
         rewrites nothing on this route. The properties above are the shape the
         recorded fixture pins
-        (services/elitea-deepwiki/conformance/fixtures/spi/slots.get.json), and
+        (conformance/provider/fixtures/deepwiki/spi/slots.get.json), and
         the permissive tail exists because the provider's own
         `_normalize_slots_payload` adds mode-dependent keys (`namespace` in
         jobs mode, `note` in subprocess mode) and may add more without this
@@ -275,7 +275,7 @@ components:
         top-level keys are re-encoded verbatim rather than dropped
         (internal/api/v2/deepwiki/invoke.go:165-169), which is what makes this
         facade a proxy rather than a re-serialiser — the shape is recorded in
-        services/elitea-deepwiki/conformance/fixtures/spi/invoke.post.json.
+        conformance/provider/fixtures/deepwiki/spi/invoke.post.json.
 
     DeepWikiInvocationAccepted:
       type: object
@@ -328,7 +328,7 @@ components:
         NOTE(W2): the poll body is forwarded VERBATIM
         (internal/api/v2/deepwiki/proxy.go:127); this route does no rewriting
         at all. The three shapes are recorded in
-        services/elitea-deepwiki/conformance/fixtures/spi/invocations.get.json,
+        conformance/provider/fixtures/deepwiki/spi/invocations.get.json,
         and the permissive tail exists because the terminal projection varies
         by tool — `result_type` is absent while running, `custom_events`
         appears only on a poll that drained some, and a tool may add its own

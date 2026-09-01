@@ -4,7 +4,7 @@ None of this needs the engine's dependency closure: the runner takes its tool
 callables by injection, so the composition path — which is what the fixtures
 pin — runs with a stub in place of a ~90k-line analysis engine.
 
-That is also how ``conformance/fixtures/generation/composed_result.json`` was
+That is also how ``conformance/provider/fixtures/deepwiki/generation/composed_result.json`` was
 recorded: by running the *legacy* composer with only ``generate_wiki`` stubbed.
 Both sides of the comparison are therefore the same experiment.
 """
@@ -26,7 +26,15 @@ from elitea_deepwiki.legacy_runner import (
 from elitea_deepwiki.repo_config import _extract_repo_config_from_toolkit
 from elitea_deepwiki.toolkits import ToolkitFamily
 
-FIXTURES = Path(__file__).resolve().parents[2] / "conformance" / "fixtures"
+# parents[4] is the repository root; the fixtures moved out of this service in
+# P1.0 (see tests/conftest.py).
+FIXTURES = (
+    Path(__file__).resolve().parents[4]
+    / "conformance"
+    / "provider"
+    / "fixtures"
+    / "deepwiki"
+)
 COMPOSED = json.loads(
     (FIXTURES / "generation" / "composed_result.json").read_text(encoding="utf-8")
 )

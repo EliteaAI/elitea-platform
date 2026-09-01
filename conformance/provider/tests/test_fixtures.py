@@ -17,7 +17,15 @@ from pathlib import Path
 
 import pytest
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+# Fixtures are grouped PER PROVIDER now, because this suite is no longer one
+# provider's test directory: it is the published contract, and a second
+# provider's recordings have to live somewhere that is not inside DeepWiki's.
+#
+# The generic half of the contract — the SPI path set every provider must serve
+# — is NOT here. It is spi/contract.json at the root of this package, because
+# it belongs to no single provider.
+PROVIDER = "deepwiki"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / PROVIDER
 
 
 def load(*parts: str):
