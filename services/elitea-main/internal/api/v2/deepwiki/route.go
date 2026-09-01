@@ -3,13 +3,12 @@ package deepwiki
 import (
 	"errors"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
-	"strings"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -63,9 +62,7 @@ func NewRoute(
 	minter CallbackMinter,
 	logger *slog.Logger,
 ) (*Route, error) {
-	if authConfig.PrincipalValidator == nil ||
-		authConfig.ForwardedIdentityVerifier == nil ||
-		permissions == nil {
+	if !facade.Composable(authConfig, permissions) {
 		return nil, ErrInvalidRoute
 	}
 
@@ -88,18 +85,11 @@ func NewRoute(
 		logger = slog.Default()
 	}
 
-	projectFromPath := func(request *http.Request) (string, bool) {
-		projectID := chi.URLParam(request, "project_id")
-		return projectID, validProjectID(projectID)
-	}
-
+	// guard, the project accessor and the id rule all come from
+	// providerhost/facade now: DeepWiki and Inventory are two callers of the
+	// same three, which is the bar ADR-0012 set for extracting them.
 	guard := func(permission string) func(http.Handler) http.Handler {
-		return func(next http.Handler) http.Handler {
-			endpoint := apimw.RequireResolvedPermissionsForProject(
-				permissions, Mode, projectFromPath, permission,
-			)(next)
-			return apimw.Auth(authConfig)(endpoint)
-		}
+		return facade.Guard(authConfig, permissions, Mode, permission)
 	}
 
 	router := chi.NewRouter()
@@ -172,13 +162,10 @@ func (route *Route) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // Rejecting rather than clamping: an id above MaxInt32 cannot correspond to
 // any row in an `integer` column, so "no such project" is the honest answer.
-func validProjectID(raw string) bool {
-	if raw == "" || strings.HasPrefix(raw, "0") && raw != "0" {
-		return false
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	return err == nil && value > 0 && value <= math.MaxInt32
-}
+// validProjectID delegates to the shared rule. Kept as a name in this package
+// because invoke.go calls it at the point it narrows the id, and moving the
+// call site away from the parse it guards is what CodeQL's dataflow lost.
+func validProjectID(raw string) bool { return facade.ValidProjectID(raw) }
 
 // userIDFrom reads the authenticated user for the signed identity.
 //
