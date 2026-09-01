@@ -110,6 +110,277 @@ IN_PLACE_TRANSFORMS = {
             'DEFAULT_BUCKET = "wiki-artifacts"',
         ),
         ("verify=False", "verify=_tls_verify()"),
+        # ── issue #665: the client spoke routes elitea-main does not serve ──
+        #
+        # These run AFTER the three above and depend on them: two of them
+        # match text the earlier substitutions produced (`verify=_tls_verify()`
+        # in the upload call, and the `DEFAULT_BUCKET` line the TLS helper is
+        # inserted before). Reordering this tuple breaks the chain, and the
+        # tool fails loudly on the first needle it cannot find.
+        # The routes this client speaks (#665). The legacy family is pylon's and
+        # elitea-main serves no route in it, so every call was a 404 on the
+        # target platform. This header block states the ones that exist.
+        (
+            "In ELITEA, all artifact storage goes through the platform's artifact endpoints:\\n"
+            "    - Upload:   POST  /api/v2/artifacts/artifacts/default/{project_id}/{bucket}\\n"
+            "    - Download: GET   /api/v2/artifacts/artifact/default/{project_id}/{bucket}/{name}\\n"
+            "    - List:     GET   /api/v2/artifacts/artifacts/default/{project_id}/{bucket}\\n"
+            "    - Delete:   DELETE /api/v2/artifacts/artifact/default/{project_id}/{bucket}/{name}\\n"
+            "\\n"
+            "The platform internally routes these to Minio/S3 with proper bucket prefixing,\\n"
+            "access control, and project scoping.",
+            "In ELITEA, all artifact storage goes through the platform's OBJECT endpoints:\\n"
+            "    - Upload:   POST   /api/v2/artifacts/objects/{project_id}/{bucket}?overwrite=true\\n"
+            "    - Download: GET    /api/v2/artifacts/objects/{project_id}/{bucket}/{key}\\n"
+            "    - List:     GET    /api/v2/artifacts/objects/{project_id}/{bucket}?prefix=...\\n"
+            "    - Delete:   DELETE /api/v2/artifacts/objects/{project_id}/{bucket}/{key}\\n"
+            "\\n"
+            "WHY THESE AND NOT THE ONES THIS FILE USED TO NAME (issue #665). The legacy\\n"
+            "family \u2014 `/artifacts/artifacts/default/...` and `/artifacts/artifact/default/...`\\n"
+            "\u2014 is implemented by pylon and by nothing else. elitea-main serves three object\\n"
+            "families and that is not one of them, so on the standalone stack and on the Go\\n"
+            "target platform every call above was a 404. It worked only where pylon was still\\n"
+            "in the request path.\\n"
+            "\\n"
+            "The consequence was silent in the worst way: uploads failed, so no wiki content\\n"
+            "ever reached the store the native UI reads, and the browser showed an empty list\\n"
+            "that no screen could tell from \"you have not generated a wiki yet\".\\n"
+            "\\n"
+            "The platform internally routes these to Minio/S3 with proper bucket prefixing,\\n"
+            "access control, and project scoping.",
+        ),
+        # The two URL builders. `/artifacts/artifacts/default/{p}/{b}` becomes
+        # `/artifacts/objects/{p}/{b}`, and the single-object form loses the
+        # `/default/` segment with it.
+        (
+            "    def _artifact_url(self, bucket: str) -> str:\\n"
+            "        \"\"\"URL base for artifact operations (upload / list).\"\"\"\\n"
+            "        bucket_segment = quote(str(bucket).lower(), safe=\"\")\\n"
+            "        return (\\n"
+            "            f\"{self.base_url}{self.api_path}/artifacts/artifacts\"\\n"
+            "            f\"/default/{self.project_id}/{bucket_segment}\"\\n"
+            "        )\\n"
+            "\\n"
+            "    def _single_artifact_url(self, bucket: str, name: str) -> str:\\n"
+            "        \"\"\"URL for a specific artifact (download / delete).\"\"\"\\n"
+            "        bucket_segment = quote(str(bucket).lower(), safe=\"\")\\n"
+            "        name_segment = quote(str(name), safe=\"/\")\\n"
+            "        return (\\n"
+            "            f\"{self.base_url}{self.api_path}/artifacts/artifact\"\\n"
+            "            f\"/default/{self.project_id}/{bucket_segment}/{name_segment}\"\\n"
+            "        )",
+            "    def _artifact_url(self, bucket: str) -> str:\\n"
+            "        \"\"\"URL base for bucket-level operations (upload / list).\"\"\"\\n"
+            "        bucket_segment = quote(str(bucket).lower(), safe=\"\")\\n"
+            "        return (\\n"
+            "            f\"{self.base_url}{self.api_path}/artifacts/objects\"\\n"
+            "            f\"/{self.project_id}/{bucket_segment}\"\\n"
+            "        )\\n"
+            "\\n"
+            "    def _single_artifact_url(self, bucket: str, name: str) -> str:\\n"
+            "        \"\"\"URL for one object (download / delete).\\n"
+            "\\n"
+            "        `safe=\"/\"` is deliberate: a wiki key is multi-segment\\n"
+            "        (``{wiki_id}/wiki_pages/{section}/{page}.md``) and the route declares\\n"
+            "        that the key \"may itself contain `/` characters\". Escaping the\\n"
+            "        separators would ask for one object whose name contains slashes,\\n"
+            "        which does not exist.\\n"
+            "        \"\"\"\\n"
+            "        bucket_segment = quote(str(bucket).lower(), safe=\"\")\\n"
+            "        name_segment = quote(str(name), safe=\"/\")\\n"
+            "        return (\\n"
+            "            f\"{self.base_url}{self.api_path}/artifacts/objects\"\\n"
+            "            f\"/{self.project_id}/{bucket_segment}/{name_segment}\"\\n"
+            "        )",
+        ),
+        # overwrite=true on upload. The object route answers 409 AlreadyExists by
+        # default, and every caller here rewrites: a manifest on each
+        # generation, a page on each edit.
+        (
+            "        files = {\"file\": (name, data)}\\n"
+            "        response = requests.post(\\n"
+            "            url, headers=self._headers(), files=files, verify=_tls_verify(), timeout=300\\n"
+            "        )",
+            "        # The KEY travels as the multipart filename, and the route reads the\\n"
+            "        # raw Content-Disposition rather than filepath.Base, so a multi-segment\\n"
+            "        # key survives.\\n"
+            "        files = {\"file\": (name, data)}\\n"
+            "        # overwrite=true, because every caller here re-uploads: a manifest is\\n"
+            "        # rewritten on each generation and a page is rewritten on each edit.\\n"
+            "        # The route's default is 409 AlreadyExists, which would turn the second\\n"
+            "        # generation of any wiki into a failure.\\n"
+            "        response = requests.post(\\n"
+            "            url,\\n"
+            "            headers=self._headers(),\\n"
+            "            params={\"overwrite\": \"true\"},\\n"
+            "            files=files,\\n"
+            "            verify=_tls_verify(),\\n"
+            "            timeout=300,\\n"
+            "        )",
+        ),
+        # DELETE takes the key as a PATH segment. The legacy route took it as a
+        # `filename` query parameter, which the object route ignores — a
+        # delete sent that way would remove nothing and report success.
+        (
+            "    def _delete_artifact_url(self, bucket: str) -> str:\\n"
+            "        \"\"\"URL for DELETE artifact (filename goes as query param).\"\"\"\\n"
+            "        bucket_segment = quote(str(bucket).lower(), safe=\"\")\\n"
+            "        return (\\n"
+            "            f\"{self.base_url}{self.api_path}/artifacts/artifact\"\\n"
+            "            f\"/default/{self.project_id}/{bucket_segment}\"\\n"
+            "        )",
+            "    def _delete_artifact_url(self, bucket: str, name: str) -> str:\\n"
+            "        \"\"\"URL for DELETE object \u2014 the key is a PATH segment, not a query.\"\"\"\\n"
+            "        return self._single_artifact_url(bucket, name)",
+        ),
+        # The delete call itself, following the builder above.
+        (
+            "        url = self._delete_artifact_url(bucket)\\n"
+            "        logger.debug(\"Deleting artifact: %s/%s\", bucket, name)\\n"
+            "\\n"
+            "        response = requests.delete(\\n"
+            "            url,\\n"
+            "            headers=self._headers(),\\n"
+            "            params={\"filename\": name},\\n"
+            "            verify=_tls_verify(),\\n"
+            "            timeout=60,\\n"
+            "        )",
+            "        url = self._delete_artifact_url(bucket, name)\\n"
+            "        logger.debug(\"Deleting artifact: %s/%s\", bucket, name)\\n"
+            "\\n"
+            "        response = requests.delete(\\n"
+            "            url,\\n"
+            "            headers=self._headers(),\\n"
+            "            verify=_tls_verify(),\\n"
+            "            timeout=60,\\n"
+            "        )",
+        ),
+        # The docstring that described the query-parameter route.
+        (
+            "        \"\"\"Delete a file from the platform bucket.\\n"
+            "\\n"
+            "        Platform DELETE endpoint expects filename as a query parameter,\\n"
+            "        not as a path segment (unlike GET which uses path).\\n"
+            "\\n"
+            "        Raises:",
+            "        \"\"\"Delete a file from the platform bucket.\\n"
+            "\\n"
+            "        Raises:",
+        ),
+        # The listing: a different response shape (`objects` / `key` / `size_bytes`
+        # / `modified_at`, not `rows` / `name` / `size`), a SERVER-side prefix,
+        # and cursor paging. Reading only the first page would show a wiki
+        # with most of its pages missing.
+        (
+            "        url = self._artifact_url(bucket)\\n"
+            "        logger.debug(\"Listing artifacts in bucket %s (prefix=%s)\", bucket, prefix)\\n"
+            "\\n"
+            "        response = requests.get(\\n"
+            "            url, headers=self._headers(), verify=_tls_verify(), timeout=60\\n"
+            "        )\\n"
+            "\\n"
+            "        if response.status_code == 404:\\n"
+            "            return []\\n"
+            "        if response.status_code != 200:\\n"
+            "            logger.warning(\"List artifacts returned HTTP %d\", response.status_code)\\n"
+            "            return []\\n"
+            "\\n"
+            "        try:\\n"
+            "            data = response.json()\\n"
+            "            # Platform response may be a list directly or wrapped in a key\\n"
+            "            if isinstance(data, list):\\n"
+            "                items = data\\n"
+            "            elif isinstance(data, dict):\\n"
+            "                items = data.get(\"rows\", data.get(\"items\", []))\\n"
+            "            else:\\n"
+            "                items = []\\n"
+            "\\n"
+            "            result = []\\n"
+            "            for item in items:\\n"
+            "                name = item.get(\"name\", item.get(\"file_name\", \"\"))\\n"
+            "                if prefix and not name.startswith(prefix):\\n"
+            "                    continue\\n"
+            "                result.append({\\n"
+            "                    \"name\": name,\\n"
+            "                    \"size\": item.get(\"size\", 0),\\n"
+            "                    \"modified\": item.get(\"modified\", item.get(\"upload_date\", \"\")),\\n"
+            "                })\\n"
+            "            return result\\n"
+            "        except Exception as e:\\n"
+            "            logger.warning(\"Failed to parse artifact list: %s\", e)\\n"
+            "            return []",
+            "        url = self._artifact_url(bucket)\\n"
+            "        logger.debug(\"Listing artifacts in bucket %s (prefix=%s)\", bucket, prefix)\\n"
+            "\\n"
+            "        result: List[Dict[str, Any]] = []\\n"
+            "        # The listing is PAGED, and a caller that reads only the first page sees\\n"
+            "        # a wiki with most of its pages missing rather than an error. A wiki of\\n"
+            "        # any size exceeds one page.\\n"
+            "        cursor = \"\"\\n"
+            "        for _ in range(MAX_LIST_PAGES):\\n"
+            "            params: Dict[str, str] = {}\\n"
+            "            # The prefix is applied SERVER-SIDE. Filtering after the fact\\n"
+            "            # would page through the whole bucket to find one wiki's files.\\n"
+            "            if prefix:\\n"
+            "                params[\"prefix\"] = prefix\\n"
+            "            if cursor:\\n"
+            "                params[\"cursor\"] = cursor\\n"
+            "\\n"
+            "            response = requests.get(\\n"
+            "                url,\\n"
+            "                headers=self._headers(),\\n"
+            "                params=params or None,\\n"
+            "                verify=_tls_verify(),\\n"
+            "                timeout=60,\\n"
+            "            )\\n"
+            "\\n"
+            "            if response.status_code == 404:\\n"
+            "                return result\\n"
+            "            if response.status_code != 200:\\n"
+            "                logger.warning(\"List artifacts returned HTTP %d\", response.status_code)\\n"
+            "                return result\\n"
+            "\\n"
+            "            try:\\n"
+            "                data = response.json()\\n"
+            "            except Exception as exc:\\n"
+            "                logger.warning(\"Failed to parse artifact list: %s\", exc)\\n"
+            "                return result\\n"
+            "\\n"
+            "            if not isinstance(data, dict):\\n"
+            "                logger.warning(\"Artifact listing was not an object: %r\", type(data))\\n"
+            "                return result\\n"
+            "\\n"
+            "            for item in data.get(\"objects\") or []:\\n"
+            "                if not isinstance(item, dict):\\n"
+            "                    continue\\n"
+            "                result.append({\\n"
+            "                    \"name\": item.get(\"key\", \"\"),\\n"
+            "                    \"size\": item.get(\"size_bytes\", 0),\\n"
+            "                    \"modified\": item.get(\"modified_at\", \"\"),\\n"
+            "                })\\n"
+            "\\n"
+            "            # Omitted when the listing is exhausted.\\n"
+            "            cursor = data.get(\"next_cursor\") or \"\"\\n"
+            "            if not cursor:\\n"
+            "                return result\\n"
+            "\\n"
+            "        logger.warning(\\n"
+            "            \"Artifact listing for bucket %s stopped at the %d-page ceiling; \"\\n"
+            "            \"results are incomplete\",\\n"
+            "            bucket, MAX_LIST_PAGES,\\n"
+            "        )\\n"
+            "        return result",
+        ),
+        # The page ceiling the loop above needs.
+        (
+            "DEFAULT_BUCKET = \"wiki-artifacts\"",
+            "# A ceiling on the paging loop above, not a page size. It exists so a server\\n"
+            "# that echoed a cursor for ever could not hang a generation; it is logged when\\n"
+            "# hit, because a silently truncated listing is a wiki missing pages.\\n"
+            "MAX_LIST_PAGES = 1000\\n"
+            "\\n"
+            "DEFAULT_BUCKET = \"wiki-artifacts\"",
+        ),
     ),
 }
 

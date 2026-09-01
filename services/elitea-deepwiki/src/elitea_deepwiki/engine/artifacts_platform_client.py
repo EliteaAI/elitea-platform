@@ -5,11 +5,22 @@ Uses the ELITEA platform's artifact HTTP API (the same API that invoke.py's
 MiniArtifactClient and elitea-sdk's EliteAClient use) instead of direct S3/boto3
 connections.
 
-In ELITEA, all artifact storage goes through the platform's artifact endpoints:
-    - Upload:   POST  /api/v2/artifacts/artifacts/default/{project_id}/{bucket}
-    - Download: GET   /api/v2/artifacts/artifact/default/{project_id}/{bucket}/{name}
-    - List:     GET   /api/v2/artifacts/artifacts/default/{project_id}/{bucket}
-    - Delete:   DELETE /api/v2/artifacts/artifact/default/{project_id}/{bucket}/{name}
+In ELITEA, all artifact storage goes through the platform's OBJECT endpoints:
+    - Upload:   POST   /api/v2/artifacts/objects/{project_id}/{bucket}?overwrite=true
+    - Download: GET    /api/v2/artifacts/objects/{project_id}/{bucket}/{key}
+    - List:     GET    /api/v2/artifacts/objects/{project_id}/{bucket}?prefix=...
+    - Delete:   DELETE /api/v2/artifacts/objects/{project_id}/{bucket}/{key}
+
+WHY THESE AND NOT THE ONES THIS FILE USED TO NAME (issue #665). The legacy
+family — `/artifacts/artifacts/default/...` and `/artifacts/artifact/default/...`
+— is implemented by pylon and by nothing else. elitea-main serves three object
+families and that is not one of them, so on the standalone stack and on the Go
+target platform every call above was a 404. It worked only where pylon was still
+in the request path.
+
+The consequence was silent in the worst way: uploads failed, so no wiki content
+ever reached the store the native UI reads, and the browser showed an empty list
+that no screen could tell from "you have not generated a wiki yet".
 
 The platform internally routes these to Minio/S3 with proper bucket prefixing,
 access control, and project scoping.
@@ -66,6 +77,11 @@ def _tls_verify():
     """CA bundle path, or True for the system trust store."""
     return os.environ.get("ELITEA_DEEPWIKI_TLS_CA_FILE") or True
 
+
+# A ceiling on the paging loop above, not a page size. It exists so a server
+# that echoed a cursor for ever could not hang a generation; it is logged when
+# hit, because a silently truncated listing is a wiki missing pages.
+MAX_LIST_PAGES = 1000
 
 DEFAULT_BUCKET = "wiki-artifacts"
 DEFAULT_API_PATH = "/api/v2"
@@ -214,20 +230,27 @@ class PlatformArtifactClient:
         }
 
     def _artifact_url(self, bucket: str) -> str:
-        """URL base for artifact operations (upload / list)."""
+        """URL base for bucket-level operations (upload / list)."""
         bucket_segment = quote(str(bucket).lower(), safe="")
         return (
-            f"{self.base_url}{self.api_path}/artifacts/artifacts"
-            f"/default/{self.project_id}/{bucket_segment}"
+            f"{self.base_url}{self.api_path}/artifacts/objects"
+            f"/{self.project_id}/{bucket_segment}"
         )
 
     def _single_artifact_url(self, bucket: str, name: str) -> str:
-        """URL for a specific artifact (download / delete)."""
+        """URL for one object (download / delete).
+
+        `safe="/"` is deliberate: a wiki key is multi-segment
+        (``{wiki_id}/wiki_pages/{section}/{page}.md``) and the route declares
+        that the key "may itself contain `/` characters". Escaping the
+        separators would ask for one object whose name contains slashes,
+        which does not exist.
+        """
         bucket_segment = quote(str(bucket).lower(), safe="")
         name_segment = quote(str(name), safe="/")
         return (
-            f"{self.base_url}{self.api_path}/artifacts/artifact"
-            f"/default/{self.project_id}/{bucket_segment}/{name_segment}"
+            f"{self.base_url}{self.api_path}/artifacts/objects"
+            f"/{self.project_id}/{bucket_segment}/{name_segment}"
         )
 
     # ------------------------------------------------------------------
@@ -259,9 +282,21 @@ class PlatformArtifactClient:
             name, bucket, url, self.project_id,
         )
 
+        # The KEY travels as the multipart filename, and the route reads the
+        # raw Content-Disposition rather than filepath.Base, so a multi-segment
+        # key survives.
         files = {"file": (name, data)}
+        # overwrite=true, because every caller here re-uploads: a manifest is
+        # rewritten on each generation and a page is rewritten on each edit.
+        # The route's default is 409 AlreadyExists, which would turn the second
+        # generation of any wiki into a failure.
         response = requests.post(
-            url, headers=self._headers(), files=files, verify=_tls_verify(), timeout=300
+            url,
+            headers=self._headers(),
+            params={"overwrite": "true"},
+            files=files,
+            verify=_tls_verify(),
+            timeout=300,
         )
 
         if response.status_code == 403:
@@ -334,32 +369,24 @@ class PlatformArtifactClient:
         )
         return content
 
-    def _delete_artifact_url(self, bucket: str) -> str:
-        """URL for DELETE artifact (filename goes as query param)."""
-        bucket_segment = quote(str(bucket).lower(), safe="")
-        return (
-            f"{self.base_url}{self.api_path}/artifacts/artifact"
-            f"/default/{self.project_id}/{bucket_segment}"
-        )
+    def _delete_artifact_url(self, bucket: str, name: str) -> str:
+        """URL for DELETE object — the key is a PATH segment, not a query."""
+        return self._single_artifact_url(bucket, name)
 
     def delete_artifact(self, bucket: str, name: str) -> None:
         """Delete a file from the platform bucket.
-
-        Platform DELETE endpoint expects filename as a query parameter,
-        not as a path segment (unlike GET which uses path).
 
         Raises:
             RuntimeError: If the platform returns an error status.
         """
         import requests
 
-        url = self._delete_artifact_url(bucket)
+        url = self._delete_artifact_url(bucket, name)
         logger.debug("Deleting artifact: %s/%s", bucket, name)
 
         response = requests.delete(
             url,
             headers=self._headers(),
-            params={"filename": name},
             verify=_tls_verify(),
             timeout=60,
         )
@@ -390,40 +417,64 @@ class PlatformArtifactClient:
         url = self._artifact_url(bucket)
         logger.debug("Listing artifacts in bucket %s (prefix=%s)", bucket, prefix)
 
-        response = requests.get(
-            url, headers=self._headers(), verify=_tls_verify(), timeout=60
-        )
+        result: List[Dict[str, Any]] = []
+        # The listing is PAGED, and a caller that reads only the first page sees
+        # a wiki with most of its pages missing rather than an error. A wiki of
+        # any size exceeds one page.
+        cursor = ""
+        for _ in range(MAX_LIST_PAGES):
+            params: Dict[str, str] = {}
+            # The prefix is applied SERVER-SIDE. Filtering after the fact
+            # would page through the whole bucket to find one wiki's files.
+            if prefix:
+                params["prefix"] = prefix
+            if cursor:
+                params["cursor"] = cursor
 
-        if response.status_code == 404:
-            return []
-        if response.status_code != 200:
-            logger.warning("List artifacts returned HTTP %d", response.status_code)
-            return []
+            response = requests.get(
+                url,
+                headers=self._headers(),
+                params=params or None,
+                verify=_tls_verify(),
+                timeout=60,
+            )
 
-        try:
-            data = response.json()
-            # Platform response may be a list directly or wrapped in a key
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict):
-                items = data.get("rows", data.get("items", []))
-            else:
-                items = []
+            if response.status_code == 404:
+                return result
+            if response.status_code != 200:
+                logger.warning("List artifacts returned HTTP %d", response.status_code)
+                return result
 
-            result = []
-            for item in items:
-                name = item.get("name", item.get("file_name", ""))
-                if prefix and not name.startswith(prefix):
+            try:
+                data = response.json()
+            except Exception as exc:
+                logger.warning("Failed to parse artifact list: %s", exc)
+                return result
+
+            if not isinstance(data, dict):
+                logger.warning("Artifact listing was not an object: %r", type(data))
+                return result
+
+            for item in data.get("objects") or []:
+                if not isinstance(item, dict):
                     continue
                 result.append({
-                    "name": name,
-                    "size": item.get("size", 0),
-                    "modified": item.get("modified", item.get("upload_date", "")),
+                    "name": item.get("key", ""),
+                    "size": item.get("size_bytes", 0),
+                    "modified": item.get("modified_at", ""),
                 })
-            return result
-        except Exception as e:
-            logger.warning("Failed to parse artifact list: %s", e)
-            return []
+
+            # Omitted when the listing is exhausted.
+            cursor = data.get("next_cursor") or ""
+            if not cursor:
+                return result
+
+        logger.warning(
+            "Artifact listing for bucket %s stopped at the %d-page ceiling; "
+            "results are incomplete",
+            bucket, MAX_LIST_PAGES,
+        )
+        return result
 
     def artifact_exists(self, bucket: str, name: str) -> bool:
         """Check whether a file exists in the platform bucket."""
