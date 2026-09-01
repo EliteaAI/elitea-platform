@@ -8,6 +8,17 @@ metadata:
   labels:
     {{- include "elitea-worker-python.labels" . | nindent 4 }}
 data:
+  # WHY consumer_id CARRIES A PLACEHOLDER
+  # consumer_id carries a per-POD placeholder, and the init container
+  # substitutes it. See the "Per-replica consumer identity" block in
+  # deployment.yaml for the whole mechanism and the failure it prevents.
+  #
+  # The short version: this is the Redis consumer-group consumer NAME, and
+  # two processes sharing one name are one consumer as far as Redis is
+  # concerned. It is NOT a security identity — those are
+  # workload_session_id, producer_id and the client certificate, and all
+  # three stay shared, because the database enforces mutual exclusion per
+  # EXECUTION rather than per producer.
   runtime.json: |
     {{- $r := .Values.worker.runtime }}
     {{- $material := "/run/elitea-runtime" }}
@@ -16,7 +27,7 @@ data:
       "limits_revision" "elitea.runtime.limits.conformance.v1"
       "workload_session_id" $r.workloadSessionId
       "producer_id" $r.producerId
-      "consumer_id" $r.consumerId
+      "consumer_id" (printf "%s-__ELITEA_POD_NAME__" $r.consumerId)
       "redis_url" $r.redisUrl
       "redis_password_path" (printf "%s/redis-worker-password" $material)
       "redis_stream" $r.redisStream

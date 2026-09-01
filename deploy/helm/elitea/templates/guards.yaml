@@ -108,3 +108,27 @@
 {{- end }}
 {{- end }}
 
+
+{{- if .Values.worker.enabled }}
+{{/*
+  The consumer name must still fit after the pod's own name is appended.
+
+  The worker bounds every identity in its deployment document at 256 bytes
+  (MAX_IDENTITY_BYTES, services/elitea-worker-rust/src/config.rs:23) and
+  refuses the whole document when one is longer. consumer_id is no longer just
+  the configured value: the init container appends "-" and the pod name, which
+  Kubernetes bounds at 63 characters.
+
+  Without this guard an over-long consumerId is not a render error. It is a
+  worker that starts, reads its config, refuses it, and exits — reported as
+  `worker_serve.invalid_configuration`, which names no field. The operator sees
+  a CrashLoopBackOff and a message that does not say which of the twenty-odd
+  values caused it.
+
+  192 = 256 - 63 - 1, so the check is exact rather than a margin.
+*/}}
+{{- $consumer := .Values.worker.runtime.consumerId | default "" }}
+{{- if gt (len $consumer) 192 }}
+{{- fail (printf "worker.runtime.consumerId is %d characters. Each replica's consumer name is this value plus \"-\" plus the pod name, and a pod name can be 63 characters, so the worker's 256-byte identity bound is exceeded and it refuses its whole configuration at startup with no field named. Use at most 192 characters." (len $consumer)) }}
+{{- end }}
+{{- end }}
