@@ -3,6 +3,7 @@ package llmproxy
 import (
 	"context"
 	"encoding/json"
+	"expvar"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -1059,7 +1060,8 @@ func (h *Handler) streamOpenAI(
 			s.sc.cancel()
 		}
 	}()
-	sw, err := h.beginStream(w)
+	sw, endStream, err := h.beginStream(w)
+	defer endStream()
 	if err != nil {
 		// The provider stream is already open; it must be drained (and billed)
 		// even though we can never write it to this client.
@@ -1149,7 +1151,8 @@ func (h *Handler) streamResponses(
 			s.sc.cancel()
 		}
 	}()
-	sw, err := h.beginStream(w)
+	sw, endStream, err := h.beginStream(w)
+	defer endStream()
 	if err != nil {
 		s.settleEarly(lossReasonBeginStreamFail)
 		return
@@ -1239,7 +1242,8 @@ func (h *Handler) streamAnthropic(
 			s.sc.cancel()
 		}
 	}()
-	sw, err := h.beginStream(w)
+	sw, endStream, err := h.beginStream(w)
+	defer endStream()
 	if err != nil {
 		s.settleEarly(lossReasonBeginStreamFail)
 		return
@@ -1299,16 +1303,58 @@ func (h *Handler) streamAnthropic(
 // streaming contract (design §6.3). The precondition is asserted here (the
 // handler owns the streaming decision) before delegating the framing to
 // ssewriter, which re-checks and clears the write deadline.
-func (h *Handler) beginStream(w http.ResponseWriter) (*ssewriter.Writer, error) {
+// It also counts the stream. The returned release function decrements, and
+// every caller must defer it — see MetricSSEActiveConnections for why the
+// number matters and what it was worth before it existed.
+func (h *Handler) beginStream(w http.ResponseWriter) (*ssewriter.Writer, func(), error) {
 	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported", "")
-		return nil, errStreamingUnsupported
+		return nil, func() {}, errStreamingUnsupported
 	}
 	finish(w.Header())
 	sw, err := ssewriter.New(w)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported", "")
-		return nil, err
+		return nil, func() {}, err
 	}
-	return sw, nil
+	// Incremented only after the stream is genuinely open. Counting the
+	// refused cases would make the gauge drift upward forever, and a gauge
+	// that only rises is one an autoscaler reads as permanent load.
+	sseActiveConnections.Add(1)
+	var once sync.Once
+	return sw, func() { once.Do(func() { sseActiveConnections.Add(-1) }) }, nil
+}
+
+const (
+	// MetricSSEActiveConnections is the number of /llm SSE streams this
+	// process is serving right now.
+	//
+	// IT IS A GAUGE, AND THE ONLY ONE ON THIS SURFACE. Every other gateway
+	// metric is a monotonic counter, which is why this one carries no `_total`
+	// suffix: a counter that goes down is a broken counter, and a Prometheus
+	// Adapter rule written for a counter would rate() this into nonsense.
+	//
+	// WHY IT EXISTS. deploy/helm/elitea/values.yaml has named this exact
+	// string as llmGateway.autoscaling.sseConnectionMetric since the HPA was
+	// written, and NOTHING published it — the /metrics surface is an explicit
+	// allowlist (cmd/elitea-llm-gateway/main.go gatewayMetrics) and no entry
+	// produced it. An operator enabling that HPA got
+	// `ScalingActive=False / FailedGetPodsMetric`, which does not scale and
+	// does not complain: the deployment silently pinned at minReplicas while
+	// its dashboard said autoscaling was on.
+	//
+	// Concurrent streams are the right signal for this process because the
+	// cost of an SSE connection is almost entirely time spent holding it open,
+	// not CPU — a gateway saturated on streams looks idle to a CPU-target HPA.
+	MetricSSEActiveConnections = "gateway_llm_sse_active_connections"
+)
+
+var sseActiveConnections = expvar.NewInt(MetricSSEActiveConnections)
+
+// SSEMetricNames returns the gauge names this package publishes, for the
+// /metrics allowlist. Separate from the counter lists because the two are
+// exported with different Prometheus types and mixing them is how a gauge
+// ends up declared as a counter.
+func SSEMetricNames() []string {
+	return []string{MetricSSEActiveConnections}
 }

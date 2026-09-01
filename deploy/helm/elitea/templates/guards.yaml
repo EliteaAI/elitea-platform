@@ -50,3 +50,61 @@
   operator has to make deliberately, and it broke this repo's own render tests,
   which exercise elitea-main's runtime configuration on its own.
 */ -}}
+
+{{- /*
+  The workload session expires, and only a CronJob stops it.
+
+  elitea_runtime.workload_sessions.expires_at is NOT NULL, and NOTHING in the
+  product writes that column — VerifyActiveSession only reads it
+  (repos/workload_sessions.go), and it requires
+  `issued_at <= now() < expires_at AND revoked_at IS NULL`. The pre-install
+  hook stamps it at install and upgrade; the renew CronJob re-stamps it on a
+  schedule. Turn the CronJob off on a cluster that then goes a full ttl without
+  a `helm upgrade`, and every ClaimCommand is refused — the worker starts,
+  reports Ready, and consumes nothing. That signature is IDENTICAL to never
+  having provisioned the row at all, which is the outage the whole Job exists
+  to prevent.
+*/ -}}
+{{- if and .Values.worker.enabled .Values.worker.runtimeSession.enabled }}
+{{- $rs := .Values.worker.runtimeSession }}
+{{- if not $rs.renew.enabled }}
+{{- if not $rs.renew.acknowledgeManualRenewal }}
+{{- fail (printf "worker.runtimeSession.renew.enabled=false leaves elitea_runtime.workload_sessions.expires_at renewed by nothing but `helm upgrade`. The row expires %s after the last one, and every agent execution is then refused with the worker still reporting Ready — the same signature as never having been provisioned. Re-enable the CronJob, or set worker.runtimeSession.renew.acknowledgeManualRenewal=true to state that something outside this chart re-stamps the row." $rs.ttl) }}
+{{- end }}
+{{- end }}
+
+{{- /*
+  ttl and schedule are two halves of one interval, and values.yaml says so:
+  "If you change `ttl`, re-derive this alongside it; the two are not linked
+  automatically." This links them for the one schedule shape that can be read,
+  which is the shape the chart ships.
+
+  Only a day-of-month step field (a star, a slash, then N) is parsed. Any
+  other cron expression is left alone rather
+  than guessed at — a guard that mis-parses a schedule and refuses a correct
+  one is worse than no guard.
+*/ -}}
+{{- if $rs.renew.enabled }}
+{{- $fields := splitList " " (trim $rs.renew.schedule) }}
+{{- if eq (len $fields) 5 }}
+{{- $dom := index $fields 2 }}
+{{- if hasPrefix "*/" $dom }}
+{{- $everyDays := atoi (trimPrefix "*/" $dom) }}
+{{- $ttlHours := atoi (trimSuffix "h" $rs.ttl) }}
+{{- if and (gt $everyDays 0) (gt $ttlHours 0) }}
+{{/*
+  Two renewal windows must fit inside the ttl. Not one: a single missed run —
+  an image pull failure, node pressure — would otherwise be the difference
+  between a live cluster and a dark one, and the values comment already says
+  the schedule "errs toward MORE frequent than a bare ttl/3 would need" for
+  exactly that reason.
+*/}}
+{{- if lt $ttlHours (mul $everyDays 48) }}
+{{- fail (printf "worker.runtimeSession.ttl is %s but renew.schedule runs every %d days, so a single missed run can outlive the session. expires_at is NOT NULL and nothing in the product re-stamps it, so an expiry refuses every agent execution while the worker still reports Ready. Give the ttl room for two renewal windows (at least %dh here), or shorten the schedule." $rs.ttl $everyDays (mul $everyDays 48)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
