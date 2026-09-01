@@ -879,6 +879,25 @@ main:
     # which is right whenever the certificate was issued for that name.
     ELITEA_DEEPWIKI_SERVER_NAME: ""
     ELITEA_DEEPWIKI_TIMEOUT_SECONDS: ""
+    # The origin the PROVIDER calls back to for artifacts and models. Required
+    # whenever the facade is on: the engine derives the artifact API base by
+    # stripping `/llm/v1` off the api_base it is handed, so this one value is
+    # both, and configuring them apart is not expressible. Set it to the
+    # in-cluster origin of elitea-main, e.g. http://elitea-main:8080.
+    ELITEA_DEEPWIKI_CALLBACK_BASE_URL: ""
+    # How long a minted callback bearer lives. It must outlast the longest
+    # generation this deployment expects: a token that dies mid-run makes the
+    # engine fail its artifact upload after doing all the work. Default 120.
+    ELITEA_DEEPWIKI_CALLBACK_TOKEN_TTL_MINUTES: ""
+    # The git hosts a repository may be cloned from. FAIL-CLOSED: unset refuses
+    # every clone, and `*` disables the control explicitly.
+    #
+    # The SAME variable is read by the provider service, deliberately. The
+    # facade checks it before opening the vault (so a host nobody allowed never
+    # causes a decrypt) and the provider checks it before building a clone URL
+    # (so the credential is never written into one). Two allowlists that could
+    # disagree would mean an invocation that starts and then fails.
+    ELITEA_DEEPWIKI_GIT_ALLOWLIST: ""
 
   # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
   # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map

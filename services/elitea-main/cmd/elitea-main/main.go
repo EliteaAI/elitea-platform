@@ -1055,6 +1055,58 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return errors.New(
 				"ELITEA_DEEPWIKI_ENABLED requires production authentication")
 		}
+		// The credential resolver and the callback minter. Both are built
+		// here rather than inside the route because both are database-backed
+		// and the facade's own tests must not need a database to exercise a
+		// body rewrite.
+		//
+		// The vault loader comes from the Configurations runtime when there is
+		// one, and from ELITEA_VAULT_MASTER_KEY_FILE / SECRETS_MASTER_KEY when
+		// there is not — the same fallback the chat-config reader makes above,
+		// and for the same reason: a loader built from a key source the
+		// deployment does not use opens no vault at all, and reports it as a
+		// configuration that will not decrypt rather than as a misconfigured
+		// key.
+		deepwikiVaults := currentConfigurationsRoot.VaultLoader()
+		if deepwikiVaults == nil {
+			deepwikiMasterKey, keyErr := encodedVaultMasterKeyFromEnv(os.LookupEnv)
+			if keyErr != nil {
+				return fmt.Errorf("compose DeepWiki vault loader: %w", keyErr)
+			}
+			ungated, vaultErr := storage.NewPostgresSecretVaultLoader(pool, deepwikiMasterKey)
+			if vaultErr != nil {
+				return fmt.Errorf("compose DeepWiki vault loader: %w", vaultErr)
+			}
+			defer ungated.Destroy()
+			deepwikiVaults = ungated
+		}
+		deepwikiUnsecreter, unsecreterErr := storage.NewCurrentVaultUnsecreter(deepwikiVaults)
+		if unsecreterErr != nil {
+			return fmt.Errorf("compose DeepWiki unsecreter: %w", unsecreterErr)
+		}
+		deepwikiConfigurations, configurationsErr := dbrepos.NewCurrentConfigurationsRepository(pool)
+		if configurationsErr != nil {
+			return fmt.Errorf("compose DeepWiki configuration reader: %w", configurationsErr)
+		}
+		deepwikiCredentials, credentialsErr := v2deepwiki.NewCredentialResolver(
+			deepwikiConfigurations, deepwikiUnsecreter, deepwikiConfig.GitEgress)
+		if credentialsErr != nil {
+			return fmt.Errorf("compose DeepWiki credential resolver: %w", credentialsErr)
+		}
+		// patSigner is declared further down, next to the router config it
+		// feeds. Recomputed here from the same rule rather than moved: the
+		// signer must be the one THIS deployment's validator reads back, and
+		// the rule for that is "the form graph when there is one".
+		var deepwikiSigner v2auth.TokenSigner
+		if formGraph != nil {
+			deepwikiSigner = formGraph
+		}
+		deepwikiTokens, minterErr := v2auth.NewCallbackTokenMinter(
+			pool, deepwikiSigner, []byte(os.Getenv("APPLICATION_SECRET_KEY")))
+		if minterErr != nil {
+			return fmt.Errorf("compose DeepWiki callback token minter: %w", minterErr)
+		}
+
 		deepwikiRoute, err = v2deepwiki.NewRoute(
 			deepwikiConfig,
 			apimw.AuthConfig{
@@ -1068,6 +1120,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
 			},
 			legacyrbac.NewPostgresResolver(pool),
+			deepwikiCredentials,
+			v2deepwiki.NewAuthCallbackMinter(deepwikiTokens),
 			slog.Default(),
 		)
 		if err != nil {

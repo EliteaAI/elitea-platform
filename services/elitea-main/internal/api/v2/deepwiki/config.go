@@ -33,6 +33,19 @@ const (
 	ServerNameEnv     = "ELITEA_DEEPWIKI_SERVER_NAME"
 	IdentitySecretEnv = "ELITEA_DEEPWIKI_IDENTITY_SECRET"
 	TimeoutEnv        = "ELITEA_DEEPWIKI_TIMEOUT_SECONDS"
+
+	// CallbackBaseURLEnv is the platform origin the provider calls back to for
+	// artifacts and models. One value, not two: the engine derives the artifact
+	// API base by stripping `/llm/v1` off the api_base it is given
+	// (artifacts_platform_client.extract_artifact_settings), so configuring
+	// them apart is not expressible.
+	CallbackBaseURLEnv = "ELITEA_DEEPWIKI_CALLBACK_BASE_URL"
+
+	// CallbackTokenTTLEnv is how long a minted callback bearer lives. It must
+	// outlast the longest generation the deployment expects; a token that dies
+	// mid-run makes the engine fail its artifact upload after doing all the
+	// work.
+	CallbackTokenTTLEnv = "ELITEA_DEEPWIKI_CALLBACK_TOKEN_TTL_MINUTES"
 )
 
 // ErrIncompleteConfig reports a deployment that enabled DeepWiki without
@@ -60,6 +73,23 @@ type Config struct {
 	IdentitySecret string
 
 	Timeout time.Duration
+
+	// CallbackBaseURL is the origin the provider reaches back on. Required
+	// whenever the facade is enabled: without it an invocation would be
+	// accepted and then fail at its first artifact upload, after the whole
+	// generation had run.
+	CallbackBaseURL string
+
+	// CallbackTokenTTL is the minted bearer's lifetime. Defaults to two hours
+	// — long enough for a large repository's generation, short enough that a
+	// leaked token is not a standing grant. The legacy flow's equivalent had
+	// no expiry at all.
+	CallbackTokenTTL time.Duration
+
+	// GitEgress is the allowlist of hosts a repository may be cloned from,
+	// checked BEFORE the vault is opened. Fail-closed: unset refuses
+	// everything, which is the same choice the provider service makes.
+	GitEgress GitEgressPolicy
 }
 
 // ConfigFromEnv reads the facade's configuration.
@@ -92,6 +122,17 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 		timeout = time.Duration(seconds) * time.Second
 	}
 
+	callbackTTL := 2 * time.Hour
+	if raw := get(CallbackTokenTTLEnv); raw != "" {
+		minutes, convErr := strconv.Atoi(raw)
+		if convErr != nil || minutes < 1 {
+			return Config{}, fmt.Errorf(
+				"%s must be a positive whole number of minutes, got %q",
+				CallbackTokenTTLEnv, raw)
+		}
+		callbackTTL = time.Duration(minutes) * time.Minute
+	}
+
 	return Config{
 		Enabled:        enabled,
 		BaseURL:        get(BaseURLEnv),
@@ -101,6 +142,10 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 		ServerName:     get(ServerNameEnv),
 		IdentitySecret: get(IdentitySecretEnv),
 		Timeout:        timeout,
+
+		CallbackBaseURL:  get(CallbackBaseURLEnv),
+		CallbackTokenTTL: callbackTTL,
+		GitEgress:        ParseGitEgressPolicy(get(GitAllowlistEnv)),
 	}, nil
 }
 
@@ -128,6 +173,12 @@ func (c Config) Validate() error {
 	}
 	if c.CAFile == "" {
 		missing = append(missing, CAFileEnv)
+	}
+	// Without a callback origin the provider can generate a wiki and then be
+	// unable to hand it back. That failure arrives at the END of the most
+	// expensive operation this facade offers, so it is caught at startup.
+	if c.CallbackBaseURL == "" {
+		missing = append(missing, CallbackBaseURLEnv)
 	}
 
 	if len(missing) > 0 {

@@ -1,6 +1,7 @@
 package deepwiki
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,28 @@ import (
 
 // ErrInvalidProxy reports a proxy that cannot be constructed.
 var ErrInvalidProxy = errors.New("invalid DeepWiki proxy")
+
+// proxyOutcome carries the proxied status back to the caller of Forward.
+//
+// A context value rather than a return, because the status is known inside
+// httputil.ReverseProxy's ModifyResponse callback and Forward has already
+// returned control to it by then. The alternative — wrapping the
+// ResponseWriter — puts a Write on a caller-influenced body and has to
+// forward Flush by hand; this reads the same number without either.
+type proxyOutcome struct {
+	status int
+}
+
+type proxyOutcomeKey struct{}
+
+func withProxyOutcome(ctx context.Context, outcome *proxyOutcome) context.Context {
+	return context.WithValue(ctx, proxyOutcomeKey{}, outcome)
+}
+
+func proxyOutcomeFrom(ctx context.Context) *proxyOutcome {
+	outcome, _ := ctx.Value(proxyOutcomeKey{}).(*proxyOutcome)
+	return outcome
+}
 
 // Proxy forwards a facade request to the provider service over mTLS.
 type Proxy struct {
@@ -79,6 +102,15 @@ func NewProxy(cfg Config, logger *slog.Logger) (*Proxy, error) {
 			// behaviour, so re-forwarding the inbound Host later fails rather
 			// than quietly handing a peer a hostname it does not serve.
 			pr.SetXForwarded()
+		},
+		// Records the status for a caller that asked for it. Never rewrites
+		// the response: returning nil leaves it exactly as the provider sent
+		// it, which is what makes this a proxy.
+		ModifyResponse: func(response *http.Response) error {
+			if outcome := proxyOutcomeFrom(response.Request.Context()); outcome != nil {
+				outcome.status = response.StatusCode
+			}
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error("deepwiki proxy failed",
