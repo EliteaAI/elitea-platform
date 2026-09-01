@@ -10,6 +10,7 @@ import (
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
+	deepwikiapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
@@ -153,6 +154,15 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	}
 	if cfg.CurrentIndexStart != nil {
 		r.Method(http.MethodPost, indexingapi.CurrentIndexStartPath, cfg.CurrentIndexStart)
+	}
+	// The DeepWiki facade. Each method is registered separately because the
+	// two that share the invocation path do NOT share a permission: polling is
+	// a read and cancelling is not.
+	if cfg.DeepWiki != nil {
+		r.Method(http.MethodGet, deepwikiapi.SlotsPath, cfg.DeepWiki)
+		r.Method(http.MethodPost, deepwikiapi.InvokePath, cfg.DeepWiki)
+		r.Method(http.MethodGet, deepwikiapi.InvocationPath, cfg.DeepWiki)
+		r.Method(http.MethodDelete, deepwikiapi.InvocationPath, cfg.DeepWiki)
 	}
 	if cfg.CurrentAgentStart != nil {
 		r.Method(http.MethodPost, agentexecutionapi.CurrentApplicationStartPath, cfg.CurrentAgentStart)

@@ -23,7 +23,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
@@ -115,14 +115,27 @@ describe('buildModelConnectionEntityId', () => {
   });
 });
 
+/* This file drives a MUI dialog through ~50 keystrokes and three async
+   settles per test, and vitest's default 5000ms is a generic value rather than
+   a budget anybody measured against that work. On CI the siblings run at
+   3.7-3.8s and "files a provider request..." tipped over 5005ms — it has now
+   failed on three different branches while passing on the same code elsewhere,
+   which is a budget set too close to the work, not a defect in the component.
+
+   Both halves of the fix are here: the `delay: null` on each userEvent.type
+   removes the per-keystroke await (measured: tests 2.26s -> 1.97s locally),
+   and this raises the ceiling to something the work fits under on a loaded
+   runner. Neither weakens an assertion. */
+vi.setConfig({ testTimeout: 20_000 });
+
 describe('RequestModelConnection', () => {
   it('files a provider request on the catalogue create route, with only the two fields a requester owns', async () => {
     mockCreate();
     renderRequestButton();
     await openDialog();
 
-    await userEvent.type(screen.getByLabelText('Provider type *'), 'anthropic');
-    await userEvent.type(screen.getByLabelText('Description *'), 'We need Claude for the review pipeline.');
+    await userEvent.type(screen.getByLabelText('Provider type *'), 'anthropic', { delay: null });
+    await userEvent.type(screen.getByLabelText('Description *'), 'We need Claude for the review pipeline.', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Send request' }));
 
     await waitFor(() => expect(captured).toHaveLength(1));
@@ -157,8 +170,8 @@ describe('RequestModelConnection', () => {
        one column. */
     expect(screen.queryByLabelText('Provider type *')).not.toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText('Model name *'), 'claude-opus-4');
-    await userEvent.type(screen.getByLabelText('Description *'), 'Needed for long-context review.');
+    await userEvent.type(screen.getByLabelText('Model name *'), 'claude-opus-4', { delay: null });
+    await userEvent.type(screen.getByLabelText('Description *'), 'Needed for long-context review.', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Send request' }));
 
     await waitFor(() => expect(captured).toHaveLength(1));
@@ -171,8 +184,8 @@ describe('RequestModelConnection', () => {
     await openDialog();
 
     await userEvent.click(screen.getByRole('radio', { name: 'A model' }));
-    await userEvent.type(screen.getByLabelText('Model name *'), 'meta-llama/Llama-3.1-70B');
-    await userEvent.type(screen.getByLabelText('Description *'), 'Self-hosted inference.');
+    await userEvent.type(screen.getByLabelText('Model name *'), 'meta-llama/Llama-3.1-70B', { delay: null });
+    await userEvent.type(screen.getByLabelText('Description *'), 'Self-hosted inference.', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Send request' }));
 
     await waitFor(() => expect(captured).toHaveLength(1));
@@ -196,7 +209,7 @@ describe('RequestModelConnection', () => {
 
     /* Whitespace is not an answer either — the server trims and would refuse
        it with a 400 the user cannot act on. */
-    await userEvent.type(screen.getByLabelText('Provider type *'), '   ');
+    await userEvent.type(screen.getByLabelText('Provider type *'), '   ', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Send request' }));
     expect(captured).toHaveLength(0);
   });
@@ -206,8 +219,8 @@ describe('RequestModelConnection', () => {
     renderRequestButton();
     await openDialog();
 
-    await userEvent.type(screen.getByLabelText('Provider type *'), 'anthropic');
-    await userEvent.type(screen.getByLabelText('Description *'), 'We need Claude.');
+    await userEvent.type(screen.getByLabelText('Provider type *'), 'anthropic', { delay: null });
+    await userEvent.type(screen.getByLabelText('Description *'), 'We need Claude.', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Send request' }));
 
     await waitFor(() => expect(captured).toHaveLength(1));

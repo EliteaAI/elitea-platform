@@ -27,6 +27,7 @@ import (
 	v2configs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2deepwiki "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
 	v2core "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
@@ -267,7 +268,12 @@ type RouterConfig struct {
 	CurrentConfigurationTypes     http.Handler
 	CurrentConfigurationMutation  http.Handler
 	CurrentIndexStart             http.Handler
-	CurrentAgentStart             http.Handler
+	// DeepWiki is the facade in front of the DeepWiki provider service
+	// (ADR-0022 P2). Nil whenever ELITEA_DEEPWIKI_ENABLED is off, which is
+	// every deployment that does not run the provider — the paths are then not
+	// registered at all rather than registered and refusing.
+	DeepWiki          *v2deepwiki.Route
+	CurrentAgentStart http.Handler
 	// SupportAssistantStart is the agent-execution use case the support
 	// assistant's predict route delegates to — the SAME use case
 	// CurrentAgentStart's route drives, not a second one. Left nil, the predict

@@ -26,6 +26,7 @@ import (
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2deepwiki "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
 	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
@@ -1036,6 +1037,43 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	var runtimeRoot *runtimecomposition.Runtime
 	var productionRuntime *api.ProductionRuntimeRoutes
+	// The DeepWiki facade (ADR-0022 P2). Composed OUTSIDE the runtime-plane
+	// block: it proxies to an independently deployed service and needs nothing
+	// the runtime provides, so tying it to ELITEA_RUNTIME_ENABLED would make a
+	// deployment turn on the agent runtime to get a wiki.
+	//
+	// An enabled-but-unreachable configuration is a startup failure, not a
+	// degraded mount. The alternative is four routes that answer 503 to every
+	// caller while the operator's flag says the feature is on.
+	var deepwikiRoute *v2deepwiki.Route
+	deepwikiConfig, err := v2deepwiki.ConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("read DeepWiki facade configuration: %w", err)
+	}
+	if deepwikiConfig.Enabled {
+		if principalValidator == nil || forwardedIdentityVerifier == nil {
+			return errors.New(
+				"ELITEA_DEEPWIKI_ENABLED requires production authentication")
+		}
+		deepwikiRoute, err = v2deepwiki.NewRoute(
+			deepwikiConfig,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				// The browser's only credential, for the reason the agent-start
+				// route gives below: the UI reaches this with a session cookie
+				// and nothing else. It does not widen what a caller may do —
+				// the permission gates below still run.
+				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
+			},
+			legacyrbac.NewPostgresResolver(pool),
+			slog.Default(),
+		)
+		if err != nil {
+			return fmt.Errorf("compose DeepWiki facade: %w", err)
+		}
+	}
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler
 	// The support assistant's half of the agent-execution wiring. It is
@@ -1530,6 +1568,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationTypes:     currentConfigurationTypes,
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
+		DeepWiki:                      deepwikiRoute,
 		CurrentAgentStart:             currentAgentStart,
 		// The support assistant's predict route delegates to the SAME
 		// agent-execution use case CurrentAgentStart's HTTP route drives — not a

@@ -31,6 +31,7 @@ import (
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2deepwiki "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
@@ -119,6 +120,12 @@ func buildFullSurfaceConfig() api.RouterConfig {
 		// production_router.go, and this test only chi.Walks the router — it
 		// never serves a request through the stub.
 		CurrentSocialAvatar: &v2social.CurrentAvatarRoute{},
+
+		// Same scheme for the DeepWiki facade: a zero Route satisfies the
+		// != nil check that gates registration, and this test only walks the
+		// router. Its ServeHTTP answers 503 for a zero value rather than
+		// panicking, so even a served request would be harmless here.
+		DeepWiki: &v2deepwiki.Route{},
 	}
 }
 
