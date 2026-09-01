@@ -4,6 +4,10 @@
     "src/entries/admin/main.tsx",
     "src/entries/maintenance/main.tsx",
     "scripts/*.mjs",
+    // The DeepWiki oracle pipeline: operator-run, not imported. It regenerates
+    // src/features/wiki-generation/lib/__fixtures__/generation-oracle.json
+    // from the legacy JSX.
+    "scripts/deepwiki-oracle/*.mjs",
     // unit M1: src/test/msw/handlers/index.ts imports each tag's aggregate
     // `get<Tag>Mock()` (spec §6.5 R-M2/R-M3 design note in that file). That
     // import pulls the `*.msw.ts` file, its per-operation
