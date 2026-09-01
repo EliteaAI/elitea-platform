@@ -7,11 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"strings"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/hop"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/spi"
 )
 
 // ErrInvalidProxy reports a proxy that cannot be constructed.
@@ -62,16 +63,14 @@ func NewProxy(cfg Config, logger *slog.Logger) (*Proxy, error) {
 		logger = slog.Default()
 	}
 
-	target, err := url.Parse(cfg.BaseURL)
-	if err != nil || target.Scheme == "" || target.Host == "" {
-		return nil, fmt.Errorf("%w: %s must be an absolute URL, got %q",
-			ErrInvalidProxy, BaseURLEnv, cfg.BaseURL)
-	}
-	if target.Scheme != "https" {
-		// The provider refuses non-mTLS traffic, so a plain-HTTP base URL
-		// produces a facade that 502s on every call. Catch it at startup.
-		return nil, fmt.Errorf("%w: %s must be https, got %q",
-			ErrInvalidProxy, BaseURLEnv, cfg.BaseURL)
+	// RequireTLS: the provider refuses non-mTLS traffic, so a plain-HTTP base
+	// URL produces a facade that 502s on every call. Caught at startup.
+	target, err := hop.ParseTarget(cfg.BaseURL, hop.TargetOptions{
+		EnvName:    BaseURLEnv,
+		RequireTLS: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidProxy, err)
 	}
 
 	serverName := cfg.ServerName
@@ -168,25 +167,28 @@ func (p *Proxy) Forward(
 	llmproxy.SignIdentityHeaders(
 		outbound.Header, p.identitySecret, projectID, userID, tenantID, "")
 
+	// The /llm hop has always done this and this one never did. It is latent
+	// today — no server here sets a WriteTimeout — and it is called so that
+	// adding one later cannot break one hop and not the other. See
+	// providerhost/hop.ClearWriteDeadline.
+	hop.ClearWriteDeadline(w, p.logger)
+
 	p.reverse.ServeHTTP(w, outbound)
 }
 
-// providerInvokePath builds the provider's invoke path.
-//
 // The provider's paths carry the toolkit and tool segments — that is its wire
 // contract and the form its SPI OpenAPI declares — so the facade's own path
 // carries them too and they map across one-for-one.
-func providerInvokePath(toolkit, tool string) string {
-	return fmt.Sprintf("/tools/%s/%s/invoke",
-		url.PathEscape(toolkit), url.PathEscape(tool))
-}
+//
+// They come from providerhost/spi rather than being built here, so that the
+// frozen contract (conformance/provider/spi/contract.json) is checked against
+// code this service SHARES rather than against one facade's private helper.
+var (
+	providerInvokePath     = spi.InvokePath
+	providerInvocationPath = spi.InvocationPath
+)
 
-func providerInvocationPath(toolkit, tool, invocation string) string {
-	return fmt.Sprintf("/tools/%s/%s/invocations/%s",
-		url.PathEscape(toolkit), url.PathEscape(tool), url.PathEscape(invocation))
-}
-
-const providerSlotsPath = "/slots"
+const providerSlotsPath = spi.SlotsPath
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
