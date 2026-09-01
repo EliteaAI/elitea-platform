@@ -49,8 +49,9 @@ import (
 func newAdminProjectListingRouter(t *testing.T) chi.Router {
 	t.Helper()
 	return NewRouter(RouterConfig{
-		SkillsRepo:    struct{ v2skills.Repository }{},
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		SkillsRepo:         struct{ v2skills.Repository }{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
 	})
 }
 

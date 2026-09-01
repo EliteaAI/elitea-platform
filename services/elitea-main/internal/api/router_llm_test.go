@@ -74,6 +74,10 @@ func buildMinimalRouterConfig(t *testing.T, validator apimw.TokenValidator, reso
 			// RPC path.
 			Client:    newTestAuthClient(t),
 			Validator: validator,
+			// validatePrincipal fails closed, so a router with a token
+			// validator and no principal validator refuses every request.
+			// These tests are about /llm ROUTING, not principal reload.
+			PrincipalValidator: testPrincipalValidator{},
 		},
 		LLMProxy:           llmProxy,
 		LLMProjectResolver: resolver,

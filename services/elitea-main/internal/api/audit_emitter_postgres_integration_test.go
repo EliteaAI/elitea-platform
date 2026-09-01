@@ -115,9 +115,10 @@ func TestAdministrativeWriteLandsInTheAuditTrailTheAdminPageReads(t *testing.T) 
 	})
 
 	router := NewRouter(RouterConfig{
-		Pool:          pool,
-		AuthValidator: testTokenValidator{user: privilegedAuditTestUser()},
-		AuditRecorder: recorder,
+		Pool:               pool,
+		AuthValidator:      testTokenValidator{user: privilegedAuditTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AuditRecorder:      recorder,
 	})
 
 	// 001_initial.sql seeds user 1 with the administration `admin` role, and
@@ -224,9 +225,10 @@ func TestRefusedAdministrativeRequestIsRecorded(t *testing.T) {
 	// User 9001 exists in no auth_core__user_role row, so the central
 	// permission gate denies. Nothing else about the request changes.
 	router := NewRouter(RouterConfig{
-		Pool:          pool,
-		AuthValidator: testTokenValidator{user: unprivilegedAuditTestUser()},
-		AuditRecorder: recorder,
+		Pool:               pool,
+		AuthValidator:      testTokenValidator{user: unprivilegedAuditTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AuditRecorder:      recorder,
 	})
 
 	response := httptest.NewRecorder()
@@ -276,9 +278,10 @@ func TestContentTrafficWritesNoAuditRows(t *testing.T) {
 	})
 
 	router := NewRouter(RouterConfig{
-		Pool:          pool,
-		AuthValidator: testTokenValidator{user: privilegedAuditTestUser()},
-		AuditRecorder: recorder,
+		Pool:               pool,
+		AuthValidator:      testTokenValidator{user: privilegedAuditTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AuditRecorder:      recorder,
 	})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, testAuthHeader(httptest.NewRequest(

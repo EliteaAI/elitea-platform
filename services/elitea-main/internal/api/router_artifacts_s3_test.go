@@ -28,6 +28,7 @@ import (
 func newS3ListingRouter(resolver fakePermissionResolver) http.Handler {
 	return NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{}),
 		ArtifactPermissionResolver: resolver,

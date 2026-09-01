@@ -85,15 +85,6 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				// principal check must cross-check both typed IDs and normalize the
 				// compatibility ID before any downstream handler can use it as a
 				// user foreign key.
-				if cfg.PrincipalValidator == nil {
-					// A composition root that forgot the validator. It stays a
-					// 401 because the request carries no proof this deployment
-					// would have accepted, but it is logged apart from the two
-					// real answers: nothing was read, and nothing was refused.
-					logPrincipalRefusal(r, sourceForwarded, reasonValidatorAbsent, nil)
-					writeInactivePrincipal(w)
-					return
-				}
 				user, err := validatePrincipal(r.Context(), cfg, user)
 				if err != nil {
 					writePrincipalRefusal(w, r, sourceForwarded, err)
@@ -265,9 +256,35 @@ func uniqueForwardedIdentityHeader(headers http.Header, name string) (string, bo
 	return values[0], true, true
 }
 
+// errPrincipalValidatorAbsent reports a deployment that composed no validator.
+//
+// It is a refusal, not a condition: every caller of validatePrincipal is on an
+// authentication path, and a path that cannot validate a principal must not
+// authenticate one.
+var errPrincipalValidatorAbsent = errors.New("no principal validator is configured")
+
+// validatePrincipal reloads the principal and refuses a suspended or deleted
+// one. It FAILS CLOSED when no validator is composed.
+//
+// It used to return `(user, nil)` in that case, and that was safe only by
+// accident: the forwarded path guarded nil separately a few lines before
+// calling this, so the open default was unreachable *there*. The other three
+// paths — X-API-Key, the `elitea_session` cookie, and Bearer — had no such
+// guard and went straight through.
+//
+// The session path is the one that mattered. verifySessionCookie is an HMAC
+// check with no database read, so on a deployment with a session secret and no
+// validator, an unexpired cookie authenticated a user this service never
+// looked up — including one since suspended or deleted. The token paths are
+// less exposed because validateToken reads the store first, but "less exposed"
+// is not a property worth relying on when the fix is one branch.
+//
+// One place decides for all four paths now, which is why the forwarded path's
+// own pre-check is gone: two spellings of the same rule is how the rule ends
+// up applied in one of them.
 func validatePrincipal(ctx context.Context, cfg AuthConfig, user auth.User) (auth.User, error) {
 	if cfg.PrincipalValidator == nil {
-		return user, nil
+		return auth.User{}, errPrincipalValidatorAbsent
 	}
 	return cfg.PrincipalValidator.ValidatePrincipal(ctx, user)
 }
@@ -326,6 +343,15 @@ const (
 // goes to the log only, because a pgx message names the host, the database and
 // the query.
 func writePrincipalRefusal(w http.ResponseWriter, r *http.Request, source string, err error) {
+	// A composition root that forgot the validator. It stays a 401 because the
+	// request carries no proof this deployment would have accepted, and it is
+	// logged apart from the two real answers: nothing was read, and nothing was
+	// refused. This branch is what the forwarded path used to spell inline.
+	if errors.Is(err, errPrincipalValidatorAbsent) {
+		logPrincipalRefusal(r, source, reasonValidatorAbsent, nil)
+		writeInactivePrincipal(w)
+		return
+	}
 	if err == nil || errors.Is(err, auth.ErrPrincipalInactive) {
 		logPrincipalRefusal(r, source, reasonPrincipalInactive, err)
 		writeInactivePrincipal(w)

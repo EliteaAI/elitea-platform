@@ -285,6 +285,7 @@ func newToolkitAdmissionRouter(t *testing.T, pool *pgxpool.Pool) http.Handler {
 	return NewRouter(RouterConfig{
 		Pool:                     pool,
 		AuthValidator:            apimw.TokenValidator(credentialJourneyValidator{}),
+		PrincipalValidator:       testPrincipalValidator{},
 		WebhookRepo:              emptyWebhookRepo{},
 		EventSource:              newEventSource(),
 		ToolkitSettingsValidator: validator,

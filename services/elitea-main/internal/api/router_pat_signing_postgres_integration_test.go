@@ -43,10 +43,11 @@ func TestRouterSignsPersonalAccessTokensWithTheConfiguredKey(t *testing.T) {
 	t.Run("a configured signer signs the token", func(t *testing.T) {
 		signer := &routerPATSignerStub{key: patKey}
 		router := NewRouter(RouterConfig{
-			Pool:          pool,
-			AuthValidator: apimw.TokenValidator(testTokenValidator{user: authenticatedTestUser()}),
-			SessionSecret: sessionSecret,
-			PATSigner:     signer,
+			Pool:               pool,
+			AuthValidator:      apimw.TokenValidator(testTokenValidator{user: authenticatedTestUser()}),
+			PrincipalValidator: testPrincipalValidator{},
+			SessionSecret:      sessionSecret,
+			PATSigner:          signer,
 		})
 
 		token := createPATThroughRouter(t, router, "router-signer-token")
@@ -66,9 +67,10 @@ func TestRouterSignsPersonalAccessTokensWithTheConfiguredKey(t *testing.T) {
 
 	t.Run("no signer falls back to the session secret", func(t *testing.T) {
 		router := NewRouter(RouterConfig{
-			Pool:          pool,
-			AuthValidator: apimw.TokenValidator(testTokenValidator{user: authenticatedTestUser()}),
-			SessionSecret: sessionSecret,
+			Pool:               pool,
+			AuthValidator:      apimw.TokenValidator(testTokenValidator{user: authenticatedTestUser()}),
+			PrincipalValidator: testPrincipalValidator{},
+			SessionSecret:      sessionSecret,
 		})
 
 		token := createPATThroughRouter(t, router, "router-fallback-token")

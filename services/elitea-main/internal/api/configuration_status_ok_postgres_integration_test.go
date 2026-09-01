@@ -80,6 +80,7 @@ func TestConfigurationWriteRouteMakesACredentialVisibleToTheGateway(t *testing.T
 	fixed := NewRouter(RouterConfig{
 		Pool:                      pool,
 		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:        testPrincipalValidator{},
 		ConfigProviderAdmission:   admission,
 		ProjectPermissionResolver: entitled,
 	})
@@ -88,6 +89,7 @@ func TestConfigurationWriteRouteMakesACredentialVisibleToTheGateway(t *testing.T
 	unfixed := NewRouter(RouterConfig{
 		Pool:                      pool,
 		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:        testPrincipalValidator{},
 		ProjectPermissionResolver: entitled,
 	})
 

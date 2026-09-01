@@ -43,6 +43,7 @@ func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
 
 	router := NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		Pool:                       pool,
 		ObjectStore:                noopObjectStore{},
@@ -83,6 +84,7 @@ func TestInternalAdminRoutesGateOnInternalAdminTokenStrengthAndValue(t *testing.
 	for _, token := range []string{"", "short", strongToken} {
 		router := NewRouter(RouterConfig{
 			AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+			PrincipalValidator: testPrincipalValidator{},
 			Shadow:             comparator,
 			ShadowMetrics:      metrics,
 			CutoverTracker:     tracker,
@@ -199,6 +201,7 @@ func TestArtifactRoutesRequireAuthentication(t *testing.T) {
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
@@ -226,6 +229,7 @@ func TestArtifactRoutesRequirePermission(t *testing.T) {
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: nil},
@@ -346,6 +350,7 @@ func TestArtifactRoutesSucceedWithExactRequiredPermission(t *testing.T) {
 			handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 			router := NewRouter(RouterConfig{
 				AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+				PrincipalValidator:         testPrincipalValidator{},
 				AppsRepo:                   struct{ applications.Repository }{},
 				ArtifactHandler:            handler,
 				ArtifactPermissionResolver: fakePermissionResolver{granted: []string{sc.permission}},
@@ -386,6 +391,7 @@ func TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
@@ -442,6 +448,7 @@ func TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured(t *testi
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
@@ -509,6 +516,7 @@ func TestArtifactBucketPatchRequiresEditPermissionNotCreate(t *testing.T) {
 			handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 			router := NewRouter(RouterConfig{
 				AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+				PrincipalValidator:         testPrincipalValidator{},
 				AppsRepo:                   struct{ applications.Repository }{},
 				ArtifactHandler:            handler,
 				ArtifactPermissionResolver: fakePermissionResolver{granted: tc.granted},
@@ -536,9 +544,10 @@ func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.
 
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
-		AuthValidator:   testTokenValidator{user: authenticatedTestUser()},
-		AppsRepo:        struct{ applications.Repository }{},
-		ArtifactHandler: handler,
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AppsRepo:           struct{ applications.Repository }{},
+		ArtifactHandler:    handler,
 		ArtifactPermissionResolver: fakePermissionResolver{
 			granted:    []string{artifactPermissionView},
 			forProject: "7",
@@ -552,4 +561,3 @@ func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
-

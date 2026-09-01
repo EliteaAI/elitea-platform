@@ -296,6 +296,7 @@ func newEliteaCoreProjectScopeRouter(
 ) http.Handler {
 	return NewRouter(RouterConfig{
 		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:        testPrincipalValidator{},
 		AppsRepo:                  struct{ applications.Repository }{},
 		SkillsRepo:                struct{ v2skills.Repository }{},
 		FoldersRepo:               struct{ v2folders.Repository }{},

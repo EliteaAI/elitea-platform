@@ -60,6 +60,7 @@ func TestArtifactStubRoutesReturn501WithTypedEnvelope(t *testing.T) {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			router := NewRouter(RouterConfig{
 				AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+				PrincipalValidator:         testPrincipalValidator{},
 				AppsRepo:                   struct{ applications.Repository }{},
 				ArtifactPermissionResolver: fakePermissionResolver{granted: []string{tc.perm}},
 			})
@@ -115,10 +116,11 @@ func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
-		AppsRepo:      struct{ applications.Repository }{},
-		Pool:          pool,
-		ObjectStore:   noopObjectStore{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AppsRepo:           struct{ applications.Repository }{},
+		Pool:               pool,
+		ObjectStore:        noopObjectStore{},
 		// This test's 5 subtests span view/create/edit/delete (the full
 		// bucket-plane permission mapping), so grant all four up front —
 		// what this test is actually checking is "real handler wired, not
@@ -174,9 +176,10 @@ func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
-		AppsRepo:      struct{ applications.Repository }{},
-		Pool:          pool,
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AppsRepo:           struct{ applications.Repository }{},
+		Pool:               pool,
 		// ObjectStore deliberately left nil.
 		//
 		// This subtest only issues a GET, so grant view — without a grant
@@ -210,10 +213,11 @@ func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
-		AppsRepo:      struct{ applications.Repository }{},
-		Pool:          pool,
-		ObjectStore:   noopObjectStore{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AppsRepo:           struct{ applications.Repository }{},
+		Pool:               pool,
+		ObjectStore:        noopObjectStore{},
 		// This test's 6 subtests span view/create/delete (the object-plane
 		// permission mapping has no PATCH/edit route), so grant that union
 		// up front — the point of this test is "real handler wired, not
@@ -284,6 +288,7 @@ func TestArtifactRouteReturnsInternalCodeWhenBackendFails(t *testing.T) {
 
 	router := NewRouter(RouterConfig{
 		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:         testPrincipalValidator{},
 		AppsRepo:                   struct{ applications.Repository }{},
 		Pool:                       pool,
 		ObjectStore:                noopObjectStore{},

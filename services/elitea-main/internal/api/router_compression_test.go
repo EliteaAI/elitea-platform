@@ -140,9 +140,10 @@ func TestProductionRouterCompressesTheJSONAPI(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
-		AppsRepo:      struct{ applications.Repository }{},
-		Pool:          pool,
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		AppsRepo:           struct{ applications.Repository }{},
+		Pool:               pool,
 	})
 
 	// The call is authenticated, and the unreachable pool then answers a JSON

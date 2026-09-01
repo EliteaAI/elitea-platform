@@ -46,8 +46,9 @@ var applicationRoutes = []struct {
 // any string at all.
 func TestRouterRegistersEveryApplicationRouteWhenAppsRepoIsComposed(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		AppsRepo:      struct{ applications.Repository }{},
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		AppsRepo:           struct{ applications.Repository }{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
 	})
 
 	// Control: an unregistered path under the same mounted group still 404s,
@@ -78,8 +79,9 @@ func TestRouterRegistersEveryApplicationRouteWhenAppsRepoIsComposed(t *testing.T
 // and not an unmounted /api/v2.
 func TestRouterDropsApplicationRoutesWithoutAppsRepo(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		SkillsRepo:    struct{ v2skills.Repository }{},
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		SkillsRepo:         struct{ v2skills.Repository }{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
 	})
 
 	// The group really is mounted: a sibling route registered by SkillsRepo

@@ -72,10 +72,11 @@ func TestTheCredentialScreenWorksForASeededMemberAndForNoOtherProject(t *testing
 	// project id, so a refusal below can only have come from the gate.
 	source := newEventSource()
 	router := NewRouter(RouterConfig{
-		Pool:          pool,
-		AuthValidator: apimw.TokenValidator(credentialJourneyValidator{}),
-		WebhookRepo:   emptyWebhookRepo{},
-		EventSource:   source,
+		Pool:               pool,
+		AuthValidator:      apimw.TokenValidator(credentialJourneyValidator{}),
+		PrincipalValidator: testPrincipalValidator{},
+		WebhookRepo:        emptyWebhookRepo{},
+		EventSource:        source,
 	})
 
 	// ── the catalogue ──────────────────────────────────────────────────────

@@ -2284,9 +2284,10 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 	// see newUnreachableRedisClient for why a nil client isn't safe here.
 	unreachableRedis := newUnreachableRedisClient()
 	return NewRouter(RouterConfig{
-		AuthValidator:  testTokenValidator{user: authenticatedTestUser()},
-		SessionHandler: v2auth.NewSessionHandler(nil, sessionSecret),
-		OIDCHandler:    &v2auth.OIDCHandler{},
+		AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator: testPrincipalValidator{},
+		SessionHandler:     v2auth.NewSessionHandler(nil, sessionSecret),
+		OIDCHandler:        &v2auth.OIDCHandler{},
 		// A zero-value SAML handler: it holds no provider store, so every one
 		// of its routes resolves no provider and refuses. It is wired anyway so
 		// the browser-auth surface below PINS the SAML paths — a handler left
@@ -2337,6 +2338,7 @@ func (r *recordingMessageRepo) GetMessageByUUID(
 func perMessageReadRouter(repo v2convs.Repository, granted ...string) http.Handler {
 	return NewRouter(RouterConfig{
 		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		PrincipalValidator:        testPrincipalValidator{},
 		ConvsRepo:                 repo,
 		ProjectAccessQuerier:      &memberOfProject{project: "7"},
 		ProjectPermissionResolver: fakePermissionResolver{granted: granted, forProject: "7"},
