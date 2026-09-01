@@ -170,11 +170,17 @@ adminTest('J35d: a registration is recorded as inactive, with a reason', async (
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
+        // The ADMISSION PLANE's shape, not pylon's. `provider_name`, an ORIGIN
+        // with no path, and the descriptor itself — see the rejection test
+        // below for the shape this replaces and why sending it is a 400.
         body: JSON.stringify({
-          name,
-          service_location_url: 'https://provider.example.invalid/e2e',
-          configuration: {},
-          provided_toolkits: [],
+          provider_name: name,
+          service_location_url: 'https://provider.example.invalid',
+          descriptor: {
+            provider_name: name,
+            version: '1.0.0',
+            toolkits: [],
+          },
         }),
       });
       return { status: post.status, body: await post.text() };
@@ -225,6 +231,60 @@ adminTest('J35d: a registration is recorded as inactive, with a reason', async (
   await page.reload({ waitUntil: 'domcontentloaded' });
   await openServiceDescriptors(page);
   await expect(page.getByText(provider, { exact: false })).toHaveCount(0);
+});
+
+adminTest('J35d1: a registration missing what admission needs is refused, not stored', async ({
+  page,
+}) => {
+  // The BODY IS PART OF THE CONTRACT, and this is the shape pylon accepted:
+  // `name`, a URL with a path, `configuration` and `provided_toolkits`, and no
+  // descriptor. Recording it would create a revision citing a manifest that
+  // does not exist, so it is refused with a message about the input rather
+  // than a 500 carrying a constraint name.
+  await openServiceDescriptors(page);
+
+  const refusals = await page.evaluate(async (endpoint) => {
+    const send = async (body: unknown) => {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.text() };
+    };
+    return {
+      pylonShaped: await send({
+        name: 'e2e-pylon-shaped',
+        service_location_url: 'https://provider.example.invalid/e2e',
+        configuration: {},
+        provided_toolkits: [],
+      }),
+      pathInOrigin: await send({
+        provider_name: 'e2e-path-in-origin',
+        service_location_url: 'https://provider.example.invalid/with/a/path',
+        descriptor: { provider_name: 'e2e-path-in-origin' },
+      }),
+      noDescriptor: await send({
+        provider_name: 'e2e-no-descriptor',
+        service_location_url: 'https://provider.example.invalid',
+      }),
+    };
+  }, REGISTER_ENDPOINT);
+
+  for (const [label, result] of Object.entries(refusals)) {
+    expect(result.status, `${label} must be refused as a bad request`).toBe(400);
+    // The message is about the INPUT. A 500 with a constraint name would send
+    // the operator looking at the database instead of at their request.
+    expect(JSON.parse(result.body) as { error?: string }).toHaveProperty('error');
+  }
+
+  // And none of them landed.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openServiceDescriptors(page);
+  for (const name of ['e2e-pylon-shaped', 'e2e-path-in-origin', 'e2e-no-descriptor']) {
+    await expect(page.getByText(name, { exact: false })).toHaveCount(0);
+  }
 });
 
 adminTest('J35d2: a revoke that matches nothing is reported, not swallowed', async ({ page }) => {
