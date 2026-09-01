@@ -34,6 +34,7 @@ import { Route as ShellChatConversationIdRouteImport } from './routes/_shell/cha
 import { Route as ShellCredentialsIndexRouteImport } from './routes/_shell/credentials/index'
 import { Route as ShellCredentialsTabRouteImport } from './routes/_shell/credentials/$tab'
 import { Route as ShellCredentialsCreateCredentialRouteImport } from './routes/_shell/credentials/create-credential'
+import { Route as ShellDeepwikiToolkitIdRouteImport } from './routes/_shell/deepwiki.$toolkitId'
 import { Route as ShellMcpsIndexRouteImport } from './routes/_shell/mcps/index'
 import { Route as ShellMcpsTabRouteImport } from './routes/_shell/mcps/$tab'
 import { Route as ShellMcpsCreateRouteImport } from './routes/_shell/mcps/create'
@@ -215,6 +216,11 @@ const ShellCredentialsCreateCredentialRoute =
     path: '/credentials/create-credential',
     getParentRoute: () => ShellRouteRoute,
   } as any)
+const ShellDeepwikiToolkitIdRoute = ShellDeepwikiToolkitIdRouteImport.update({
+  id: '/$toolkitId',
+  path: '/$toolkitId',
+  getParentRoute: () => ShellDeepwikiRoute,
+} as any)
 const ShellMcpsIndexRoute = ShellMcpsIndexRouteImport.update({
   id: '/mcps/',
   path: '/mcps/',
@@ -519,7 +525,7 @@ export interface FileRoutesByFullPath {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/agents-hub': typeof ShellAgentsHubRoute
   '/chat': typeof ShellChatRouteWithChildren
-  '/deepwiki': typeof ShellDeepwikiRoute
+  '/deepwiki': typeof ShellDeepwikiRouteWithChildren
   '/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/help-center': typeof ShellHelpCenterRoute
   '/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
@@ -533,6 +539,7 @@ export interface FileRoutesByFullPath {
   '/chat/$conversationId': typeof ShellChatConversationIdRoute
   '/credentials/$tab': typeof ShellCredentialsTabRouteWithChildren
   '/credentials/create-credential': typeof ShellCredentialsCreateCredentialRouteWithChildren
+  '/deepwiki/$toolkitId': typeof ShellDeepwikiToolkitIdRoute
   '/mcps/$tab': typeof ShellMcpsTabRouteWithChildren
   '/mcps/create': typeof ShellMcpsCreateRouteWithChildren
   '/pipelines/$tab': typeof ShellPipelinesTabRouteWithChildren
@@ -597,7 +604,7 @@ export interface FileRoutesByTo {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/agents-hub': typeof ShellAgentsHubRoute
   '/chat': typeof ShellChatRouteWithChildren
-  '/deepwiki': typeof ShellDeepwikiRoute
+  '/deepwiki': typeof ShellDeepwikiRouteWithChildren
   '/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/help-center': typeof ShellHelpCenterRoute
   '/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
@@ -612,6 +619,7 @@ export interface FileRoutesByTo {
   '/chat/$conversationId': typeof ShellChatConversationIdRoute
   '/credentials/$tab': typeof ShellCredentialsTabRouteWithChildren
   '/credentials/create-credential': typeof ShellCredentialsCreateCredentialRouteWithChildren
+  '/deepwiki/$toolkitId': typeof ShellDeepwikiToolkitIdRoute
   '/mcps/$tab': typeof ShellMcpsTabRouteWithChildren
   '/mcps/create': typeof ShellMcpsCreateRouteWithChildren
   '/pipelines/$tab': typeof ShellPipelinesTabRouteWithChildren
@@ -679,7 +687,7 @@ export interface FileRoutesById {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/_shell/agents-hub': typeof ShellAgentsHubRoute
   '/_shell/chat': typeof ShellChatRouteWithChildren
-  '/_shell/deepwiki': typeof ShellDeepwikiRoute
+  '/_shell/deepwiki': typeof ShellDeepwikiRouteWithChildren
   '/_shell/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/_shell/help-center': typeof ShellHelpCenterRoute
   '/_shell/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
@@ -694,6 +702,7 @@ export interface FileRoutesById {
   '/_shell/chat/$conversationId': typeof ShellChatConversationIdRoute
   '/_shell/credentials/$tab': typeof ShellCredentialsTabRouteWithChildren
   '/_shell/credentials/create-credential': typeof ShellCredentialsCreateCredentialRouteWithChildren
+  '/_shell/deepwiki/$toolkitId': typeof ShellDeepwikiToolkitIdRoute
   '/_shell/mcps/$tab': typeof ShellMcpsTabRouteWithChildren
   '/_shell/mcps/create': typeof ShellMcpsCreateRouteWithChildren
   '/_shell/pipelines/$tab': typeof ShellPipelinesTabRouteWithChildren
@@ -776,6 +785,7 @@ export interface FileRouteTypes {
     | '/chat/$conversationId'
     | '/credentials/$tab'
     | '/credentials/create-credential'
+    | '/deepwiki/$toolkitId'
     | '/mcps/$tab'
     | '/mcps/create'
     | '/pipelines/$tab'
@@ -855,6 +865,7 @@ export interface FileRouteTypes {
     | '/chat/$conversationId'
     | '/credentials/$tab'
     | '/credentials/create-credential'
+    | '/deepwiki/$toolkitId'
     | '/mcps/$tab'
     | '/mcps/create'
     | '/pipelines/$tab'
@@ -936,6 +947,7 @@ export interface FileRouteTypes {
     | '/_shell/chat/$conversationId'
     | '/_shell/credentials/$tab'
     | '/_shell/credentials/create-credential'
+    | '/_shell/deepwiki/$toolkitId'
     | '/_shell/mcps/$tab'
     | '/_shell/mcps/create'
     | '/_shell/pipelines/$tab'
@@ -1179,6 +1191,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/credentials/create-credential'
       preLoaderRoute: typeof ShellCredentialsCreateCredentialRouteImport
       parentRoute: typeof ShellRouteRoute
+    }
+    '/_shell/deepwiki/$toolkitId': {
+      id: '/_shell/deepwiki/$toolkitId'
+      path: '/$toolkitId'
+      fullPath: '/deepwiki/$toolkitId'
+      preLoaderRoute: typeof ShellDeepwikiToolkitIdRouteImport
+      parentRoute: typeof ShellDeepwikiRoute
     }
     '/_shell/mcps/': {
       id: '/_shell/mcps/'
@@ -1635,6 +1654,18 @@ const ShellChatRouteWithChildren = ShellChatRoute._addFileChildren(
   ShellChatRouteChildren,
 )
 
+interface ShellDeepwikiRouteChildren {
+  ShellDeepwikiToolkitIdRoute: typeof ShellDeepwikiToolkitIdRoute
+}
+
+const ShellDeepwikiRouteChildren: ShellDeepwikiRouteChildren = {
+  ShellDeepwikiToolkitIdRoute: ShellDeepwikiToolkitIdRoute,
+}
+
+const ShellDeepwikiRouteWithChildren = ShellDeepwikiRoute._addFileChildren(
+  ShellDeepwikiRouteChildren,
+)
+
 interface ShellAgentsTabAgentIdRouteChildren {
   ShellAgentsTabAgentIdVersionRoute: typeof ShellAgentsTabAgentIdVersionRoute
 }
@@ -1841,7 +1872,7 @@ interface ShellRouteRouteChildren {
   ShellSettingsRouteRoute: typeof ShellSettingsRouteRouteWithChildren
   ShellAgentsHubRoute: typeof ShellAgentsHubRoute
   ShellChatRoute: typeof ShellChatRouteWithChildren
-  ShellDeepwikiRoute: typeof ShellDeepwikiRoute
+  ShellDeepwikiRoute: typeof ShellDeepwikiRouteWithChildren
   ShellEliteaCatalogRoute: typeof ShellEliteaCatalogRoute
   ShellHelpCenterRoute: typeof ShellHelpCenterRoute
   ShellMcpAuthCallbackRoute: typeof ShellMcpAuthCallbackRoute
@@ -1883,7 +1914,7 @@ const ShellRouteRouteChildren: ShellRouteRouteChildren = {
   ShellSettingsRouteRoute: ShellSettingsRouteRouteWithChildren,
   ShellAgentsHubRoute: ShellAgentsHubRoute,
   ShellChatRoute: ShellChatRouteWithChildren,
-  ShellDeepwikiRoute: ShellDeepwikiRoute,
+  ShellDeepwikiRoute: ShellDeepwikiRouteWithChildren,
   ShellEliteaCatalogRoute: ShellEliteaCatalogRoute,
   ShellHelpCenterRoute: ShellHelpCenterRoute,
   ShellMcpAuthCallbackRoute: ShellMcpAuthCallbackRoute,
