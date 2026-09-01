@@ -38,6 +38,10 @@ const DELIBERATE_DIVERGENCES: Record<string, string> = {
   'error-then-late-frames':
     'the legacy reducer moves an errored run back to running and then to ' +
     'completed; this one ignores every frame after the error',
+  'thinking-step-from-poll-adapter':
+    'the legacy reducer reads only content.message, so a poll-synthesised ' +
+    'progress event renders "Processing..." and its text is discarded; this ' +
+    'one reads a plain-string content as the message',
 };
 
 interface Recorded {
@@ -78,11 +82,18 @@ describe('the generation reducer replays the recorded legacy behaviour', () => {
       const { state, statuses } = replay(recorded.frames);
 
       if (divergence) {
-        // The divergence is asserted, not skipped: the legacy output is what
-        // the fixture holds, and this port must NOT reproduce it.
+        // A divergence is ASSERTED, not skipped: the legacy output is what the
+        // fixture holds, and this port must not reproduce it. Each case also
+        // says what it produces instead, so "diverges" cannot become a licence
+        // to produce anything.
         expect(statuses).not.toEqual(recorded.observed.generationStatus);
-        expect(state.status.status).toBe('error');
-        expect(state.errored).toBe(true);
+        if (name === 'error-then-late-frames') {
+          expect(state.status.status).toBe('error');
+          expect(state.errored).toBe(true);
+        } else {
+          expect(state.status.message).toBe('Cloning the repository');
+          expect(state.thinkingSteps.at(-1)?.message).toBe('Cloning the repository');
+        }
         return;
       }
 

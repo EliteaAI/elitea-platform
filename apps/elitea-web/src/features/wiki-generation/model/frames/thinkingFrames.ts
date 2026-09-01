@@ -19,6 +19,17 @@ export function reduceThinkingStep(
   const message =
     firstString(metadata, 'message') ??
     firstString(asRecord(frame.content), 'message') ??
+    // A PLAIN STRING content is the message. This is a DIVERGENCE, and it is
+    // the one that decides whether the progress log says anything at all.
+    //
+    // Since the socket.io removal every progress event is synthesised from a
+    // poll, and the adapter puts the text in `content` as a string
+    // (useSocket.js messagesFromPoll). The legacy reducer reads only
+    // `content?.message`, which a string does not have, so EVERY step renders
+    // "Processing..." and the real text is discarded. Verified by running the
+    // legacy reducer on exactly what the adapter builds — see the
+    // `thinking-step-from-poll-adapter` sequence in the oracle.
+    (typeof frame.content === 'string' && frame.content ? frame.content : undefined) ??
     'Processing...';
   const added = addStep(state, message, frame.type, metadata, now);
   return {
