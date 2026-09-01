@@ -2031,6 +2031,15 @@ func backfillProjectSecretsHeaderValues(ctx context.Context, pool *pgxpool.Pool,
 			"error", err)
 		return
 	}
+	if report.SkippedLocked {
+		// Another replica holds the lock and is doing the pass. This one starts
+		// serving rather than queueing behind it — see the doc on
+		// BackfillProjectSecretsHeaderValues for why waiting would put an
+		// O(projects) sequence of Fernet operations on the readiness path of
+		// every replica an autoscaler adds.
+		logger.InfoContext(ctx, "another replica is running the project X-SECRET backfill; skipping it here")
+		return
+	}
 	if report.Written == 0 && report.Skipped == 0 {
 		logger.InfoContext(ctx, "every project vault already holds an X-SECRET value",
 			"vaults", report.Vaults)
