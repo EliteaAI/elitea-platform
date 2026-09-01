@@ -113,6 +113,45 @@ target "pylon-indexer" {
   platforms  = ["linux/amd64", "linux/arm64"]
 }
 
+# The DeepWiki provider service (ADR-0022). Context is the repository root
+# because the Containerfile COPYs services/elitea-deepwiki from there.
+#
+# EXTRAS is empty here, and that is the shipping default. The engine's
+# dependency closure is torch-sized (~92 packages: torch, transformers,
+# faiss-cpu, tree-sitter grammars), so the default image carries the engine
+# SOURCE and refuses every tool — GET /health names the refusing runner, so it
+# cannot look like it has an engine. Build the runnable image explicitly:
+#
+#   docker buildx bake elitea-deepwiki-engine
+#
+# Deliberately NOT in `group "default"`, for the same reason the two workers
+# are not: a bare bake must not go from minutes to tens of minutes.
+target "elitea-deepwiki" {
+  context    = "."
+  dockerfile = "services/elitea-deepwiki/Containerfile"
+  args       = { EXTRAS = "[storage-postgres]" }
+  tags       = ["${REGISTRY}/elitea-deepwiki:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-deepwiki"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-deepwiki"]
+  platforms  = ["linux/amd64", "linux/arm64"]
+}
+
+# The same image WITH the analysis engine's closure. It is a separate target
+# rather than a build argument on the one above because the two produce
+# different images with different sizes and different scan surfaces, and a
+# release must be able to ship one without waiting for the other.
+target "elitea-deepwiki-engine" {
+  inherits   = ["elitea-deepwiki"]
+  args       = { EXTRAS = "[engine,storage-postgres]" }
+  tags       = ["${REGISTRY}/elitea-deepwiki:${TAG}-engine"]
+  cache-from = ["type=gha,scope=elitea-deepwiki-engine"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-deepwiki-engine"]
+}
+
+group "deepwiki" {
+  targets = ["elitea-deepwiki", "elitea-deepwiki-engine"]
+}
+
 # Standalone module pinned to Go 1.26.4 (bifrost/core). The Containerfile pins
 # golang:1.26.4 internally, so the correct toolchain is used regardless of the
 # build runner. Context is the module directory (self-contained, off go.work).

@@ -47,7 +47,7 @@ address. Those copies had already drifted apart.
 |---|---|---|---|---|
 | `nats` | `applications/nats.yaml` | -2 | `elitea-gateway` | **Production reference.** scale-1 profile by default; `values-ha.yaml` for HA. |
 | `nats-bootstrap` | `applications/nats-bootstrap.yaml` | -1 | `elitea-gateway` | **Production reference.** Idempotent Helm hook Job; HA needs `replicas=3`. |
-| `elitea` | `applications/elitea.yaml` | 0 | `elitea` | **The platform.** One release: elitea-main and its migration Job, elitea-web, the scheduler, the LLM gateway, the agent worker, the runtime Redis, the OTel collector, the `dbInit` Job. |
+| `elitea` | `applications/elitea.yaml` | 0 | `elitea` | **The platform.** One release: elitea-main and its migration Job, elitea-web, the scheduler, the LLM gateway, the agent worker, the runtime Redis, the OTel collector, the `dbInit` Job, and the DeepWiki provider service with its own migration Job. |
 
 Components of the `elitea` chart are switched by `<component>.enabled`, and
 `deploy/helm/elitea/values.yaml` holds every one of them. Ordering inside the
@@ -65,6 +65,25 @@ Two images have no chart. `ghcr.io/eliteaai/elitea-ui` is the old UI: it runs
 in compose, and the Kubernetes path is the `web` component. `pylon-indexer` is
 not deployed at all — the Go runtime plane serves index ingest through the
 agent worker, on the same command stream.
+
+One component is off by default and needs TWO settings, not one. `deepwiki`
+is the DeepWiki provider service (ADR-0022). Turning it on is the `deepwiki`
+block AND `main.env.ELITEA_DEEPWIKI_ENABLED` with its base URL, callback
+origin, git allowlist and the three client-certificate paths — elitea-main is
+the only door to it, so a provider nobody can reach is a Deployment doing
+nothing. Both halves refuse to render while half configured
+(`elitea-deepwiki.validateGuards`, `elitea-main.validateDeepWiki`), because the
+container's own refusal is a CrashLoopBackOff somebody has to go read logs for.
+
+Two things about it are worth knowing before turning it on. The published
+image carries the engine SOURCE but not its ~92-package closure, so it serves
+the whole SPI and REFUSES every tool; the `-engine` image tag is the one that
+can run a generation, and the chart refuses the combination of
+`ELITEA_DEEPWIKI_RUNNER=legacy` with a non-engine tag. And
+`ELITEA_DEEPWIKI_GIT_ALLOWLIST` is read by BOTH halves and is fail-closed on
+both: the facade checks it before opening the vault, the provider before
+building a clone URL, and two values that disagree mean an invocation that
+starts and then fails.
 
 Two images share one chart component. The `worker` component runs either
 `elitea-worker-rust` (the default) or `elitea-worker-python`, selected by

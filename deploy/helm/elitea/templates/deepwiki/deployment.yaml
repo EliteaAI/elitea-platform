@@ -1,0 +1,170 @@
+{{- if .Values.deepwiki.enabled }}
+{{- $env := .Values.deepwiki.env | default dict }}
+{{- /*
+  The database secret, resolved once, in the same shape every other component
+  in this chart uses. An explicit `secrets.ELITEA_DEEPWIKI_DATABASE_URL` under
+  this component wins and is taken WHOLE — `hasKey` rather than a field-wise
+  merge, so an entry that names a secret can never be completed with a key from
+  somewhere else and end up pointing at a database nobody chose.
+
+  NOTE this is the SERVICE's own database (ADR-0022 decision 3): its wiki index
+  and its invocation rows. It may be the platform database, and the default
+  below makes it so, but it is a separate setting because it is separate
+  ownership — the service migrates it and the platform does not.
+*/ -}}
+{{- $secrets := .Values.deepwiki.secrets | default dict }}
+{{- $pg := .Values.postgresql | default dict }}
+{{- if and $pg.existingSecret (not (hasKey $secrets "ELITEA_DEEPWIKI_DATABASE_URL")) }}
+{{- $secrets = merge (deepCopy $secrets) (dict "ELITEA_DEEPWIKI_DATABASE_URL" (dict "secretName" $pg.existingSecret "key" (required "postgresql.key is required when postgresql.existingSecret is set" $pg.key))) }}
+{{- end }}
+{{- include "elitea-deepwiki.validateGuards" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "elitea-deepwiki.fullname" . }}
+  labels:
+    {{- include "elitea-deepwiki.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.deepwiki.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "elitea-deepwiki.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "elitea-deepwiki.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.deepwiki.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "elitea-deepwiki.serviceAccountName" . }}
+      # Long enough for an in-flight invocation to be recorded as terminal
+      # before the process goes. It does not have to outlast a GENERATION:
+      # invocations are durable (PostgreSQL), and a restarted service
+      # reconciles rows left running by a previous owner into a terminal error
+      # the caller can act on. Draining forever would be the wrong trade.
+      terminationGracePeriodSeconds: {{ .Values.deepwiki.terminationGracePeriodSeconds }}
+      {{- include "elitea.imagePullSecrets" (dict "local" .Values.deepwiki.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      containers:
+        - name: elitea-deepwiki
+          image: "{{ .Values.deepwiki.image.repository }}:{{ .Values.deepwiki.image.tag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.deepwiki.image.pullPolicy }}
+          {{- with .Values.deepwiki.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- range $key, $value := $env }}
+            {{- if not (hasKey $secrets $key) }}
+            # Skipped when the same name is secret-backed below: emitting both
+            # puts one name twice in this list, and only ordering decides which
+            # wins.
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.deepwiki.mtls.enabled }}
+            # The mTLS terminus. Without these the service serves plain HTTP,
+            # and its own refusal of non-mTLS traffic has nothing to enforce —
+            # the same shape the gateway's FIX #10 records.
+            - name: ELITEA_DEEPWIKI_TLS_CERTFILE
+              value: {{ .Values.deepwiki.mtls.mountPath }}/tls.crt
+            - name: ELITEA_DEEPWIKI_TLS_KEYFILE
+              value: {{ .Values.deepwiki.mtls.mountPath }}/tls.key
+            - name: ELITEA_DEEPWIKI_TLS_CA_FILE
+              value: {{ .Values.deepwiki.mtls.mountPath }}/ca.crt
+            {{- end }}
+            {{- range $name, $ref := $secrets }}
+            # Sensitive vars from Kubernetes Secrets, never plaintext in the
+            # env map above.
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
+          # tcpSocket, not httpGet, and for the reason the gateway's deployment
+          # spells out at length: with mTLS on, this listener requires and
+          # verifies a client certificate, and the kubelet presents none. An
+          # httpGet probe fails every time, readiness never passes, and the
+          # liveness probe restarts a process that is working correctly.
+          #
+          # /health and /ready still exist and still answer. Reaching them from
+          # a probe needs a second cleartext listener or a probe that can
+          # present a certificate; both are larger changes than this file.
+          {{- if .Values.deepwiki.mtls.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: {{ .Values.deepwiki.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.deepwiki.probes.liveness.failureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: {{ .Values.deepwiki.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.deepwiki.probes.readiness.failureThreshold }}
+          {{- else }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.deepwiki.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.deepwiki.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.deepwiki.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.deepwiki.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.deepwiki.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.deepwiki.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.deepwiki.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # The engine clones repositories and writes an index before
+            # publishing it. That is ephemeral pod storage by design (ADR-0022
+            # decision 4): nothing durable lives here, and a replica that dies
+            # mid-generation loses only work that is being redone anyway.
+            - name: scratch
+              mountPath: {{ .Values.deepwiki.scratch.mountPath }}
+            {{- if .Values.deepwiki.mtls.enabled }}
+            - name: mtls
+              mountPath: {{ .Values.deepwiki.mtls.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.deepwiki.scratch.sizeLimit | quote }}
+        {{- if .Values.deepwiki.mtls.enabled }}
+        - name: mtls
+          secret:
+            secretName: {{ .Values.deepwiki.mtls.serverSecretName }}
+        {{- end }}
+      {{- with .Values.deepwiki.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deepwiki.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deepwiki.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

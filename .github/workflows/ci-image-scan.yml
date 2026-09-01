@@ -393,6 +393,37 @@ jobs:
             target: ""
             expect_type: rustbinary
             blocking: true
+          # The DeepWiki provider service (ADR-0022 P3). Repo ROOT context: the
+          # Containerfile COPYs services/elitea-deepwiki from there.
+          #
+          # Built WITHOUT the engine extra, exactly as publish.yml releases it.
+          # Scanning the engine image instead would report on a multi-GB ML
+          # closure nobody publishes, which is a scan of something that does not
+          # ship — the shape this gate exists to avoid in the other direction.
+          #
+          # EXEMPT, and the exemption is measured rather than assumed.
+          #
+          # It was written `blocking: false` with no register entry, which the
+          # coverage check refused; it then ran as `blocking: true`, and THAT
+          # is the run that produced the numbers. 73 HIGH/CRITICAL, every one
+          # from the Debian base and none from this project's own packages.
+          #
+          # The base then moved from python:3.12.10-slim (Debian 12.11) to
+          # 3.12.14-slim (trixie), taking it to 19, and the three that had a
+          # published fix are closed by an --only-upgrade in the Containerfile.
+          # The remaining 16 have no fixed version in Debian at all, which is
+          # criterion 1 of .github/image-scan-exempt.txt exactly.
+          #
+          # Findings #635, retirement #636. Both files must agree, and the
+          # coverage job fails when they do not.
+          - name: elitea-deepwiki
+            context: .
+            dockerfile: ./services/elitea-deepwiki/Containerfile
+            target: ""
+            build_args: |
+              EXTRAS=[storage-postgres]
+            expect_type: python-pkg
+            blocking: false
 
     steps:
       - uses: actions/checkout@v7
@@ -412,6 +443,10 @@ jobs:
           # Empty for single-target images, which build their last stage. Same
           # expression publish.yml uses.
           target: ${{ matrix.image.target }}
+          # Empty for every image but elitea-deepwiki, which needs its storage
+          # extra to be the image publish.yml actually releases. Scanning a
+          # different build than the one that ships is a scan of nothing.
+          build-args: ${{ matrix.image.build_args }}
           push: false
           load: true
           tags: ${{ matrix.image.name }}:ci-scan

@@ -130,6 +130,7 @@ because it passes a manifest the binary then rejects.
 {{- end -}}
 
 {{- include "elitea-main.validateLLMGateway" . -}}
+{{- include "elitea-main.validateDeepWiki" . -}}
 {{- include "elitea-main.validateSelfLLMOrigins" . -}}
 {{- include "elitea-main.validateRuntime" . -}}
 {{- include "elitea-main.validateAuthMaterial" . -}}
@@ -391,6 +392,73 @@ the /llm path. That state is no longer silent: with no URL the router answers
 {{- range $name, $value := $material -}}
 {{- if $value -}}
 {{- fail (printf "env.%s is set but env.LLM_GATEWAY_URL is empty, so no proxy is composed and the material is never read. Set env.LLM_GATEWAY_URL, or clear env.%s." $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+elitea-main.validateDeepWiki — the same all-or-nothing shape as the /llm hop
+above, for the same reason (ADR-0022 P2/P3).
+
+internal/api/v2/deepwiki/config.go's Validate() refuses an enabled facade that
+is missing the base URL, any of the three certificate paths, or the callback
+origin, and cmd/elitea-main turns that into a fatal boot error. So a
+half-configured values file is a CrashLoopBackOff, not a disabled feature, and
+this refuses it while the operator is still looking at their terminal.
+
+The reverse direction is checked too, and it is the one that would otherwise be
+silent: material configured with the flag off is a mounted Secret nothing
+reads, which looks configured and does nothing.
+*/}}
+{{- define "elitea-main.validateDeepWiki" -}}
+{{- $env := .Values.main.env | default dict -}}
+{{- $clientMaterial := .Values.main.fileConfig.deepwikiClientMaterial | default dict -}}
+{{- $mountPath := $clientMaterial.mountPath | default "" | toString -}}
+{{- $enabled := get $env "ELITEA_DEEPWIKI_ENABLED" | toString -}}
+{{- $on := has (lower $enabled) (list "1" "true" "yes" "on") -}}
+{{- $material := dict
+  "ELITEA_DEEPWIKI_CLIENT_CERT_FILE" (get $env "ELITEA_DEEPWIKI_CLIENT_CERT_FILE" | toString)
+  "ELITEA_DEEPWIKI_CLIENT_KEY_FILE" (get $env "ELITEA_DEEPWIKI_CLIENT_KEY_FILE" | toString)
+  "ELITEA_DEEPWIKI_CA_FILE" (get $env "ELITEA_DEEPWIKI_CA_FILE" | toString) -}}
+{{- if and $enabled (not $on) (not (has (lower $enabled) (list "0" "false" "no" "off"))) -}}
+{{- fail (printf "env.ELITEA_DEEPWIKI_ENABLED is %q, which is neither true nor false. internal/api/v2/deepwiki/config.go refuses an unrecognised spelling rather than reading it as off, so a typo here is a boot failure and never a quietly disabled feature." $enabled) -}}
+{{- end -}}
+{{- if $on -}}
+{{- $url := get $env "ELITEA_DEEPWIKI_BASE_URL" | toString -}}
+{{- if not (hasPrefix "https://" $url) -}}
+{{- fail (printf "env.ELITEA_DEEPWIKI_BASE_URL must be an https URL, and it is %q. The provider refuses non-mTLS traffic, so a plain-http origin is a facade that fails on every call; NewProxy catches it at startup." $url) -}}
+{{- end -}}
+{{- if not (get $env "ELITEA_DEEPWIKI_CALLBACK_BASE_URL") -}}
+{{- fail "env.ELITEA_DEEPWIKI_ENABLED is on, so env.ELITEA_DEEPWIKI_CALLBACK_BASE_URL must name the origin the PROVIDER calls back to for artifacts and models. Without it a generation runs to completion and then cannot hand back what it produced — the failure arrives at the end of the most expensive operation the facade offers. Set it to this deployment's own in-cluster origin, e.g. http://elitea-main:8080." -}}
+{{- end -}}
+{{- if not (get $env "ELITEA_DEEPWIKI_GIT_ALLOWLIST") -}}
+{{- fail "env.ELITEA_DEEPWIKI_ENABLED is on, so env.ELITEA_DEEPWIKI_GIT_ALLOWLIST must name the git hosts this deployment may clone from. It is fail-closed: empty refuses every repository, at the point a user asks for a wiki. It must hold the SAME value as deepwiki.env.ELITEA_DEEPWIKI_GIT_ALLOWLIST — this side checks it before opening the vault, that side before building a clone URL, and two that disagree mean an invocation that starts and then fails." -}}
+{{- end -}}
+{{- range $name, $value := $material -}}
+{{- if not $value -}}
+{{- fail (printf "env.ELITEA_DEEPWIKI_ENABLED is on, so env.%s must be set too. The provider terminates mTLS with CERT_REQUIRED, so all three of the client certificate, its key and the CA bundle are mandatory; Config.Validate() names the missing one and cmd/elitea-main exits at boot." $name) -}}
+{{- end -}}
+{{- if not (hasPrefix "/" $value) -}}
+{{- fail (printf "env.%s must be an absolute file path, not certificate text. Got %q — it is passed to tls.LoadX509KeyPair / os.ReadFile." $name $value) -}}
+{{- end -}}
+{{- if and $clientMaterial.enabled (not (hasPrefix $mountPath $value)) -}}
+{{- fail (printf "env.%s is %q, which fileConfig.deepwikiClientMaterial does not serve: its mountPath is %q. A path outside the mounted directory is a file that does not exist in the container." $name $value $mountPath) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $clientMaterial.enabled -}}
+{{- fail "env.ELITEA_DEEPWIKI_ENABLED is on, so fileConfig.deepwikiClientMaterial.enabled must be true — otherwise the three paths above name files no volume serves. Set fileConfig.deepwikiClientMaterial.secretName to the Secret the deepwiki chart's facade-client Certificate issues (deepwiki.mtls.clientSecretName, default elitea-main-deepwiki-client-tls), which must exist in THIS namespace." -}}
+{{- end -}}
+{{- if and $clientMaterial.secretName $clientMaterial.volume -}}
+{{- fail "fileConfig.deepwikiClientMaterial.secretName and .volume are mutually exclusive: one Deployment volume cannot have two sources." -}}
+{{- end -}}
+{{- else -}}
+{{- if $clientMaterial.enabled -}}
+{{- fail "fileConfig.deepwikiClientMaterial.enabled is true but env.ELITEA_DEEPWIKI_ENABLED is off, so the material is mounted and never read. That is the state that looks configured and does nothing. Turn the facade on, or disable the material." -}}
+{{- end -}}
+{{- range $name, $value := $material -}}
+{{- if $value -}}
+{{- fail (printf "env.%s is set but env.ELITEA_DEEPWIKI_ENABLED is off, so no facade is composed and the material is never read. Turn it on, or clear env.%s." $name $name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

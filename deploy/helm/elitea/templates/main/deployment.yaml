@@ -256,6 +256,16 @@ spec:
               mountPath: {{ .Values.main.fileConfig.llmGatewayClientMaterial.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.main.fileConfig.deepwikiClientMaterial.enabled }}
+            # The DeepWiki hop's client material. A whole-directory mount for
+            # the same reason as the /llm hop's: internal/llmproxy's transport
+            # builder reads these with tls.LoadX509KeyPair / os.ReadFile and
+            # applies no symlink contract, so the Secret volume's `..data`
+            # symlink farm is fine here.
+            - name: deepwiki-client-material
+              mountPath: {{ .Values.main.fileConfig.deepwikiClientMaterial.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.main.fileConfig.brandPack.enabled }}
             # BRAND_PACK_PATH is "one pack file per deployment" (branding
             # package doc), read with os.ReadFile — a subPath mount, same as
@@ -353,6 +363,16 @@ spec:
           secret:
             secretName: {{ required "fileConfig.llmGatewayClientMaterial.enabled=true needs secretName or volume" .Values.main.fileConfig.llmGatewayClientMaterial.secretName }}
             defaultMode: {{ .Values.main.fileConfig.llmGatewayClientMaterial.defaultMode }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.main.fileConfig.deepwikiClientMaterial.enabled }}
+        - name: deepwiki-client-material
+          {{- with .Values.main.fileConfig.deepwikiClientMaterial.volume }}
+          {{- toYaml . | nindent 10 }}
+          {{- else }}
+          secret:
+            secretName: {{ required "fileConfig.deepwikiClientMaterial.enabled=true needs secretName or volume" .Values.main.fileConfig.deepwikiClientMaterial.secretName }}
+            defaultMode: {{ .Values.main.fileConfig.deepwikiClientMaterial.defaultMode }}
           {{- end }}
         {{- end }}
         {{- if .Values.main.fileConfig.brandPack.enabled }}

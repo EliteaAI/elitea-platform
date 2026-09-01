@@ -39,7 +39,7 @@ services/elitea-deepwiki/
 │       ├── publish.py   move a generated index from scratch into PostgreSQL
 │       ├── install.py   the runtime substitution (readonly reads only)
 │       └── migrate.py   versioned, checksummed migrations
-├── migrations/          service-owned SQL, applied against the deepwiki DB
+├── src/elitea_deepwiki/migrations/  service-owned SQL, applied against the deepwiki DB
 ├── tools/               refresh_engine_copy.py — re-copy and re-digest
 ├── e2e/                 the end-to-end harness + a deterministic LLM stub
 ├── tests/
@@ -646,6 +646,65 @@ cd services/elitea-deepwiki && python -m elitea_deepwiki
 ```bash
 podman build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki .
 ```
+
+## Deploying it (P3)
+
+### The migrations ship inside the package, and that was a defect
+
+`MIGRATIONS_DIR` used to be `parents[3] / "migrations"`. From a source
+checkout that resolves to this directory; from an installed package it
+resolves to `<site-packages>/../migrations`, which exists nowhere. Only files
+inside the package go into a wheel, so **the published image carried no
+migrations at all** and could not prepare its own database. Every test passed
+the whole time, because every test runs from a checkout where the wrong path
+happens to work.
+
+They now live at `src/elitea_deepwiki/migrations/`, and
+`tests/storage/test_migrations.py` asserts the directory is under the package
+root — false for the old computation in either layout, true for the new one in
+both.
+
+Applying them is a command, not a library call:
+
+```bash
+ELITEA_DEEPWIKI_DATABASE_URL=postgres://... python -m elitea_deepwiki.storage
+```
+
+A Job, never a startup step. Two replicas starting together would both
+migrate, and the second would either race the first or have to decide whether
+finding the work done is an error.
+
+### Two images, and the default one refuses every tool
+
+`docker buildx bake elitea-deepwiki` builds the shipping image: the whole SPI,
+the engine SOURCE, and none of its ~92-package closure. It refuses every tool
+and `GET /health` names the refusing runner, so it cannot look like it has an
+engine. `docker buildx bake elitea-deepwiki-engine` builds the one that can
+actually generate a wiki. Only the first is released — publishing a multi-GB ML
+closure needs a scan-threshold decision that P3 does not make.
+
+### Kubernetes
+
+`deploy/helm/elitea`, component `deepwiki`, off by default. Turning it on is
+TWO settings: the `deepwiki` block and `main.env.ELITEA_DEEPWIKI_ENABLED` with
+its base URL, callback origin, git allowlist and three certificate paths.
+elitea-main is the only door, so a provider nobody can reach is a Deployment
+doing nothing. Both halves refuse to render while half configured.
+
+### Compose (dev scale)
+
+```bash
+bash deploy/scripts/gen-deepwiki-certs.sh
+ELITEA_DEEPWIKI_ENABLED=true podman compose --profile deepwiki up -d
+```
+
+The certificates are not optional and there is no plaintext mode on either
+side. The facade refuses a non-https base URL and always builds an mTLS
+transport; the provider answers 421 to a cleartext hop and 496 to a missing
+client certificate. A dev-only relaxation in the production code path is how a
+deployment ends up serving without mTLS while believing it has it, so dev gets
+throwaway certificates instead — from the same local CA the gateway hop uses,
+presenting the same `CN=elitea-main` client.
 
 ## Still to do in P1
 
