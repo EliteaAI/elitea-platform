@@ -285,6 +285,24 @@ jobs:
             -e E2E_TZ="${E2E_TZ:-UTC}" \
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --project=${{ matrix.engine }}
+      - name: Collect the stack's own logs
+        # ONLY ON FAILURE, and BEFORE the teardown below removes the stack.
+        #
+        # A journey failed with "Failed to load users." on screen after a write.
+        # The job captured a screenshot, a video and an accessibility tree, and
+        # none of them can say whether the listing answered 500, timed out, or
+        # was refused — only the server can. The stack was torn down in the next
+        # step and the answer went with it.
+        #
+        # A failure nobody can diagnose gets retried until it passes, which is
+        # how a real defect becomes "flaky". `|| true` because a diagnostic that
+        # fails the job it is diagnosing replaces one unexplained failure with
+        # another.
+        if: failure()
+        working-directory: apps/elitea-web
+        env:
+          COMPOSE_BIN: docker compose
+        run: bash scripts/e2e-stack.sh logs || true
       - name: Give the report back to the runner user
         # The container runs as root, so playwright-results/ and
         # playwright-report/ come back root-owned. upload-artifact can still READ
@@ -706,6 +724,24 @@ jobs:
       #
       # `|| true` because the script exits non-zero whenever anything differs,
       # which in this mode is the normal and expected outcome, not a failure.
+      - name: Collect the stack's own logs
+        # ONLY ON FAILURE, and BEFORE the teardown below removes the stack.
+        #
+        # A journey failed with "Failed to load users." on screen after a write.
+        # The job captured a screenshot, a video and an accessibility tree, and
+        # none of them can say whether the listing answered 500, timed out, or
+        # was refused — only the server can. The stack was torn down in the next
+        # step and the answer went with it.
+        #
+        # A failure nobody can diagnose gets retried until it passes, which is
+        # how a real defect becomes "flaky". `|| true` because a diagnostic that
+        # fails the job it is diagnosing replaces one unexplained failure with
+        # another.
+        if: failure()
+        working-directory: apps/elitea-web
+        env:
+          COMPOSE_BIN: docker compose
+        run: bash scripts/e2e-stack.sh logs || true
       - name: Report what the regeneration changed
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
         working-directory: apps/elitea-web
