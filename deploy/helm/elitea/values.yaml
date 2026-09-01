@@ -2375,7 +2375,52 @@ worker:
   #
   # Raise this, or put an autoscaler on it, with a measured reason. The bound
   # to measure first is the Redis consumer group's read rate, not CPU.
+  #
+  # IGNORED when autoscaling below is on: the Deployment then omits `replicas`
+  # entirely, because a value there is rewritten on every `helm upgrade` and
+  # would fight the autoscaler.
   replicaCount: 1
+
+  # Queue-depth autoscaling, through KEDA.
+  #
+  # OFF by default, and enabling it requires KEDA in the cluster. The chart
+  # REFUSES to install rather than creating an object no controller reads —
+  # this chart has already shipped one autoscaler that silently did nothing
+  # (the gateway HPA named a metric that was never published), and that is the
+  # failure the refusal exists to prevent.
+  #
+  # WHY NOT A NATIVE HPA. The other three autoscalers in this chart scale on
+  # CPU and memory. An agent execution spends most of its life waiting on a
+  # model, so a backlog of thousands of unclaimed commands raises neither. The
+  # depth of the Redis consumer group is the signal, and no native HPA reads
+  # it.
+  #
+  # BEFORE YOU ENABLE IT: the runtime Redis uses a private CA, and KEDA
+  # verifies against the operator pod's own trust store. Install the KEDA
+  # operator with that CA mounted, or the scaler cannot connect — and a scaler
+  # that cannot connect reports no depth, which scales the fleet DOWN while the
+  # backlog grows. The chart cannot check this for you.
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+
+    # Entries pending in the consumer group, per replica. KEDA divides the
+    # observed depth by this to get a replica count.
+    #
+    # 4 rather than 1: a worker claims a small batch at a time
+    # (limits.redis_read_batch is 4 in values-standalone), so a target of 1
+    # would add a replica for a backlog one existing replica is already about
+    # to take.
+    targetPendingEntries: 4
+
+    pollingIntervalSeconds: 15
+
+    # LONG, deliberately. An agent execution runs for minutes and scale-down
+    # removes pods. The worker drains on SIGTERM, but a cooldown shorter than a
+    # typical execution turns every quiet moment into a round of terminations
+    # that each wait out an in-flight turn.
+    cooldownSeconds: 300
 
   # One Secret carrying every file the worker reads. Keys:
   #   runtime-ca.crt                 agent-worker-client.crt
