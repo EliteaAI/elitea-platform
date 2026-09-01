@@ -23,3 +23,4 @@ playwright-report/
 # untracked. CI then linted 245 lines of legacy code as though this repository
 # had written them.
 scripts/deepwiki-oracle/jsxReducer.generated.mjs
+scripts/deepwiki-oracle/chatReducer.generated.mjs

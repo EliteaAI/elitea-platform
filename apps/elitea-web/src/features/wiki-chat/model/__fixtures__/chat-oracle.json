@@ -1,0 +1,3324 @@
+{
+  "event-todo-update-items": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"todo_update\",\"data\":{\"items\":[{\"id\":1,\"title\":\"Read the README\"}]}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [
+        {
+          "id": 1,
+          "title": "Read the README"
+        }
+      ],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-todo-update-todos": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"todo_update\",\"data\":{\"todos\":[{\"id\":2,\"title\":\"Trace the router\"}]}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [
+        {
+          "id": 2,
+          "title": "Trace the router"
+        }
+      ],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-todo-update-bare-array": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"todo_update\",\"data\":[{\"id\":3,\"title\":\"Bare\"}]}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [
+        {
+          "id": 3,
+          "title": "Bare"
+        }
+      ],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-todo-update-not-a-list": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"todo_update\",\"data\":{\"unexpected\":true}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-tool-start": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_start\",\"data\":{\"id\":\"tool-1\",\"tool\":\"search\",\"input\":\"router\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "tool-1",
+              "event": "tool_start",
+              "data": {
+                "id": "tool-1",
+                "tool": "search",
+                "input": "router",
+                "output": ""
+              },
+              "message": "Calling: search"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-tool-start-toolname-alias": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_start\",\"data\":{\"id\":\"tool-2\",\"toolName\":\"grep\",\"args\":\"foo\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "tool-2",
+              "event": "tool_start",
+              "data": {
+                "id": "tool-2",
+                "toolName": "grep",
+                "args": "foo",
+                "tool": "grep",
+                "input": "foo",
+                "output": ""
+              },
+              "message": "Calling: tool"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-tool-start-unnamed": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_start\",\"data\":{}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "tool-1767225600000",
+              "event": "tool_start",
+              "data": {
+                "input": "",
+                "output": ""
+              },
+              "message": "Calling: tool"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-tool-end-alone": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_end\",\"data\":{\"id\":\"tool-9\",\"output\":\"result\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "tool-9",
+              "event": "tool_end",
+              "data": {
+                "id": "tool-9",
+                "output": "result",
+                "status": "completed"
+              },
+              "message": "Tool completed"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-thinking": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"thinking\",\"data\":{\"id\":\"th-1\",\"message\":\"Considering the shape\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "th-1",
+              "event": "thinking",
+              "data": {
+                "id": "th-1",
+                "message": "Considering the shape"
+              },
+              "message": "Considering the shape"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-thinking-title-fallback": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"thinking\",\"data\":{\"id\":\"th-2\",\"title\":\"A title\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "th-2",
+              "event": "thinking",
+              "data": {
+                "id": "th-2",
+                "title": "A title"
+              },
+              "message": "A title"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-llm-thinking": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"llm_thinking\",\"data\":{\"id\":\"llm-1\",\"message\":\"Drafting\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "llm-1",
+              "event": "llm_thinking",
+              "data": {
+                "id": "llm-1",
+                "message": "Drafting"
+              },
+              "message": "Drafting"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-llm-thinking-default-message": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"llm_thinking\",\"data\":{\"id\":\"llm-2\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "llm-2",
+              "event": "llm_thinking",
+              "data": {
+                "id": "llm-2"
+              },
+              "message": "Thinking..."
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-status": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"status\",\"data\":{\"message\":\"Halfway\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "status-1767225600000",
+              "event": "status",
+              "data": {
+                "message": "Halfway"
+              },
+              "message": "Halfway"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-log": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"log\",\"data\":{\"message\":\"A log line\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "log-1767225600000",
+              "event": "log",
+              "data": {
+                "message": "A log line"
+              },
+              "message": "A log line"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-unknown-with-message": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"mystery\",\"data\":{\"message\":\"Who knows\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "mystery-1767225600000",
+              "event": "mystery",
+              "data": {
+                "message": "Who knows"
+              },
+              "message": "Who knows"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-unknown-with-title": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"mystery\",\"data\":{\"title\":\"Titled\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "mystery-1767225600000",
+              "event": "mystery",
+              "data": {
+                "title": "Titled"
+              },
+              "message": "Titled"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "event-unknown-bare": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"mystery\",\"data\":{\"a\":1}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "mystery-1767225600000",
+              "event": "mystery",
+              "data": {
+                "a": 1
+              },
+              "message": "{\"a\":1}"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "plain-metadata-string": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "Reading files"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "Reading files",
+              "type": "agent_thinking_step"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "plain-content-object": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "content": {
+          "message": "From content"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "From content",
+              "type": "agent_thinking_step"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "plain-content-string": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "content": "A bare string"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "A bare string",
+              "type": "agent_thinking_step"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "plain-nothing": {
+    "frames": [
+      {
+        "type": "agent_thinking_step"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "Processing...",
+              "type": "agent_thinking_step"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "plain-metadata-not-json": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "not { json"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "not { json",
+              "type": "agent_thinking_step"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "plain-metadata-json-without-event": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"hello\":\"world\"}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "{\"hello\":\"world\"}",
+              "type": "agent_thinking_step"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "thinking-step-update-type": {
+    "frames": [
+      {
+        "type": "agent_thinking_step_update",
+        "response_metadata": {
+          "message": "An update"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "step-1767225600000",
+              "event": "log",
+              "message": "An update",
+              "type": "agent_thinking_step_update"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "direct-todo-update-todos": {
+    "frames": [
+      {
+        "type": "todo_update",
+        "content": {
+          "todos": [
+            {
+              "id": 4
+            }
+          ]
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [
+        {
+          "id": 4
+        }
+      ],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "direct-todo-update-bare": {
+    "frames": [
+      {
+        "type": "todo_update",
+        "content": [
+          {
+            "id": 5
+          }
+        ]
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [
+        {
+          "id": 5
+        }
+      ],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "direct-todo-update-not-a-list": {
+    "frames": [
+      {
+        "type": "todo_update",
+        "content": {
+          "nope": 1
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": [],
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-plain-string": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "The answer."
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "The answer.",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-array-message": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "[{\"object_type\":\"message\",\"data\":\"From an array\",\"success\":true}]"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "From an array",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-array-failed": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "[{\"object_type\":\"message\",\"data\":\"It broke\",\"success\":false}]"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "It broke",
+          "sources": [],
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-array-no-message-object": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "[{\"object_type\":\"other\",\"data\":\"x\"}]"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Response received",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-object-answer": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "{\"answer\":\"Answered\",\"sources\":[{\"path\":\"a.md\"}]}"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Answered",
+          "sources": [
+            {
+              "path": "a.md"
+            }
+          ],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-object-result-fallback": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "{\"result\":\"Resulted\"}"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Resulted",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-object-success-false": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "{\"answer\":\"Bad\",\"success\":false}"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Bad",
+          "sources": [],
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-empty-answer-falls-through": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "{\"answer\":\"\",\"result\":\"the real one\"}"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "the real one",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-live-empty-answer-falls-through": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": {
+          "answer": "",
+          "message": "the real one"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "the real one",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-json-object-no-known-field": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "{ \"foo\" : \"bar\" }"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "{ \"foo\" : \"bar\" }",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "error-object-empty-message-falls-through": {
+    "frames": [
+      {
+        "type": "llm_error",
+        "content": {
+          "message": "",
+          "error": "the real one"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: the real one",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "the real one"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-broken-json": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "{not json at all"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "{not json at all",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-live-array": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": [
+          {
+            "object_type": "message",
+            "data": "Live array",
+            "success": true
+          }
+        ]
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Live array",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-live-object": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": {
+          "message": "Live object"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Live object",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-live-object-unrecognised": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": {
+          "odd": true
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "{\"odd\":true}",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "response-empty-string": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": ""
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Response received",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "chunk-accumulates": {
+    "frames": [
+      {
+        "type": "chunk",
+        "content": "Hel"
+      },
+      {
+        "type": "AIMessageChunk",
+        "content": "lo "
+      },
+      {
+        "type": "agent_llm_chunk",
+        "content": "world"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "Hello world",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "chunk-non-string-ignored": {
+    "frames": [
+      {
+        "type": "chunk",
+        "content": {
+          "not": "a string"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "error-string": {
+    "frames": [
+      {
+        "type": "error",
+        "content": "exploded"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: exploded",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "exploded"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "error-object-message": {
+    "frames": [
+      {
+        "type": "llm_error",
+        "content": {
+          "message": "model refused"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: model refused",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "model refused"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "error-object-error-field": {
+    "frames": [
+      {
+        "type": "agent_exception",
+        "content": {
+          "error": "raised"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: raised",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "raised"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "error-unreadable": {
+    "frames": [
+      {
+        "type": "agent_tool_error",
+        "content": 42
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: An error occurred",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "An error occurred"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "unhandled-type": {
+    "frames": [
+      {
+        "type": "references",
+        "content": [
+          "a.md"
+        ]
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-tool-start-then-end": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_start\",\"data\":{\"id\":\"tool-7\",\"tool\":\"search\",\"input\":\"q\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_end\",\"data\":{\"id\":\"tool-7\",\"output\":\"found it\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "tool-7",
+              "event": "tool_end",
+              "data": {
+                "id": "tool-7",
+                "tool": "search",
+                "input": "q",
+                "output": "found it",
+                "status": "completed"
+              },
+              "message": "Calling: search"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-tool-end-unmatched-id": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_start\",\"data\":{\"id\":\"tool-7\",\"tool\":\"search\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_end\",\"data\":{\"id\":\"other\",\"output\":\"stray\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "tool-7",
+              "event": "tool_start",
+              "data": {
+                "id": "tool-7",
+                "tool": "search",
+                "input": "",
+                "output": ""
+              },
+              "message": "Calling: search"
+            },
+            {
+              "id": "other",
+              "event": "tool_end",
+              "data": {
+                "id": "other",
+                "output": "stray",
+                "status": "completed"
+              },
+              "message": "Tool completed"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-tool-end-no-id": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"status\",\"data\":{\"message\":\"A step with no data id\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_end\",\"data\":{\"output\":\"merged into the status step\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "status-1767225600000",
+              "event": "tool_end",
+              "data": {
+                "message": "A step with no data id",
+                "output": "merged into the status step",
+                "input": "",
+                "status": "completed"
+              },
+              "message": "A step with no data id"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-tool-numeric-id": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_start\",\"data\":{\"id\":5,\"tool\":\"search\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"tool_end\",\"data\":{\"id\":5,\"output\":\"numeric\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": 5,
+              "event": "tool_end",
+              "data": {
+                "id": 5,
+                "tool": "search",
+                "input": "",
+                "output": "numeric",
+                "status": "completed"
+              },
+              "message": "Calling: search"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-llm-thinking-replaces": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"llm_thinking\",\"data\":{\"id\":\"llm-a\",\"message\":\"First\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"llm_thinking\",\"data\":{\"id\":\"llm-b\",\"message\":\"Second\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "llm-b",
+              "event": "llm_thinking",
+              "data": {
+                "id": "llm-b",
+                "message": "Second"
+              },
+              "message": "Second"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-llm-thinking-with-steps-between": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"llm_thinking\",\"data\":{\"id\":\"llm-a\",\"message\":\"First\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"thinking\",\"data\":{\"id\":\"th-1\",\"message\":\"Middle\"}}"
+        }
+      },
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"llm_thinking\",\"data\":{\"id\":\"llm-b\",\"message\":\"Second\"}}"
+        }
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": [
+            {
+              "id": "th-1",
+              "event": "thinking",
+              "data": {
+                "id": "th-1",
+                "message": "Middle"
+              },
+              "message": "Middle"
+            },
+            {
+              "id": "llm-b",
+              "event": "llm_thinking",
+              "data": {
+                "id": "llm-b",
+                "message": "Second"
+              },
+              "message": "Second"
+            }
+          ]
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-steps-then-response": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"thinking\",\"data\":{\"id\":\"th-1\",\"message\":\"Working\"}}"
+        }
+      },
+      {
+        "type": "agent_response",
+        "content": "Done."
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": [
+            {
+              "id": "th-1",
+              "event": "thinking",
+              "data": {
+                "id": "th-1",
+                "message": "Working"
+              },
+              "message": "Working"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "Done.",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-steps-then-error": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"thinking\",\"data\":{\"id\":\"th-1\",\"message\":\"Working\"}}"
+        }
+      },
+      {
+        "type": "error",
+        "content": "gave up"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": [
+            {
+              "id": "th-1",
+              "event": "thinking",
+              "data": {
+                "id": "th-1",
+                "message": "Working"
+              },
+              "message": "Working"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: gave up",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "gave up"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-chunks-then-response": {
+    "frames": [
+      {
+        "type": "chunk",
+        "content": "partial "
+      },
+      {
+        "type": "chunk",
+        "content": "text"
+      },
+      {
+        "type": "agent_response",
+        "content": "the real answer"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "the real answer",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "partial text",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-two-responses": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "first"
+      },
+      {
+        "type": "agent_response",
+        "content": "second"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "first",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        },
+        {
+          "role": "assistant",
+          "content": "second",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask",
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask",
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false,
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 2,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "order-response-then-error": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "ok"
+      },
+      {
+        "type": "error",
+        "content": "then it broke"
+      }
+    ],
+    "seedRefs": {},
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "ok",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: then it broke",
+          "isError": true,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask",
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask",
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false,
+        false
+      ],
+      "setErrorCalls": [
+        "then it broke"
+      ],
+      "unsubscribeCalls": 2,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "stream-filter-drops-foreign": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "from elsewhere",
+        "response_metadata": {
+          "stream_id": "stream-other"
+        }
+      }
+    ],
+    "seedRefs": {
+      "currentStreamIdRef": "stream-mine"
+    },
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": "stream-mine",
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": "block-1",
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "stream-filter-admits-own": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "mine",
+        "response_metadata": {
+          "stream_id": "stream-mine"
+        }
+      }
+    ],
+    "seedRefs": {
+      "currentStreamIdRef": "stream-mine"
+    },
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "mine",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "stream-filter-admits-unstamped": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "unstamped"
+      }
+    ],
+    "seedRefs": {
+      "currentStreamIdRef": "stream-mine"
+    },
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "unstamped",
+          "sources": [],
+          "isError": false,
+          "capability": "ask"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "ask"
+      ],
+      "persistedCapabilities": [
+        "ask"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "capability-research-carried-to-response": {
+    "frames": [
+      {
+        "type": "agent_response",
+        "content": "researched"
+      }
+    ],
+    "seedRefs": {
+      "pendingCapabilityRef": "research"
+    },
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "researched",
+          "sources": [],
+          "isError": false,
+          "capability": "research"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "research"
+      ],
+      "persistedCapabilities": [
+        "research"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "capability-research-carried-to-error": {
+    "frames": [
+      {
+        "type": "error",
+        "content": "research failed"
+      }
+    ],
+    "seedRefs": {
+      "pendingCapabilityRef": "research"
+    },
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "completed",
+          "steps": []
+        },
+        {
+          "role": "assistant",
+          "content": "Sorry, I encountered an error: research failed",
+          "isError": true,
+          "capability": "research"
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [
+        "research"
+      ],
+      "persistedCapabilities": [
+        "research"
+      ],
+      "setIsLoadingCalls": [
+        false
+      ],
+      "setErrorCalls": [
+        "research failed"
+      ],
+      "unsubscribeCalls": 1,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": null,
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  },
+  "no-open-block-discards-steps": {
+    "frames": [
+      {
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "{\"event\":\"thinking\",\"data\":{\"id\":\"th-1\",\"message\":\"Nowhere to go\"}}"
+        }
+      }
+    ],
+    "seedRefs": {
+      "currentThinkingBlockIdRef": null
+    },
+    "observed": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Where is the router?"
+        },
+        {
+          "type": "thinking_steps",
+          "id": "block-1",
+          "status": "running",
+          "steps": []
+        }
+      ],
+      "researchTodos": null,
+      "pendingAnswer": "",
+      "setChatModeCalls": [],
+      "persistedCapabilities": [],
+      "setIsLoadingCalls": [],
+      "setErrorCalls": [],
+      "unsubscribeCalls": 0,
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentMessageIdRef": "msg-1",
+        "currentThinkingBlockIdRef": null,
+        "pendingCapabilityRef": null
+      }
+    }
+  }
+}
