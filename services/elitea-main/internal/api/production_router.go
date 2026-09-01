@@ -14,6 +14,7 @@ import (
 	deepwikiuiapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwikiui"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	inventoryapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/inventory"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
@@ -170,6 +171,15 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 		r.Method(http.MethodPost, deepwikiapi.InvokePath, cfg.DeepWiki)
 		r.Method(http.MethodGet, deepwikiapi.InvocationPath, cfg.DeepWiki)
 		r.Method(http.MethodDelete, deepwikiapi.InvocationPath, cfg.DeepWiki)
+	}
+	// The SECOND provider facade, mounted the same way as the first. Four
+	// lines, because providerhost/{facade,proxy,spi} carry everything the two
+	// have in common — which is what ADR-0012's budget was measuring.
+	if cfg.Inventory != nil {
+		r.Method(http.MethodGet, inventoryapi.SlotsPath, cfg.Inventory)
+		r.Method(http.MethodPost, inventoryapi.InvokePath, cfg.Inventory)
+		r.Method(http.MethodGet, inventoryapi.InvocationPath, cfg.Inventory)
+		r.Method(http.MethodDelete, inventoryapi.InvocationPath, cfg.Inventory)
 	}
 	if cfg.CurrentAgentStart != nil {
 		r.Method(http.MethodPost, agentexecutionapi.CurrentApplicationStartPath, cfg.CurrentAgentStart)

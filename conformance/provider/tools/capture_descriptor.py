@@ -42,7 +42,17 @@ from _legacy import (  # noqa: E402
     source_pin,
 )
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "deepwiki" / "descriptor" / "legacy-v0"
+def fixtures_for(provider: str) -> Path:
+    """Where one provider's descriptor fixtures live.
+
+    Per-provider since P1.0: this recorder has a SECOND provider now, and the
+    directory is the only thing that had to change to record it. The legacy
+    method it loads (``methods/descriptor.py::Method.provider_descriptor``) is
+    the same file name in both plugins, and both emit the same four top-level
+    keys — which is the evidence that the SPI contract is generic rather than a
+    description of DeepWiki.
+    """
+    return Path(__file__).resolve().parents[1] / "fixtures" / provider / "descriptor" / "legacy-v0"
 
 #: The legacy default; the deployed value is environment-specific and is
 #: deliberately normalised out of the fixture (P1 replaces it with a reviewed
@@ -199,14 +209,25 @@ def main() -> int:
         action="store_true",
         help="fail instead of writing when the committed fixture differs",
     )
+    parser.add_argument(
+        "--provider",
+        default="deepwiki",
+        help="which provider's fixture profile to write (default: deepwiki)",
+    )
     args = parser.parse_args()
 
+    fixtures = fixtures_for(args.provider)
     descriptor = capture()
     outputs = {
-        FIXTURES / "provider_descriptor.json": descriptor,
-        FIXTURES / "descriptor.inventory.json": build_inventory(descriptor),
-        FIXTURES / "bundle.manifest.json": build_bundle_manifest(),
+        fixtures / "provider_descriptor.json": descriptor,
+        fixtures / "descriptor.inventory.json": build_inventory(descriptor),
     }
+    # The bundle manifest pins the legacy v0 SCHEMA DOCUMENTS, which belong to
+    # elitea_core and are the same for every provider. Written once, with
+    # DeepWiki's profile, rather than duplicated per provider — two copies
+    # would be two things to keep byte-identical.
+    if args.provider == "deepwiki":
+        outputs[fixtures / "bundle.manifest.json"] = build_bundle_manifest()
 
     if args.check:
         drift = []

@@ -32,6 +32,7 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	v2inventory "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/inventory"
 	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	predictapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
@@ -58,6 +59,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -1046,6 +1048,34 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// An enabled-but-unreachable configuration is a startup failure, not a
 	// degraded mount. The alternative is four routes that answer 503 to every
 	// caller while the operator's flag says the feature is on.
+	// The SECOND provider facade. Composed the same way as the first and in
+	// far fewer lines, because providerhost/{facade,proxy,spi} carry what the
+	// two have in common — which is what ADR-0012's budget measured.
+	var inventoryRoute *v2inventory.Route
+	inventoryConfig, err := facade.ConfigFromEnv(v2inventory.EnvNames, os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("read Inventory facade configuration: %w", err)
+	}
+	if inventoryConfig.Enabled {
+		if principalValidator == nil || forwardedIdentityVerifier == nil {
+			return errors.New("ELITEA_INVENTORY_ENABLED requires production authentication")
+		}
+		inventoryRoute, err = v2inventory.NewRoute(
+			inventoryConfig,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				SessionSecret:             os.Getenv("APPLICATION_SECRET_KEY"),
+			},
+			legacyrbac.NewPostgresResolver(pool),
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf("build the Inventory facade: %w", err)
+		}
+	}
+
 	var deepwikiRoute *v2deepwiki.Route
 	var deepwikiUIHandler *v2deepwikiui.Handler
 	deepwikiConfig, err := v2deepwiki.ConfigFromEnv(os.LookupEnv)
@@ -1653,6 +1683,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
 		DeepWiki:                      deepwikiRoute,
+		Inventory:                     inventoryRoute,
 		DeepWikiUI:                    deepwikiUIHandler,
 		CurrentAgentStart:             currentAgentStart,
 		// The support assistant's predict route delegates to the SAME

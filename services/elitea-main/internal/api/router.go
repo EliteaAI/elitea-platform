@@ -34,6 +34,7 @@ import (
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	v2inventory "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/inventory"
 	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	v2messagetraces "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/messagetraces"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
@@ -274,6 +275,10 @@ type RouterConfig struct {
 	// every deployment that does not run the provider — the paths are then not
 	// registered at all rather than registered and refusing.
 	DeepWiki *v2deepwiki.Route
+
+	// Inventory is the facade in front of the Inventory provider service —
+	// the second provider, mounted through the same shared packages.
+	Inventory *v2inventory.Route
 	// DeepWikiUI is the vendored SPA (ADR-0022 decision 8). Nil when the
 	// facade is off or the image carries no bundle — two separate conditions,
 	// and a page with no facade behind it would render and then fail on its
