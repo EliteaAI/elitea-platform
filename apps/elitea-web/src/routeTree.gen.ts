@@ -15,6 +15,7 @@ import { Route as ProjectIdSplatRouteImport } from './routes/$projectId.$'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as ShellAgentsHubRouteImport } from './routes/_shell/agents-hub'
 import { Route as ShellChatRouteImport } from './routes/_shell/chat'
+import { Route as ShellDeepwikiRouteImport } from './routes/_shell/deepwiki'
 import { Route as ShellEliteaCatalogRouteImport } from './routes/_shell/elitea-catalog'
 import { Route as ShellHelpCenterRouteImport } from './routes/_shell/help-center'
 import { Route as ShellMcpAuthCallbackRouteImport } from './routes/_shell/mcp-auth-callback'
@@ -115,6 +116,11 @@ const ShellAgentsHubRoute = ShellAgentsHubRouteImport.update({
 const ShellChatRoute = ShellChatRouteImport.update({
   id: '/chat',
   path: '/chat',
+  getParentRoute: () => ShellRouteRoute,
+} as any)
+const ShellDeepwikiRoute = ShellDeepwikiRouteImport.update({
+  id: '/deepwiki',
+  path: '/deepwiki',
   getParentRoute: () => ShellRouteRoute,
 } as any)
 const ShellEliteaCatalogRoute = ShellEliteaCatalogRouteImport.update({
@@ -513,6 +519,7 @@ export interface FileRoutesByFullPath {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/agents-hub': typeof ShellAgentsHubRoute
   '/chat': typeof ShellChatRouteWithChildren
+  '/deepwiki': typeof ShellDeepwikiRoute
   '/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/help-center': typeof ShellHelpCenterRoute
   '/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
@@ -590,6 +597,7 @@ export interface FileRoutesByTo {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/agents-hub': typeof ShellAgentsHubRoute
   '/chat': typeof ShellChatRouteWithChildren
+  '/deepwiki': typeof ShellDeepwikiRoute
   '/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/help-center': typeof ShellHelpCenterRoute
   '/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
@@ -671,6 +679,7 @@ export interface FileRoutesById {
   '/$projectId/$': typeof ProjectIdSplatRoute
   '/_shell/agents-hub': typeof ShellAgentsHubRoute
   '/_shell/chat': typeof ShellChatRouteWithChildren
+  '/_shell/deepwiki': typeof ShellDeepwikiRoute
   '/_shell/elitea-catalog': typeof ShellEliteaCatalogRoute
   '/_shell/help-center': typeof ShellHelpCenterRoute
   '/_shell/mcp-auth-callback': typeof ShellMcpAuthCallbackRoute
@@ -753,6 +762,7 @@ export interface FileRouteTypes {
     | '/$projectId/$'
     | '/agents-hub'
     | '/chat'
+    | '/deepwiki'
     | '/elitea-catalog'
     | '/help-center'
     | '/mcp-auth-callback'
@@ -830,6 +840,7 @@ export interface FileRouteTypes {
     | '/$projectId/$'
     | '/agents-hub'
     | '/chat'
+    | '/deepwiki'
     | '/elitea-catalog'
     | '/help-center'
     | '/mcp-auth-callback'
@@ -910,6 +921,7 @@ export interface FileRouteTypes {
     | '/$projectId/$'
     | '/_shell/agents-hub'
     | '/_shell/chat'
+    | '/_shell/deepwiki'
     | '/_shell/elitea-catalog'
     | '/_shell/help-center'
     | '/_shell/mcp-auth-callback'
@@ -1033,6 +1045,13 @@ declare module '@tanstack/react-router' {
       path: '/chat'
       fullPath: '/chat'
       preLoaderRoute: typeof ShellChatRouteImport
+      parentRoute: typeof ShellRouteRoute
+    }
+    '/_shell/deepwiki': {
+      id: '/_shell/deepwiki'
+      path: '/deepwiki'
+      fullPath: '/deepwiki'
+      preLoaderRoute: typeof ShellDeepwikiRouteImport
       parentRoute: typeof ShellRouteRoute
     }
     '/_shell/elitea-catalog': {
@@ -1822,6 +1841,7 @@ interface ShellRouteRouteChildren {
   ShellSettingsRouteRoute: typeof ShellSettingsRouteRouteWithChildren
   ShellAgentsHubRoute: typeof ShellAgentsHubRoute
   ShellChatRoute: typeof ShellChatRouteWithChildren
+  ShellDeepwikiRoute: typeof ShellDeepwikiRoute
   ShellEliteaCatalogRoute: typeof ShellEliteaCatalogRoute
   ShellHelpCenterRoute: typeof ShellHelpCenterRoute
   ShellMcpAuthCallbackRoute: typeof ShellMcpAuthCallbackRoute
@@ -1863,6 +1883,7 @@ const ShellRouteRouteChildren: ShellRouteRouteChildren = {
   ShellSettingsRouteRoute: ShellSettingsRouteRouteWithChildren,
   ShellAgentsHubRoute: ShellAgentsHubRoute,
   ShellChatRoute: ShellChatRouteWithChildren,
+  ShellDeepwikiRoute: ShellDeepwikiRoute,
   ShellEliteaCatalogRoute: ShellEliteaCatalogRoute,
   ShellHelpCenterRoute: ShellHelpCenterRoute,
   ShellMcpAuthCallbackRoute: ShellMcpAuthCallbackRoute,
