@@ -1,0 +1,28 @@
+name: Dependency Scanning
+
+# Guards .github/dependabot.yml against the tree it claims to cover.
+#
+# NOT path-filtered, on purpose. The failure this catches is a module added
+# somewhere with no dependabot entry, and a path filter naming the places
+# modules live would have to be edited by exactly the change it is meant to
+# catch. no-binaries.yml is unfiltered for the same reason.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  dependabot-coverage:
+    name: Every manifest is scanned
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The script reads git ls-files, so it needs the index, not history.
+      - name: Check dependabot coverage
+        run: bash scripts/ci/check-dependabot-coverage.sh

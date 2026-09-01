@@ -1,0 +1,215 @@
+# Source-level dependency scanning.
+#
+# WHAT THIS CLOSES. Before this file, a dependency vulnerability was caught in
+# exactly one place: trivy in ci-image-scan.yml, which runs against a BUILT
+# IMAGE. That means nothing was scanned until it was packaged, nothing that is
+# not packaged was scanned at all (every library module, the tools, the test
+# harnesses), and the report arrived with no route to a fix — trivy names a
+# package, not the manifest that pins it.
+#
+# CodeQL does not fill that gap. It runs as GitHub's default setup, which is
+# why there is no CodeQL config file here, and it analyses THIS repository's
+# source. A vulnerable version of a third-party crate or module is not a
+# finding it can make.
+#
+# HOW THE ECOSYSTEMS ARE SPLIT. One entry per manifest, because dependabot
+# resolves each directory independently and a single entry cannot cover
+# sibling modules. The Go modules are listed individually rather than with a
+# wildcard so that a new module is a deliberate addition here — a wildcard
+# would quietly cover a module nobody decided to scan, and quietly stop
+# covering one that moved.
+#
+# GROUPING IS DELIBERATE. Ungrouped, this configuration opens a pull request
+# per package per week across 10 Go modules, 4 Python projects, 3 npm projects
+# and a Cargo workspace. That volume is how a scanner gets switched off. Each
+# entry groups its non-major updates into one pull request; a major version is
+# left on its own because it is a real review.
+#
+# WHAT DEPENDABOT CANNOT DO HERE, stated so the next reader does not assume
+# coverage that is absent:
+#
+#   - go.work.sum. The workspace members share one checksum file that no
+#     single-module bump updates. A Go bump can therefore turn ci-go.yml red
+#     with a checksum mismatch, and the fix is `go work sync` on the branch.
+#     This is a known cost of the workspace layout, not a reason to skip the
+#     scanning.
+#   - services/elitea-worker-python/elitea-sdk.lock.json. The SDK revision is
+#     pinned there by digest, and the gateway asserts the same digest in
+#     internal/sdkpin/sdk-pin.json. Dependabot does not read either file, so
+#     the SDK is NOT covered by this configuration and stays a manual bump.
+#   - The Debian base layers. Those are the majority of every image-scan
+#     finding, and they move with the Containerfile's FROM line.
+version: 2
+updates:
+  # ---------------------------------------------------------------- GitHub
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ------------------------------------------------------------------- Go
+  # The two services that ship, first. elitea-llm-gateway is deliberately
+  # outside go.work on its own Go release, so its bumps do not touch
+  # go.work.sum and are the cleanest of the Go entries.
+  - package-ecosystem: gomod
+    directory: /services/elitea-llm-gateway
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /services/elitea-main
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /services/elitea-scheduler
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /libs/go/authlib
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /libs/go/eventslib
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /libs/go/observability
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /libs/go/rpclib
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /gen/go
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /libs/proto/gen/go
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: /tools/uictl
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ----------------------------------------------------------------- Rust
+  - package-ecosystem: cargo
+    directory: /services/elitea-worker-rust
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --------------------------------------------------------------- Python
+  # elitea-worker-python is where issue #554 lives: 30 of its image-scan
+  # findings are in OUR site-packages and are fixable, and they are currently
+  # invisible because .github/image-scan-exempt.txt shields the image for the
+  # 50 findings that are not. This entry is what surfaces them at the source.
+  - package-ecosystem: pip
+    directory: /services/elitea-worker-python
+    schedule:
+      interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: pip
+    directory: /services/elitea-deepwiki
+    schedule:
+      interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: pip
+    directory: /services/pylon-indexer
+    schedule:
+      interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: pip
+    directory: /libs/proto
+    schedule:
+      interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ------------------------------------------------------------------ npm
+  - package-ecosystem: npm
+    directory: /apps/elitea-web
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: npm
+    directory: /tools/parity-extract
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # apps/deepwiki-ui is the VENDORED bundle that ADR-0022 decision 8 declared
+  # interim and that Track P2 deletes. open-pull-requests-limit: 0 turns off
+  # routine version updates while leaving SECURITY updates on — dependabot
+  # raises those regardless of this limit. So a vulnerability in the bundle
+  # still opens a pull request; a weekly minor bump on code with a scheduled
+  # deletion date does not.
+  - package-ecosystem: npm
+    directory: /apps/deepwiki-ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
