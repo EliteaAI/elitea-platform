@@ -2361,6 +2361,20 @@ worker:
   logLevel: info
   traceLevel: info
 
+  # Scale-out is now CORRECT, and this stays at 1 because correct is not the
+  # same as needed.
+  #
+  # Each replica gets its own Redis consumer name — the init container
+  # substitutes the pod's own name into consumer_id, see
+  # templates/worker/deployment.yaml. Everything else stays shared: one
+  # workload session row, one producer_id, one client certificate. That is not
+  # an economy, it is what the database already enforces —
+  # `execution_claims_active_idx` is UNIQUE on (execution_id, generation) while
+  # the claim is live, so two replicas cannot run one execution however they
+  # identify themselves.
+  #
+  # Raise this, or put an autoscaler on it, with a measured reason. The bound
+  # to measure first is the Redis consumer group's read rate, not CPU.
   replicaCount: 1
 
   # One Secret carrying every file the worker reads. Keys:

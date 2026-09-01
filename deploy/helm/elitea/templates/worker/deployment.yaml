@@ -7,12 +7,16 @@ metadata:
     {{- include "elitea-worker-python.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.worker.replicaCount }}
-  # Recreate: every replica claims from the same consumer group with the SAME
-  # consumer_id, and two consumers sharing one name split acknowledgements
-  # between them. Scaling out means giving each replica its own consumer_id and
-  # its own workload session row, which this chart does not model.
+  # RollingUpdate, and the identity work that makes it correct is described in
+  # the "Per-replica consumer identity" block below.
+  #
+  # This was Recreate, with a comment saying every replica shared one
+  # consumer_id and that scaling out would need a workload session row per
+  # replica as well. The first half was true. The second half was not, and it
+  # is the reason the whole thing looked harder than it is — see that block for
+  # the three database facts that decide it.
   strategy:
-    type: Recreate
+    type: RollingUpdate
   selector:
     matchLabels:
       {{- include "elitea-worker-python.selectorLabels" . | nindent 6 }}
@@ -54,6 +58,14 @@ spec:
               value: {{ include "elitea-worker-python.materialFiles" . | quote }}
             - name: OWNER
               value: "{{ .Values.worker.runAsUser }}:{{ .Values.worker.runAsGroup }}"
+            # The pod's own name, which is what makes this replica's Redis
+            # consumer name different from its siblings'. The downward API is
+            # the only source that is unique per pod, stable for the pod's
+            # life, and available before the worker starts.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           command:
             - /bin/sh
             - -ec
@@ -95,6 +107,74 @@ spec:
                 [ "$keep" -eq 1 ] || rm -f "$existing"
               done
 
+              # ---------------------------------------------------------
+              # Per-replica consumer identity.
+              #
+              # THE FAILURE THIS PREVENTS. consumer_id is the Redis consumer
+              # NAME inside the consumer group. Redis tracks pending entries
+              # per consumer name, not per connection, so two processes using
+              # one name are one consumer to Redis, and two things go wrong:
+              #
+              #   1. Each replica's heartbeat refreshes the OTHER's entries.
+              #      The worker keeps its pending entries alive with
+              #      `XCLAIM ... JUSTID` for its own consumer name
+              #      (redis_streams.rs:81). With a shared name, a living
+              #      replica keeps a DEAD replica's in-flight entries looking
+              #      fresh, so XAUTOCLAIM never reclaims them and that work is
+              #      lost silently rather than retried.
+              #   2. `XAUTOCLAIM` (redis_streams.rs:607) claims by idle time,
+              #      not by owner, so one replica can take an entry another is
+              #      actively executing.
+              #
+              # WHY ONLY THIS ONE FIELD. The security identities —
+              # workload_session_id, producer_id, workload_identity and the
+              # client certificate — stay SHARED, because none of them is what
+              # keeps two replicas off the same execution. Three facts decide
+              # it, and each was read rather than assumed:
+              #
+              #   - `execution_claims_active_idx`
+              #     (migrations/shared/0030_execution_kernel.sql:225) is UNIQUE
+              #     on (execution_id, generation) WHERE released_at IS NULL. One
+              #     live claim per execution, enforced by the database, whoever
+              #     asks.
+              #   - the fence carries a 32-byte random `fence_token`, and every
+              #     authority query matches on it. A replica cannot present a
+              #     fence it never received.
+              #   - `VerifyActiveSession`
+              #     (internal/infra/db/repos/workload_sessions.go:43) asks only
+              #     whether the (session, identity, producer) triple exists,
+              #     is unexpired and is not revoked. One row satisfies every
+              #     replica.
+              #
+              # So the pre-install hook still provisions ONE workload session
+              # row, and the fleet can be any size. That is what unblocks
+              # autoscaling the worker.
+              #
+              # A KNOWN, BOUNDED COST: a restarted pod gets a new name and
+              # therefore a new consumer name, and Redis does not remove the
+              # old one. Empty consumers accumulate in the group's metadata.
+              # They hold no entries — XAUTOCLAIM moves those out — and each is
+              # a few bytes. `XGROUP DELCONSUMER` is the cleanup if a long-lived
+              # deployment ever makes it matter.
+              #
+              # sed on one unmistakable token, not a templating language: the
+              # document is strict-parsed by the worker and a general
+              # substitution pass over JSON is a way to produce a file that
+              # parses and means something else.
+              if ! grep -q '__ELITEA_POD_NAME__' /src-runtime/runtime.json; then
+                echo "ERROR: runtime.json carries no __ELITEA_POD_NAME__ placeholder;" >&2
+                echo "       every replica would share one Redis consumer name." >&2
+                exit 1
+              fi
+              sed "s/__ELITEA_POD_NAME__/${POD_NAME}/g" \
+                /src-runtime/runtime.json > /rendered/runtime.json
+              if grep -q '__ELITEA_POD_NAME__' /rendered/runtime.json; then
+                echo "ERROR: the placeholder survived substitution." >&2
+                exit 1
+              fi
+              chmod 600 /rendered/runtime.json
+              chown "$OWNER" /rendered/runtime.json
+
               # The output spool root must be private and owned by the worker:
               # serve.py validates it as a private directory on every start.
               chown "$OWNER" /spool
@@ -106,6 +186,11 @@ spec:
               readOnly: true
             - name: material
               mountPath: /dst
+            - name: runtime-config
+              mountPath: /src-runtime
+              readOnly: true
+            - name: runtime-rendered
+              mountPath: /rendered
             - name: spool
               mountPath: /spool
       containers:
@@ -187,7 +272,12 @@ spec:
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           volumeMounts:
-            - name: runtime-config
+            # The RENDERED document, not the ConfigMap. The ConfigMap's copy
+            # still carries the __ELITEA_POD_NAME__ placeholder; mounting it
+            # here would give the worker a consumer name containing that
+            # literal, identical on every replica — which is the exact defect
+            # this replaces, wearing a stranger name.
+            - name: runtime-rendered
               mountPath: /run/elitea/runtime.json
               subPath: runtime.json
               readOnly: true
@@ -215,6 +305,14 @@ spec:
             # by the worker.
             defaultMode: 0400
         - name: material
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.worker.materialInit.sizeLimit }}
+        # Where the init container writes this pod's own runtime.json. Memory
+        # backed like `material`, and for the same reason: it holds the
+        # document that names this replica's identities, and it should not
+        # reach a node disk.
+        - name: runtime-rendered
           emptyDir:
             medium: Memory
             sizeLimit: {{ .Values.worker.materialInit.sizeLimit }}
