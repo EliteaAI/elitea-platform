@@ -57,6 +57,10 @@ function unwrapData<T>(response: unknown, pick: (v: Record<string, unknown>) => 
 // IS /api/v2 — writing it here too produces /api/v2/api/v2/... and a 404 that
 // looks like an empty bucket. Every other entity API in this codebase passes a
 // path relative to the base for the same reason.
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 function objectsPath(projectId: string | number, bucket: string): string {
   return `/artifacts/objects/${encodeURIComponent(String(projectId))}/${encodeURIComponent(bucket)}`;
 }
@@ -91,4 +95,27 @@ export async function fetchWikiManifest(
 ): Promise<WikiManifest | undefined> {
   const response = await eliteaFetch<unknown>(objectPath(projectId, bucket, key));
   return unwrapData(response, (v) => (typeof v.wiki_id === 'string' ? (v as WikiManifest) : undefined));
+}
+
+/**
+ * One wiki page's markdown.
+ *
+ * NOT `unwrapData`. A page is TEXT, not JSON: the transport hands back a string
+ * in `data`, and running it through the JSON reader would return undefined for
+ * every page.
+ *
+ * `key` is the manifest's own `wiki_id` joined to the path the manifest lists
+ * in `pages[]`, because that is how the provider writes them:
+ * `{wiki_id}/wiki_pages/{section}/{page}.md`. Asking without the wiki id asks
+ * for a key that does not exist, and the page renders as "could not be loaded".
+ */
+export async function fetchWikiPage(
+  projectId: string | number,
+  wikiId: string,
+  page: string,
+  bucket: string = WIKI_BUCKET,
+): Promise<string | undefined> {
+  const response = await eliteaFetch<unknown>(objectPath(projectId, bucket, `${wikiId}/${page}`));
+  const body = isRecord(response) && 'data' in response ? response.data : response;
+  return typeof body === 'string' ? body : undefined;
 }

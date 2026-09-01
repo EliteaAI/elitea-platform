@@ -378,6 +378,25 @@ const ROUTES: readonly VisualRoute[] = [
     landmark: (page) => page.getByText('Business Analyst'),
     light: true,
   },
+  {
+    // @covers /deepwiki
+    name: 'deepwiki-browser',
+    path: '/app/deepwiki',
+    // THE SEEDED WIKI'S TITLE, which lives only in a manifest object in the
+    // artifact store. Every other candidate on this screen fails the rule:
+    // the page has no static heading of its own, the toolkit chooser does not
+    // render for a project with one toolkit, and the empty state
+    // ("No wiki has been generated for this project yet.") is what a STALLED
+    // listing shows as well as an empty one — a baseline photographed against
+    // it would record the screen this feature spent a phase not shipping.
+    //
+    // The title comes from two chained reads: the bucket listing, then the
+    // manifest itself. Neither can resolve under a stall, and neither can be
+    // produced by a screen that is merely mounted.
+    // Measured: loaded YES, stalled no.
+    landmark: (page) => page.getByText('E2E Service Wiki'),
+    light: true,
+  },
 ];
 
 for (const route of ROUTES) {

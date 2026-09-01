@@ -24,7 +24,7 @@ import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 
-import { useWikiList, WikiList } from '@/features/wiki-browser';
+import { useWikiList, WikiList, WikiPageView } from '@/features/wiki-browser';
 import type { RepositoryIdentity, ToolkitSettings, WikiManifest } from '@/entities/wiki';
 import { WikiChatDrawer, type WikiChatTarget } from '@/widgets/deepwiki';
 import { hasBackendCapability } from '@/shared/config/backendCapabilities';
@@ -125,6 +125,14 @@ export function DeepWiki({
         selectedWikiId={selected?.wiki_id}
         onSelect={setSelected}
       />
+
+      {/* The first wiki is opened by default. A list that needs a click before
+          it shows anything reads as an empty screen on a project with one
+          wiki, which is the common case. */}
+      {(() => {
+        const open = selected ?? query.data.wikis[0];
+        return open === undefined ? null : <WikiPageView projectId={projectId} wiki={open} />;
+      })()}
 
       {chatTarget === null ? null : (
         <WikiChatDrawer
