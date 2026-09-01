@@ -1,10 +1,12 @@
 {{- if .Values.deepwiki.enabled }}
 {{- if .Values.deepwiki.migrate.enabled }}
-{{- $secrets := .Values.deepwiki.secrets | default dict }}
-{{- $pg := .Values.postgresql | default dict }}
-{{- if and $pg.existingSecret (not (hasKey $secrets "ELITEA_DEEPWIKI_DATABASE_URL")) }}
-{{- $secrets = merge (deepCopy $secrets) (dict "ELITEA_DEEPWIKI_DATABASE_URL" (dict "secretName" $pg.existingSecret "key" (required "postgresql.key is required when postgresql.existingSecret is set" $pg.key))) }}
-{{- end }}
+{{- /*
+  The SAME resolution the Deployment does, from the same define. It has to be
+  the same: a migration Job that reads a different database URL from the
+  Deployment migrates a database the service does not use, successfully, with
+  nothing to report.
+*/ -}}
+{{- $secrets := fromJson (include "elitea.provider.databaseSecret" (dict "ctx" . "provider" "deepwiki" "urlKey" "ELITEA_DEEPWIKI_DATABASE_URL")) }}
 # The service's own migrations (ADR-0022 decision 3).
 #
 # A JOB, not a startup step, and not a second responsibility of the platform's
@@ -30,16 +32,7 @@ metadata:
     {{- include "elitea-deepwiki.labels" . | nindent 4 }}
     app.kubernetes.io/component: deepwiki-migrate
   annotations:
-    # BEFORE the Deployment. A pod that starts against an unmigrated database
-    # answers every read with a missing-relation error, which reads as a broken
-    # service rather than as an unfinished install.
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "5"
-    helm.sh/hook-delete-policy: before-hook-creation
-    # Argo ignores helm.sh/hook-weight when its own annotation is present, so
-    # the wave states the same ordering in its dialect.
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/sync-wave: "5"
+    {{- include "elitea.provider.migrateJobAnnotations" . | trim | nindent 4 }}
 spec:
   backoffLimit: {{ .Values.deepwiki.migrate.backoffLimit }}
   template:
@@ -66,14 +59,7 @@ spec:
           # Overrides the image's ENTRYPOINT, which starts the server.
           command: ["python", "-m", "elitea_deepwiki.storage"]
           env:
-            {{- range $name, $ref := $secrets }}
-            - name: {{ $name }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $ref.secretName }}
-                  key: {{ $ref.key }}
-                  optional: {{ $ref.optional | default false }}
-            {{- end }}
+            {{- with (include "elitea.provider.secretEnv" (dict "secrets" $secrets) | trim) }}{{- . | nindent 12 }}{{- end }}
           resources:
             {{- toYaml .Values.deepwiki.migrate.resources | nindent 12 }}
           volumeMounts:
