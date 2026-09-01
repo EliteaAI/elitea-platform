@@ -165,6 +165,69 @@ describe('AdminServiceDescriptors', () => {
     expect(screen.queryByText('Yes')).toBeNull();
   });
 
+  it('reports an unprobed provider as Unknown, not as unhealthy', async () => {
+    // THE THREE-STATE CONTRACT, and the one state pylon could not express.
+    // `provider_health_projection` is a separate table with its own timestamp,
+    // and the server answers `null` when no projection is fresh enough to make
+    // a claim. Rendering that as "No" reports a provider nobody has asked about
+    // as broken — the exact defect the projection table was split out to stop.
+    //
+    // Both other rows are here on purpose: with only the null row, a component
+    // that had collapsed to a single chip would still pass.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 4,
+          provider_name: 'unprobed',
+          service_location_url: 'https://provider.example.com/unprobed',
+          healthy: null,
+        },
+        {
+          project_id: 4,
+          provider_name: 'live',
+          service_location_url: 'https://provider.example.com/live',
+          healthy: true,
+        },
+        {
+          project_id: 4,
+          provider_name: 'down',
+          service_location_url: 'https://provider.example.com/down',
+          healthy: false,
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByText('Unknown')).toBeVisible();
+    expect(screen.getByText('Yes')).toBeVisible();
+    expect(screen.getByText('No')).toBeVisible();
+    // Exactly one of each: three rows must not render three copies of one
+    // label, which is what a state that fell through to a default would do.
+    expect(screen.getAllByText('Unknown')).toHaveLength(1);
+    expect(screen.getAllByText('No')).toHaveLength(1);
+  });
+
+  it('treats a descriptor with no healthy field at all as Unknown', async () => {
+    // An absent field says exactly as little as an explicit null. This is the
+    // repo's recurring "absence reads as correctness" shape pointed the other
+    // way: absence must read as NO CLAIM, never as a false one.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 7,
+          provider_name: 'silent',
+          service_location_url: 'https://provider.example.com/silent',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByText('Unknown')).toBeVisible();
+    expect(screen.queryByText('No')).toBeNull();
+  });
+
   it('renders an empty listing without claiming the surface is unavailable', async () => {
     // "Nothing is registered" and "this platform has no provider hub" are
     // different facts, and the second one must come from the server.

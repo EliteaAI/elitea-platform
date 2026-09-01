@@ -62,19 +62,42 @@ function rowKey(descriptor: AdminServiceDescriptor): string {
 }
 
 /**
- * The two presentations of the `healthy` column, each pairing its colour with
+ * The THREE presentations of the `healthy` column, each pairing its colour with
  * its label. `label` is a function because `t` must be called at render time,
  * not at module load, or a locale switch would not reach it.
+ *
+ * The third one is the reason this is a lookup and not a ternary. The server
+ * answers `null` for "no health projection is fresh enough to say", which is a
+ * different statement from "down" — pylon could not make it, and reading that
+ * `null` as `false` here would put the lie back on the screen after the server
+ * stopped telling it. A two-state column FORCES the server to choose, which is
+ * why the API type is `boolean | null` and this map has three entries.
  */
-const HEALTHY_CHIP = {
-  color: 'success',
-  label: () => t('pages.admin.serviceDescriptors.healthy.yes', 'Yes'),
+const HEALTH_CHIPS = {
+  yes: {
+    color: 'success',
+    label: () => t('pages.admin.serviceDescriptors.healthy.yes', 'Yes'),
+  },
+  no: {
+    color: 'error',
+    label: () => t('pages.admin.serviceDescriptors.healthy.no', 'No'),
+  },
+  unknown: {
+    color: 'default',
+    label: () => t('pages.admin.serviceDescriptors.healthy.unknown', 'Unknown'),
+  },
 } as const;
 
-const UNHEALTHY_CHIP = {
-  color: 'error',
-  label: () => t('pages.admin.serviceDescriptors.healthy.no', 'No'),
-} as const;
+/**
+ * `undefined` joins `null` in the unknown bucket. A row that omits the field
+ * entirely says exactly as little as one that sends null, and only `true` and
+ * `false` are claims.
+ */
+function healthChip(value: boolean | null | undefined) {
+  if (value === true) return HEALTH_CHIPS.yes;
+  if (value === false) return HEALTH_CHIPS.no;
+  return HEALTH_CHIPS.unknown;
+}
 
 export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptorsTable({
   descriptors,
@@ -114,8 +137,8 @@ export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptor
         // MUI's internal class names, so only the label is observable in a
         // test. Selecting the pair together makes the pair impossible to
         // disagree with itself.
-        renderCell: (params: GridRenderCellParams<DescriptorGridRow, boolean>) => {
-          const health = params.value === true ? HEALTHY_CHIP : UNHEALTHY_CHIP;
+        renderCell: (params: GridRenderCellParams<DescriptorGridRow, boolean | null>) => {
+          const health = healthChip(params.value);
           return <Chip size="small" variant="outlined" color={health.color} label={health.label()} />;
         },
       },

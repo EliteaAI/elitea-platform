@@ -1757,6 +1757,7 @@
   "pages.admin.serviceDescriptors.empty": "No service descriptors are registered.",
   "pages.admin.serviceDescriptors.error.load": "Failed to load the registered service descriptors.",
   "pages.admin.serviceDescriptors.healthy.no": "No",
+  "pages.admin.serviceDescriptors.healthy.unknown": "Unknown",
   "pages.admin.serviceDescriptors.healthy.yes": "Yes",
   "pages.admin.serviceDescriptors.tableLabel": "Registered service descriptors",
   "pages.admin.serviceDescriptors.title": "Service Descriptors",
