@@ -137,8 +137,13 @@ func setupArtifactSuite() (teardown func()) {
 	// is gone (ADR-0017, #260); injecting a validator is both narrower and
 	// closer to what a deployment does.
 	router := api.NewRouter(api.RouterConfig{
-		Pool:                       pool,
-		AuthValidator:              artifactContractValidator{},
+		Pool:          pool,
+		AuthValidator: artifactContractValidator{},
+		// Required since validatePrincipal became fail-closed: a router with a
+		// token validator and no principal validator refuses EVERY request,
+		// and this suite would report 401 for all of its two hundred-odd
+		// assertions with the WARN line as the only clue.
+		PrincipalValidator:         artifactContractPrincipalValidator{},
 		ObjectStore:                storage.Instrument(store, "s3"),
 		ArtifactPermissionResolver: artifactPermissiveResolver{},
 	})
@@ -303,6 +308,17 @@ func (artifactContractValidator) ValidateToken(_ context.Context, token string) 
 		return platformauth.User{}, fmt.Errorf("artifact contract suite: unexpected token %q", token)
 	}
 	return platformauth.User{ID: "1", UserID: "1", Email: "contract@test.local", AuthType: "token"}, nil
+}
+
+// artifactContractPrincipalValidator passes the authenticated principal
+// through. It is the counterpart to artifactContractValidator above: the token
+// validator says WHO the caller is, and this says the caller is still active.
+// A real deployment reads that from the database; this suite has no user rows
+// and its subject is the artifact surface, not principal lifecycle.
+type artifactContractPrincipalValidator struct{}
+
+func (artifactContractPrincipalValidator) ValidatePrincipal(_ context.Context, user platformauth.User) (platformauth.User, error) {
+	return user, nil
 }
 
 type artifactPermissiveResolver struct{}
