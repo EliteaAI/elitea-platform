@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: sqlc-dev/setup-sqlc@v3
+      - uses: sqlc-dev/setup-sqlc@v5
         with:
           sqlc-version: "1.31.1"
       - name: Generate and vet type-safe SQL
