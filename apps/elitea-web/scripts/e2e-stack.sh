@@ -1179,6 +1179,47 @@ JOIN auth_core__project_role r ON r.project_id = 90001 AND r.name = 'admin'
 WHERE u.email IN ('e2e-project-admin@autotest.local', 'e2e-admin@autotest.local')
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 
+-- ITS OWN PROJECT, and that is not tidiness (issue #519's lesson, and #290's).
+--
+-- The first version put this toolkit in project 1, the shared one every
+-- persona lands in. J17.1 ("an empty toolkit list redirects to the create
+-- page") polls until project 1's toolkit list reports `total: 0`, because
+-- sibling journeys create and delete toolkits there. A PERMANENT toolkit makes
+-- that condition unreachable, so J17.1 could only ever time out — a journey
+-- broken by a fixture it never mentions.
+--
+-- The chat work hit the same wall and answered it the same way: a dedicated
+-- persona and project (#290). Here only the project is dedicated; the member
+-- persona is granted editor on it and the journey selects it.
+INSERT INTO centry.project (id, name, owner_id, keycloak_groups, create_success, suspended)
+VALUES (90200, 'e2e-deepwiki', 1, '{}', true, false)
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, suspended = EXCLUDED.suspended;
+
+INSERT INTO auth_core__project_role (project_id, name) VALUES
+    (90200, 'admin'), (90200, 'editor'), (90200, 'viewer')
+ON CONFLICT (project_id, name) DO NOTHING;
+
+-- The permissions this project's journey needs, copied from what project 1's
+-- editor role holds. Copied rather than restated: a hand-written subset drifts
+-- from the real role the moment a permission is added, and the journey would
+-- fail on a permission nobody thought about.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT 90200, target.id, source.permission
+FROM auth_core__project_role_permission source
+JOIN auth_core__project_role origin
+  ON origin.id = source.role_id AND origin.project_id = 1
+JOIN auth_core__project_role target
+  ON target.project_id = 90200 AND target.name = origin.name
+WHERE source.project_id = 1
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT 90200, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90200 AND r.name = 'editor'
+WHERE u.email = 'e2e-member@autotest.local'
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
 -- Tenant schemas for every project this seed created.
 --
 -- POSITION IS LOAD-BEARING: this must run after EVERY `centry.project` insert,
@@ -1645,13 +1686,13 @@ ENDFIXTURE
 -- response (issue #705). Seeding it would put a value in the database that no
 -- client can read back, and a fixture nothing can observe is a fixture that
 -- teaches the next reader something false.
-INSERT INTO p_1.elitea_tools (id, name, type, description, owner_id, author_id, settings)
+INSERT INTO p_90200.elitea_tools (id, name, type, description, owner_id, author_id, settings)
 VALUES (
     9001,
     'E2E Wiki',
     'wikis',
     'Seeded by scripts/e2e-stack.sh for the DeepWiki journeys',
-    1,
+    90200,
     1,
     '{"repository": "acme/e2e-service", "branch": "main",
       "llm_model": "gpt-4o-mini"}'::jsonb
@@ -1664,7 +1705,7 @@ ON CONFLICT (id) DO UPDATE
 -- would be invisible without it — a listing that answers 404 and reads on
 -- screen as "you have no wikis".
 INSERT INTO elitea_storage.buckets (project_id, name, display_name, bucket_type)
-VALUES (1, 'wiki-artifacts', 'Wiki artifacts', 'local')
+VALUES (90200, 'wiki-artifacts', 'Wiki artifacts', 'local')
 ON CONFLICT (project_id, name) WHERE deleted_at IS NULL DO NOTHING;
 DEEPWIKI_SQL
 
@@ -1710,7 +1751,7 @@ WIKI_PAGE
       -v "${WIKI_TMP}:/wiki:ro" \
       --entrypoint sh docker.io/minio/mc:latest -c "
         mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret >/dev/null &&
-        mc cp --recursive /wiki/${WIKI_ID} rustfs/elitea-artifacts/p/1/b/wiki-artifacts/o/ >/dev/null
+        mc cp --recursive /wiki/${WIKI_ID} rustfs/elitea-artifacts/p/90200/b/wiki-artifacts/o/ >/dev/null
       " || {
         echo "ERROR: could not write the seeded wiki objects into rustfs." >&2
         echo "  The DeepWiki journey would then find an empty bucket, which is" >&2
@@ -1728,18 +1769,18 @@ WIKI_PAGE
     WIKI_OBJECTS=$($EXEC_BIN run --rm --network "${E2E_PROJECT}_default" \
       --entrypoint sh docker.io/minio/mc:latest -c "
         mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret >/dev/null &&
-        mc ls --recursive rustfs/elitea-artifacts/p/1/b/wiki-artifacts/o/ 2>/dev/null
+        mc ls --recursive rustfs/elitea-artifacts/p/90200/b/wiki-artifacts/o/ 2>/dev/null
       " || true)
     case "$WIKI_OBJECTS" in
       *wiki_manifest_1.json*) ;;
       *)
         echo "ERROR: the seeded wiki manifest is not under the prefix elitea-main reads." >&2
-        echo "  Expected p/1/b/wiki-artifacts/o/${WIKI_ID}/wiki_manifest_1.json" >&2
+        echo "  Expected p/90200/b/wiki-artifacts/o/${WIKI_ID}/wiki_manifest_1.json" >&2
         echo "  mc listed: ${WIKI_OBJECTS:-<nothing>}" >&2
         exit 1
         ;;
     esac
-    echo "  ✓ DeepWiki toolkit 9001 and wiki ${WIKI_ID} seeded"
+    echo "  ✓ DeepWiki project 90200, toolkit 9001 and wiki ${WIKI_ID} seeded"
 
     echo "→ Seed complete."
     ;;

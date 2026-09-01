@@ -14,6 +14,15 @@
  * redirect on "exactly one" would make the URL depend on how many toolkits a
  * project happens to have, so the browser's Back button would land somewhere
  * different for two projects.
+ *
+ * `deepwiki.index.tsx` AND NOT `deepwiki.tsx`, which is not a naming
+ * preference. As `deepwiki.tsx` this file became the PARENT of
+ * `deepwiki.$toolkitId.tsx`, and a parent that renders its own UI without an
+ * `<Outlet/>` swallows its children: `/deepwiki/999999` matched, rendered THIS
+ * component, and showed the project's own wiki as though the id in the URL had
+ * been honoured. Nothing failed — the screen looked right — and the
+ * toolkit-addressed route had never rendered at all. Caught by the journey that
+ * asks for a toolkit which does not exist and expects to be told so.
  */
 import { createFileRoute, Link } from '@tanstack/react-router';
 
@@ -29,9 +38,9 @@ import { t } from '@/shared/i18n';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
-import { DeepWikiToolkitBody } from './-deepwiki/DeepWikiToolkitBody';
+import { DeepWikiToolkit } from '@/pages/deepwiki/DeepWikiToolkit';
 
-export const Route = createFileRoute('/_shell/deepwiki')({
+export const Route = createFileRoute('/_shell/deepwiki/')({
   pendingComponent: RoutePending,
   errorComponent: RouteError,
   component: DeepWikiIndexRoute,
@@ -69,7 +78,7 @@ function DeepWikiIndexRoute(): React.JSX.Element | null {
   }
 
   if (toolkits.length === 1 && toolkits[0]) {
-    return <DeepWikiToolkitBody projectId={projectId} toolkitId={toolkits[0].id} />;
+    return <DeepWikiToolkit projectId={projectId} toolkitId={toolkits[0].id} />;
   }
 
   return (

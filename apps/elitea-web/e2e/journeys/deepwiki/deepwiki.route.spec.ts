@@ -33,6 +33,16 @@ import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
 
 /** What scripts/e2e-stack.sh seeds. Changing either without the other is a red journey. */
 const SEEDED = {
+  /**
+   * A project of the wiki's OWN, not the shared project 1.
+   *
+   * The first version seeded the toolkit into project 1 and broke J17.1, which
+   * polls until that project's toolkit list reports `total: 0` — a permanent
+   * toolkit makes that unreachable, so a journey this file never mentions could
+   * only time out. The chat work answered the same problem the same way (#290).
+   */
+  projectId: '90200',
+  projectName: 'e2e-deepwiki',
   wikiTitle: 'E2E Service Wiki',
   repository: 'acme/e2e-service',
   page: 'wiki_pages/architecture/router.md',
@@ -53,6 +63,19 @@ const NOT_FOUND_TEXT = /not found|404/i;
  * provider rather than a routing decision.
  */
 async function openDeepWiki(page: Page, path: string): Promise<void> {
+  // Select the wiki's project BEFORE the app boots. `addInitScript` runs in
+  // every document of this context, so the store hydrates from it rather than
+  // from the persona's saved project — setting it after load would race the
+  // first render and the wiki list would be fetched for project 1.
+  await page.addInitScript(
+    ([id, name]) => {
+      localStorage.setItem('el.project.id', id);
+      localStorage.setItem('el.project.name', name);
+      sessionStorage.setItem('el.project.id', id);
+      sessionStorage.setItem('el.project.name', name);
+    },
+    [SEEDED.projectId, SEEDED.projectName] as const,
+  );
   await page.goto(`${BASE_URL}${path}`, { waitUntil: 'domcontentloaded' });
   await page.waitForURL((url) => url.origin === new URL(BASE_URL).origin, { timeout: 30_000 });
   await page.waitForLoadState('networkidle');
@@ -69,6 +92,10 @@ test.describe('DeepWiki', () => {
     // header for why the URL must not depend on how many toolkits exist.
     await openDeepWiki(page, '/app/deepwiki');
     expect(page.url()).toContain('/deepwiki');
+
+    // The project really switched. Without this the next assertions could pass
+    // against project 1 for the wrong reason — or fail for one.
+    await expect(page.getByText(SEEDED.projectName)).toBeVisible({ timeout: 20_000 });
 
     // Neither of the two "nothing to show" states. Both are real screens and
     // both would mean the toolkit was not resolved.
@@ -123,6 +150,13 @@ test.describe('DeepWiki', () => {
     // "This toolkit could not be read" and "this wiki has no pages" are
     // different facts. Rendering the browser for an unreadable toolkit would
     // say the second about a repository the screen never learned the name of.
+    //
+    // THIS TEST FOUND A ROUTING BUG, which is worth recording because the bug
+    // was invisible: as `deepwiki.tsx` the index route became the PARENT of
+    // `deepwiki.$toolkitId.tsx`, and a parent that renders its own UI without
+    // an `<Outlet/>` swallows its child. `/deepwiki/999999` matched, rendered
+    // the index, and showed the project's own wiki as though the id had been
+    // honoured. Every other assertion in this file passed throughout.
     await openDeepWiki(page, '/app/deepwiki/999999');
     await expect(page.getByTestId('deepwiki-toolkit-error')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId('wiki-page-content')).toHaveCount(0);

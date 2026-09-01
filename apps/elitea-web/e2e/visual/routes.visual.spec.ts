@@ -95,6 +95,43 @@ interface VisualRoute {
   readonly landmark: (page: Page) => ReturnType<Page['locator']>;
   /** Also capture a light-scheme variant. */
   readonly light?: boolean;
+  /**
+   * Photograph this route with a DIFFERENT project selected.
+   *
+   * Every route here otherwise uses the persona's own project, which is right:
+   * a shot should show what the user who signed in sees. The exception is a
+   * fixture that cannot live in the shared project — the seeded wiki is in one
+   * of its own, because a permanent toolkit in project 1 makes J17.1's
+   * empty-list premise unreachable (#519's lesson).
+   *
+   * Without this the shot would photograph a project with no wiki, whose
+   * "No wiki has been generated for this project yet." is the SAME screen a
+   * stalled listing shows — a baseline that records the failure it was added
+   * to catch.
+   */
+  readonly project?: { readonly id: string; readonly name: string };
+}
+
+/**
+ * Select `route.project` before the app boots.
+ *
+ * `addInitScript` runs in every document of the context, so the store hydrates
+ * from it rather than from the persona's saved project. Setting it after load
+ * would race the first render, and the route's data would be fetched for the
+ * wrong project.
+ */
+async function selectProject(page: Page, route: VisualRoute): Promise<void> {
+  const project = route.project;
+  if (!project) return;
+  await page.addInitScript(
+    ([id, name]) => {
+      localStorage.setItem('el.project.id', id);
+      localStorage.setItem('el.project.name', name);
+      sessionStorage.setItem('el.project.id', id);
+      sessionStorage.setItem('el.project.name', name);
+    },
+    [project.id, project.name] as const,
+  );
 }
 
 /*
@@ -401,6 +438,7 @@ const ROUTES: readonly VisualRoute[] = [
 
 for (const route of ROUTES) {
   test(`@visual ${route.name}`, async ({ page }) => {
+    await selectProject(page, route);
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
@@ -461,6 +499,7 @@ async function useLightScheme(page: Page): Promise<void> {
 for (const route of ROUTES.filter((r) => r.light)) {
   test(`@visual ${route.name}-light`, async ({ page }) => {
     await useLightScheme(page);
+    await selectProject(page, route);
 
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page);

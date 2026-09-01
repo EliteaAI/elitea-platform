@@ -14,7 +14,7 @@ import { hasBackendCapability } from '@/shared/config/backendCapabilities';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
-import { DeepWikiToolkitBody } from './-deepwiki/DeepWikiToolkitBody';
+import { DeepWikiToolkit } from '@/pages/deepwiki/DeepWikiToolkit';
 
 export const Route = createFileRoute('/_shell/deepwiki/$toolkitId')({
   pendingComponent: RoutePending,
@@ -27,5 +27,5 @@ function DeepWikiToolkitRoute(): React.JSX.Element | null {
   const projectId = useSelectedProjectStore((state) => state.project?.id ?? '');
 
   if (!hasBackendCapability('deepwiki')) return null;
-  return <DeepWikiToolkitBody projectId={projectId} toolkitId={toolkitId} />;
+  return <DeepWikiToolkit projectId={projectId} toolkitId={toolkitId} />;
 }

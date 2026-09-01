@@ -25,6 +25,7 @@
   "/credentials/create-credential",
   "/credentials/create-credential/:credentialType",
   "/deepwiki",
+  "/deepwiki/:toolkitId",
   "/elitea-catalog",
   "/help-center",
   "/mcp-auth-callback",
