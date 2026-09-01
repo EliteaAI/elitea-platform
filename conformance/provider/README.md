@@ -1,6 +1,17 @@
-# DeepWiki conformance fixtures (ADR-0022 phase P0)
+# Provider conformance (ADR-0022 phase P0, ADR-0012 phase P1.0)
 
-Golden fixtures for porting the legacy `deepwiki_plugin` into
+The published contract every provider service is admitted against, plus the
+golden fixtures each provider is verified with.
+
+**This directory moved in P1.0**, from `services/elitea-deepwiki/conformance/`.
+It moved because a contract that lives inside one implementation's test
+directory is indistinguishable from that implementation's notes — you cannot
+generalise a runner against it, and the second provider has nowhere to put its
+recordings. Fixtures are now grouped per provider under `fixtures/<provider>/`,
+and the protocol-generic half is `spi/contract.json`, which belongs to none of
+them.
+
+The original subject is unchanged: porting the legacy `deepwiki_plugin` into
 `services/elitea-deepwiki`, per
 ADR-0022 (`elitea-docs`: `docs/internal/03-architecture/adrs/adr-0022-deepwiki-provider-service-port.mdx`)
 ("DeepWiki Ports as a Standalone Provider Service on PostgreSQL", Approved).
@@ -11,16 +22,30 @@ in this directory touches elitea-main, `v2.yaml` or any migration.
 ## What is here
 
 ```
-conformance/
+conformance/provider/
 ├── pyproject.toml            no runtime deps; [record] extras only to re-record
+├── spi/contract.json         THE CONTRACT: the SPI path set, provider-agnostic
 ├── tools/                    the recorders (run against the legacy checkout)
 ├── tests/test_fixtures.py    invariants over the committed fixtures (stdlib + pytest)
 └── fixtures/
-    ├── descriptor/legacy-v0/ the golden provider descriptor + its inventory + digests
-    ├── spi/                  recorded request/response shapes for every SPI operation
-    ├── generation/           the composed generate_wiki artifact set
-    └── retrieval/sample-repo/ dense / BM25 / FTS / fused rankings, with scores
+    └── deepwiki/             one profile per provider
+        ├── descriptor/legacy-v0/ the golden provider descriptor + inventory + digests
+        ├── spi/              recorded request/response shapes for every SPI operation
+        ├── generation/       the composed generate_wiki artifact set
+        └── retrieval/sample-repo/ dense / BM25 / FTS / fused rankings, with scores
 ```
+
+Two artefacts sit outside this directory and belong to the same contract:
+
+| Path | What it is |
+| --- | --- |
+| `libs/provider/legacy/v0/` | the vendored v0 schema documents, byte-pinned by `fixtures/deepwiki/descriptor/legacy-v0/bundle.manifest.json` |
+| `scripts/provider/verify-legacy-bundle.sh` | the gate that keeps them byte-identical |
+
+`spi/contract.json` is spelled in three places, and
+`services/elitea-main/internal/api/v2/deepwiki/spi_contract_parity_test.go`
+fails when any one of them drifts: this file, the path builders in `proxy.go`,
+and the facade routes in `v2.yaml`.
 
 Every fixture carries a `_source` block pinning the legacy repository revision
 and the SHA-256 of each source file it was derived from.
@@ -72,13 +97,13 @@ Two things are restated rather than executed, and say so in the fixture:
 Replaying the committed fixtures needs only pytest:
 
 ```bash
-cd services/elitea-deepwiki/conformance && python -m pytest -q
+cd conformance/provider && python -m pytest -q
 ```
 
 Re-recording needs a read-only legacy checkout and the `record` extras:
 
 ```bash
-cd services/elitea-deepwiki/conformance && DEEPWIKI_LEGACY_ROOT=~/projects/eliteaai/legacy/plugins/deepwiki_plugin python tools/record_spi.py --check
+cd conformance/provider && DEEPWIKI_LEGACY_ROOT=~/projects/eliteaai/legacy/plugins/deepwiki_plugin python tools/record_spi.py --check
 ```
 
 `DEEPWIKI_LEGACY_ROOT` is optional when the checkout sits at the usual

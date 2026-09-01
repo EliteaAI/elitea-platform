@@ -47,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _legacy import legacy_root, load_legacy_module, source_pin  # noqa: E402
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "spi"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "deepwiki" / "spi"
 
 SOURCE_FILES = [
     "routes/descriptor.py",

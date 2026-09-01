@@ -42,7 +42,7 @@ from _legacy import (  # noqa: E402
     source_pin,
 )
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "descriptor" / "legacy-v0"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "deepwiki" / "descriptor" / "legacy-v0"
 
 #: The legacy default; the deployed value is environment-specific and is
 #: deliberately normalised out of the fixture (P1 replaces it with a reviewed
