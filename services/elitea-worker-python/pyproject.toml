@@ -19,6 +19,20 @@ dependencies = [
   # the pinned SDK runtime extra without installing the full indexing stack in
   # the configuration-validation worker image.
   "langchain-core==1.2.7",
+  # langsmith 0.12.0 moved its HTTP stack from httpx to httpx2/httpcore2, which
+  # requires h11>=0.16 — and httpx<1 above resolves httpcore 1.0.7, which
+  # requires h11<0.15. The two cannot coexist, so every image build failed with
+  # ResolutionImpossible the moment 0.12.0 was published.
+  #
+  # langsmith is TRANSITIVE (langchain-core requires langsmith>=0.3.45,<1.0.0),
+  # so nothing here named it and nothing here bounded it. This is the same
+  # class the mcp==1.27.1 pin below was written for, and the same remedy: state
+  # the boundary explicitly so a clean build cannot silently cross it.
+  #
+  # MEASURED, not guessed: 0.11.2 requires httpx<1,>=0.23.0 and 0.12.0 requires
+  # httpx2<3,>=2 (PyPI metadata). Lift this when the SDK's own stack moves to
+  # httpx2 — not before, or the conflict simply returns.
+  "langsmith>=0.3.45,<0.12",
   "langgraph==1.0.7",
   "protobuf>=5.29,<7",
   "pydantic>=2.10,<3",
