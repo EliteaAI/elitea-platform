@@ -62,19 +62,85 @@ function rowKey(descriptor: AdminServiceDescriptor): string {
 }
 
 /**
- * The two presentations of the `healthy` column, each pairing its colour with
+ * The THREE presentations of the `healthy` column, each pairing its colour with
  * its label. `label` is a function because `t` must be called at render time,
  * not at module load, or a locale switch would not reach it.
+ *
+ * The third one is the reason this is a lookup and not a ternary. The server
+ * answers `null` for "no health projection is fresh enough to say", which is a
+ * different statement from "down" — pylon could not make it, and reading that
+ * `null` as `false` here would put the lie back on the screen after the server
+ * stopped telling it. A two-state column FORCES the server to choose, which is
+ * why the API type is `boolean | null` and this map has three entries.
  */
-const HEALTHY_CHIP = {
-  color: 'success',
-  label: () => t('pages.admin.serviceDescriptors.healthy.yes', 'Yes'),
+const HEALTH_CHIPS = {
+  yes: {
+    color: 'success',
+    label: () => t('pages.admin.serviceDescriptors.healthy.yes', 'Yes'),
+  },
+  no: {
+    color: 'error',
+    label: () => t('pages.admin.serviceDescriptors.healthy.no', 'No'),
+  },
+  unknown: {
+    color: 'default',
+    label: () => t('pages.admin.serviceDescriptors.healthy.unknown', 'Unknown'),
+  },
 } as const;
 
-const UNHEALTHY_CHIP = {
-  color: 'error',
-  label: () => t('pages.admin.serviceDescriptors.healthy.no', 'No'),
-} as const;
+/**
+ * `undefined` joins `null` in the unknown bucket. A row that omits the field
+ * entirely says exactly as little as one that sends null, and only `true` and
+ * `false` are claims.
+ */
+function healthChip(value: boolean | null | undefined) {
+  if (value === true) return HEALTH_CHIPS.yes;
+  if (value === false) return HEALTH_CHIPS.no;
+  return HEALTH_CHIPS.unknown;
+}
+
+/**
+ * The admission states, and the one column that makes a REVOKE visible.
+ *
+ * The listing is driven by every origin ever registered, and DELETE revokes
+ * rather than deleting — an admission that was once in force is a fact about
+ * what this deployment ran. So a revoked provider stays in the table. Without
+ * this column it stays there looking exactly like a live one, and an operator
+ * who revokes it, reloads, and sees no change concludes the revoke failed.
+ *
+ * `unregistered` is not an error: it is an origin with no admitted revision
+ * yet, which is a real state and the one an operator is usually looking for.
+ */
+const STATUS_CHIPS: Record<string, { readonly color: 'success' | 'warning' | 'error' | 'default'; readonly label: () => string }> = {
+  active: {
+    color: 'success',
+    label: () => t('pages.admin.serviceDescriptors.status.active', 'Active'),
+  },
+  inactive: {
+    color: 'warning',
+    label: () => t('pages.admin.serviceDescriptors.status.inactive', 'Inactive'),
+  },
+  revoked: {
+    color: 'error',
+    label: () => t('pages.admin.serviceDescriptors.status.revoked', 'Revoked'),
+  },
+  unregistered: {
+    color: 'default',
+    label: () => t('pages.admin.serviceDescriptors.status.unregistered', 'Not registered'),
+  },
+};
+
+/**
+ * A state this build does not know is shown VERBATIM rather than mapped to a
+ * default. The admission plane can gain a state before this page does, and
+ * rendering an unfamiliar one as "Not registered" would be a confident wrong
+ * answer where the raw word is a correct one.
+ */
+function statusChip(value: unknown): { color: 'success' | 'warning' | 'error' | 'default'; label: string } {
+  const key = typeof value === 'string' && value !== '' ? value : 'unregistered';
+  const known = STATUS_CHIPS[key];
+  return known ? { color: known.color, label: known.label() } : { color: 'default', label: key };
+}
 
 export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptorsTable({
   descriptors,
@@ -104,6 +170,24 @@ export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptor
         minWidth: 240,
       },
       {
+        field: 'status',
+        headerName: t('pages.admin.serviceDescriptors.column.status', 'Admission'),
+        width: 140,
+        sortable: true,
+        renderCell: (params: GridRenderCellParams<DescriptorGridRow, string | undefined>) => {
+          const status = statusChip(params.value);
+          return (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={status.color}
+              label={status.label}
+              title={params.row.reason === undefined || params.row.reason === '' ? undefined : params.row.reason}
+            />
+          );
+        },
+      },
+      {
         field: 'healthy',
         headerName: t('pages.admin.serviceDescriptors.column.healthy', 'Healthy'),
         width: 120,
@@ -114,8 +198,8 @@ export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptor
         // MUI's internal class names, so only the label is observable in a
         // test. Selecting the pair together makes the pair impossible to
         // disagree with itself.
-        renderCell: (params: GridRenderCellParams<DescriptorGridRow, boolean>) => {
-          const health = params.value === true ? HEALTHY_CHIP : UNHEALTHY_CHIP;
+        renderCell: (params: GridRenderCellParams<DescriptorGridRow, boolean | null>) => {
+          const health = healthChip(params.value);
           return <Chip size="small" variant="outlined" color={health.color} label={health.label()} />;
         },
       },

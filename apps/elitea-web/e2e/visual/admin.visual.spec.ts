@@ -306,12 +306,24 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     // @covers /admin/app/service-descriptors
     name: 'admin-service-descriptors',
     path: '/admin/app/service-descriptors',
-    // The 501 Alert, carrying the SERVER's own sentence rather than a copy this
-    // page holds. During load this page renders its title and a
-    // `LinearProgress` and nothing else, so the Alert cannot be mistaken for a
-    // loading state.
+    // The GRID, which this page renders only on `query.isSuccess` — during
+    // load it shows its title and a `LinearProgress` and nothing else, so the
+    // grid cannot be mistaken for a loading state.
+    //
+    // It used to be the 501 Alert. The admission plane replaced that refusal
+    // with a real listing (migration 0107), so the Alert no longer renders and
+    // a landmark still waiting for it fails against a page that is working —
+    // which is what turned this spec red rather than any pixel changing.
+    //
+    // Not the empty-state text: the DataGrid's `noRowsLabel` renders for an
+    // empty list AND is what an unmounted-rows state would show, while the grid
+    // itself is present only after the query resolved. This stack registers no
+    // descriptors, so the reference is the empty listing on purpose — a page
+    // that says "nothing is registered" is the honest answer here, and it is a
+    // different sentence from "this platform has no provider hub".
     // Measured: loaded YES, stalled no.
-    landmark: (page) => page.getByTestId('admin-service-descriptors-unavailable'),
+    landmark: (page) =>
+      page.getByRole('grid', { name: 'Registered service descriptors' }),
   },
 ];
 

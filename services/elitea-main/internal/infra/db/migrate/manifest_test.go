@@ -293,7 +293,24 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// follow a running generation, and may not start one or cancel someone
 	// else's. Like 0102, 0104 and 0105 it grants centrally AND delivers to the
 	// projects carrying their own permission rows.
-	require.EqualValues(t, 106, Head(shared))
+	//
+	// 107: shared/0107_provider_admitted_revisions.sql, the provider ADMISSION
+	// plane (ADR-0012 phase P3). It is the storage the three service-descriptor
+	// routes had been refusing for want of, and it is the first file here that
+	// creates a whole schema rather than granting into an existing one.
+	//
+	// Two of its constraints are the architecture rather than hygiene:
+	// UNIQUE (project_id, provider_id) WHERE status = 'active' makes "which
+	// manifest is this deployment running" answerable, and
+	// CHECK (status <> 'active' OR overlay_revision IS NOT NULL) is ADR-0012's
+	// "a missing overlay policy fails admission" written where Go cannot
+	// bypass it — this deployment can record and show a provider and
+	// physically cannot activate one.
+	//
+	// It claims no pylon-owned table. Every name is new, in a new schema, so
+	// it cannot collide with a seeded fixture at 42P07 the way three earlier
+	// migrations did.
+	require.EqualValues(t, 107, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

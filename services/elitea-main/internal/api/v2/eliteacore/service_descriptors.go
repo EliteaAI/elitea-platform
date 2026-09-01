@@ -113,7 +113,11 @@ package eliteacore
 // the trap #207's test caught. These handlers take no mode from the URL, and any
 // other mode 404s rather than being answered with something plausible.
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+	"strings"
+)
 
 // The permissions the pylon originals declare, resolved in `administration`
 // mode. Constants rather than literals at the registration site because the
@@ -152,28 +156,115 @@ const ServiceDescriptorsUnavailableReason = "service descriptors register EXTERN
 
 // ServiceDescriptors serves `GET /elitea_core/admin/administration`.
 //
-// It replaces a handler that answered 200 with three invented rows in a shape no
-// client reads. See this file's header.
-func (h *Handler) ServiceDescriptors(w http.ResponseWriter, _ *http.Request) {
-	writeServiceDescriptorsRefusal(w)
+// It answers 200 from storage now (migration 0107). Every column comes from a
+// table; none is invented. See provider_admission.go for the three-state
+// `healthy` and why it exists.
+func (h *Handler) ServiceDescriptors(w http.ResponseWriter, r *http.Request) {
+	// No database, or no migration 0107: there is no admission plane, which is
+	// the state the recorded reason describes. An empty list would read as "no
+	// providers are registered", and a 500 would tell an operator nothing
+	// about the unapplied migration behind it.
+	if h.pool == nil || !h.admissionPlanePresent(r.Context()) {
+		writeServiceDescriptorsRefusal(w)
+		return
+	}
+	rows, err := h.listServiceDescriptors(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "the registered providers could not be read",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "total": len(rows)})
 }
 
 // RegisterDescriptor serves POST and DELETE on
 // `/elitea_core/register_descriptor/{projectID}`.
 //
-// Both verbs refuse. The handler this replaces answered `{"ok": true}` to either
-// — the DELETE without looking at anything, the POST after decoding a body it
-// discarded — and had no route, so nothing called it and nothing noticed. A
-// registration that reports success and stores nothing is worse than a refusal:
-// the operator points a provider at Elitea, sees it accepted, and finds out it
-// was never reachable when an agent fails to call its tools.
-func (h *Handler) RegisterDescriptor(w http.ResponseWriter, _ *http.Request) {
-	writeServiceDescriptorsRefusal(w)
+// POST answers 202, not 200. The descriptor is RECORDED and is not in force:
+// 200 would say the provider is admitted, and admitting one needs a policy
+// overlay this deployment cannot issue. The body says which revision was
+// created, which manifest digest it cites, that its status is inactive, and
+// why — rather than the `{"ok": true}` the handler this replaces returned
+// without storing anything.
+//
+// DELETE revokes. It never deletes a row: an admission that was once in force
+// is a fact about what this deployment ran.
+func (h *Handler) RegisterDescriptor(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil || !h.admissionPlanePresent(r.Context()) {
+		writeServiceDescriptorsRefusal(w)
+		return
+	}
+	projectID, err := projectIDFromPath(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		h.registerDescriptorRoute(w, r, projectID)
+	case http.MethodDelete:
+		h.revokeDescriptorRoute(w, r, projectID)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"error": "this route serves POST and DELETE",
+		})
+	}
 }
 
-// writeServiceDescriptorsRefusal is one function so a later edit cannot make the
-// verbs disagree — the read saying "unavailable" while a write quietly returns
-// 200 is precisely the state this file removes.
+func (h *Handler) registerDescriptorRoute(w http.ResponseWriter, r *http.Request, projectID int64) {
+	req, err := decodeRegisterRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	response, err := h.registerDescriptor(r.Context(), projectID, providerActor(r), req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "the descriptor could not be recorded",
+		})
+		return
+	}
+	// 202 ACCEPTED: recorded, not in force.
+	writeJSON(w, http.StatusAccepted, response)
+}
+
+func (h *Handler) revokeDescriptorRoute(w http.ResponseWriter, r *http.Request, projectID int64) {
+	provider := strings.TrimSpace(r.URL.Query().Get("provider_name"))
+	if provider == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "provider_name is required, so that a revoke names what it revokes",
+		})
+		return
+	}
+	reason := strings.TrimSpace(r.URL.Query().Get("reason"))
+	if reason == "" {
+		reason = "revoked through the administration surface"
+	}
+
+	err := h.revokeDescriptor(r.Context(), projectID, provider, providerActor(r), reason)
+	switch {
+	case errors.Is(err, ErrProviderNotRegistered):
+		// 404 rather than a silent success: a revoke that matched nothing is
+		// usually a misspelt provider, and reporting it as done sends the
+		// operator away believing they turned something off.
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "no such provider is registered for this project",
+		})
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "the provider could not be revoked",
+		})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "revoked", "reason": reason,
+		})
+	}
+}
+
+// writeServiceDescriptorsRefusal is the answer when the admission plane has no
+// database. It keeps the recorded reason rather than inventing a new one.
 func writeServiceDescriptorsRefusal(w http.ResponseWriter) {
 	writeJSON(w, http.StatusNotImplemented, map[string]any{
 		"error": ServiceDescriptorsUnavailableReason,

@@ -24,7 +24,6 @@ package admin
 // remove one once something in this platform READS the values. `resources` is
 // the section that passes that test: apps/elitea-web's Help Center reads it back
 // through `GET /admin/plugin_config_values/prompt_lib/resources`.
-import "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 
 const (
 	// extraUIConfigUnavailable used to cover the `extra_ui_config.*` sections
@@ -65,16 +64,31 @@ const (
 		"applies budgets, rate limits, model and MCP allowlists, credential rate policy and CEL routing rules on " +
 		"every /llm request."
 
-	// serviceDescriptorsElsewhereUnavailable — the section is unavailable for
-	// the SAME reason its own page is, and says so in the same words.
+	// serviceDescriptorsElsewhereUnavailable — the section defers to the page,
+	// and no longer borrows that page's old refusal.
 	//
-	// Until that page was ported this said only "service descriptors are a page
-	// of their own in the admin port (issue #200)", which deferred to a surface
-	// that did not exist yet. Deferring to one that now exists and itself says
-	// "unavailable" would be worse: an operator following the pointer would be
-	// told something different at the other end. The constant lives with the
-	// endpoints that enforce it.
-	serviceDescriptorsElsewhereUnavailable = eliteacore.ServiceDescriptorsUnavailableReason
+	// THREE WORDINGS, IN ORDER, AND EACH ONE WAS TRUE WHEN WRITTEN. First it
+	// said only "service descriptors are a page of their own in the admin port
+	// (issue #200)", deferring to a surface that did not exist yet. Then it
+	// became `eliteacore.ServiceDescriptorsUnavailableReason`, because the page
+	// existed and refused, and pointing an operator at a page that said
+	// something different would have been worse than saying nothing.
+	//
+	// Migration 0107 made that page ANSWER. Reusing the refusal now would tell
+	// an operator this deployment has no descriptor store while the page it
+	// points at lists one — a section whose text outlived its subject, which is
+	// the failure the shared constant was adopted to prevent, arriving from the
+	// other direction. So the section states what is still true: authoring
+	// happens somewhere else.
+	//
+	// The refusal constant is NOT retired. It remains this deployment's answer
+	// when the admission plane is absent — no database, or 0107 unapplied — and
+	// it is still the sentence those endpoints return.
+	serviceDescriptorsElsewhereUnavailable = "provider registrations are administered on their own page " +
+		"(/admin/app/service-descriptors), not through this form: a registration is a descriptor plus an " +
+		"admission decision, and this page is a flat form over a single value document. Registrations recorded " +
+		"there are stored and listed; a recorded descriptor is NOT in force until an admission overlay is issued, " +
+		"and its page says which state each one is in."
 
 	// skillPublishValidationRulesUnavailable is the skill-side twin of
 	// publishValidationRulesUnavailable below, and it is withheld for the same

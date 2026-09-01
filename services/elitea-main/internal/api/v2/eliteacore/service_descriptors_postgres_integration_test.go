@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -352,7 +353,17 @@ func TestServiceDescriptorListingHasNoOtherMode(t *testing.T) {
 // from either surface. Before this unit the section said "a page of their own in
 // the admin port (issue #200)", which pointed at a page that did not exist; a
 // pointer to a page that now says something DIFFERENT would be worse.
-func TestConfigurationSectionStatesTheSameReason(t *testing.T) {
+// The Configuration section defers to the page and does NOT repeat its refusal.
+//
+// This test used to assert the two strings were identical, and that was right
+// while the page refused: an operator following the pointer had to be told the
+// same thing at the other end. Migration 0107 made the page answer, so equality
+// became the bug — the section would claim there is no descriptor store while
+// the page it points at lists one.
+//
+// What is asserted now is the property equality was standing in for: the section
+// names the page, and it does not carry the refusal.
+func TestConfigurationSectionDefersToTheDescriptorsPage(t *testing.T) {
 	pool := newAuditPool(t)
 	principal := auth.User{ID: "1", UserID: "1"}
 	handler := adminapi.NewHandler(pool)
@@ -382,9 +393,17 @@ func TestConfigurationSectionStatesTheSameReason(t *testing.T) {
 		if section.ID != "service_descriptors" {
 			continue
 		}
-		if section.UnavailableReason != eliteacore.ServiceDescriptorsUnavailableReason {
-			t.Fatalf("the Configuration section states a different reason:\n  section: %q\n  endpoint: %q",
-				section.UnavailableReason, eliteacore.ServiceDescriptorsUnavailableReason)
+		if section.UnavailableReason == "" {
+			t.Fatal("the Configuration section explains nothing; an operator reaching this subject from " +
+				"Configuration has to be told where it is administered")
+		}
+		if section.UnavailableReason == eliteacore.ServiceDescriptorsUnavailableReason {
+			t.Fatal("the Configuration section still carries the endpoints' REFUSAL. That sentence says this " +
+				"deployment has no descriptor store, and since migration 0107 the page it points at lists one.")
+		}
+		if !strings.Contains(section.UnavailableReason, "/admin/app/service-descriptors") {
+			t.Fatalf("the Configuration section does not name the page that administers this:\n  %q",
+				section.UnavailableReason)
 		}
 		return
 	}

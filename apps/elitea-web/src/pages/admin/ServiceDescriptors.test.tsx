@@ -165,6 +165,145 @@ describe('AdminServiceDescriptors', () => {
     expect(screen.queryByText('Yes')).toBeNull();
   });
 
+  it('shows a REVOKED provider as revoked rather than as one more live row', async () => {
+    // The listing is driven by every origin ever registered, and DELETE revokes
+    // instead of deleting, so a revoked provider STAYS in the table. Without an
+    // admission column it stays there looking exactly like a live one — and an
+    // operator who revokes it, reloads, and sees no change concludes the revoke
+    // did not work.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 3,
+          provider_name: 'retired',
+          service_location_url: 'https://provider.example.com/retired',
+          healthy: null,
+          status: 'revoked',
+          reason: 'superseded',
+        },
+        {
+          project_id: 3,
+          provider_name: 'recorded',
+          service_location_url: 'https://provider.example.com/recorded',
+          healthy: true,
+          status: 'inactive',
+          reason: 'no admission overlay',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByText('Revoked')).toBeVisible();
+    expect(screen.getByText('Inactive')).toBeVisible();
+    // Both rows are still listed; the revoke did not remove one.
+    expect(screen.getByText('retired')).toBeVisible();
+    expect(screen.getByText('recorded')).toBeVisible();
+  });
+
+  it('reads a row with no admission as not registered', async () => {
+    // An origin with no admitted revision is a real state, and the one an
+    // operator is usually looking for. The server sends `unregistered`.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 3,
+          provider_name: 'origin-only',
+          service_location_url: 'https://provider.example.com/origin-only',
+          healthy: null,
+          status: 'unregistered',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+    expect(await screen.findByText('Not registered')).toBeVisible();
+  });
+
+  it('shows an admission state this build does not know VERBATIM', async () => {
+    // The plane can gain a state before this page does. Mapping an unfamiliar
+    // one onto a default would be a confident wrong answer where the raw word
+    // is a correct one.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 3,
+          provider_name: 'future',
+          service_location_url: 'https://provider.example.com/future',
+          healthy: null,
+          status: 'quarantined',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+    expect(await screen.findByText('quarantined')).toBeVisible();
+    expect(screen.queryByText('Not registered')).toBeNull();
+  });
+
+  it('reports an unprobed provider as Unknown, not as unhealthy', async () => {
+    // THE THREE-STATE CONTRACT, and the one state pylon could not express.
+    // `provider_health_projection` is a separate table with its own timestamp,
+    // and the server answers `null` when no projection is fresh enough to make
+    // a claim. Rendering that as "No" reports a provider nobody has asked about
+    // as broken — the exact defect the projection table was split out to stop.
+    //
+    // Both other rows are here on purpose: with only the null row, a component
+    // that had collapsed to a single chip would still pass.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 4,
+          provider_name: 'unprobed',
+          service_location_url: 'https://provider.example.com/unprobed',
+          healthy: null,
+        },
+        {
+          project_id: 4,
+          provider_name: 'live',
+          service_location_url: 'https://provider.example.com/live',
+          healthy: true,
+        },
+        {
+          project_id: 4,
+          provider_name: 'down',
+          service_location_url: 'https://provider.example.com/down',
+          healthy: false,
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByText('Unknown')).toBeVisible();
+    expect(screen.getByText('Yes')).toBeVisible();
+    expect(screen.getByText('No')).toBeVisible();
+    // Exactly one of each: three rows must not render three copies of one
+    // label, which is what a state that fell through to a default would do.
+    expect(screen.getAllByText('Unknown')).toHaveLength(1);
+    expect(screen.getAllByText('No')).toHaveLength(1);
+  });
+
+  it('treats a descriptor with no healthy field at all as Unknown', async () => {
+    // An absent field says exactly as little as an explicit null. This is the
+    // repo's recurring "absence reads as correctness" shape pointed the other
+    // way: absence must read as NO CLAIM, never as a false one.
+    respondWith(200, {
+      rows: [
+        {
+          project_id: 7,
+          provider_name: 'silent',
+          service_location_url: 'https://provider.example.com/silent',
+        },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByText('Unknown')).toBeVisible();
+    expect(screen.queryByText('No')).toBeNull();
+  });
+
   it('renders an empty listing without claiming the surface is unavailable', async () => {
     // "Nothing is registered" and "this platform has no provider hub" are
     // different facts, and the second one must come from the server.
