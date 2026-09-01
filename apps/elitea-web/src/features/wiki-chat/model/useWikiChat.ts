@@ -23,8 +23,15 @@ import { reduceChatFrames } from './reducer';
 import { capabilityOnOpen, chatHistory, failTurn, openTurn, rewindToLastQuestion, toolNameFor } from './turn';
 import { initialChatState, type ChatCapability, type ChatMessage, type ChatState } from './types';
 
-/** How often a running invocation is polled, in milliseconds. */
-export const CHAT_POLL_INTERVAL_MS = 2000;
+/**
+ * How often a running invocation is polled, in milliseconds.
+ *
+ * Not exported: nothing outside this slice names it. A caller that needs a
+ * different cadence passes `intervalMs`, which is what the tests do — an
+ * exported constant with no importer is the dead-code shape this repository has
+ * removed six times (#126/#129/#134/#136/#138/#149).
+ */
+const CHAT_POLL_INTERVAL_MS = 2000;
 
 /** What the caller must supply to start one request. */
 export interface ChatInvokeInput {
