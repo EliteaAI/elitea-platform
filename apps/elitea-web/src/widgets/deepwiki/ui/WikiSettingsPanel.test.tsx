@@ -135,4 +135,43 @@ describe('WikiSettingsPanel', () => {
     expect(await screen.findByTestId('wiki-settings-error')).toBeVisible();
     expect(document.querySelector('.cm-content')?.textContent).toContain('acme/svc');
   });
+
+  it('names both model settings when the toolkit configures neither, WITHOUT blocking Save', async () => {
+    // Measured 2026-09-02 (PR #725): the engine asks the gateway for
+    // gpt-4o-mini / text-embedding-3-large when the toolkit names neither, the
+    // gateway resolves models per project, and a project without those rows
+    // answers 404 — the generation "completes" with no pages and only the
+    // gateway log says why. The document is still legal, so Save stays live.
+    const user = userEvent.setup();
+    show(<WikiSettingsPanel projectId="7" toolkitId="42" toolkit={TOOLKIT} settings={{ repository: 'acme/svc' }} />);
+    await replaceDraft(user, '{"repository": "acme/svc"}');
+    const hints = await screen.findAllByTestId('wiki-settings-hint');
+    expect(hints.map((hint) => hint.getAttribute('data-field'))).toEqual(['llm_model', 'embedding_model']);
+    // The model the engine would ask for is named, because that is the string
+    // the operator has to configure or match.
+    expect(hints[0]).toHaveTextContent('gpt-4o-mini');
+    expect(hints[1]).toHaveTextContent('text-embedding-3-large');
+    // No literal braces: a `{{fallback}}` that never interpolated would render
+    // as itself and still satisfy a looser assertion.
+    expect(hints[1]?.textContent).not.toContain('{{');
+    expect(screen.getByTestId('wiki-settings-save')).toBeEnabled();
+    expect(screen.queryByTestId('wiki-settings-problem')).toBeNull();
+  });
+
+  it('drops the hint for a model the toolkit DOES name', async () => {
+    const user = userEvent.setup();
+    show(<WikiSettingsPanel projectId="7" toolkitId="42" toolkit={TOOLKIT} settings={{ repository: 'acme/svc' }} />);
+    await replaceDraft(user, '{"repository": "acme/svc", "llm_model": "gpt-5"}');
+    const hints = await screen.findAllByTestId('wiki-settings-hint');
+    expect(hints.map((hint) => hint.getAttribute('data-field'))).toEqual(['embedding_model']);
+  });
+
+  it('says nothing about models while the draft is not JSON', async () => {
+    // A hint beside "not valid JSON" would read as a second, unrelated defect.
+    const user = userEvent.setup();
+    show(<WikiSettingsPanel projectId="7" toolkitId="42" toolkit={TOOLKIT} settings={{ repository: 'acme/svc' }} />);
+    await replaceDraft(user, '{not json');
+    await screen.findByTestId('wiki-settings-problem');
+    expect(screen.queryAllByTestId('wiki-settings-hint')).toEqual([]);
+  });
 });
