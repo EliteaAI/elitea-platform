@@ -5,6 +5,7 @@ on:
     paths:
       - "services/elitea-main/**"
       - "services/elitea-scheduler/**"
+      - "services/elitea-subapp-host/**"
       - "services/elitea-worker-python/**"
       - "libs/go/**"
       - "libs/proto/**"
@@ -30,6 +31,7 @@ on:
     paths:
       - "services/elitea-main/**"
       - "services/elitea-scheduler/**"
+      - "services/elitea-subapp-host/**"
       - "services/elitea-worker-python/**"
       - "libs/go/**"
       - "libs/proto/**"
@@ -449,3 +451,8 @@ jobs:
         run: |
           cd services/elitea-scheduler
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-scheduler ./cmd/elitea-scheduler
+
+      - name: Build elitea-subapp-host
+        run: |
+          cd services/elitea-subapp-host
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-subapp-host ./cmd/elitea-subapp-host
