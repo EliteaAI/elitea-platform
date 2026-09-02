@@ -1,0 +1,54 @@
+{
+  "recordedAt": "2026-09-01",
+  "synthetic": false,
+  "note": "Object keys taken from the phase-P0 provider recording (conformance fixture generation/artifact_layout.json + generation/wiki_manifest.json, recorded by EXECUTING the legacy deepwiki_plugin at revision ce679f11). The ENVELOPE is elitea-main's ListObjects shape (GET /api/v2/artifacts/objects/{projectID}/{bucket}, objects.go), because that is the route the native feature uses. The legacy /artifacts/artifact(s)/default/... family the vendored bundle calls is served by no elitea-main route \u2014 see parity/notes/deepwiki-artifact-store.md. Every key in the manifest's pages[] is present here: the browser lists from the object listing and reads pages the manifest names, so a listing that omits a named page is the exact inconsistency DWIKI-002 and DWIKI-003 would trip over. fixtures.test.ts pins that.",
+  "body": {
+    "common_prefixes": [
+      "acme--notes-service--main/"
+    ],
+    "objects": [
+      {
+        "key": "acme--notes-service--main/wiki_manifest_20260101T000000Z-0000000a.json",
+        "size_bytes": 2048,
+        "media_type": "application/json",
+        "etag": "5f3a1c7e9b2d4a6c8e0f2a4b6c8d0e2f",
+        "modified_at": "2026-01-01T00:00:00Z"
+      },
+      {
+        "key": "acme--notes-service--main/wiki_pages/overview/getting-started.md",
+        "size_bytes": 1536,
+        "media_type": "text/markdown; charset=utf-8",
+        "etag": "00b2c3d4e5f60718293a4b5c6d7e8f9",
+        "modified_at": "2026-01-01T00:00:00Z"
+      },
+      {
+        "key": "acme--notes-service--main/wiki_pages/overview/architecture-data-flow.md",
+        "size_bytes": 2240,
+        "media_type": "text/markdown; charset=utf-8",
+        "etag": "01b2c3d4e5f60718293a4b5c6d7e8f9",
+        "modified_at": "2026-01-01T00:00:00Z"
+      },
+      {
+        "key": "acme--notes-service--main/wiki_pages/components/note-storage.md",
+        "size_bytes": 2240,
+        "media_type": "text/markdown; charset=utf-8",
+        "etag": "02b2c3d4e5f60718293a4b5c6d7e8f9",
+        "modified_at": "2026-01-01T00:00:00Z"
+      },
+      {
+        "key": "acme--notes-service--main/wiki_pages/components/search-ranking.md",
+        "size_bytes": 1792,
+        "media_type": "text/markdown; charset=utf-8",
+        "etag": "03b2c3d4e5f60718293a4b5c6d7e8f9",
+        "modified_at": "2026-01-01T00:00:00Z"
+      },
+      {
+        "key": "acme--notes-service--main/wiki_pages/components/bearer-tokens.md",
+        "size_bytes": 1408,
+        "media_type": "text/markdown; charset=utf-8",
+        "etag": "04b2c3d4e5f60718293a4b5c6d7e8f9",
+        "modified_at": "2026-01-01T00:00:00Z"
+      }
+    ]
+  }
+}

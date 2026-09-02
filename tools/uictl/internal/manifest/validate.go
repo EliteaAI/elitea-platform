@@ -14,13 +14,29 @@ var (
 	idRe     = regexp.MustCompile(`^[A-Z]{3,8}-\d{3}$`)
 	commitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	dateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	sourceRe = regexp.MustCompile(`^apps/elitea-ui/(.+):(\d+)(?:-(\d+))?$`)
+	// Two source trees, and the captured prefix decides which root resolves the
+	// reference. They are not the same kind of thing:
+	//
+	//   apps/elitea-ui/    the PINNED baseline. A submodule checkout at a fixed
+	//                      commit, supplied by -baseline. It does not move, so a
+	//                      line reference into it stays true.
+	//   apps/deepwiki-ui/  a bundle vendored into THIS repository. It resolves
+	//                      against the repo tree and therefore moves with HEAD.
+	//
+	// The second is weaker evidence and it is admitted deliberately: the bundle
+	// is frozen and is deleted at the end of the DeepWiki port, so the window in
+	// which a reference can drift is the port itself. Nothing else may use it —
+	// the alternation below is a closed list, not a wildcard.
+	sourceRe = regexp.MustCompile(`^apps/(elitea-ui|deepwiki-ui)/(.+):(\d+)(?:-(\d+))?$`)
 	acceptRe = regexp.MustCompile(`^(GIVEN|WHEN|THEN|AND) `)
 )
 
 var domains = set("shell", "chat", "agents", "pipelines", "skills", "toolkits",
 	"mcps", "apps", "credentials", "artifacts", "indexes", "secrets", "users",
-	"tokens", "notifications", "analytics", "public", "admin")
+	"tokens", "notifications", "analytics", "public", "admin",
+	// The DeepWiki UI port. Its evidence comes from apps/deepwiki-ui, not the
+	// pinned baseline — see sourceRe.
+	"deepwiki")
 
 var kinds = set("route", "behaviour", "integration", "permission", "shell", "visual")
 
@@ -38,6 +54,7 @@ var units = set(
 	"A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10",
 	"A11", "A12", "A13", "A14", "A15",
 	"W-shell", "V1", "V2", "V3", "V4", "X4", "X5", "X6",
+	"DW0", "DW1", "DW2", "DW3", "DW4", "DW5", "DW6", "DW7", "DW8", "DW9",
 )
 
 // Tokens that flag implementation detail inside acceptance criteria.
@@ -118,26 +135,40 @@ func Validate(m *Manifest, baseline string) []string {
 		for _, s := range it.Source {
 			mm := sourceRe.FindStringSubmatch(s)
 			if mm == nil {
-				bad("%s: source %q is not apps/elitea-ui/<file>:<line>[-<line>]", id, s)
+				bad("%s: source %q is not apps/elitea-ui/<file>:<line>[-<line>] "+
+					"or apps/deepwiki-ui/<file>:<line>[-<line>]", id, s)
 				continue
 			}
 			if retiredItem {
 				continue
 			}
-			rel, lineS, endS := mm[1], mm[2], mm[3]
-			n, ok := lineCounts[rel]
+			tree, rel, lineS, endS := mm[1], mm[2], mm[3], mm[4]
+
+			// The root differs per tree. apps/elitea-ui resolves against the
+			// pinned baseline checkout; apps/deepwiki-ui is vendored in this
+			// repository and resolves against the repository itself.
+			//
+			// Keyed by tree AND path, because the two roots can hold a file
+			// with the same relative path and a shared cache would then answer
+			// for the wrong one.
+			root := baseline
+			if tree == "deepwiki-ui" {
+				root = filepath.Join("apps", "deepwiki-ui")
+			}
+			cacheKey := tree + "/" + rel
+			n, ok := lineCounts[cacheKey]
 			if !ok {
-				data, err := os.ReadFile(filepath.Join(baseline, filepath.FromSlash(rel)))
+				data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 				if err != nil {
-					lineCounts[rel] = -1
+					lineCounts[cacheKey] = -1
 					n = -1
 				} else {
 					n = bytes.Count(data, []byte("\n")) + 1
-					lineCounts[rel] = n
+					lineCounts[cacheKey] = n
 				}
 			}
 			if n < 0 {
-				bad("%s: source file %q does not exist in baseline %s", id, rel, baseline)
+				bad("%s: source file %q does not exist under %s", id, rel, root)
 				continue
 			}
 			line, _ := strconv.Atoi(lineS)

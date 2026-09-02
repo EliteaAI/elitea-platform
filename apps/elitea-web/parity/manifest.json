@@ -96,6 +96,11 @@
       "path": "manifest/admin.json",
       "domain": "admin",
       "items": 9
+    },
+    {
+      "path": "manifest/deepwiki.json",
+      "domain": "deepwiki",
+      "items": 12
     }
   ]
 }
