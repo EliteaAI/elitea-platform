@@ -62,10 +62,11 @@ export const ClickingSelectedAgainStaysSelected: Story = {
 };
 
 /**
- * Keyboard path: each button is independently Tab-reachable (MUI's
- * `ToggleButtonGroup` does not roam focus on arrow keys — that is a
- * `radiogroup` pattern, not this component's `role="group"` of plain
- * buttons), and Enter activates the focused one.
+ * Keyboard path. Since MUI 9.4.0 `ToggleButtonGroup` roves its tab index:
+ * the group is one Tab stop and Left/Right move focus between the buttons
+ * (Home/End jump, wrapping). Enter activates the focused one. Before 9.4
+ * each button was its own Tab stop, and this story pinned that; #680's
+ * bump is what changed the contract.
  */
 export const KeyboardNavigation: Story = {
   play: async ({ canvasElement, args }) => {
@@ -73,7 +74,7 @@ export const KeyboardNavigation: Story = {
     const listButton = canvas.getByRole('button', { name: 'List' });
     listButton.focus();
     await expect(listButton).toHaveFocus();
-    await userEvent.tab();
+    await userEvent.keyboard('{ArrowRight}');
     const gridButton = canvas.getByRole('button', { name: 'Grid' });
     await expect(gridButton).toHaveFocus();
     await userEvent.keyboard('{Enter}');
