@@ -971,6 +971,31 @@ main:
     # disagree would mean an invocation that starts and then fails.
     ELITEA_DEEPWIKI_GIT_ALLOWLIST: ""
 
+    # --- The Inventory facade's source expansion (ADR-0023 H4c I2) ---
+    #
+    # ONE ALLOWLIST VARIABLE PER APP, not one shared with DeepWiki. The two
+    # facades clone from different things for different reasons — DeepWiki from
+    # the repository a wiki documents, Inventory from every repository a
+    # knowledge graph ingests — and a deployment that wants one and not the
+    # other has to be able to say so. Fail-closed in exactly the same way:
+    # unset refuses every source, and `*` disables the control explicitly.
+    ELITEA_INVENTORY_GIT_ALLOWLIST: ""
+    # The origin the Inventory provider calls back to for artifacts and models.
+    # EMPTY DISABLES SOURCE EXPANSION rather than failing the boot: the eight
+    # Inventory tools that only read an existing graph still work, and the
+    # three that name a source get the provider's own refusal. Set it to the
+    # platform's own external origin (the same value DeepWiki's takes).
+    ELITEA_INVENTORY_CALLBACK_BASE_URL: ""
+    # How long that bearer lives. Default 120 minutes; it must outlast the
+    # longest ingestion this deployment expects.
+    ELITEA_INVENTORY_CALLBACK_TOKEN_TTL_MINUTES: ""
+    # Which source toolkit types may be expanded. Empty means the default,
+    # "github,ado_repos". It can only SUBTRACT: a type with no field
+    # projection in internal/api/v2/inventory (gitlab, bitbucket today) cannot
+    # be admitted by configuration, because admitting it would mean sending
+    # fields nobody enumerated.
+    ELITEA_INVENTORY_SOURCE_TYPES: ""
+
     # What this deployment does with a provider the admission plane records
     # but has not put in force (migration 0107, internal/providerhost/admission).
     #

@@ -14,48 +14,36 @@ package deepwiki
 // clone and to call back. What the client may choose is which configuration in
 // their own project to use, and the platform expands it under the caller's own
 // project membership.
+//
+// THE MECHANICS ARE NO LONGER HERE. The bounded read, the
+// `configuration.parameters` split, the callback block and its tool-level
+// lift, and the invoke handler that revokes a refused invocation's grant all
+// live in internal/providerhost/material, because Inventory does the same six
+// things to different field names. What is left in this file is the two names
+// DeepWiki rewrites.
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
-	"github.com/go-chi/chi/v5"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
 )
 
-// maxInvokeBodyBytes caps what is parsed. The real payload is a handful of
-// small fields; anything larger is a client sending something this facade has
-// no business rewriting, and reading it into memory to find that out is the
-// failure mode worth avoiding.
-const maxInvokeBodyBytes = 1 << 20
-
-// ErrInvokeRejected reports a body the facade will not forward.
-var ErrInvokeRejected = errors.New("DeepWiki invocation rejected")
+// ErrInvokeRejected reports a body the facade will not forward. It is the
+// shared sentinel: a caller matching on it matches every facade's refusal.
+var ErrInvokeRejected = material.ErrRejected
 
 // CallbackMinter mints the short-lived, project-bound bearer the provider
-// calls back with. Satisfied by v2auth.CallbackTokenMinter; narrowed to what
-// this package uses so the facade's tests do not need a database.
-type CallbackMinter interface {
-	Mint(ctx context.Context, ownerID, projectID int64, name string, lifetime time.Duration) (CallbackGrant, error)
-	Revoke(ctx context.Context, ownerID int64, tokenUUID string) error
-}
+// calls back with.
+type CallbackMinter = material.Minter
 
-// CallbackGrant is one minted bearer, in this package's terms.
-type CallbackGrant struct {
-	Bearer  string
-	Expires time.Time
-	UUID    string
-}
+// CallbackGrant is one minted bearer.
+type CallbackGrant = material.Grant
 
 // InvokeRewriter turns a reference-carrying body into a material-carrying one.
 type InvokeRewriter struct {
@@ -103,26 +91,14 @@ func (rw *InvokeRewriter) Rewrite(
 	projectID int64,
 	userID int64,
 ) ([]byte, CallbackGrant, error) {
-	raw, err := io.ReadAll(io.LimitReader(body, maxInvokeBodyBytes+1))
-	if err != nil {
-		return nil, CallbackGrant{}, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
-	}
-	if len(raw) > maxInvokeBodyBytes {
-		return nil, CallbackGrant{}, fmt.Errorf(
-			"%w: body exceeds %d bytes", ErrInvokeRejected, maxInvokeBodyBytes)
-	}
-
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, CallbackGrant{}, fmt.Errorf("%w: body is not a JSON object", ErrInvokeRejected)
-	}
-
-	parameters, configurationRest, err := invokeParameters(envelope)
+	envelope, err := material.Read(body)
 	if err != nil {
 		return nil, CallbackGrant{}, err
 	}
+	parameters := envelope.Parameters()
 
-	toolkitID, err := codeToolkitID(parameters)
+	toolkitID, err := material.RowID(
+		parameters["code_toolkit"], "configuration.parameters.code_toolkit")
 	if err != nil {
 		return nil, CallbackGrant{}, err
 	}
@@ -134,11 +110,7 @@ func (rw *InvokeRewriter) Rewrite(
 	// caller that does not come through that route — Rewrite is exported —
 	// and unlike the boundary check it is local enough for CodeQL's dataflow
 	// to see (go/incorrect-integer-conversion).
-	//
-	// Refusing rather than clamping: the configuration columns are Postgres
-	// `integer`, so a value above MaxInt32 cannot name a row, and truncating
-	// would silently resolve a DIFFERENT project's credentials.
-	narrowedProject, ok := narrowProjectID(projectID)
+	narrowedProject, ok := material.NarrowRowID(projectID)
 	if !ok {
 		return nil, CallbackGrant{}, fmt.Errorf(
 			"%w: project %d is out of range", ErrToolkitNotResolvable, projectID)
@@ -149,8 +121,8 @@ func (rw *InvokeRewriter) Rewrite(
 	// minting before it would leave a live bearer behind for every refused
 	// request, which is a credential issued for work that never happened.
 	resolved, err := rw.credentials.Resolve(ctx, narrowedProject, toolkitID,
-		stringParameter(parameters, "repository"),
-		firstStringParameter(parameters, "active_branch", "branch", "base_branch"))
+		material.String(parameters, "repository"),
+		material.FirstString(parameters, "active_branch", "branch", "base_branch"))
 	if err != nil {
 		return nil, CallbackGrant{}, err
 	}
@@ -161,216 +133,24 @@ func (rw *InvokeRewriter) Rewrite(
 		return nil, CallbackGrant{}, err
 	}
 
-	encodedToolkit, err := json.Marshal(resolved.Payload)
-	if err != nil {
-		return nil, grant, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
-	}
-	parameters["code_toolkit"] = encodedToolkit
-
-	block := rw.llmSettings(parameters, grant, projectID)
-	if err := liftToolLLMSettings(envelope, block); err != nil {
+	if err := envelope.Set("code_toolkit", resolved.Payload); err != nil {
 		return nil, grant, err
 	}
-	settings, err := json.Marshal(block)
-	if err != nil {
-		return nil, grant, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
-	}
-	parameters["llm_settings"] = settings
 
-	encodedParameters, err := json.Marshal(parameters)
-	if err != nil {
-		return nil, grant, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
+	block := material.CallbackSettings(rw.callbackBase, grant, projectID,
+		material.String(parameters, "llm_model"))
+	if err := envelope.LiftToolLLMSettings(block); err != nil {
+		return nil, grant, err
 	}
-	configurationRest["parameters"] = encodedParameters
-
-	encodedConfiguration, err := json.Marshal(configurationRest)
-	if err != nil {
-		return nil, grant, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
+	if err := envelope.Set("llm_settings", block); err != nil {
+		return nil, grant, err
 	}
-	envelope["configuration"] = encodedConfiguration
 
-	rewritten, err := json.Marshal(envelope)
+	rewritten, err := envelope.Encode()
 	if err != nil {
-		return nil, grant, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
+		return nil, grant, err
 	}
 	return rewritten, grant, nil
-}
-
-// llmSettings builds the block the engine reads for BOTH its model calls and
-// its artifact callbacks.
-//
-// One block, two uses, and that is the engine's design rather than a shortcut
-// here: extract_artifact_settings derives the artifact base by stripping
-// `/llm/v1` off api_base and takes project_id from `organization`. Splitting
-// them would mean editing the engine, which this port does not do.
-func (rw *InvokeRewriter) llmSettings(
-	parameters map[string]json.RawMessage,
-	grant CallbackGrant,
-	projectID int64,
-) map[string]any {
-	settings := map[string]any{
-		"api_base": rw.callbackBase + "/llm/v1",
-		"api_key":  grant.Bearer,
-		// The engine reads project_id from `organization` first. It is the
-		// project the artifacts land in and the project the model calls bill,
-		// and both must be the one in the path — not one the client names.
-		"organization": fmt.Sprintf("%d", projectID),
-	}
-	// model_name is a caller choice, not a credential, so the caller's own
-	// llm_model still decides it. Anything else the client put in llm_settings
-	// is discarded with the block.
-	if model := stringParameter(parameters, "llm_model"); model != "" {
-		settings["model_name"] = model
-	}
-	return settings
-}
-
-// toolLLMSettingsCarried are the keys of a TOOL-level llm_settings block the
-// facade carries into its own: tuning, never transport. Everything else in
-// that block is dropped with it.
-var toolLLMSettingsCarried = []string{"max_tokens", "temperature"}
-
-// liftToolLLMSettings removes a client's llm_settings from the tool-level
-// `parameters` and lifts its tuning keys into the facade's block.
-//
-// The provider merges the tool's own parameters OVER the configuration's
-// (the legacy `if key not in params or value` rule, kept by the host), so a
-// tool-level `llm_settings` — which the wiki chat sends, carrying
-// max_tokens and the model — replaced the facade's block wholesale and the
-// engine refused with `llm_settings.api_base is required`. MEASURED on the
-// first real-engine chat through the product (DWIKI-014b). The same hole let
-// a client push api_base/api_key past the rewrite that exists to stop that:
-// the configuration-level block was replaced, the tool-level one merged.
-func liftToolLLMSettings(envelope map[string]json.RawMessage, block map[string]any) error {
-	encoded, ok := envelope["parameters"]
-	if !ok || isJSONNull(encoded) {
-		return nil
-	}
-	tool := map[string]json.RawMessage{}
-	if err := json.Unmarshal(encoded, &tool); err != nil {
-		return fmt.Errorf("%w: parameters is not an object", ErrInvokeRejected)
-	}
-	raw, ok := tool["llm_settings"]
-	if !ok {
-		return nil
-	}
-	delete(tool, "llm_settings")
-	if !isJSONNull(raw) {
-		var client map[string]any
-		if err := json.Unmarshal(raw, &client); err != nil {
-			return fmt.Errorf("%w: parameters.llm_settings is not an object", ErrInvokeRejected)
-		}
-		for _, key := range toolLLMSettingsCarried {
-			if v, ok := client[key]; ok && v != nil {
-				block[key] = v
-			}
-		}
-	}
-	rewritten, err := json.Marshal(tool)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrInvokeRejected, err)
-	}
-	envelope["parameters"] = rewritten
-	return nil
-}
-
-// invokeParameters extracts configuration.parameters as a mutable map.
-func invokeParameters(
-	envelope map[string]json.RawMessage,
-) (map[string]json.RawMessage, map[string]json.RawMessage, error) {
-	configurationRest := map[string]json.RawMessage{}
-	if encoded, ok := envelope["configuration"]; ok && !isJSONNull(encoded) {
-		if err := json.Unmarshal(encoded, &configurationRest); err != nil {
-			return nil, nil, fmt.Errorf(
-				"%w: configuration is not an object", ErrInvokeRejected)
-		}
-	}
-	parameters := map[string]json.RawMessage{}
-	if encoded, ok := configurationRest["parameters"]; ok && !isJSONNull(encoded) {
-		if err := json.Unmarshal(encoded, &parameters); err != nil {
-			return nil, nil, fmt.Errorf(
-				"%w: configuration.parameters is not an object", ErrInvokeRejected)
-		}
-	}
-	return parameters, configurationRest, nil
-}
-
-// codeToolkitID reads the configuration id the caller named.
-//
-// A NUMBER, and only a number. The descriptor types this field Integer, and a
-// client sending an expanded object instead is a client pushing its own
-// credentials — refused rather than merged, because merging would leave the
-// caller in control of which token the provider clones with.
-func codeToolkitID(parameters map[string]json.RawMessage) (int32, error) {
-	encoded, ok := parameters["code_toolkit"]
-	if !ok || isJSONNull(encoded) {
-		return 0, fmt.Errorf(
-			"%w: configuration.parameters.code_toolkit is required", ErrInvokeRejected)
-	}
-	var id int32
-	if err := json.Unmarshal(encoded, &id); err != nil {
-		return 0, fmt.Errorf(
-			"%w: code_toolkit must be a configuration id, not %s",
-			ErrInvokeRejected, describeJSON(encoded))
-	}
-	if id <= 0 {
-		return 0, fmt.Errorf("%w: code_toolkit %d is not a configuration id", ErrInvokeRejected, id)
-	}
-	return id, nil
-}
-
-// narrowProjectID converts to the width the configuration columns use, or
-// refuses. See the call site for why refusing is the only correct answer.
-func narrowProjectID(value int64) (int32, bool) {
-	if value <= 0 || value > math.MaxInt32 {
-		return 0, false
-	}
-	return int32(value), true
-}
-
-func stringParameter(parameters map[string]json.RawMessage, key string) string {
-	encoded, ok := parameters[key]
-	if !ok {
-		return ""
-	}
-	var value string
-	if err := json.Unmarshal(encoded, &value); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(value)
-}
-
-func firstStringParameter(parameters map[string]json.RawMessage, keys ...string) string {
-	for _, key := range keys {
-		if value := stringParameter(parameters, key); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func isJSONNull(raw json.RawMessage) bool {
-	return len(bytes.TrimSpace(raw)) == 4 && bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
-}
-
-// describeJSON names a value's kind for an error message, without echoing the
-// value: the thing a client wrongly put in code_toolkit is exactly the thing
-// most likely to be a secret.
-func describeJSON(raw json.RawMessage) string {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
-		return "nothing"
-	}
-	switch trimmed[0] {
-	case '{':
-		return "an object"
-	case '[':
-		return "an array"
-	case '"':
-		return "a string"
-	default:
-		return "that value"
-	}
 }
 
 // invokeError maps a rewrite failure to a status a caller can act on.
@@ -391,118 +171,4 @@ func invokeError(err error) (int, string) {
 		return http.StatusServiceUnavailable,
 			"DeepWiki credentials could not be resolved."
 	}
-}
-
-// invoke rewrites the body, forwards it, and revokes the minted bearer when
-// the provider did not accept the invocation.
-//
-// REVOCATION IS THE POINT OF CAPTURING THE STATUS. A refused invoke leaves a
-// live, project-bound credential behind for nothing: the work it was minted
-// for will never run, and it stays valid until its TTL. It expires either way,
-// so this is a narrowing rather than a guarantee — but it narrows the window
-// from hours to nothing for the case that fails fastest and most often, a
-// malformed or refused request.
-func invoke(
-	w http.ResponseWriter,
-	r *http.Request,
-	proxy *Proxy,
-	rewriter *InvokeRewriter,
-	logger *slog.Logger,
-	providerPath string,
-) {
-	projectID, ok := pathProjectID(r)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "The project id is not valid.")
-		return
-	}
-	userID := ownerIDFrom(r)
-	if userID <= 0 {
-		// A machine principal with no owning user cannot be given a callback
-		// bearer: the token row must belong to somebody, and inventing an
-		// owner would put a credential under a user who did not ask for it.
-		writeError(w, http.StatusForbidden,
-			"Starting a DeepWiki generation requires a user identity.")
-		return
-	}
-
-	rewritten, grant, err := rewriter.Rewrite(r.Context(), r.Body, projectID, userID)
-	if err != nil {
-		if grant.UUID != "" {
-			revoke(r.Context(), rewriter, logger, userID, grant.UUID)
-		}
-		status, message := invokeError(err)
-		logger.Warn("deepwiki invoke rejected",
-			"project", projectID, "status", status, "error", err)
-		writeError(w, status, message)
-		return
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(rewritten))
-	r.ContentLength = int64(len(rewritten))
-	r.Header.Set("Content-Type", "application/json")
-	// A stale Content-Length from the original body would be forwarded
-	// alongside the new one; the header and the field must agree.
-	r.Header.Del("Content-Length")
-
-	// The status is observed through the proxy's own ModifyResponse hook, not
-	// by wrapping the ResponseWriter.
-	//
-	// A wrapper was the first shape, and it was worse in two ways. It has to
-	// forward Flush or a streaming response stops streaming — a hazard this
-	// route does not need to carry — and it puts a Write on a
-	// caller-influenced response body, which CodeQL reads as a reflected-XSS
-	// sink (go/reflected-xss). SecurityHeaders already sets nosniff in front
-	// of every route, so the sink was not exploitable; ModifyResponse is
-	// simply the seam the standard library provides for reading a proxied
-	// status, and using it means there is no wrapper to reason about.
-	status := proxy.ForwardObserved(w, r,
-		providerPath, strconv.FormatInt(projectID, 10),
-		strconv.FormatInt(userID, 10))
-
-	// Zero means ModifyResponse never ran, which is a transport failure — the
-	// provider was never reached, so the invocation certainly did not start.
-	if status >= 400 || status == 0 {
-		revoke(r.Context(), rewriter, logger, userID, grant.UUID)
-	}
-}
-
-func revoke(
-	ctx context.Context,
-	rewriter *InvokeRewriter,
-	logger *slog.Logger,
-	userID int64,
-	tokenUUID string,
-) {
-	if tokenUUID == "" {
-		return
-	}
-	// context.WithoutCancel: the request context may already be done — a
-	// client that disconnected is one of the cases that leaves a token behind
-	// — and revoking is exactly the work that must still happen then.
-	if err := rewriter.minter.Revoke(context.WithoutCancel(ctx), userID, tokenUUID); err != nil {
-		logger.Warn("deepwiki callback token not revoked; it expires on its own",
-			"token", tokenUUID, "error", err)
-	}
-}
-
-func pathProjectID(r *http.Request) (int64, bool) {
-	raw := chi.URLParam(r, "project_id")
-	if !validProjectID(raw) {
-		return 0, false
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	return value, err == nil
-}
-
-// ownerIDFrom reads the database user a callback token can belong to.
-func ownerIDFrom(r *http.Request) int64 {
-	principal, ok := auth.RuntimePrincipalFromContext(r.Context())
-	if !ok {
-		return 0
-	}
-	owner, ok := principal.OwningUserID()
-	if !ok {
-		return 0
-	}
-	return owner
 }
