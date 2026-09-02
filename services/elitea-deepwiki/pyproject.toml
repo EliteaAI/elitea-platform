@@ -83,7 +83,7 @@ engine = [
   "tree-sitter-embedded-template==0.25.0",
   "tree-sitter-yaml==0.7.2",
   "deepagents==0.4.4",
-  "wcmatch==10.1",
+  "wcmatch==11.0.1",
   "bracex==2.6",
   "filetype==1.2.0",
   "docstring-parser==0.17.0",
