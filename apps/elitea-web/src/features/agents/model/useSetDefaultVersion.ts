@@ -81,7 +81,7 @@ export function useSetDefaultVersion(input: UseSetDefaultVersionInput): UseSetDe
       setError(undefined);
       try {
         const options = getSetApplicationDefaultVersionQueryOptions(input.projectId, input.applicationId, versionId);
-        const response = await queryClient.fetchQuery({ ...options, staleTime: 0 });
+        const response = await queryClient.query({ ...options, staleTime: 0 });
         return (response as { data: OkResponse }).data.ok;
       } catch (caught) {
         setError(caught);

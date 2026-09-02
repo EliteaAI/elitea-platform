@@ -166,7 +166,7 @@ export function useSaveVersion(onSaveTools?: () => Promise<boolean>): UseSaveVer
           input.versionId,
           input.version,
         );
-        const versionResponse = await queryClient.fetchQuery(versionOptions);
+        const versionResponse = await queryClient.query(versionOptions);
         const versionDetail = (versionResponse as { data: ApplicationVersionDetail }).data;
 
         if (!needsApplicationUpdate(input)) {
@@ -179,7 +179,7 @@ export function useSaveVersion(onSaveTools?: () => Promise<boolean>): UseSaveVer
           ...(input.applicationIcon !== undefined ? { icon: input.applicationIcon } : {}),
         };
         const appOptions = getEditApplicationQueryOptions(input.projectId, input.applicationId, body);
-        const appResponse = await queryClient.fetchQuery(appOptions);
+        const appResponse = await queryClient.query(appOptions);
         const application = (appResponse as { data: ApplicationUpdatedResponse }).data;
 
         return { versionDetail, application };

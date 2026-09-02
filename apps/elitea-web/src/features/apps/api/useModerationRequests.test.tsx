@@ -22,7 +22,7 @@ import { renderHookWithRouter } from '../__tests__/testUtils';
  * never depend on cache/retry timing. That also means it CANNOT reproduce
  * the exact regression finding #1 (adversarial-review cluster
  * `A6-api-model`) describes: `submitRequest` routing its POST through
- * `queryClient.fetchQuery()` against query-flavoured options picks up
+ * `queryClient.query()` against query-flavoured options picks up
  * whatever the *app's real* `defaultOptions.queries` are
  * (`staleTime: 30_000`, `retry: 1` — `src/app/providers/queryClient.ts`'s
  * `QUERY_DEFAULT_OPTIONS`), not the test harness's zeroed ones. Importing
@@ -230,7 +230,7 @@ describe('useModerationRequests', () => {
     expect(result.current.getRequestStatus('inventory')).toBe(REQUEST_STATUS.NONE);
   });
 
-  it('submitRequest fires a fresh POST on every call, even with identical arguments inside the real 30s staleTime window (regression test — queryClient.fetchQuery() against query-flavoured options would dedup this non-idempotent POST against the QueryClient cache and skip the second network call entirely)', async () => {
+  it('submitRequest fires a fresh POST on every call, even with identical arguments inside the real 30s staleTime window (regression test — queryClient.query() against query-flavoured options would dedup this non-idempotent POST against the QueryClient cache and skip the second network call entirely)', async () => {
     let postCount = 0;
     server.use(
       getModerationStatusMockHandler({ total: 0, rows: [] }),
@@ -252,7 +252,7 @@ describe('useModerationRequests', () => {
     expect(postCount).toBe(1);
 
     // Same type/description/label as the first call — under the old
-    // fetchQuery()-against-query-options implementation this hashes to the
+    // query()-against-query-options implementation this hashes to the
     // same queryKey and, still inside the 30s staleTime window, resolves
     // from cache with NO second network request.
     await act(async () => {
@@ -261,7 +261,7 @@ describe('useModerationRequests', () => {
     expect(postCount).toBe(2);
   });
 
-  it('does not auto-retry a failed submitRequest (regression test — queryClient.fetchQuery() picks up the real query default retry: 1, silently replaying the non-idempotent POST once on failure)', async () => {
+  it('does not auto-retry a failed submitRequest (regression test — queryClient.query() picks up the real query default retry: 1, silently replaying the non-idempotent POST once on failure)', async () => {
     let postCount = 0;
     server.use(
       getModerationStatusMockHandler({ total: 0, rows: [] }),

@@ -53,7 +53,7 @@ export interface UseLazyGetAgentCategoriesQueryResult {
  * `useLazyGetAgentCategoriesQuery()` — imperative-trigger form. TanStack
  * Query's generated client has no RTK-style lazy hook; the established
  * imperative-trigger convention for this generated client is
- * `queryClient.fetchQuery(getXQueryOptions(...))` (see
+ * `queryClient.query(getXQueryOptions(...))` (see
  * `entities/application-form/model/mutations.ts`'s own doc comment for why
  * every write endpoint here uses this shape — read endpoints follow the
  * same pattern when an imperative call, not a subscription, is what the
@@ -65,7 +65,7 @@ export function useLazyGetAgentCategoriesQuery(): UseLazyGetAgentCategoriesQuery
   const trigger = useCallback(
     async (projectId: string): Promise<AgentCategoriesResponse | undefined> => {
       const options = getGetAgentCategoriesQueryOptions(projectId);
-      const response = await queryClient.fetchQuery(options);
+      const response = await queryClient.query(options);
       // Error-envelope response variants (401) are never actually reachable here —
       // `eliteaFetch` throws `EliteaApiError` instead of resolving with them (mutator.ts's
       // §3.6 unwrap contract; same cast convention as `entities/application-form`'s hooks).

@@ -190,7 +190,7 @@ interface PerformAssociationParams {
  * stay under the §3.5 cyclomatic-complexity budget (12).
  */
 async function performAssociation({ queryClient, projectId, applicationId, versionId, candidate, entityLabel, currentTools }: PerformAssociationParams): Promise<AssociateAgentOutcome> {
-  const detailResponse = await queryClient.fetchQuery(getGetApplicationQueryOptions(projectId, candidate.id));
+  const detailResponse = await queryClient.query(getGetApplicationQueryOptions(projectId, candidate.id));
   // Same error-envelope-unreachable cast as `entities/application-form/model/mutations.ts` (eliteaFetch throws instead of resolving with the error variant).
   const selectedApplication = (detailResponse as { data: ApplicationDetail }).data;
   const candidateVersion = selectedApplication.version_details;
@@ -205,7 +205,7 @@ async function performAssociation({ queryClient, projectId, applicationId, versi
     return { ok: false, message: `"${candidate.name}" has no version to attach.` };
   }
 
-  await queryClient.fetchQuery(
+  await queryClient.query(
     getUpdateApplicationRelationQueryOptions(projectId, Number(selectedApplication.id), Number(candidateVersion.id), {
       application_id: applicationId,
       version_id: versionId,
