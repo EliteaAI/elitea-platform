@@ -450,8 +450,12 @@ const ROUTES: readonly VisualRoute[] = [
   },
   {
     // @covers /deepwiki
+    // @covers /deepwiki/$toolkitId
     name: 'deepwiki-browser',
-    path: '/app/deepwiki',
+    // The toolkit page itself: project 90200 seeds TWO wiki toolkits (the
+    // read-only one and the one the generation journeys mutate), so
+    // /app/deepwiki renders the chooser, not a wiki.
+    path: '/app/deepwiki/9001',
     // The wiki's own project, not the persona's. The seeded wiki cannot live in
     // the shared project 1 — a permanent toolkit there makes J17.1's empty-list
     // premise unreachable — so this shot switches to the project the fixture is
@@ -477,7 +481,10 @@ const ROUTES: readonly VisualRoute[] = [
     // @covers /deepwiki
     // The toolkit settings panel, open: the JSON draft editor and its Save.
     name: 'deepwiki-settings',
-    path: '/app/deepwiki',
+    // The toolkit page itself: project 90200 seeds TWO wiki toolkits (the
+    // read-only one and the one the generation journeys mutate), so
+    // /app/deepwiki renders the chooser, not a wiki.
+    path: '/app/deepwiki/9001',
     project: { id: '90200', name: 'e2e-deepwiki' },
     prepare: async (page) => {
       await page.getByTestId('wiki-settings-toggle').click();
@@ -489,7 +496,10 @@ const ROUTES: readonly VisualRoute[] = [
     // The wiki chat drawer, open and empty: the composer, the mode switch,
     // the invitation. Nothing has been asked, so nothing here is volatile.
     name: 'deepwiki-chat',
-    path: '/app/deepwiki',
+    // The toolkit page itself: project 90200 seeds TWO wiki toolkits (the
+    // read-only one and the one the generation journeys mutate), so
+    // /app/deepwiki renders the chooser, not a wiki.
+    path: '/app/deepwiki/9001',
     project: { id: '90200', name: 'e2e-deepwiki' },
     prepare: async (page) => {
       await page.getByRole('button', { name: 'Ask about this repository' }).click();
