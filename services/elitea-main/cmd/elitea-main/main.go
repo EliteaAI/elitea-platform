@@ -1089,6 +1089,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("build the Inventory facade: %w", err)
 		}
+		startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
+			"inventory", inventoryConfig, v2inventory.EnvNames.BaseURL)
 	}
 
 	var deepwikiRoute *v2deepwiki.Route
@@ -1161,6 +1163,17 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose DeepWiki facade: %w", err)
 		}
+		startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
+			"deepwiki", facade.Config{
+				Enabled:        true,
+				BaseURL:        deepwikiConfig.BaseURL,
+				ClientCertFile: deepwikiConfig.ClientCertFile,
+				ClientKeyFile:  deepwikiConfig.ClientKeyFile,
+				CAFile:         deepwikiConfig.CAFile,
+				ServerName:     deepwikiConfig.ServerName,
+				IdentitySecret: deepwikiConfig.IdentitySecret,
+				Timeout:        deepwikiConfig.Timeout,
+			}, v2deepwiki.BaseURLEnv)
 	}
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler
