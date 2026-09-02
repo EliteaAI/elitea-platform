@@ -119,3 +119,30 @@ export async function fetchWikiPage(
   const body = isRecord(response) && 'data' in response ? response.data : response;
   return typeof body === 'string' ? body : undefined;
 }
+
+/**
+ * Write one wiki page back into the bucket.
+ *
+ * `overwrite=true`, because every caller here REPLACES: an edit saves over the
+ * page it opened, a quick fix saves over the block it repaired. The object
+ * route answers 409 AlreadyExists by default, and without the flag the second
+ * save of any page would fail.
+ *
+ * The KEY travels as the multipart filename — appended as the third argument,
+ * not wrapped in `new File(...)`, whose constructor replaces `/` with `:` and
+ * would mangle every `{wiki_id}/wiki_pages/...` key. `eliteaFetch` passes a
+ * FormData body through untouched, so `fetch` sets the multipart boundary.
+ */
+export async function putWikiPage(
+  projectId: string | number,
+  key: string,
+  markdown: string,
+  bucket: string = WIKI_BUCKET,
+): Promise<void> {
+  const body = new FormData();
+  body.append('file', new Blob([markdown], { type: 'text/markdown' }), key);
+  await eliteaFetch<unknown>(`${objectsPath(projectId, bucket)}?overwrite=true`, {
+    method: 'POST',
+    body,
+  });
+}

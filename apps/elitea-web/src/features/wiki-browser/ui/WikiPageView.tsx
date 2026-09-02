@@ -53,7 +53,7 @@ export function WikiPageView({ projectId, wiki }: WikiPageViewProps): React.JSX.
   // "could not be loaded", and the unreadable branch below is unreachable.
   // Found by the test for that branch, not by reading.
   const query = useQuery({
-    queryKey: ['wiki', 'page', projectId, wikiId, active],
+    queryKey: ['deepwiki', 'page', projectId, wikiId, active],
     enabled: wikiId !== '' && active !== undefined,
     queryFn: async () => ({ text: (await fetchWikiPage(projectId, wikiId, active ?? '')) ?? null }),
   });

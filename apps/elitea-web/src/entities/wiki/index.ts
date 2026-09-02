@@ -14,5 +14,11 @@ export type { RepositoryIdentity, ToolkitSettings, WikiManifest } from './model/
 export { filterManifestsByRepo } from './lib/repoMatch';
 // Added in P5, when the settings feature became its first consumer.
 export { getConfiguredRepoIdentity } from './lib/toolkitSettings';
-export { fetchWikiManifest, fetchWikiPage, listWikiObjects, manifestKeys } from './api/wikiArtifactsApi';
+export {
+  fetchWikiManifest,
+  fetchWikiPage,
+  listWikiObjects,
+  manifestKeys,
+  putWikiPage,
+} from './api/wikiArtifactsApi';
 export { useWikiToolkit, useWikiToolkits } from './api/wikiToolkitApi';
