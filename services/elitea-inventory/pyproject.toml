@@ -106,7 +106,7 @@ engine = [
   # chromadb and mcp are the only two transitive packages that bound uvicorn in
   # the resolution; pinning chromadb alone was not enough, and the build was
   # still walking backwards through uvicorn releases.
-  "mcp==1.29.1",
+  "mcp==2.1.1",
   # langsmith, bounded for the reason services/elitea-worker-python states at
   # length and this build then reproduced verbatim:
   #
