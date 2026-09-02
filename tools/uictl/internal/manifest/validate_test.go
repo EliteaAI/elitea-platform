@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -177,8 +178,81 @@ func TestUnverifiedMust(t *testing.T) {
 	c := validItem()
 	c.ID = "TEST-003"
 	c.Priority = "should"
-	got := UnverifiedMust(validManifest(a, b, c))
+	got := UnverifiedMust(validManifest(a, b, c), "")
 	if len(got) != 1 || got[0] != "TEST-001" {
 		t.Fatalf("expected [TEST-001], got %v", got)
+	}
+}
+
+func TestUnverifiedMust_DomainScopesTheAudit(t *testing.T) {
+	a := validItem() // unverified, in validItem's domain
+	other := validItem()
+	other.ID = "TEST-002"
+	other.Domain = "deepwiki"
+	other.Status = "verified"
+	m := validManifest(a, other)
+	if got := UnverifiedMust(m, "deepwiki"); len(got) != 0 {
+		t.Fatalf("deepwiki has nothing unverified, got %v", got)
+	}
+	if got := UnverifiedMust(m, a.Domain); len(got) != 1 || got[0] != "TEST-001" {
+		t.Fatalf("expected [TEST-001] in %s, got %v", a.Domain, got)
+	}
+	if !HasDomain(m, "deepwiki") || HasDomain(m, "no-such-domain") {
+		t.Fatal("HasDomain must answer for exactly the domains items carry")
+	}
+}
+
+// The DeepWiki bundle was deleted at the end of its port; its anchors resolve
+// through the pinned commit. Proved on a throwaway repository: the file is
+// committed, deleted from the tree, and still measured through the pin.
+func TestValidate_DeepWikiUIAnchorsResolveThroughThePin(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q")
+	src := filepath.Join(dir, "apps", "deepwiki-ui", "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "App.jsx"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "vendored")
+	commit := run("rev-parse", "HEAD")
+	if err := os.RemoveAll(filepath.Join(dir, "apps", "deepwiki-ui")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "apps", "elitea-web", "parity"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	baseline := fixtureBaseline(t)
+
+	item := validItem()
+	item.Domain = "deepwiki"
+	item.Source = []string{"apps/deepwiki-ui/src/App.jsx:1-3"}
+
+	// Without the pin the anchor is unresolvable — reported, not waved through.
+	if problems := Validate(validManifest(item), baseline); len(problems) == 0 {
+		t.Fatal("expected a problem with no pin and no tree")
+	}
+	if err := os.WriteFile(deepwikiUIPin, []byte(commit+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if problems := Validate(validManifest(item), baseline); len(problems) != 0 {
+		t.Fatalf("expected the pinned tree to resolve the anchor, got %v", problems)
+	}
+	item.Source = []string{"apps/deepwiki-ui/src/App.jsx:1-9"}
+	if problems := Validate(validManifest(item), baseline); len(problems) == 0 {
+		t.Fatal("a range past the pinned file's end must still be out of range")
 	}
 }

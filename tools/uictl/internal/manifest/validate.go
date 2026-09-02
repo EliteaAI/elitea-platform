@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -20,13 +21,16 @@ var (
 	//   apps/elitea-ui/    the PINNED baseline. A submodule checkout at a fixed
 	//                      commit, supplied by -baseline. It does not move, so a
 	//                      line reference into it stays true.
-	//   apps/deepwiki-ui/  a bundle vendored into THIS repository. It resolves
-	//                      against the repo tree and therefore moves with HEAD.
+	//   apps/deepwiki-ui/  the bundle that WAS vendored into this repository for
+	//                      the DeepWiki port and deleted at its end (P2.P9). It
+	//                      resolves against the commit named in
+	//                      apps/elitea-web/parity/deepwiki-ui.pin — the last one
+	//                      that carried it — through `git show`, so the anchors
+	//                      stay true after the tree is gone. While the tree still
+	//                      exists it is read directly.
 	//
-	// The second is weaker evidence and it is admitted deliberately: the bundle
-	// is frozen and is deleted at the end of the DeepWiki port, so the window in
-	// which a reference can drift is the port itself. Nothing else may use it —
-	// the alternation below is a closed list, not a wildcard.
+	// Nothing else may use the second root — the alternation below is a closed
+	// list, not a wildcard.
 	sourceRe = regexp.MustCompile(`^apps/(elitea-ui|deepwiki-ui)/(.+):(\d+)(?:-(\d+))?$`)
 	acceptRe = regexp.MustCompile(`^(GIVEN|WHEN|THEN|AND) `)
 )
@@ -159,6 +163,9 @@ func Validate(m *Manifest, baseline string) []string {
 			n, ok := lineCounts[cacheKey]
 			if !ok {
 				data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+				if err != nil && tree == "deepwiki-ui" {
+					data, err = deepwikiUISourceAtPin(rel)
+				}
 				if err != nil {
 					lineCounts[cacheKey] = -1
 					n = -1
@@ -168,6 +175,11 @@ func Validate(m *Manifest, baseline string) []string {
 				}
 			}
 			if n < 0 {
+				if tree == "deepwiki-ui" {
+					bad("%s: source file %q is not under %s and could not be read from the commit in %s "+
+						"(a shallow checkout cannot `git show` it — fetch the history)", id, rel, root, deepwikiUIPin)
+					continue
+				}
 				bad("%s: source file %q does not exist under %s", id, rel, root)
 				continue
 			}
@@ -250,4 +262,22 @@ func Validate(m *Manifest, baseline string) []string {
 		}
 	}
 	return problems
+}
+
+// deepwikiUIPin names the commit the deleted DeepWiki bundle is read from.
+const deepwikiUIPin = "apps/elitea-web/parity/deepwiki-ui.pin"
+
+// deepwikiUISourceAtPin reads apps/deepwiki-ui/<rel> from the pinned commit.
+// The pin file's first line is the commit; the tree it names is the evidence,
+// exactly as the elitea-ui submodule's commit is for the other root.
+func deepwikiUISourceAtPin(rel string) ([]byte, error) {
+	pin, err := os.ReadFile(deepwikiUIPin)
+	if err != nil {
+		return nil, err
+	}
+	commit := strings.TrimSpace(strings.SplitN(string(pin), "\n", 2)[0])
+	if !commitRe.MatchString(commit) {
+		return nil, fmt.Errorf("%s: first line is not a commit: %q", deepwikiUIPin, commit)
+	}
+	return exec.Command("git", "show", commit+":apps/deepwiki-ui/"+rel).Output()
 }

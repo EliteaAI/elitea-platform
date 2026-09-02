@@ -22,16 +22,21 @@
  * The line range is asserted, not trusted: if the surrounding file moves, the
  * script fails loudly rather than slicing the wrong function.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SOURCE = resolve(here, '../../../deepwiki-ui/src/components/ChatDrawer.jsx');
+// The vendored bundle was deleted at the end of the port (P2.P9); its source
+// is read from the commit pinned in parity/deepwiki-ui.pin, which is the last
+// one that carried it. The line anchors below refer to that commit.
+const PIN = readFileSync(resolve(here, '../../parity/deepwiki-ui.pin'), 'utf8').trim().split('\n')[0];
+const SOURCE = `${PIN}:apps/deepwiki-ui/src/components/ChatDrawer.jsx`;
 const FIRST_LINE = 1229; // `const handleAskSocketMessage = useCallback((data) => {`
 const LAST_LINE = 1565; // `}, []);`
 
-const lines = readFileSync(SOURCE, 'utf8').split('\n');
+const lines = execFileSync('git', ['show', SOURCE], { encoding: 'utf8', cwd: resolve(here, '../../../..') }).split('\n');
 const body = lines.slice(FIRST_LINE - 1, LAST_LINE).join('\n');
 
 // The guards. A silently wrong slice is a harness that characterises the wrong

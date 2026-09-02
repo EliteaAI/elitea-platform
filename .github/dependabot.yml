@@ -202,14 +202,3 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
-  # apps/deepwiki-ui is the VENDORED bundle that ADR-0022 decision 8 declared
-  # interim and that Track P2 deletes. open-pull-requests-limit: 0 turns off
-  # routine version updates while leaving SECURITY updates on — dependabot
-  # raises those regardless of this limit. So a vulnerability in the bundle
-  # still opens a pull request; a weekly minor bump on code with a scheduled
-  # deletion date does not.
-  - package-ecosystem: npm
-    directory: /apps/deepwiki-ui
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0

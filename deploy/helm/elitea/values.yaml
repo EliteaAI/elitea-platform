@@ -988,14 +988,6 @@ main:
     # elitea-main.validateConnectionBudget exists to make visible, and the
     # deployment has to answer it with a bigger server or fewer replicas.
     ELITEA_DATABASE_MAX_CONNS: "6"
-    # The vendored DeepWiki SPA's bundle directory (ADR-0022 decision 8).
-    # The published image bakes this in, so it is normally left alone; set it
-    # to "" to serve no UI while keeping the facade's API routes.
-    #
-    # SEPARATE from ELITEA_DEEPWIKI_ENABLED on purpose: an image can carry the
-    # facade and no bundle (the hybrid target does), and a page mounted
-    # without one renders an empty document that reports nothing anywhere.
-    DEEPWIKI_UI_STATIC_DIR: /data/deepwiki_ui/dist
 
   # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
   # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
