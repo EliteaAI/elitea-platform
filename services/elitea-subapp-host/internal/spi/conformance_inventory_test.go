@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,8 +77,19 @@ func inventoryFixture(t *testing.T, parts ...string) []byte {
 	return raw
 }
 
+// DescriptorRevision is the revision the host serves, and the one the byte pin
+// below reads. It moved from legacy-v0 to legacy-v1 in ADR-0023 H4c stage I3,
+// which added four tools the legacy plugin implemented, routed and never
+// declared — see internal/apps/inventory/inventory.go and the fixture
+// directory's README for which four and why.
+//
+// legacy-v0 stays in the fixtures. It is the record of what the legacy plugin
+// ACTUALLY declared, which is what a parity question is asked against; the test
+// below reads it as well, so deleting it fails rather than passing quietly.
+const DescriptorRevision = "legacy-v1"
+
 func TestTheInventoryApplicationWalksTheWholeSuite(t *testing.T) {
-	// The served descriptor is the frozen legacy-v0 document, byte for byte
+	// The served descriptor is the frozen legacy-v1 document, byte for byte
 	// after canonical whitespace — key ORDER included, which a map-based
 	// encoder would lose. The fixture's location is the settings default.
 	t.Run("the descriptor is byte-identical to the golden fixture", func(t *testing.T) {
@@ -86,11 +98,66 @@ func TestTheInventoryApplicationWalksTheWholeSuite(t *testing.T) {
 			t.Fatalf("%d", recorder.Code)
 		}
 		var compact bytes.Buffer
-		if err := json.Compact(&compact, inventoryFixture(t, "descriptor", "legacy-v0", "provider_descriptor.json")); err != nil {
+		if err := json.Compact(&compact, inventoryFixture(t, "descriptor", DescriptorRevision, "provider_descriptor.json")); err != nil {
 			t.Fatal(err)
 		}
 		if recorder.Body.String() != compact.String() {
 			t.Fatalf("descriptor differs from the golden fixture\n got: %.200s\nwant: %.200s", recorder.Body.String(), compact.String())
+		}
+	})
+
+	// legacy-v1 differs from legacy-v0 by exactly four added tools and
+	// nothing else. Checked here rather than trusted, because the change was
+	// made to a 37 KB document by a generator: a generator that also dropped a
+	// tool, reordered a family or edited an args_schema would produce a
+	// descriptor this suite's other cases still accept.
+	t.Run("legacy-v1 adds four tools to legacy-v0 and changes nothing else", func(t *testing.T) {
+		type tool struct {
+			Name string `json:"name"`
+		}
+		type toolkit struct {
+			Name          string          `json:"name"`
+			ProvidedTools []tool          `json:"provided_tools"`
+			Config        json.RawMessage `json:"toolkit_config"`
+		}
+		read := func(revision string) []toolkit {
+			var document struct {
+				ProvidedToolkits []toolkit `json:"provided_toolkits"`
+			}
+			if err := json.Unmarshal(inventoryFixture(t, "descriptor", revision, "provider_descriptor.json"), &document); err != nil {
+				t.Fatal(err)
+			}
+			return document.ProvidedToolkits
+		}
+		v0, v1 := read("legacy-v0"), read(DescriptorRevision)
+		if len(v0) != len(v1) {
+			t.Fatalf("legacy-v1 has %d toolkits, legacy-v0 has %d", len(v1), len(v0))
+		}
+		added := map[string]bool{
+			"get_ingestion_status": true, "get_entities_by_ids": true,
+			"get_entity_neighbors": true, "smart_normalize_types": true,
+		}
+		for i := range v0 {
+			if v0[i].Name != v1[i].Name {
+				t.Fatalf("toolkit %d renamed: %q -> %q", i, v0[i].Name, v1[i].Name)
+			}
+			if !bytes.Equal(v0[i].Config, v1[i].Config) {
+				t.Fatalf("%s: toolkit_config changed; legacy-v1 adds tools only", v0[i].Name)
+			}
+			var kept []string
+			for _, tl := range v1[i].ProvidedTools {
+				if !added[tl.Name] {
+					kept = append(kept, tl.Name)
+				}
+			}
+			var before []string
+			for _, tl := range v0[i].ProvidedTools {
+				before = append(before, tl.Name)
+			}
+			if strings.Join(kept, ",") != strings.Join(before, ",") {
+				t.Fatalf("%s: legacy-v0's tools are not legacy-v1 minus the four added\n got: %v\nwant: %v",
+					v0[i].Name, kept, before)
+			}
 		}
 	})
 
@@ -106,7 +173,7 @@ func TestTheInventoryApplicationWalksTheWholeSuite(t *testing.T) {
 				} `json:"provided_tools"`
 			} `json:"provided_toolkits"`
 		}
-		if err := json.Unmarshal(inventoryFixture(t, "descriptor", "legacy-v0", "provider_descriptor.json"), &document); err != nil {
+		if err := json.Unmarshal(inventoryFixture(t, "descriptor", DescriptorRevision, "provider_descriptor.json"), &document); err != nil {
 			t.Fatal(err)
 		}
 		if len(document.ProvidedToolkits) != len(inventory.Toolkits.Families) {
@@ -225,7 +292,7 @@ func TestTheInventoryApplicationWalksTheWholeSuite(t *testing.T) {
 	// same one for every application.
 	t.Run("invoke is async even for a tool that advertises sync", func(t *testing.T) {
 		var descriptor map[string]any
-		_ = json.Unmarshal(inventoryFixture(t, "descriptor", "legacy-v0", "provider_descriptor.json"), &descriptor)
+		_ = json.Unmarshal(inventoryFixture(t, "descriptor", DescriptorRevision, "provider_descriptor.json"), &descriptor)
 		sync := false
 		for _, tk := range descriptor["provided_toolkits"].([]any) {
 			for _, tl := range tk.(map[string]any)["provided_tools"].([]any) {

@@ -144,13 +144,38 @@ func TestRunnersAreTheSharedOnesPlusTheApplicationsOwn(t *testing.T) {
 	if runner, err := deepwiki.Runner("legacy", withSocket, 0); err != nil || runner.Name() != "legacy" {
 		t.Fatalf("deepwiki/legacy: %v %v", err, runner)
 	}
+	// Inventory has a legacy runner of its own since ADR-0023 H4c stage I3, and
+	// it takes the same refusal without a socket.
+	//
+	// It is asserted SEPARATELY from the "another application's runner" loop
+	// below, because until this stage that loop covered inventory/legacy and
+	// passed — for the wrong reason. `legacy` was not offered, so it was
+	// refused as unknown, with the same spi.ErrConfig an unreachable socket
+	// produces. Adding the runner would have left that assertion green while it
+	// stopped meaning anything.
+	inventoryApp, _ := apps.Lookup("inventory")
+	if _, err := inventoryApp.Runner("legacy", settings, 0); !errors.Is(err, spi.ErrConfig) {
+		t.Fatalf("inventory/legacy with no socket: %v", err)
+	}
+	inventorySocket := settings
+	inventorySocket.EngineSocket = "/run/inventory/engine.sock"
+	runner, err := inventoryApp.Runner("legacy", inventorySocket, 0)
+	if err != nil || runner.Name() != "legacy" {
+		t.Fatalf("inventory/legacy: %v %v", err, runner)
+	}
+
+	// `fixture` is still DeepWiki's alone, and neither other application serves
+	// it. A runner served by an application it was not written for is how a
+	// deployment gets DeepWiki's canned wiki results out of an Inventory host.
 	for _, name := range []string{"echo", "inventory"} {
 		app, _ := apps.Lookup(name)
-		for _, deepwikiOwn := range []string{"fixture", "legacy"} {
-			if _, err := app.Runner(deepwikiOwn, settings, 0); !errors.Is(err, spi.ErrConfig) {
-				t.Errorf("%s served DeepWiki's %s runner: %v", name, deepwikiOwn, err)
-			}
+		if _, err := app.Runner("fixture", inventorySocket, 0); !errors.Is(err, spi.ErrConfig) {
+			t.Errorf("%s served DeepWiki's fixture runner: %v", name, err)
 		}
+	}
+	echoApp, _ := apps.Lookup("echo")
+	if _, err := echoApp.Runner("legacy", inventorySocket, 0); !errors.Is(err, spi.ErrConfig) {
+		t.Errorf("echo served a legacy runner it has no engine for: %v", err)
 	}
 }
 

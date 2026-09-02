@@ -1,0 +1,151 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "elitea-inventory"
+version = "0.1.0"
+description = "ELITEA Inventory provider engine (ADR-0023 H4c port of inventory_plugin)"
+requires-python = ">=3.12,<3.13"
+
+# The sidecar shell only. The knowledge-graph engine's closure arrives with the
+# engine itself, in the `engine` extra, so this service can be built, tested and
+# imaged without it while the port is in flight — and so that an image built
+# without it cannot look like it has an engine.
+dependencies = [
+  # fastapi and uvicorn are pinned EXACTLY, not ranged, and the pins are
+  # load-bearing rather than cautious.
+  #
+  # MEASURED, four times: with ranges (`fastapi>=0.115,<1`,
+  # `uvicorn[standard]>=0.34,<1`) a clean `pip wheel` of the `engine` extra
+  # never finished. The SDK's tools extra brings a ~1,280-package closure in
+  # which chromadb, mcp and langsmith each bound starlette, uvicorn and
+  # websockets differently; pip explores that space by downloading one
+  # release's metadata at a time, and every build was killed while it was
+  # still walking backwards through uvicorn releases. Narrowing the ranges and
+  # then pinning chromadb and mcp each removed one dimension and revealed the
+  # next.
+  #
+  # The set IS satisfiable and these ARE the versions it is satisfiable at —
+  # `uv pip compile` reaches fastapi 0.115.9 / uvicorn 0.52.4 / starlette
+  # 0.45.3 with and without these pins. The pins state the answer so pip does
+  # not have to search for it.
+  #
+  # This is the remedy this repository already uses for the same class of
+  # problem: services/elitea-worker-python pins mcp exactly ("state the
+  # boundary explicitly so a clean build cannot silently cross it") and gives
+  # its indexing closure exact versions in an extra that "intentionally
+  # replaces" the SDK's ranges.
+  #
+  # To move them: re-run `uv pip compile` over this file's dependencies plus
+  # the engine extra, and take what it lands on.
+  "fastapi==0.115.9",
+  "pydantic>=2.10,<3",
+  # The artifact READ path (elitea_inventory.artifacts) speaks `requests`, and
+  # it is in the shell, not the engine: a query tool with no engine still has
+  # to be able to say "no graph in the bucket" rather than fail to import.
+  "requests>=2.32,<3",
+  "uvicorn[standard]==0.52.4",
+]
+
+[project.optional-dependencies]
+# The knowledge-graph engine's dependency closure.
+#
+# NOTE what is NOT here, against the legacy `requirements.txt`:
+#
+#   torch / sentence-transformers / transformers, as DIRECT dependencies
+#       the legacy plugin embedded entities with a local all-MiniLM-L6-v2 and
+#       named these itself. v1 embeds through the platform gateway
+#       (elitea_inventory.embeddings), so nothing here asks for them.
+#
+#       They still arrive, TRANSITIVELY, through elitea-sdk[tools]
+#       (unstructured -> unstructured-inference -> timm/torch). MEASURED from
+#       the resolved lock: torch 2.14.0, torchvision 0.29.0, timm 1.0.29,
+#       transformers 4.57.6, sentence-transformers 2.7.0. So this extra is
+#       multi-GB, and the honest statement is that the port removed its OWN
+#       reason to carry torch, not that the image no longer carries it.
+#       Narrowing the SDK extra is stage I8.
+#
+#       The copied `engine/routing.py` imports sentence-transformers for its
+#       semantic query classifier; the import is inside a try and the router
+#       falls back to its regex tier when the MODEL is unavailable, which it is
+#       here — nothing downloads all-MiniLM-L6-v2 at runtime.
+#   kubernetes
+#       v1 runs ingestion in this sidecar. There is no ingestion Job.
+#   nest-asyncio
+#       needed because the legacy plugin ran async code inside Pylon's Flask
+#       threads. The sidecar owns its event loop and runs the synchronous
+#       engine with asyncio.to_thread.
+#   langfuse
+#       optional in the legacy plugin too; the copied
+#       `engine/utils/langfuse_callback.py` degrades without it.
+engine = [
+  # Pinned to the SAME version services/elitea-worker-python pins, not to the
+  # legacy plugin's floor (>=0.6.33). Two services on one platform resolving
+  # different SDK majors is how a toolkit that instantiates in the worker fails
+  # to instantiate here, with a message about a settings key.
+  "elitea-sdk[runtime,tools]==0.9.8",
+  # chromadb is TRANSITIVE — it arrives with the SDK's tools extra, nothing
+  # here uses it, and nothing here bounded it. It is pinned anyway, for the
+  # same measured reason the fastapi/uvicorn bounds above exist: the SDK
+  # accepts a wide chromadb range, each release in that range bounds fastapi,
+  # starlette, tokenizers and opentelemetry differently, and pip explores that
+  # space one metadata download at a time. Two engine image builds were killed
+  # while it was still walking backwards through chromadb and uvicorn releases.
+  #
+  # 1.5.9 is the version the resolution actually lands on. Pinning it removes
+  # the search dimension rather than changing the answer.
+  "chromadb==1.5.9",
+  # mcp is the other one, and it is the SAME package
+  # services/elitea-worker-python already pins for the same reason ("state the
+  # boundary explicitly so a clean build cannot silently cross it" — it pins
+  # 1.27.1 for its own closure). It arrives here transitively through
+  # langchain-mcp-adapters, nothing in this service uses it, and every release
+  # bounds uvicorn differently.
+  #
+  # chromadb and mcp are the only two transitive packages that bound uvicorn in
+  # the resolution; pinning chromadb alone was not enough, and the build was
+  # still walking backwards through uvicorn releases.
+  "mcp==1.29.1",
+  # langsmith, bounded for the reason services/elitea-worker-python states at
+  # length and this build then reproduced verbatim:
+  #
+  #   ERROR: Cannot install elitea-sdk, httpx2, uvicorn and
+  #   uvicorn[standard]==0.52.4 because these package versions have conflicting
+  #   dependencies. … uvicorn 0.52.4 depends on h11>=0.8 / httpcore 1.0.7
+  #   depends on h11<0.15 and >=0.13 / httpcore2 2.0.0 depends on h11>=0.16
+  #
+  # langsmith 0.12.0 moved its HTTP stack from httpx to httpx2/httpcore2, which
+  # needs h11>=0.16; the rest of this closure resolves httpcore 1.0.7, which
+  # needs h11<0.15. The two cannot coexist. langsmith is TRANSITIVE
+  # (langchain-core requires it), so nothing here named it and nothing here
+  # bounded it — the same shape as the two pins above.
+  #
+  # The bound is the worker's, unchanged, because it is one platform-wide fact
+  # and two services disagreeing about it is worse than either answer. Lift it
+  # when the SDK's own stack moves to httpx2 — not before, or the conflict
+  # simply returns.
+  "langsmith>=0.3.45,<0.12",
+  "langchain-core>=0.3,<2",
+  "langchain-openai>=0.2,<2",
+  "networkx>=3.0,<4",
+  "numpy>=1.26,<3",
+  "python-igraph>=0.11,<2",
+  "leidenalg>=0.10,<1",
+]
+test = [
+  "httpx>=0.27,<1",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.24,<2",
+]
+
+[project.scripts]
+elitea-inventory = "elitea_inventory.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/elitea_inventory"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"

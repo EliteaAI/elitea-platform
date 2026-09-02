@@ -22,6 +22,7 @@ import (
 	deepwikirun "github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/deepwiki/run"
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/echo"
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/inventory"
+	inventoryrun "github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/inventory/run"
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/spi"
 )
 
@@ -105,8 +106,21 @@ var registry = []App{
 		EnvPrefix:  inventory.EnvPrefix,
 		Descriptor: inventory.Descriptor,
 		Toolkits:   inventory.Toolkits,
-		// No runner of its own: Inventory's engine is stage I3. Until then
-		// the shared default refuses every tool with a readable reason.
+		Runners: map[string]RunnerFactory{
+			// The knowledge-graph engine, reached as a sidecar over a local
+			// socket (ADR-0023 H4c stage I3): the engine's dependency closure
+			// stays in Python; composition, upload and the SPI are this
+			// host's. A host asked for the engine with no socket to reach it
+			// must not come up looking healthy — the same rule, and the same
+			// refusal, as DeepWiki's.
+			"legacy": func(settings spi.Settings, _ time.Duration) (spi.Runner, error) {
+				if settings.EngineSocket == "" {
+					return nil, fmt.Errorf("%w: %sRUNNER=legacy needs %sENGINE_SOCKET, the engine sidecar's Unix socket",
+						spi.ErrConfig, settings.Prefix, settings.Prefix)
+				}
+				return inventoryrun.NewEngineRunner(settings), nil
+			},
+		},
 	},
 }
 
