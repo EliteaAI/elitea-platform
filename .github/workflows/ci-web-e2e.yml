@@ -186,7 +186,7 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.e2e-standalone.yml
+            docker-compose.e2e-standalone.yml
           cache-hcl: |
             ci/bake-cache.hcl
           targets: e2e
@@ -854,7 +854,7 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.e2e-standalone.yml
+            docker-compose.e2e-standalone.yml
           cache-hcl: |
             ci/bake-cache.hcl
           targets: e2e
