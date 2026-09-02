@@ -80,6 +80,8 @@ import type {
   RemoveUserModeRoleParams,
   Role,
   RoleListParams,
+  SendBrandingTestEmail200,
+  SendBrandingTestEmailBody,
   UpdateUserProjectPermissionsParams,
   UploadBrandingAssetBody,
   UserDeleteParams,
@@ -1733,10 +1735,12 @@ export const getInviteUserGloballyUrl = () => {
  * project and no role, so the console can then place them. The address is
  * resolved by email on first login.
  *
- * NO INVITATION IS DELIVERED. The reference calls an external identity
- * service to create and mail an invitation token; that integration has no
- * equivalent here, so `invitation_delivered` is false and
- * `invitation_delivery` says why. Answering a bare `{"ok": true}` would
+ * An invitation e-mail is sent when outbound e-mail is configured
+ * (SMTP_HOST; ADR-0024 WP7), branded with the deployment's pack and
+ * linking to the deployment's public URL — the account is resolved by
+ * e-mail on first login, so the link carries no token.
+ * `invitation_delivered` reports whether it went out and
+ * `invitation_delivery` why not; answering a bare `{"ok": true}` would
  * be rendered by a console as "invitation sent".
  *
  * Inviting an address that already has an account is not an error and is
@@ -2624,6 +2628,243 @@ export function useUploadBrandingAsset<
   const queryOptions = getUploadBrandingAssetQueryOptions(
     kind,
     uploadBrandingAssetBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type sendBrandingTestEmailResponse200 = {
+  data: SendBrandingTestEmail200;
+  status: 200;
+};
+
+export type sendBrandingTestEmailResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type sendBrandingTestEmailResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type sendBrandingTestEmailResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type sendBrandingTestEmailResponse502 = {
+  data: void;
+  status: 502;
+};
+
+export type sendBrandingTestEmailResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type sendBrandingTestEmailResponseSuccess =
+  sendBrandingTestEmailResponse200 & {
+    headers: Headers;
+  };
+export type sendBrandingTestEmailResponseError = (
+  | sendBrandingTestEmailResponse400
+  | sendBrandingTestEmailResponse401
+  | sendBrandingTestEmailResponse403
+  | sendBrandingTestEmailResponse502
+  | sendBrandingTestEmailResponse503
+) & {
+  headers: Headers;
+};
+
+export type sendBrandingTestEmailResponse =
+  sendBrandingTestEmailResponseSuccess | sendBrandingTestEmailResponseError;
+
+export const getSendBrandingTestEmailUrl = () => {
+  return `/admin/branding/test_email/administration`;
+};
+
+/**
+ * ADR-0024 WP7. Renders the test template against the resolved brand
+ * pack and sends it to `to`, so an administrator can see the e-mail
+ * brand without inviting anyone. 503 when no SMTP is configured or
+ * sending is suppressed, 400 for an address that is not a plain
+ * addr-spec, 502 when the relay refused (the reason is in `error`).
+ * Gated on `configuration.branding`.
+ * @summary Send one branded test e-mail
+ */
+export const sendBrandingTestEmail = async (
+  sendBrandingTestEmailBody: SendBrandingTestEmailBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<sendBrandingTestEmailResponse> => {
+  return eliteaFetch<sendBrandingTestEmailResponse>(
+    getSendBrandingTestEmailUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(sendBrandingTestEmailBody),
+    },
+  );
+};
+
+export const getSendBrandingTestEmailQueryKey = (
+  sendBrandingTestEmailBody?: SendBrandingTestEmailBody,
+) => {
+  return [
+    "POST",
+    `/admin/branding/test_email/administration`,
+    sendBrandingTestEmailBody,
+  ] as const;
+};
+
+export const getSendBrandingTestEmailQueryOptions = <
+  TData = Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+  TError = N400Response | N401Response | N403Response | void,
+>(
+  sendBrandingTestEmailBody: SendBrandingTestEmailBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getSendBrandingTestEmailQueryKey(sendBrandingTestEmailBody);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof sendBrandingTestEmail>>
+  > = ({ signal }) =>
+    sendBrandingTestEmail(sendBrandingTestEmailBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type SendBrandingTestEmailQueryResult = NonNullable<
+  Awaited<ReturnType<typeof sendBrandingTestEmail>>
+>;
+export type SendBrandingTestEmailQueryError =
+  N400Response | N401Response | N403Response | void;
+
+export function useSendBrandingTestEmail<
+  TData = Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+  TError = N400Response | N401Response | N403Response | void,
+>(
+  sendBrandingTestEmailBody: SendBrandingTestEmailBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+          TError,
+          Awaited<ReturnType<typeof sendBrandingTestEmail>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useSendBrandingTestEmail<
+  TData = Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+  TError = N400Response | N401Response | N403Response | void,
+>(
+  sendBrandingTestEmailBody: SendBrandingTestEmailBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+          TError,
+          Awaited<ReturnType<typeof sendBrandingTestEmail>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useSendBrandingTestEmail<
+  TData = Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+  TError = N400Response | N401Response | N403Response | void,
+>(
+  sendBrandingTestEmailBody: SendBrandingTestEmailBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Send one branded test e-mail
+ */
+
+export function useSendBrandingTestEmail<
+  TData = Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+  TError = N400Response | N401Response | N403Response | void,
+>(
+  sendBrandingTestEmailBody: SendBrandingTestEmailBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof sendBrandingTestEmail>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getSendBrandingTestEmailQueryOptions(
+    sendBrandingTestEmailBody,
     options,
   );
 

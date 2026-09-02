@@ -44,13 +44,16 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 // inviteDeliveryUnavailable is the reason carried in every response body. It is
 // a statement about the deployment, not about this request.
-const inviteDeliveryUnavailable = "no invitation was delivered: sending one is an external identity-provider " +
-	"call (pylon's auth_cirro_invite) with no equivalent in this service. The platform user record exists, " +
-	"so the address can be granted roles now and is resolved by email on first login."
+const inviteDeliveryUnavailable = "no invitation was delivered: outbound e-mail is not configured on this " +
+	"deployment (SMTP_HOST is unset). The platform user record exists, so the address can be granted roles " +
+	"now and is resolved by email on first login."
 
 // UserInvite serves `POST /admin/user_invite/administration`.
 func (h *Handler) UserInvite(w http.ResponseWriter, r *http.Request) {
@@ -109,15 +112,43 @@ func (h *Handler) UserInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Delivery (ADR-0024 WP7). The record exists either way; what the
+	// response says about the e-mail is what actually happened to it.
+	delivered, delivery := h.deliverInvitation(r, appmailer.Invitation{
+		Email: email, Name: name, InvitedBy: inviterName(r),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                   true,
 		"id":                   userID,
 		"email":                email,
 		"name":                 name,
 		"created":              created,
-		"invitation_delivered": false,
-		"invitation_delivery":  inviteDeliveryUnavailable,
+		"invitation_delivered": delivered,
+		"invitation_delivery":  delivery,
 	})
+}
+
+// deliverInvitation sends the invitation when a mailer is wired and reports
+// what happened in the two response fields. A relay failure is reported, not
+// swallowed and not fatal: the record exists and the operator can resend.
+func (h *Handler) deliverInvitation(r *http.Request, invitation appmailer.Invitation) (bool, string) {
+	if h.mailer == nil || !h.mailer.Configured() {
+		return false, inviteDeliveryUnavailable
+	}
+	if err := h.mailer.SendInvitation(r.Context(), invitation); err != nil {
+		return false, "the invitation could not be sent: " + err.Error()
+	}
+	return true, "an invitation e-mail was sent to " + invitation.Email
+}
+
+// inviterName is the caller's e-mail (the name field is never populated on
+// this platform's principals), or empty.
+func inviterName(r *http.Request) string {
+	principal, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		return ""
+	}
+	return principal.Email
 }
 
 func normalizeInviteEmail(raw string) string {

@@ -500,7 +500,13 @@ test.describe('#130 write path', () => {
     // The success toast is NOT evidence — the broken build showed it too,
     // because the no-op handler's 200 drove `onSuccess`. It is only waited on
     // so the request has certainly been issued.
-    await expect(page.getByText('The user has been invited')).toBeVisible({ timeout: 15_000 });
+    // The toast names what actually happened (ADR-0024 WP7): "invited by
+    // e-mail" only when the deployment sends mail, "added" otherwise. The
+    // E2E stack configures no SMTP, so it sees the second; a stack with a
+    // relay sees the first. Either proves the write landed.
+    await expect(
+      page.getByText(/The user has been (added\. No invitation e-mail was sent\.|invited by e-mail)/),
+    ).toBeVisible({ timeout: 15_000 });
 
     // RE-READ #1: straight off the server, no client code in the path.
     const after = await apiMembers(page.request);

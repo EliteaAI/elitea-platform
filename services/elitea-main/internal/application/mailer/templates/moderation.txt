@@ -1,0 +1,7 @@
+Moderation decision — {{.ProductName}}
+
+{{.Moderation.Message}}
+
+{{.ActionURL}}
+{{if .SupportEmail}}
+Need help? {{.SupportEmail}}{{end}}

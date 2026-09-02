@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
 	"io"
 	"log/slog"
 	"mime"
@@ -50,6 +51,24 @@ type Handler struct {
 	// WithPrebuiltMCPCatalogue is applied, in which case resolution is a no-op.
 	prebuiltMCP      *mcpregistry.PrebuiltStore
 	prebuiltMCPVault PrebuiltSecretReader
+	// Outbound e-mail for project invitations (users_write.go); nil means
+	// the invite result reports no delivery.
+	mailer InviteMailer
+}
+
+// InviteMailer is the seam to internal/application/mailer.
+type InviteMailer interface {
+	Configured() bool
+	SendInvitation(ctx context.Context, invitation appmailer.Invitation) error
+}
+
+// WithInviteMailer supplies the composer project invites send through.
+func WithInviteMailer(m InviteMailer) Option {
+	return func(handler *Handler) {
+		if m != nil {
+			handler.mailer = m
+		}
+	}
 }
 
 type Option func(*Handler)

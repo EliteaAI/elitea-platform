@@ -23,6 +23,9 @@ type Handler struct {
 	// The brand asset store the upload route writes (branding.go). Nil unless
 	// WithBrandingAssets is applied with an available store.
 	brandingAssets *v2branding.AssetStore
+	// Outbound e-mail (branding.go, user_invite.go). Nil unless WithMailer is
+	// applied; invites then report `invitation_delivered: false`.
+	mailer Mailer
 	// The pre-built MCP server catalogue and the vault its client secrets are
 	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
 	// is applied, and the catalogue routes answer 503 while either is.

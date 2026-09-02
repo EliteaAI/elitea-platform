@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
 	"net/http"
 	"os"
 	"strings"
@@ -127,6 +128,10 @@ type RouterConfig struct {
 	// login page can never disagree about the brand. Nil builds one here
 	// from BrandPackPath and Pool — the shape every test uses.
 	Branding *v2branding.Resolver
+	// Mailer is outbound e-mail (ADR-0024 WP7): invitations, moderation
+	// notices, the Branding page's test message. Nil means none is sent and
+	// every invite reports invitation_delivered: false.
+	Mailer *appmailer.Composer
 	// AuditRecorder overrides the Pool-backed `centry.audit_events` writer
 	// mounted on the /api/v2 group. Tests inject one to assert WHICH events a
 	// request produces without a live database; production leaves it unset and
@@ -896,6 +901,17 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		})
 	}
 	brandingHandler := v2branding.NewHandler(v2branding.Config{Resolver: brandingResolver})
+	// A nil *Composer must stay a nil INTERFACE for the With* options to
+	// recognise "no mailer"; a typed nil inside the interface would pass
+	// their check and panic on first use.
+	var (
+		adminMailer    admin.Mailer
+		inviteMailer   v2core.InviteMailer
+		decisionMailer v2moderation.DecisionMailer
+	)
+	if cfg.Mailer != nil {
+		adminMailer, inviteMailer, decisionMailer = cfg.Mailer, cfg.Mailer, cfg.Mailer
+	}
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	// Uploaded brand assets (ADR-0024 decision 3): public for the same
@@ -1156,6 +1172,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				cfg.Pool,
 				v2core.WithPermissionResolver(permissionResolver),
 				v2core.WithObjectStore(cfg.ObjectStore),
+				v2core.WithInviteMailer(inviteMailer),
 				v2core.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 			)
 
@@ -1198,12 +1215,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				admin.WithIdentityProviders(identityProviderStore, prebuiltMCPVault),
 				admin.WithBranding(brandingResolver),
 				admin.WithBrandingAssets(brandingAssets),
+				admin.WithMailer(adminMailer),
 				// The same store the SCIM tree writes through. One store, so
 				// the screen and a group push can never disagree about which
 				// project a binding names.
 				admin.WithSCIMGroupBindings(scimdirectory.NewStore(cfg.Pool)),
 			)
-			moderationHandler := v2moderation.NewHandler(cfg.Pool)
+			moderationHandler := v2moderation.NewHandler(cfg.Pool, v2moderation.WithMailer(decisionMailer))
 			// The admin panel's surface. Every route below is gated on the same
 			// pylon permission its Python counterpart declares in
 			// legacy/plugins/admin/api/v2/, resolved from the database in
@@ -1463,6 +1481,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(requireBranding).Get("/branding/administration", adminHandler.BrandingRead)
 				r.With(requireBranding).Put("/branding/administration", adminHandler.BrandingSave)
 				r.With(requireBranding).Post("/branding/assets/{kind}", adminHandler.BrandingAssetUpload)
+				r.With(requireBranding).Post("/branding/test_email/administration", adminHandler.BrandingTestEmail)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the

@@ -52,6 +52,12 @@ export const UserInviteResult = zod
       .describe(
         "Numeric id of the invited user, present only when status is ok.",
       ),
+    invitation_delivered: zod
+      .boolean()
+      .optional()
+      .describe(
+        "True when an invitation e-mail went out for this address (ADR-0024 WP7); false without SMTP, on a relay refusal, or on an error row.\n",
+      ),
   })
   .describe(
     "One element of the per-address array pylon's invite returns. The response carries one of these per requested address, and the whole response is 400 when any of them failed.\n",

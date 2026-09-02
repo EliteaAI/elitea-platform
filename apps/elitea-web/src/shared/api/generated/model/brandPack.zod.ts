@@ -52,12 +52,24 @@ export const BrandPack = zod
       tagline: zod.string().optional(),
       docsUrl: zod.string().optional(),
       supportUrl: zod.string().optional(),
+      senderName: zod
+        .string()
+        .optional()
+        .describe("Display name outbound e-mail is sent as."),
+      supportEmail: zod
+        .string()
+        .optional()
+        .describe("Address the app's contact-support paths use."),
     }),
     assets: zod.object({
       logoFull: zod.string(),
       logoMark: zod.string(),
       favicon: zod.string(),
       loginArt: zod.string().optional(),
+      logoEmail: zod
+        .string()
+        .optional()
+        .describe("Raster logo for e-mail, a same-origin asset path."),
     }),
     typography: zod.object({
       fontFamily: zod.string(),

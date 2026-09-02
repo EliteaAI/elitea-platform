@@ -57,6 +57,7 @@ import type {
   PlatformSettings,
   PublishedAgentsListing,
   Role,
+  SendBrandingTestEmail200,
   UserInviteResult,
   UserListResponse,
   UserProjectPermissionsResult,
@@ -92,6 +93,10 @@ export const getUserCreateResponseMock = (): UserInviteResult[] =>
     email: faker.string.alpha({ length: { min: 10, max: 20 } }),
     id: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    invitation_delivered: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
       undefined,
     ]),
   }));
@@ -185,12 +190,24 @@ export const getGetBrandingSettingsResponseMock = (
           faker.string.alpha({ length: { min: 10, max: 20 } }),
           undefined,
         ]),
+        senderName: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        supportEmail: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
       },
       assets: {
         logoFull: faker.string.alpha({ length: { min: 10, max: 20 } }),
         logoMark: faker.string.alpha({ length: { min: 10, max: 20 } }),
         favicon: faker.string.alpha({ length: { min: 10, max: 20 } }),
         loginArt: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        logoEmail: faker.helpers.arrayElement([
           faker.string.alpha({ length: { min: 10, max: 20 } }),
           undefined,
         ]),
@@ -299,12 +316,24 @@ export const getSaveBrandingSettingsResponseMock = (
           faker.string.alpha({ length: { min: 10, max: 20 } }),
           undefined,
         ]),
+        senderName: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        supportEmail: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
       },
       assets: {
         logoFull: faker.string.alpha({ length: { min: 10, max: 20 } }),
         logoMark: faker.string.alpha({ length: { min: 10, max: 20 } }),
         favicon: faker.string.alpha({ length: { min: 10, max: 20 } }),
         loginArt: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        logoEmail: faker.helpers.arrayElement([
           faker.string.alpha({ length: { min: 10, max: 20 } }),
           undefined,
         ]),
@@ -394,6 +423,14 @@ export const getUploadBrandingAssetResponseMock = (
   content_type: faker.string.alpha({ length: { min: 10, max: 20 } }),
   size: faker.number.int(),
   path: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSendBrandingTestEmailResponseMock = (
+  overrideResponse: Partial<Extract<SendBrandingTestEmail200, object>> = {},
+): SendBrandingTestEmail200 => ({
+  sent: faker.datatype.boolean(),
+  to: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
 
@@ -879,6 +916,32 @@ export const getUploadBrandingAssetMockHandler = (
   );
 };
 
+export const getSendBrandingTestEmailMockHandler = (
+  overrideResponse?:
+    | SendBrandingTestEmail200
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<SendBrandingTestEmail200> | SendBrandingTestEmail200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/admin/branding/test_email/administration",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSendBrandingTestEmailResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetUserProjectPermissionsMockHandler = (
   overrideResponse?:
     | UserProjectRoleMap
@@ -1101,6 +1164,7 @@ export const getAdminMock = () => [
   getGetBrandingSettingsMockHandler(),
   getSaveBrandingSettingsMockHandler(),
   getUploadBrandingAssetMockHandler(),
+  getSendBrandingTestEmailMockHandler(),
   getGetUserProjectPermissionsMockHandler(),
   getUpdateUserProjectPermissionsMockHandler(),
   getRoleListMockHandler(),

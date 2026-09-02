@@ -831,6 +831,25 @@ main:
     # above. Discovered unwired while verifying S17's env-drift gate.
     BRAND_PACK_PATH: ""
 
+    # --- Outbound e-mail (ADR-0024 WP7) -----------------------------------------
+    # Unset SMTP_HOST = the platform sends no e-mail and every invite reports
+    # invitation_delivered: false, as before. Once SMTP_HOST is set, EMAIL_FROM
+    # and a public origin (PUBLIC_BASE_URL, or DEPLOYMENT_URL above) are
+    # REQUIRED and the pod refuses to start without them: a half-configured
+    # mailer would report deliveries it never made. SMTP_PASSWORD is a Secret
+    # (secrets: block below). SMTP_TLS: starttls (default, port 587) |
+    # implicit (port 465) | none (in-cluster relay only). ELITEA_EMAIL_SUPPRESS
+    # "true" renders but never sends — the setting for a shadow or staging
+    # deployment that must produce no user-visible side effect.
+    SMTP_HOST: ""
+    SMTP_PORT: ""
+    SMTP_USERNAME: ""
+    SMTP_TLS: ""
+    EMAIL_FROM: ""
+    EMAIL_REPLY_TO: ""
+    PUBLIC_BASE_URL: ""
+    ELITEA_EMAIL_SUPPRESS: ""
+
     # --- Object storage (S17; ADR-0016) -----------------------------------------
     # STORAGE_BACKEND has no code default — ConfigFromEnv fails closed with no
     # object store configured until this is explicitly one of "s3"/"azure"/"gcs".
@@ -1075,6 +1094,13 @@ main:
     ELITEA_DEEPWIKI_IDENTITY_SECRET:
       secretName: elitea-deepwiki-secrets
       key: identity-secret
+      optional: true
+    # Outbound e-mail relay password (ADR-0024 WP7). Optional: a deployment
+    # without SMTP never reads it; one with SMTP_USERNAME set refuses to start
+    # without it (username and password must be set together).
+    SMTP_PASSWORD:
+      secretName: elitea-main-mail-secrets
+      key: smtp-password
       optional: true
     S3_ACCESS_KEY:
       secretName: elitea-main-storage-secrets

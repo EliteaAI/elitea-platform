@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/mailer"
 	"log/slog"
 	"net/http"
 	"os"
@@ -300,6 +302,33 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		PackPath: brandPack.Path,
 		Pool:     pool,
 	})
+
+	// Outbound e-mail (ADR-0024 WP7): a real SMTP transport only when the
+	// environment names a relay; otherwise the composer holds the null
+	// transport and every invite reports that nothing was delivered.
+	mailSettings, err := mailerConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load outbound e-mail settings: %w", err)
+	}
+	var mailTransport mailer.Transport
+	if mailSettings.Enabled {
+		smtpTransport, err := mailer.New(mailSettings.Transport)
+		if err != nil {
+			return fmt.Errorf("configure outbound e-mail: %w", err)
+		}
+		mailTransport = smtpTransport
+		logger.Info("outbound e-mail enabled", "host", mailSettings.Transport.Host, "port", mailSettings.Transport.Port,
+			"tls", string(mailSettings.Transport.TLS), "suppressed", mailSettings.Suppressed)
+	}
+	mailComposer, err := appmailer.New(appmailer.Config{
+		Transport:     mailTransport,
+		Brand:         brandingResolver,
+		PublicBaseURL: mailSettings.PublicBaseURL,
+		Suppressed:    mailSettings.Suppressed,
+	})
+	if err != nil {
+		return fmt.Errorf("compose outbound e-mail: %w", err)
+	}
 
 	if authEnabled {
 		if err := pool.Ping(ctx); err != nil {
@@ -1711,6 +1740,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		AdminUI:                    adminUICfg,
 		Pool:                       pool,
 		Branding:                   brandingResolver,
+		Mailer:                     mailComposer,
 		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
 		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
 		ToolkitSettingsValidator:   toolkitSettingsValidator,

@@ -133,6 +133,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -403,7 +405,39 @@ func (h *Handler) AdministrationRequestUpdate(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// The in-app row is the delivery of record and is already committed; the
+	// e-mail is a second channel that never fails the decision (ADR-0024 WP7).
+	h.mailDecision(r.Context(), row)
 	writeModerationJSON(w, http.StatusOK, row)
+}
+
+// mailDecision sends the same pre-rendered sentence the notification row
+// carries to the requester's address, when a mailer is wired.
+func (h *Handler) mailDecision(ctx context.Context, row *requestRow) {
+	if h.mailer == nil || !h.mailer.Configured() || row == nil {
+		return
+	}
+	email := row.UserEmail
+	if email == "" {
+		if err := h.pool.QueryRow(ctx, `SELECT email FROM public.auth_core__user WHERE id = $1`, row.UserID).Scan(&email); err != nil || email == "" {
+			slog.Warn("moderation decision e-mail not sent: requester address unknown", "user_id", row.UserID)
+			return
+		}
+	}
+	if err := h.mailer.SendModerationDecision(ctx, appmailer.ModerationDecision{
+		Email: email, Message: decisionMessage(*row),
+	}); err != nil {
+		slog.Warn("moderation decision e-mail not sent", "user_id", row.UserID, "reason", err.Error())
+	}
+}
+
+// decisionMessage is the one sentence both channels carry.
+func decisionMessage(row requestRow) string {
+	message := fmt.Sprintf("Your %s moderation request has been %s.", row.IssueType, row.Status)
+	if row.RejectionComment != nil && *row.RejectionComment != "" {
+		message += " Reason: " + *row.RejectionComment
+	}
+	return message
 }
 
 // refusedDecisionField reports the first field a moderator may not write.
@@ -512,10 +546,7 @@ RETURNING id, user_id, project_id, issue_type, COALESCE(entity_id, ''), descript
 // renderer has no branch for these two event types, in either frontend, so the
 // sentence has to travel with the row.
 func insertDecisionNotification(ctx context.Context, tx pgx.Tx, row requestRow) error {
-	message := fmt.Sprintf("Your %s moderation request has been %s.", row.IssueType, row.Status)
-	if row.RejectionComment != nil && *row.RejectionComment != "" {
-		message += " Reason: " + *row.RejectionComment
-	}
+	message := decisionMessage(row)
 
 	meta := map[string]any{
 		"issue_type":        row.IssueType,

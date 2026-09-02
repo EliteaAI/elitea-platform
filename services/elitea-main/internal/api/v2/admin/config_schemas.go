@@ -1248,6 +1248,8 @@ func brandingSection() map[string]any {
 			text("product_tagline", "Tagline", "A short line under the name on the login page."),
 			text("docs_url", "Documentation URL", "Absolute http(s) URL the help links open."),
 			text("support_url", "Support URL", "Absolute http(s) URL the support links open."),
+			text("support_email", "Support e-mail", "Address the app's contact-support paths and e-mail footers use."),
+			text("sender_name", "E-mail sender name", "Display name outbound e-mail is sent as; the product name when empty."),
 			text("brand_hue", "Brand colour", "Six-digit hex colour, e.g. #1A73E8. Every accent and surface tint is derived from it."),
 			text("brand_on_brand", "Text on brand colour", "Six-digit hex colour for text placed on the brand colour."),
 			text("font_family", "Font family", "CSS font-family list for text, e.g. \"Inter\", Arial, sans-serif. Self-hosted faces arrive with asset upload."),
@@ -1263,6 +1265,7 @@ func brandingSection() map[string]any {
 			text("logo_mark", "Logo mark", "Path on this origin for the compact mark."),
 			text("favicon", "Favicon", "Path on this origin."),
 			text("login_art", "Login artwork", "Path on this origin for the login page image."),
+			text("logo_email", "E-mail logo", "Path on this origin of an uploaded PNG or WebP logo for e-mail."),
 			{
 				"key":   "font_faces",
 				"type":  "array",

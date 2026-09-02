@@ -266,6 +266,8 @@ func applyOverlay(base *Pack, o platformconfig.BrandingOverlay) (*Pack, error) {
 	setOptional(&merged.Product.Tagline, o.ProductTagline)
 	setOptional(&merged.Product.DocsURL, o.DocsURL)
 	setOptional(&merged.Product.SupportURL, o.SupportURL)
+	setOptional(&merged.Product.SenderName, o.SenderName)
+	setOptional(&merged.Product.SupportEmail, o.SupportEmail)
 	setString(&merged.Brand.Hue, o.Hue)
 	setOptional(&merged.Brand.OnBrand, o.OnBrand)
 	setString(&merged.Typography.FontFamily, o.FontFamily)
@@ -281,6 +283,7 @@ func applyOverlay(base *Pack, o platformconfig.BrandingOverlay) (*Pack, error) {
 	setString(&merged.Assets.LogoMark, o.LogoMark)
 	setString(&merged.Assets.Favicon, o.Favicon)
 	setOptional(&merged.Assets.LoginArt, o.LoginArt)
+	setOptional(&merged.Assets.LogoEmail, o.LogoEmail)
 	if len(o.FontFaces) > 0 {
 		faces := make([]FontFace, 0, len(o.FontFaces))
 		for _, f := range o.FontFaces {

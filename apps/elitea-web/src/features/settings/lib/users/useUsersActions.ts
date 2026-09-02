@@ -18,7 +18,7 @@ export interface UseUsersActionsArgs {
   rolesOptions: { label: string; value: string }[];
   onDeleteSuccess: () => void;
   onDeleteError: (error: unknown) => void;
-  onInviteSuccess: () => void;
+  onInviteSuccess: (outcome: InviteOutcome) => void;
   onInviteError: (error: unknown) => void;
   onEditSuccess: () => void;
   onEditError: (error: unknown) => void;
@@ -56,15 +56,39 @@ export interface UseUsersActionsResult {
  * not worth threading a new entities/user primitive through for from this
  * fix's scope.
  */
-function useInviteUsers(projectId: string, onSuccess: () => void, onError: (error: unknown) => void) {
+/**
+ * What the invite mutation reports to the page (ADR-0024 WP7): whether an
+ * invitation e-mail went out for EVERY address. The server says so per row
+ * (`invitation_delivered`); a deployment with no SMTP configured answers
+ * false, and the page must not then tell the operator "invited" as if a
+ * message had been sent.
+ */
+interface InviteOutcome {
+  readonly delivered: boolean;
+}
+
+function inviteOutcome(results: unknown): InviteOutcome {
+  if (!Array.isArray(results) || results.length === 0) return { delivered: false };
+  return {
+    delivered: results.every(
+      (row) => typeof row === 'object' && row !== null && (row as { invitation_delivered?: unknown }).invitation_delivered === true,
+    ),
+  };
+}
+
+function useInviteUsers(
+  projectId: string,
+  onSuccess: (outcome: InviteOutcome) => void,
+  onError: (error: unknown) => void,
+) {
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
     mutationFn: ({ emails, roles }: { emails: string[]; roles: string[] }) =>
       userCreate(projectId, { emails, roles }),
-    onSuccess: () => {
+    onSuccess: (results) => {
       void queryClient.invalidateQueries({ queryKey: getUserListQueryKey(projectId) });
-      onSuccess();
+      onSuccess(inviteOutcome(results));
     },
     onError: (error: unknown) => {
       onError(error);
