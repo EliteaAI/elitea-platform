@@ -13,13 +13,17 @@ import { server } from '@/test/setup';
 const BASE = 'http://elitea.test/api/v2';
 const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
-function show(ui: React.ReactElement) {
+function Wrapper({ children }: { children: React.ReactNode }): React.ReactElement {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>{ui}</ThemeProvider>
-    </QueryClientProvider>,
+  return (
+    <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    </ThemeProvider>
   );
+}
+
+function show(ui: React.ReactElement) {
+  return render(ui, { wrapper: Wrapper });
 }
 
 beforeEach(() => {
@@ -86,6 +90,15 @@ async function renderBrokenPage(): Promise<void> {
 }
 
 describe('WikiPageReader', () => {
+  it('follows the page when it is re-read underneath — an editor save must show without a reload', () => {
+    installQuickFix();
+    const view = show(<WikiPageReader projectId={PROJECT} pageKey={KEY} markdown="# Before" />);
+    expect(screen.getByText('Before')).toBeInTheDocument();
+    view.rerender(<WikiPageReader projectId={PROJECT} pageKey={KEY} markdown="# After the save" />);
+    expect(screen.getByText('After the save')).toBeInTheDocument();
+    expect(screen.queryByText('Before')).toBeNull();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
