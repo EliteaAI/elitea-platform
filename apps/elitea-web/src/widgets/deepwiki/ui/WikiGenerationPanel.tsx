@@ -121,7 +121,13 @@ export function WikiGenerationPanel({ projectId, toolkitId, settings, hasWiki }:
     },
     onSettled,
   });
-  const running = invocationId !== null && generation.status.status === 'running';
+  // RUNNING is "there is an invocation and it has not settled", not "the
+  // reducer has said running". A resumed run's first poll can carry no events
+  // at all, which leaves the reducer at `idle` while the provider is still
+  // working — and a Stop button that hides behind that would leave the user no
+  // way to stop the run they just reloaded into.
+  const settled = generation.status.status === 'completed' || generation.status.status === 'error';
+  const running = invocationId !== null && !settled;
 
   // Stopping is a DELETE on the invocation — the facade's cancel, not a task
   // API; the poll that follows reports Stopped, which the reducer reads as an
