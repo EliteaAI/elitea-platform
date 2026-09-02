@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { APPLICATION_CATALOG } from '../../lib/constants';
+import { applicationCatalog } from '../../lib/constants';
 import { buildCatalogApplication } from '../../model/catalog';
 import { renderWithProviders } from '../../__tests__/testUtils';
 
 import { RequestAccessModal } from './RequestAccessModal';
 
-const wikisApp = buildCatalogApplication(APPLICATION_CATALOG[0]!, {}, new Set());
+const wikisApp = buildCatalogApplication(applicationCatalog()[0]!, {}, new Set());
 
 describe('RequestAccessModal', () => {
   it('renders nothing when there is no application', () => {

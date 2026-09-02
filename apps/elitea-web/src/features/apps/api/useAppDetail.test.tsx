@@ -35,7 +35,6 @@ describe('useAppDetail', () => {
     const missing = renderHookWithRouter(() => useAppDetail(undefined), { projectId: 'proj-1' });
     await waitFor(() => expect(missing.result.current).toBeDefined());
     expect(missing.result.current.isFetching).toBe(false);
-    expect(missing.result.current.hasCustomUI).toBe(false);
     expect(missing.result.current.appName).toBe('Application');
   });
 
@@ -57,21 +56,18 @@ describe('useAppDetail', () => {
     const { result } = renderHookWithRouter(() => useAppDetail('7'));
     await waitFor(() => expect(result.current).toBeDefined());
     expect(result.current.isFetching).toBe(false);
-    expect(result.current.hasCustomUI).toBe(false);
   });
 
-  it('defaults appName to "Application" and hasCustomUI to false while loading/absent', async () => {
+  it('reads appName from the fetched detail', async () => {
     server.use(getGetApplicationMockHandler(detail({ name: 'Wikis' })));
 
     const { result } = renderHookWithRouter(() => useAppDetail('7'), { projectId: 'proj-1' });
 
     await waitFor(() => expect(result.current.isFetching).toBe(false));
     expect(result.current.appName).toBe('Wikis');
-    expect(result.current.hasCustomUI).toBe(false);
-    expect(result.current.iframeUrl).toBeNull();
   });
 
-  it('builds the /ui_host iframe URL when the backend supplies custom_ui_route + provider in version_details.meta', async () => {
+  it('exposes no custom-UI frame state, even when the legacy meta keys are present (ADR-0024 WP8)', async () => {
     server.use(
       getGetApplicationMockHandler(
         detail({
@@ -88,32 +84,9 @@ describe('useAppDetail', () => {
 
     const { result } = renderHookWithRouter(() => useAppDetail('7'), { projectId: 'proj-1' });
 
-    await waitFor(() => expect(result.current.hasCustomUI).toBe(true));
-    expect(result.current.iframeUrl).toMatch(/^\/ui_host\/deepwiki\/wiki\/proj-1\/\?/);
-    expect(result.current.iframeUrl).toContain('toolkit_id=7');
-    expect(result.current.iframeKey).toBeGreaterThan(0);
-  });
-
-  it('does not build an iframe URL when only one of custom_ui_route/provider is present', async () => {
-    server.use(
-      getGetApplicationMockHandler(
-        detail({
-          version_details: {
-            id: '1',
-            application_id: '7',
-            name: 'v1',
-            status: 'active',
-            meta: { custom_ui_route: 'wiki' },
-          },
-        }),
-      ),
-    );
-
-    const { result } = renderHookWithRouter(() => useAppDetail('7'), { projectId: 'proj-1' });
-
     await waitFor(() => expect(result.current.isFetching).toBe(false));
-    expect(result.current.hasCustomUI).toBe(false);
-    expect(result.current.iframeUrl).toBeNull();
+    expect(result.current.appName).toBe('Wikis');
+    expect(Object.keys(result.current).sort()).toEqual(['appName', 'error', 'isError', 'isFetching']);
   });
 
   it('surfaces a fetch error via isError/error', async () => {

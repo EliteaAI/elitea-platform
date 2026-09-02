@@ -41,7 +41,7 @@ describe('AppDetail (ROUTE-040)', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 
-  it('renders the custom-UI iframe when the backend supplies custom_ui_route + provider', async () => {
+  it('renders the EditToolkit slot, not an iframe, when the legacy custom-UI meta keys are present (ADR-0024 WP8)', async () => {
     server.use(
       getGetApplicationMockHandler(
         detail({
@@ -57,13 +57,12 @@ describe('AppDetail (ROUTE-040)', () => {
     );
     renderAppsRoute('/apps/applications/7', { projectId: 'proj-1' });
 
-    const iframe = await screen.findByTitle('Wikis Custom UI');
-    expect(iframe.tagName).toBe('IFRAME');
-    expect(iframe).toHaveAttribute('src', expect.stringContaining('/ui_host/deepwiki/wiki/proj-1/'));
-    expect(iframe).toHaveAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups');
+    await waitFor(() => expect(screen.getByTestId('app-detail-edit-toolkit-slot')).toBeInTheDocument());
+    expect(document.querySelector('iframe')).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('renders the (composition-gap) EditToolkit slot when there is no custom UI', async () => {
+  it('renders the (composition-gap) EditToolkit slot for an ordinary detail', async () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderAppsRoute('/apps/applications/7', { projectId: 'proj-1' });
 

@@ -1,8 +1,10 @@
 import { z } from 'zod';
 
 /**
- * Tier 0 — the brand pack (spec §4.2). Reproduced VERBATIM from the spec;
- * no field was added, removed, widened or made optional.
+ * Tier 0 — the brand pack (spec §4.2). Reproduced from the spec; the only
+ * additions are `shape.radiusPill` (S1 Part B) and the two optional
+ * `product.supportEmail` / `product.senderName` contact fields (ADR-0024
+ * WP8). No field was removed, widened or made optional.
  *
  * Contract notes that other units depend on (all verified against
  * zod@4.4.3 and mirrored field-for-field by the Go implementation in
@@ -40,6 +42,14 @@ export const BrandPack = z
       // Go mirror (`optionalURL`) stays valid. Recorded as a §4.2 erratum.
       docsUrl: z.url().optional(),
       supportUrl: z.url().optional(),
+      // ADR-0024 WP8: the two tenant-facing contact fields. Both optional and
+      // both ABSENT-not-null, like every other optional here. `z.email()` is
+      // the Zod 4 spelling of `z.string().email()` (same erratum as `docsUrl`
+      // above). The Go mirror (`pack.go`) adds the same two fields; nested
+      // objects strip unknown keys, so a pack from either side parses on the
+      // other while the two land independently.
+      supportEmail: z.email().optional(),
+      senderName: z.string().optional(),
     }),
     assets: z.object({
       logoFull: z.string(), // data: URI or same-origin path

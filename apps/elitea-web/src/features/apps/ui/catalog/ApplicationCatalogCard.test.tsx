@@ -2,14 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { APPLICATION_CATALOG, REQUEST_STATUS } from '../../lib/constants';
+import { REQUEST_STATUS, applicationCatalog } from '../../lib/constants';
 import { buildCatalogApplication } from '../../model/catalog';
 import type { CatalogApplication } from '../../model/types';
 import { renderWithProviders } from '../../__tests__/testUtils';
 
 import { ApplicationCatalogCard } from './ApplicationCatalogCard';
 
-const wikisEntry = APPLICATION_CATALOG[0]!;
+const wikisEntry = applicationCatalog()[0]!;
 
 function catalogApp(overrides: { schema?: boolean; configured?: boolean } = {}): CatalogApplication {
   const schemas = overrides.schema ? { [wikisEntry.type]: { metadata: { application: true, label: 'Wikis' } } } : {};

@@ -5,6 +5,7 @@ import {
   checkForkedAssets,
   checkModeBranches,
   checkMuiSelectors,
+  checkSubAppStrings,
   checkThemePalette,
 } from './theme-gate-core.mjs';
 
@@ -189,5 +190,60 @@ describe('§4.6 check 6 — external origins', () => {
       ),
     ]);
     expect(hits).toHaveLength(1);
+  });
+});
+
+describe('check 8 — sub-application screens carry no engine name or vendor docs origin', () => {
+  it('flags a string literal with DeepWiki or docs.elitea.ai in every scoped path, any quote style', () => {
+    const hits = checkSubAppStrings([
+      file('src/features/apps/lib/constants.ts', "  description: 'DeepWiki turns a repository into docs.',"),
+      file('src/pages/deepwiki/DeepWiki.tsx', 'const title = t("wiki.title", "DeepWiki");'),
+      file('src/widgets/deepwiki/ui/Panel.tsx', 'const href = `https://docs.elitea.ai/integrations/apps/wikis`;'),
+      file('src/features/wiki-generation/lib/copy.ts', "export const hint = 'See docs.elitea.ai';"),
+      file('src/entities/wiki/lib/x.ts', "const engine = 'DeepWiki';"),
+      file('src/routes/_shell/deepwiki.index.tsx', "const crumb = 'DeepWiki';"),
+    ]);
+    expect(hits).toHaveLength(6);
+    expect(hits[0]).toMatchObject({ path: 'src/features/apps/lib/constants.ts', line: 1 });
+  });
+
+  it('ignores the same strings outside the scope, in test/story files, and in non-ts files', () => {
+    expect(
+      checkSubAppStrings([
+        file('src/shared/brand/brandLinks.ts', "export const FALLBACK_DOCS_URL = 'https://docs.elitea.ai';"),
+        file('src/features/apps/lib/constants.test.ts', "expect(x).not.toMatch('DeepWiki');"),
+        file('src/pages/deepwiki/DeepWiki.stories.tsx', "const s = 'DeepWiki';"),
+        file('src/pages/deepwiki/x.css', "content: 'DeepWiki';"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('ignores identifiers, module specifiers and comment lines', () => {
+    expect(
+      checkSubAppStrings([
+        file(
+          'src/pages/deepwiki/DeepWikiToolkit.tsx',
+          [
+            "import { DeepWiki } from '@/pages/deepwiki/DeepWiki';",
+            "export { DeepWiki } from '@/pages/deepwiki/DeepWiki';",
+            '// the DeepWiki engine, see "DeepWiki" in the ADR',
+            ' * a JSDoc-style continuation line: "DeepWiki"',
+            '/** block: "DeepWiki" */',
+            'const body = await invokeDeepWikiTool(projectId, name);',
+            "const label = t('wiki.label', 'Wikis');",
+          ].join('\n'),
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still flags a real string on the line after an exempt one', () => {
+    const hits = checkSubAppStrings([
+      file(
+        'src/pages/deepwiki/DeepWiki.tsx',
+        ["import { t } from '@/shared/i18n';", "const title = t('wiki.title', 'DeepWiki');"].join('\n'),
+      ),
+    ]);
+    expect(hits).toEqual([{ path: 'src/pages/deepwiki/DeepWiki.tsx', line: 2, text: "const title = t('wiki.title', 'DeepWiki');" }]);
   });
 });

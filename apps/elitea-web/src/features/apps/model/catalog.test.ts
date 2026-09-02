@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { APPLICATION_CATALOG } from '../lib/constants';
+import { applicationCatalog } from '../lib/constants';
 
 import { buildCatalogApplication, filterApplicationSchemas, resolveApplicationAvailability } from './catalog';
 
-const wikisEntry = APPLICATION_CATALOG[0]!;
+const wikisEntry = applicationCatalog()[0]!;
 
 describe('filterApplicationSchemas', () => {
   it('returns an empty map for undefined input', () => {

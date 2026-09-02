@@ -4,7 +4,8 @@
  * are table-testable without a filesystem. Check 1 (raw colours) runs the
  * elitea/no-raw-color lint rule via oxlint and lives in the CLI; check 7
  * (brand-pack round trip) is unit T1's vitest contract test, invoked by the
- * CLI when the file exists.
+ * CLI when the file exists. Check 8 (ADR-0024 WP8) is a grep too: no
+ * sub-application screen names the vendor's engine or docs origin itself.
  */
 
 /** A file for the text checks: { path, text } with path relative to root. */
@@ -14,6 +15,26 @@ const THEME_PALETTE_RE = /theme\.palette\./;
 const MUI_SELECTOR_RE = /\.Mui[A-Za-z]+-|\.css-[a-z0-9]{5,}/;
 const FORKED_ASSET_RE = /-(light|dark)\.(svg|png)$/;
 const EXTERNAL_ORIGIN_RE = /fonts\.googleapis\.com|fonts\.gstatic\.com|avatars\.githubusercontent\.com/;
+
+/**
+ * Check 8 — a STRING LITERAL (any quote style) that carries the engine's
+ * product name or the vendor's docs origin. Identifiers such as
+ * `invokeDeepWikiTool(` sit outside quotes and never match; a module
+ * specifier (`from '@/pages/deepwiki/DeepWiki'`) is excluded by line below.
+ */
+const SUBAPP_STRING_RE = /(['"`])[^'"`\n]*(?:DeepWiki|docs\.elitea\.ai)[^'"`\n]*\1/;
+/** Where check 8 looks: the catalogue file and every sub-application screen. */
+const SUBAPP_SCOPE = [
+  'src/features/apps/lib/constants.ts',
+  'src/pages/deepwiki/',
+  'src/widgets/deepwiki/',
+  'src/features/wiki-',
+  'src/entities/wiki/',
+  'src/routes/_shell/deepwiki',
+];
+const TEST_OR_STORY_RE = /\.(test|spec|stories)\.tsx?$/;
+/** A line that names a module, or a `//` / ` * ` comment line: never user-visible. */
+const NON_COPY_LINE_RE = /^\s*(?:import|export)\b.*\bfrom\s+['"]|^\s*(?:\/\/|\*)/;
 
 /**
  * Strips `/* ... *\/` block comments (including JSDoc), replacing each with
@@ -30,12 +51,13 @@ function stripBlockComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ''));
 }
 
-function grep(files, re, filterFile) {
+function grep(files, re, filterFile, filterLine) {
   const hits = [];
   for (const file of files) {
     if (filterFile && !filterFile(file.path)) continue;
     const lines = stripBlockComments(file.text).split('\n');
     for (let i = 0; i < lines.length; i++) {
+      if (filterLine && !filterLine(lines[i])) continue;
       if (re.test(lines[i])) {
         hits.push({ path: file.path, line: i + 1, text: file.text.split('\n')[i].trim() });
       }
@@ -99,4 +121,20 @@ export function checkForkedAssets(assetPaths) {
 /** §4.6 check 6 — no external font/image origins in index.html or src. */
 export function checkExternalOrigins(files) {
   return grep(files, EXTERNAL_ORIGIN_RE);
+}
+
+/**
+ * Check 8 (ADR-0024 decision 8, WP8) — a sub-application screen never names
+ * the engine behind it ("DeepWiki") or the vendor's docs origin
+ * (`docs.elitea.ai`) in a string. Copy comes from `t()` + `en.json`; links
+ * come from `shared/brand`'s `docsLink()`, which is outside this scope and is
+ * the one place the fallback origin may live.
+ */
+export function checkSubAppStrings(files) {
+  return grep(
+    files,
+    SUBAPP_STRING_RE,
+    (path) => isTs(path) && !TEST_OR_STORY_RE.test(path) && SUBAPP_SCOPE.some((prefix) => path.startsWith(prefix)),
+    (line) => !NON_COPY_LINE_RE.test(line),
+  );
 }

@@ -208,7 +208,7 @@ for (const [id, mechanism, tag] of OXLINT_CASES) {
 {
   const run = (dir) =>
     spawnSync(process.execPath, [join(SCRIPT_DIR, 'theme-gate.mjs'), '--root', dir], { encoding: 'utf8' });
-  const CHECKS = ['1-raw-colors', '2-mode-branches', '3-theme-palette', '4-mui-selectors', '5-forked-assets', '6-external-origins'];
+  const CHECKS = ['1-raw-colors', '2-mode-branches', '3-theme-palette', '4-mui-selectors', '5-forked-assets', '6-external-origins', '8-subapp-strings'];
   const bad = run(join(FIXTURES, 'theme-gate', 'bad'));
   const badOut = bad.stdout + bad.stderr;
   const good = run(join(FIXTURES, 'theme-gate', 'good'));

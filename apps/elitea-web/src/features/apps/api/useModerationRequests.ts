@@ -9,7 +9,7 @@ import {
 } from '@/shared/api/generated/admin/admin';
 import type { ModerationRequestCreate } from '@/shared/api/generated/model';
 
-import { APPLICATION_CATALOG, REQUEST_STATUS } from '../lib/constants';
+import { APPLICATION_CATALOG_TYPES, REQUEST_STATUS } from '../lib/constants';
 import type { RequestStatus } from '../lib/constants';
 
 import { useSelectedProjectId } from './useSelectedProjectId';
@@ -111,8 +111,8 @@ function useCreateModerationRequestMutation(): UseMutationResult<
  * Replaces the baseline's `useApplicationRequests`
  * (`features/apps/lib/hooks/useApplicationRequests.hooks.js`). One
  * `useQueries` call replaces the baseline's `Promise.all` + local
- * `moderationData` state — `APPLICATION_CATALOG` is a fixed-length module
- * constant, so mapping it to one query-options object per entry is stable
+ * `moderationData` state — `APPLICATION_CATALOG_TYPES` is a fixed-length
+ * module constant, so mapping it to one query-options object per entry is stable
  * across renders (never a variable-length hook call).
  *
  * Until unit A14 the Go endpoints behind this hook were a static stub: every
@@ -133,11 +133,11 @@ export function useModerationRequests() {
   const { mutateAsync: createModerationRequestAsync } = useCreateModerationRequestMutation();
 
   const statusQueries = useQueries({
-    queries: APPLICATION_CATALOG.map((entry) =>
+    queries: APPLICATION_CATALOG_TYPES.map((type) =>
       // The third argument is the operation's query parameters
       // (`issue_type`), NOT the react-query options. Passing the options
       // there silently drops `enabled`. The query then runs with no project.
-      getModerationStatusQueryOptions(projectId ?? '', entry.type, undefined, {
+      getModerationStatusQueryOptions(projectId ?? '', type, undefined, {
         query: { enabled: projectId !== undefined },
       }),
     ),
@@ -145,13 +145,13 @@ export function useModerationRequests() {
 
   const statusByType = useMemo(() => {
     const map = new Map<string, RequestStatus>();
-    APPLICATION_CATALOG.forEach((entry, index) => {
+    APPLICATION_CATALOG_TYPES.forEach((type, index) => {
       // `.data.data`'s declared type includes the error-envelope variant —
       // never actually reachable here since `eliteaFetch` throws instead of
       // resolving with it (mutator.ts's §3.6 unwrap contract). It is passed as
       // `unknown` so `statusFromResponse` can also read the bare-`{status}`
       // body a hybrid pylon deployment may still answer with.
-      map.set(entry.type, statusFromResponse(statusQueries[index]?.data?.data));
+      map.set(type, statusFromResponse(statusQueries[index]?.data?.data));
     });
     return map;
   }, [statusQueries]);

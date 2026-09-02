@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { SocketClientContext } from '@/shared/api/socket/client';
 import { createTestSocketClient } from '@/shared/api/socket/testing';
-import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
+import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme, docsLink } from '@/shared/brand';
 import { server } from '@/test/setup';
 
 import { createTestQueryClient } from '../__tests__/testUtils';
@@ -167,7 +167,9 @@ describe('ToolkitTypeSelector', () => {
     await waitFor(() => expect(screen.getByText(/Still no local MCP available/)).toBeInTheDocument());
 
     const link = screen.getByRole('link', { name: 'Documentation' });
-    expect(link).toHaveAttribute('href', 'https://docs.elitea.ai/integrations/mcp/create-and-use-server-stdio');
+    // Brand-derived (ADR-0024 WP8): the served pack states no docsUrl here, so this is the shipped origin.
+    expect(link).toHaveAttribute('href', docsLink('integrations/mcp/create-and-use-server-stdio'));
+    expect(link).toHaveAttribute('href', expect.stringMatching(/^https:\/\/.+\/integrations\/mcp\/create-and-use-server-stdio$/));
     expect(link).toHaveAttribute('target', '_blank');
 
     expect(screen.queryByText('No MCPs found')).not.toBeInTheDocument();

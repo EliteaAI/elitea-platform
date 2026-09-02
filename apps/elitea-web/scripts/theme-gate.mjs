@@ -10,9 +10,11 @@
  *   6. no external font/image origins              (grep, index.html + src)
  *   7. brand-pack round trip                       (T1's vitest contract test;
  *      skip-with-notice until src/shared/brand/__tests__/brandPack.contract.test.ts lands)
+ *   8. no engine name / vendor docs origin in       (grep, ADR-0024 decision 8 / WP8)
+ *      sub-application screens
  *
  * Usage: node scripts/theme-gate.mjs [--root <dir>]
- * Checks 2–6 logic lives in scripts/lib/theme-gate-core.mjs (unit-tested);
+ * Checks 2–6 and 8 logic lives in scripts/lib/theme-gate-core.mjs (unit-tested);
  * this file walks files and orchestrates.
  */
 import { spawnSync } from 'node:child_process';
@@ -26,6 +28,7 @@ import {
   checkForkedAssets,
   checkModeBranches,
   checkMuiSelectors,
+  checkSubAppStrings,
   checkThemePalette,
 } from './lib/theme-gate-core.mjs';
 
@@ -152,6 +155,8 @@ function main() {
   failed = report('4-mui-selectors', checkMuiSelectors(files)) || failed;
   failed = report('5-forked-assets', checkForkedAssets(assetPaths)) || failed;
   failed = report('6-external-origins', checkExternalOrigins(files)) || failed;
+  // 8 — runs before 7 because 7 spawns vitest; a text check has no reason to wait for it.
+  failed = report('8-subapp-strings', checkSubAppStrings(files)) || failed;
 
   // 7 — brand-pack round trip (unit T1 owns the test; §4.6 check 7).
   //
