@@ -62,6 +62,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_BUCKET = "wiki-artifacts"
 
 
+def _artifact_client_from(llm_settings: dict[str, Any]) -> Any | None:
+    """The artifact client for one invocation, or ``None`` without a transport.
+
+    Built from the same ``llm_settings`` the engine's own uploads use, so the
+    in-process path and the Kubernetes-Job path land in the same place with
+    the same credential — the callback bearer the facade minted.
+    """
+    if not llm_settings.get("api_base") or not llm_settings.get("api_key"):
+        return None
+    from .engine.artifacts_platform_client import (  # noqa: PLC0415
+        create_platform_client_from_llm_settings,
+    )
+
+    return create_platform_client_from_llm_settings(llm_settings)
+
+
 def merge_parameters(request_data: dict[str, Any]) -> dict[str, Any]:
     """Merge toolkit configuration with tool arguments, legacy rules intact.
 
@@ -431,9 +447,11 @@ class LegacyToolRunner:
         self,
         settings=None,
         tools: dict[str, Callable[..., Any]] | None = None,
+        artifact_client_factory: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self._settings = settings
         self._tools = tools
+        self._artifact_client_factory = artifact_client_factory or _artifact_client_from
 
     def _bound_tool(self, name: str, context: InvocationContext) -> Callable[..., Any]:
         if self._tools is not None:
@@ -510,11 +528,12 @@ class LegacyToolRunner:
 
         if tool_name == "generate_wiki":
             await self._publish(result, context)
-
+        objects = compose_result_objects(tool_name, result)
+        objects = await self._upload(objects, params, context)
         return {
             "invocation_id": context.invocation_id,
             "status": "Completed",
-            "result": json.dumps(compose_result_objects(tool_name, result)),
+            "result": json.dumps(objects),
             "result_type": "String",
         }
 
@@ -543,6 +562,78 @@ class LegacyToolRunner:
         policy = EgressPolicy.parse(settings.git_allowlist)
         host = check_repo_config(policy, repo_config)
         logger.info("clone destination %s permitted by the egress allowlist", host)
+
+    async def _upload(
+        self,
+        objects: list[dict[str, Any]],
+        params: dict[str, Any],
+        context: InvocationContext,
+    ) -> list[dict[str, Any]]:
+        """Put every ``result_target: artifact`` object into its bucket.
+
+        THE PORT GAP THIS CLOSES. In the pylon world the socket worker read
+        the composed list and uploaded each artifact object itself; on the Go
+        platform nothing does. The Kubernetes-Job worker uploads directly and
+        marks what it uploaded (``_uploaded_directly``, skipped in
+        composition), but the in-process path returned pages inline and they
+        never landed — a ``Completed`` generation whose wiki did not exist.
+
+        The transport is the one the facade hands over in ``llm_settings``:
+        the callback base URL and the minted bearer. When no transport is
+        present (a direct SPI call, the P0 fixtures) nothing is uploaded and
+        that is logged, not reported in band — the composed list is a frozen
+        contract and the real path always carries the transport.
+
+        A failed upload does not fail the invocation, for the reason
+        ``_publish`` gives: the objects are still returned inline, so the
+        caller loses nothing it had; what it must not get is a success that
+        claims the bucket holds them. So the failure is appended as a message
+        in the legacy ``⚠️`` style and logged loudly.
+        """
+        import asyncio  # noqa: PLC0415
+
+        pending = [
+            obj for obj in objects
+            if obj.get("result_target") == "artifact" and obj.get("name")
+        ]
+        if not pending:
+            return objects
+        client = self._artifact_client_factory(params.get("llm_settings") or {})
+        if client is None:
+            logger.warning(
+                "%d artifact object(s) returned inline only: the request carried "
+                "no artifact transport (llm_settings.api_base / api_key)",
+                len(pending),
+            )
+            return objects
+        await context.thinking(f"Uploading {len(pending)} wiki objects")
+        failures: list[str] = []
+        for obj in pending:
+            bucket = obj.get("result_bucket") or DEFAULT_BUCKET
+            name = str(obj["name"])
+            try:
+                await context.checkpoint()
+                await asyncio.to_thread(
+                    client.upload_artifact, bucket, name, obj.get("data", "")
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+                logger.exception("uploading %s to bucket %s failed", name, bucket)
+                failures.append(f"- {name}: {exc}")
+        if failures:
+            await context.thinking(f"Uploading FAILED for {len(failures)} object(s)")
+            return [
+                *objects,
+                _message(
+                    "⚠️ The wiki was generated but "
+                    f"{len(failures)} of {len(pending)} objects could not be "
+                    "uploaded to the artifact bucket, so they are not readable "
+                    "from the wiki browser:\n" + "\n".join(failures)
+                ),
+            ]
+        await context.thinking(f"Uploaded {len(pending)} wiki objects")
+        return objects
 
     async def _publish(
         self, result: dict[str, Any], context: InvocationContext

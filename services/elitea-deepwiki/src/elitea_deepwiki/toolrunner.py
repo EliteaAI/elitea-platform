@@ -12,7 +12,10 @@ Three implementations:
   a ``resource_not_found`` error rather than returning an empty success. A
   runner that is not wired must look broken, not idle;
 * :class:`elitea_deepwiki.legacy_runner.LegacyToolRunner` — the real one,
-  which dispatches into the engine.
+  which dispatches into the engine;
+* :class:`elitea_deepwiki.fixture_runner.FixtureToolRunner` — the legacy
+  runner's composition and upload over canned tool results, for stacks that
+  must exercise the whole generate → land → read path without the engine.
 
 The module is called ``toolrunner`` rather than ``engine`` because ``engine``
 is the copied package itself.
@@ -103,8 +106,11 @@ def build_runner(settings) -> ToolRunner:
         from .legacy_runner import LegacyToolRunner  # noqa: PLC0415
 
         return LegacyToolRunner(settings=settings)
+    if name == "fixture":
+        from .fixture_runner import FixtureToolRunner  # noqa: PLC0415
 
+        return FixtureToolRunner(settings=settings)
     raise ValueError(
         f"ELITEA_DEEPWIKI_RUNNER={name!r} is not a known runner "
-        f"(expected 'unavailable' or 'legacy')"
+        f"(expected 'unavailable', 'legacy' or 'fixture')"
     )
