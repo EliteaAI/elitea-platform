@@ -32,10 +32,14 @@ test.describe('DeepWiki generation', () => {
     await page.getByTestId('wiki-settings-toggle').click();
     await expect(page.getByTestId('wiki-settings-panel')).toBeVisible();
 
-    // The refusal names the FIELD, not the document: a draft with no repository.
+    // The refusal names the FIELD, not the document: a draft with no repository
+    // is reported as it is typed, and Save is disabled until it is fixed — so
+    // there is no click here. (A click was a race: on a fast machine it landed
+    // inside the editor's 30ms debounce and hit a still-enabled button; on the
+    // CI runner Playwright waited two minutes for a button that stays disabled.)
     await replaceEditorText(page, JSON.stringify({ branch: 'main', llm_model: 'gpt-4o-mini', code_toolkit: 9010 }));
-    await page.getByTestId('wiki-settings-save').click();
     await expect(page.getByTestId('wiki-settings-problem')).toHaveAttribute('data-field', 'repository');
+    await expect(page.getByTestId('wiki-settings-save')).toBeDisabled();
     await expect(page.getByTestId('wiki-settings-saved')).toHaveCount(0);
 
     // A good draft saves, and survives a reload — it was PUT, not kept in memory.
