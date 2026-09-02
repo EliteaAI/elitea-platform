@@ -1,6 +1,7 @@
 import { ThemeProvider } from '@mui/material/styles';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
+import { EditorView } from '@codemirror/view';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -38,17 +39,22 @@ installCodeMirrorTestPolyfills();
 
 const TOOLKIT = { id: 42, name: 'Wikis', type: 'wikis', description: 'kept' };
 
-async function replaceDraft(user: ReturnType<typeof userEvent.setup>, text: string) {
-  const editor = document.querySelector('.cm-content');
-  if (!(editor instanceof HTMLElement)) throw new Error('no editor');
-  await user.click(editor);
-  await user.keyboard('{Control>}a{/Control}{Backspace}');
-  // Pasted, not typed: typing `{` key by key runs CodeMirror's bracket
-  // auto-closing, which on a slow runner interleaved with the keystrokes and
-  // left a draft that was not the text asked for (the CI shard saw the
-  // "not JSON" problem where the "no repository" one was expected). A paste
-  // is one transaction carrying the exact text.
-  await user.paste(text);
+async function replaceDraft(_user: ReturnType<typeof userEvent.setup>, text: string) {
+  const content = document.querySelector('.cm-content');
+  if (!(content instanceof HTMLElement)) throw new Error('no editor');
+  // Through the editor's own API, as one transaction. Typing `{` key by key
+  // ran CodeMirror's bracket auto-closing into the keystrokes, and a
+  // user-event paste reached the CI shard's jsdom with no clipboard data at
+  // all — the draft it saved was "" (the CI run received data-field="").
+  // The panel reads the draft through CodeMirrorEditor's debounced onChange
+  // (30ms), so the dispatch is followed by a wait longer than that.
+  const view = EditorView.findFromDOM(content);
+  if (view === null) throw new Error('no EditorView behind .cm-content');
+  await act(async () => {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  });
+  expect(content).toHaveTextContent(text.slice(0, 12));
 }
 
 describe('WikiSettingsPanel', () => {
