@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # Every check reads only the standard library and the committed JSON, so
@@ -204,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The check asks `origin` whether the branch it names still exists, so the
@@ -341,7 +341,7 @@ jobs:
           # The walk needs the trunk. The checker REFUSES a shallow clone
           # rather than reporting a short walk as a pass.
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The suite builds throwaway bare repositories with git plumbing. It
