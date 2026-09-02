@@ -333,7 +333,7 @@ main:
   # fails `helm template` rather than the pod.
   replicaCount: 2
 
-  # Pull secrets for a registry that needs credentials. ghcr.io/eliteaai/elitea-main
+  # Pull secrets for a registry that needs credentials. ghcr.io/elitea-ng/elitea-main
   # is a PRIVATE package today — an anonymous pull is refused, unlike
   # elitea-web's — so a cluster without an entry here cannot start this service
   # at all: both the Deployment and the migration hook Job stop at
@@ -345,7 +345,7 @@ main:
   imagePullSecrets: []
 
   image:
-    repository: ghcr.io/eliteaai/elitea-main
+    repository: ghcr.io/elitea-ng/elitea-main
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -1360,7 +1360,7 @@ web:
     # is real. Pin `tag` to a release in production — `latest` plus
     # IfNotPresent means a node that already cached an older `latest` layer
     # keeps serving it.
-    repository: ghcr.io/eliteaai/elitea-web
+    repository: ghcr.io/elitea-ng/elitea-web
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -1492,7 +1492,7 @@ scheduler:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/eliteaai/elitea-scheduler
+    repository: ghcr.io/elitea-ng/elitea-scheduler
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -1680,7 +1680,7 @@ llmGateway:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/eliteaai/elitea-llm-gateway
+    repository: ghcr.io/elitea-ng/elitea-llm-gateway
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -2215,14 +2215,14 @@ deepwiki:
   # share. `image` is the host; `engine.image` is the Python image, which
   # must be the `-engine` variant for the legacy runner to run anything.
   image:
-    repository: ghcr.io/eliteaai/elitea-subapp-host
+    repository: ghcr.io/elitea-ng/elitea-subapp-host
     # Empty means the chart-wide image.tag.
     tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   engine:
     image:
-      repository: ghcr.io/eliteaai/elitea-deepwiki
+      repository: ghcr.io/elitea-ng/elitea-deepwiki
       # Empty means the chart-wide image.tag with `-engine` appended — the
       # image that carries the engine's dependency closure. The guard in
       # _helpers.tpl refuses a runner=legacy install whose engine tag lacks
@@ -2413,7 +2413,7 @@ worker:
     # over `implementation`, and is how you pin an image by digest or run the
     # worker from a mirror. To stay on the Python worker, either set
     # `implementation: python` or pin this to
-    # `ghcr.io/eliteaai/elitea-worker-python`.
+    # `ghcr.io/elitea-ng/elitea-worker-python`.
     repository: ""
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent

@@ -59,7 +59,7 @@ agentStateMigrations:
 main:
   replicaCount: 1
   image:
-    repository: ghcr.io/eliteaai/elitea-main
+    repository: ghcr.io/elitea-ng/elitea-main
     pullPolicy: IfNotPresent
   autoscaling:
     enabled: false
@@ -167,12 +167,12 @@ main:
 deepwiki:
   enabled: true
   image:
-    repository: ghcr.io/eliteaai/elitea-subapp-host
+    repository: ghcr.io/elitea-ng/elitea-subapp-host
     tag: kind
     pullPolicy: IfNotPresent
   engine:
     image:
-      repository: ghcr.io/eliteaai/elitea-deepwiki
+      repository: ghcr.io/elitea-ng/elitea-deepwiki
       # Ends in -engine, which is what elitea-deepwiki.validateGuards requires
       # of a runner=legacy install.
       tag: kind-engine

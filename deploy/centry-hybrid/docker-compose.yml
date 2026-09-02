@@ -41,7 +41,7 @@ services:
       context: ${ELITEA_PLATFORM_DIR:-../elitea-platform}
       dockerfile: services/elitea-main/Containerfile
       target: hybrid
-    image: ghcr.io/eliteaai/elitea-main:pov-integration
+    image: ghcr.io/elitea-ng/elitea-main:pov-integration
     restart: on-failure
     environment:
       DATABASE_URL: >-

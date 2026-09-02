@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: ghcr.io/eliteaai
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
   # Read by the chart job. Pinned, not "latest" — an unpinned third-party
   # download is a hard dependency of every release.
   YQ_VERSION: v4.44.6
@@ -880,7 +880,7 @@ jobs:
           # all six copies of the image list against docker-bake.hcl.
           IMAGES=("elitea-main" "elitea-scheduler" "elitea-subapp-host" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust" "elitea-deepwiki")
           SUFFIXES=("linux-amd64" "linux-arm64")
-          ORG="eliteaai"
+          ORG="${{ github.repository_owner }}"
 
           for img in "${IMAGES[@]}"; do
             # Delete platform-specific tags
@@ -922,7 +922,7 @@ jobs:
           # exist and left the one chart this release actually published in
           # place — pointing at images the step above had just deleted.
           CHARTS=("elitea" "nats" "nats-bootstrap")
-          ORG="eliteaai"
+          ORG="${{ github.repository_owner }}"
 
           # Report what could not be deleted. Every call here used to end in
           # `2>/dev/null || true`, so a refused delete looked exactly like a

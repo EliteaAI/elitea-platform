@@ -3,8 +3,8 @@
 # repository's Helm chart the way it ships to production (ADR-0023):
 #
 #   * the provider pod is TWO containers — the Go sub-application host
-#     (ghcr.io/eliteaai/elitea-subapp-host) with ELITEA_DEEPWIKI_RUNNER=legacy,
-#     and the Python engine sidecar (ghcr.io/eliteaai/elitea-deepwiki) reached
+#     (ghcr.io/elitea-ng/elitea-subapp-host) with ELITEA_DEEPWIKI_RUNNER=legacy,
+#     and the Python engine sidecar (ghcr.io/elitea-ng/elitea-deepwiki) reached
 #     over a Unix socket the two share;
 #   * the facade -> provider hop is mutually authenticated, with both
 #     certificates issued by cert-manager from one internal CA ClusterIssuer,
@@ -29,9 +29,9 @@ TAG="${KIND_IMAGE_TAG:-kind}"
 ENGINE_TAG="${TAG}-engine"
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.19.2}"
 
-HOST_IMAGE="ghcr.io/eliteaai/elitea-subapp-host:${TAG}"
-MAIN_IMAGE="ghcr.io/eliteaai/elitea-main:${TAG}"
-ENGINE_IMAGE="ghcr.io/eliteaai/elitea-deepwiki:${ENGINE_TAG}"
+HOST_IMAGE="ghcr.io/elitea-ng/elitea-subapp-host:${TAG}"
+MAIN_IMAGE="ghcr.io/elitea-ng/elitea-main:${TAG}"
+ENGINE_IMAGE="ghcr.io/elitea-ng/elitea-deepwiki:${ENGINE_TAG}"
 
 # The engine sidecar's build extras. `storage-postgres` is what the migration
 # Job needs — it opens ELITEA_DEEPWIKI_DATABASE_URL, and psycopg lives behind
