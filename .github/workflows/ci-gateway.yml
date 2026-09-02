@@ -76,7 +76,7 @@ jobs:
         working-directory: .
         run: bash scripts/ci/check-gateway-toolchain.sh
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: services/elitea-llm-gateway/go.sum
@@ -93,7 +93,7 @@ jobs:
         working-directory: services/elitea-llm-gateway
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: services/elitea-llm-gateway/go.sum
@@ -145,7 +145,7 @@ jobs:
         working-directory: services/elitea-llm-gateway
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: services/elitea-llm-gateway/go.sum
