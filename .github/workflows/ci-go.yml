@@ -123,6 +123,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
+            services/elitea-subapp-host/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
             gen/go/go.sum
@@ -203,6 +204,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
+            services/elitea-subapp-host/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
 
@@ -426,6 +428,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
+            services/elitea-subapp-host/go.sum
             libs/proto/gen/go/go.sum
 
       - name: Build elitea-main

@@ -170,13 +170,20 @@ func (c *Context) StopRequested() bool { return c.Checkpoint() != nil }
 type Call func(ctx context.Context, tc *Context) (map[string]any, error)
 
 // Manager owns the registry and the goroutines behind it.
+// inFlight is one run this process owns: how to cancel its context, and
+// the struct its Context checkpoints on.
+type inFlight struct {
+	cancel     context.CancelFunc
+	invocation *Invocation
+}
+
 type Manager struct {
 	store     Store
 	logger    *slog.Logger
 	retention time.Duration
 
 	mu       sync.Mutex
-	inFlight map[string]context.CancelFunc
+	inFlight map[string]*inFlight
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -193,7 +200,7 @@ func NewManager(store Store, retention time.Duration, logger *slog.Logger) *Mana
 	if retention <= 0 {
 		retention = time.Hour
 	}
-	return &Manager{store: store, logger: logger, retention: retention, inFlight: map[string]context.CancelFunc{}, stopped: make(chan struct{})}
+	return &Manager{store: store, logger: logger, retention: retention, inFlight: map[string]*inFlight{}, stopped: make(chan struct{})}
 }
 
 // Store exposes the registry's store (for /health's durable flag).
@@ -229,8 +236,8 @@ func (m *Manager) Start(ctx context.Context) {
 func (m *Manager) Stop() {
 	m.stopOnce.Do(func() { close(m.stopped) })
 	m.mu.Lock()
-	for _, cancel := range m.inFlight {
-		cancel()
+	for _, live := range m.inFlight {
+		live.cancel()
 	}
 	m.mu.Unlock()
 	m.wg.Wait()
@@ -255,7 +262,7 @@ func (m *Manager) Submit(ctx context.Context, toolkit, tool string, call Call) (
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.mu.Lock()
-	m.inFlight[invocation.ID] = cancel
+	m.inFlight[invocation.ID] = &inFlight{cancel: cancel, invocation: invocation}
 	m.mu.Unlock()
 	m.wg.Add(1)
 	go func() {
@@ -340,8 +347,17 @@ func (m *Manager) Cancel(ctx context.Context, toolkit, tool, id string) (bool, e
 	if err != nil || invocation == nil {
 		return false, err
 	}
+	// The flag must reach the struct the RUNNING call checkpoints on. The
+	// in-memory store hands back that very struct; a durable store hands
+	// back a fresh row, so the live one is flipped too when this process
+	// owns the run. (A run owned by another replica cannot be stopped from
+	// here — the same limit the Python store had; its row still records
+	// the request.)
 	m.mu.Lock()
 	invocation.StopRequest = true
+	if live, ok := m.inFlight[id]; ok {
+		live.invocation.StopRequest = true
+	}
 	m.mu.Unlock()
 	return true, m.store.Update(ctx, invocation)
 }

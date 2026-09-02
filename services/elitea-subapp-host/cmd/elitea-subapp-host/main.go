@@ -3,6 +3,7 @@
 //	ELITEA_SUBAPP=deepwiki|echo     which application (default: deepwiki)
 //	ELITEA_<APP>_RUNNER=unavailable|echo|fixture|legacy (fixture, legacy: DeepWiki only)
 //	ELITEA_<APP>_ENGINE_SOCKET      the engine sidecar's Unix socket (legacy)
+//	ELITEA_<APP>_DATABASE_URL       the durable invocation store (else in memory)
 //	ELITEA_<APP>_*                  the host settings under the app's prefix
 //
 // One binary, one application per process; the prefix keeps each
@@ -65,7 +66,26 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	server, err := spi.NewServer(settings, app, logger)
+	var options []spi.Option
+	if settings.DatabaseURL != "" {
+		// The durable store (ADR-0023 H2b): the rows the Python migrations
+		// own. Orphans of a previous process are reconciled before the first
+		// request, so no poll answers InProgress for work nobody is doing. A
+		// database that is configured and unreachable is a boot failure, not
+		// a host that silently runs in memory.
+		store, err := spi.NewPostgresStore(ctx, settings.DatabaseURL, "", logger)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if reconciled, err := store.Reconcile(ctx); err != nil {
+			return fmt.Errorf("reconcile the invocation store: %w", err)
+		} else if reconciled > 0 {
+			logger.Warn("invocations orphaned by a previous process were terminated", "count", reconciled)
+		}
+		options = append(options, spi.WithStore(store))
+	}
+	server, err := spi.NewServer(settings, app, logger, options...)
 	if err != nil {
 		return err
 	}
