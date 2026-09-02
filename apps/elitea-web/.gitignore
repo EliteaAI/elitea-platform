@@ -18,8 +18,8 @@ playwright-report/
 # A build artefact: the legacy DeepWiki reducer, sliced out of apps/deepwiki-ui
 # by scripts/deepwiki-oracle/extract-jsx-reducer.mjs. Regenerated on demand.
 #
-# The entry lives HERE, on the branch that first had a working tree containing
-# it, rather than only alongside the script that writes it. It was committed by
-# accident once — `git add -A` swept it in while it was untracked — and CI then
-# linted 245 lines of legacy code as if this repository had written them.
+# Committing it would keep a second copy of code this repository is deleting —
+# and it WAS committed once, by a `git add -A` that swept it in while it was
+# untracked. CI then linted 245 lines of legacy code as though this repository
+# had written them.
 scripts/deepwiki-oracle/jsxReducer.generated.mjs

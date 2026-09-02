@@ -32,6 +32,13 @@
     // scripts/check-gates-selftest.mjs (which lints them per-case with this
     // same config, fixture-cwd-relative so the path-scoped overrides apply).
     "tools/lint-rules/fixtures/**",
+    // The legacy DeepWiki reducer, SLICED VERBATIM out of the JSX by
+    // scripts/deepwiki-oracle/extract-jsx-reducer.mjs so it can be run and
+    // recorded. It is legacy code by definition — linting it would report the
+    // findings of a file this repository is deleting, and "fixing" them would
+    // make the differential compare against something the legacy app does not
+    // do. Not committed either; see .gitignore.
+    "scripts/deepwiki-oracle/jsxReducer.generated.mjs",
     // unit S4: orval-emitted output (tags-split endpoint/mock files + zod
     // models, including the scripted backfill for the handful orval's own
     // zod-schema writer misses — see scripts/lib/orval-zod-backfill.mjs).
