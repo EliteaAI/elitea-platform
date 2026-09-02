@@ -17,18 +17,14 @@ is still not repointed. See [What is not wired yet](#what-is-not-wired-yet).
 ```
 services/elitea-deepwiki/
 ├── src/elitea_deepwiki/
-│   ├── app.py           the ASGI application — the Pylon shim's replacement
-│   ├── descriptor.py    the frozen provider descriptor
-│   ├── invocations.py   invocation registry + job manager (arbiter's successor)
-│   ├── toolkits.py      toolkit/tool admission, including the legacy aliases
-│   ├── slots.py         GET /slots capacity accounting
 │   ├── errors.py        the two error shapes
-│   ├── toolrunner.py    the seam between the SPI and the engine
-│   ├── legacy_runner.py dispatch + result composition (perform_invoke_request)
+│   ├── toolrunner.py    the seam between the sidecar and the engine
+│   ├── legacy_runner.py the engine's host hooks, run_engine_tool, and the index publish
 │   ├── repo_config.py   repository-config extraction, copied from the handler
 │   ├── publishing.py    publish a completed generation into PostgreSQL
 │   ├── jobs.py          the Kubernetes-Job manifest, repointed at this layout
-│   ├── security/        the mTLS terminus, identity headers, egress allowlist
+│   ├── security/        the git-host egress allowlist (mTLS and identity are the Go host's)
+│   ├── sidecar.py       the engine sidecar the Go host calls over a Unix socket (ADR-0023)
 │   ├── config.py        strict-parsed settings
 │   ├── engine/          the analysis engine — 101 files, plain copy, digest-guarded
 │   └── storage/
@@ -260,18 +256,14 @@ to tell which they have without reading the deployment.
 
 ### mTLS and identity
 
-`ELITEA_DEEPWIKI_TLS_CERTFILE` / `_TLS_KEYFILE` / `_TLS_CA_FILE` terminate mTLS
-in uvicorn with `CERT_REQUIRED` — the actual terminus. `MutualTLSMiddleware`
-then refuses any request that reached the app without a verified client
-certificate, which is the misconfiguration case: TLS terminated somewhere that
-did not verify a client, or plain HTTP forwarded in. `/health` stays reachable,
-because a readiness probe has no certificate.
-
-`IdentityMiddleware` **strips every identity header unconditionally**, then
-re-derives the identity only from a valid HMAC signature. Stripping first is
-what makes the order safe: no handler can read a header a client set, because
-by the time anything else runs it is gone. The only way to see an identity is
-`request.state.identity`, which exists only when a signature was checked.
+Both are the Go sub-application host's now (ADR-0023,
+`services/elitea-subapp-host`): its listener is the mutual-TLS terminus
+(`RequireAndVerifyClientCert`), its identity gate strips every identity
+header and re-derives the identity from a valid HMAC signature, and the
+probes stay reachable unsigned. The `ELITEA_DEEPWIKI_TLS_*` and
+`_IDENTITY_SECRET` settings are read by that host under the same names. This
+package's engine sidecar listens only on a Unix socket in the host's pod and
+carries no transport security of its own.
 
 The signing scheme is a **third implementation** of one that already exists
 twice in Go — elitea-main signs, the LLM gateway verifies — and it must agree
@@ -352,10 +344,11 @@ configured. spec-provider-service requires it:
 > A restarted service MUST NOT silently reinterpret a known accepted operation
 > as never having existed.
 
-Migration 0002 adds `invocations` and `invocation_events`;
-`storage/invocation_store.py` implements the same `InvocationStore` interface
-the in-memory store does, so routes, projection, drain semantics and the 404
-rules are untouched. Only where the rows live moves.
+Migration 0002 adds `invocations` and `invocation_events` — still this
+package's migration, applied by `python -m elitea_deepwiki.storage`. The
+store over them is the Go host's (`spi.PostgresStore`, ADR-0023 H2b); routes,
+projection, drain semantics and the 404 rules are the host's too. Only the
+schema stays here, because the migrations do.
 
 Two things it buys beyond surviving a restart:
 
@@ -534,16 +527,11 @@ below applies to it unchanged.
 
 | Module | Lines | What it is |
 | --- | --- | --- |
-| `invocations.py` | 429 | The invocation registry: the `pending`/`running`/`stopped`/`pruned` vocabulary, the `Started`/`InProgress` projection, drain-on-read `custom_events`, cooperative cancel, retention, and the `InvocationStore` seam. Every audited provider has this, and the spec describes it as one shape. |
 | `jobs.py` | 296 | The Kubernetes Job manifest builder. The label, worker module and image are parameters; the structure — no init container, projected-file secrets, no retry — is what ADR-0022 decision 7 requires of any provider. |
-| `app.py` | 236 | The SPI routes themselves. Only the descriptor wiring is provider-specific. |
-| `security/identity.py` | 138 | The HMAC identity scheme. **See the warning below.** |
-| `security/middleware.py` | 142 | mTLS refusal and unconditional identity-header stripping. |
 | `security/egress.py` | 202 | The fail-closed host allowlist. Inventory ingests from sources and needs the same control. |
 | `errors.py` | 131 | The two frozen error shapes and the category classifier. |
-| `toolrunner.py` | 110 | The seam between the SPI and whatever runs the tools. |
+| `toolrunner.py` | — | The seam between the engine sidecar and whatever runs the tools. |
 | `config.py` | 157 | Strict-parsed settings; only the variable names are ours. |
-| `slots.py` | 82 | Capacity accounting, including the `canStart` alias. |
 | `storage/migrate.py` | 136 | Versioned, checksummed, service-owned migrations. |
 
 Plus about 1,160 lines of conformance tooling that works on **any** Pylon
@@ -554,25 +542,26 @@ second provider's golden fixtures is a matter of pointing these at it.
 
 ### DeepWiki's own
 
-`descriptor.py`, `toolkits.py` (the alias lists), `legacy_runner.py` (dispatch
-and result composition), `repo_config.py`, `publishing.py`, the copied
-`tool_operations.py`, and all of `storage/` except `migrate.py` — the retrieval
-layer is specific to what this engine indexes.
+`legacy_runner.py` (binding the copied tool layer to its host hooks, and the
+index publish), `fixture_runner.py`, `sidecar.py`, `repo_config.py`,
+`publishing.py`, the copied `tool_operations.py`, and all of `storage/`
+except `migrate.py` — the retrieval layer is specific to what this engine
+indexes. Everything that was generic — the SPI routes, the invocation
+registry and its PostgreSQL store, the identity scheme, the mTLS boundary,
+the slot accounting, the parameter merge, the composer and the upload — was
+moved to the Go sub-application host by ADR-0023 (H1–H4), where it serves
+DeepWiki and the next sub-application from one implementation.
 
-### The identity scheme is now written three times
-
-`security/identity.py` is the **third** implementation of one contract:
+### The identity scheme is written twice, both in Go
 
     services/elitea-main/internal/llmproxy/identity.go         signs
-    services/elitea-llm-gateway/internal/llmproxy/identity.go  verifies
-    this file                                                  verifies
+    services/elitea-subapp-host/internal/spi/identity.go       verifies
 
-The Go comment on the canonical string says why that matters: it is duplicated
-across independently deployed modules, so changing it in place fails every
-request in both directions for the length of a rolling deploy. A fourth copy
-for the next provider is not a DRY nicety — it is a rotation hazard. This one
-belongs in a shared library on its own merits, whenever someone next touches
-it.
+The Python third copy is gone with the SPI shell; the gateway verifier is the
+other reader. The Go comment on the canonical string still says why the
+number matters: it is duplicated across independently deployed modules, so
+changing it in place fails every request in both directions for the length of
+a rolling deploy.
 
 ### Why it was not extracted here
 
@@ -622,7 +611,7 @@ keeps working through cutover; the `ELITEA_DEEPWIKI_*` names take precedence.
 ## Running
 
 ```bash
-cd services/elitea-deepwiki && python -m pip install -e ".[test]" && python -m pytest tests/unit tests/conformance
+cd services/elitea-deepwiki && python -m pip install -e ".[test]" && python -m pytest tests/unit tests/engine
 ```
 
 The storage-parity suite needs PostgreSQL with pgvector:
@@ -640,7 +629,9 @@ which turns the skip into a failure so a misconfigured workflow cannot report a
 parity run it never performed.
 
 ```bash
-cd services/elitea-deepwiki && python -m elitea_deepwiki
+# The engine sidecar: it listens on ELITEA_DEEPWIKI_ENGINE_SOCKET for the Go
+# sub-application host, which serves the provider SPI (ADR-0023).
+cd services/elitea-deepwiki && ELITEA_DEEPWIKI_RUNNER=fixture python -m elitea_deepwiki
 ```
 
 ```bash

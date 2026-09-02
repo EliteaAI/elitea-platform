@@ -82,8 +82,10 @@ WORKDIR /home/deepwiki
 ENV ELITEA_DEEPWIKI_SCRATCH_PATH=/var/scratch/deepwiki \
     PYTHONUNBUFFERED=1
 
-EXPOSE 8080
-
+# No port: the entrypoint is the engine SIDECAR (ADR-0023), which listens on
+# the Unix socket ELITEA_DEEPWIKI_ENGINE_SOCKET for the Go sub-application
+# host in the same pod. The provider SPI is that host's.
+#
 # The settings object is strict-parsed at startup, so a malformed environment
 # fails the container rather than degrading a request later.
 ENTRYPOINT ["python", "-m", "elitea_deepwiki"]

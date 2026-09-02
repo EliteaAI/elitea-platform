@@ -43,6 +43,18 @@ ERROR_CATEGORIES = frozenset(
 )
 
 
+class InvocationCancelled(Exception):
+    """Raised at a checkpoint once the host has asked for a stop.
+
+    The engine's tool layer checkpoints between phases; raising here is what
+    makes a stop land mid-run instead of after the worker finished.
+    """
+
+    def __init__(self, invocation_id: str) -> None:
+        super().__init__(f"invocation {invocation_id} was cancelled")
+        self.invocation_id = invocation_id
+
+
 def classify(exception: BaseException) -> str:
     """Return the legacy error category for ``exception``.
 

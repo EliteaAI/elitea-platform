@@ -31,8 +31,7 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
-from .errors import classify
-from .invocations import InvocationCancelled
+from .errors import InvocationCancelled, classify
 
 logger = logging.getLogger(__name__)
 

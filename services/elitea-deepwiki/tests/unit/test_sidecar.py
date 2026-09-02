@@ -58,7 +58,7 @@ async def stream(client: AsyncClient, body: dict[str, Any]) -> list[dict[str, An
 
 
 async def test_the_fixture_engine_streams_progress_then_the_result():
-    runner = FixtureToolRunner(settings(), artifact_client_factory=lambda _s: None)
+    runner = FixtureToolRunner(settings())
     async with client_for(create_sidecar(settings(), runner)) as client:
         lines = await stream(client, {"invocation_id": "invocation_1", "tool": "generate_wiki", "arguments": ARGUMENTS})
     thinking = [line["thinking"] for line in lines if "thinking" in line]
@@ -81,7 +81,7 @@ async def test_an_engine_exception_becomes_an_error_line_with_type_and_category(
     def boom(**_kwargs):
         raise FileNotFoundError("Wiki not found for repository")
 
-    runner = LegacyToolRunner(settings=settings(), tools={"ask": boom}, artifact_client_factory=lambda _s: None)
+    runner = LegacyToolRunner(settings=settings(), tools={"ask": boom})
     async with client_for(create_sidecar(settings(), runner)) as client:
         lines = await stream(client, {"invocation_id": "invocation_2", "tool": "ask", "arguments": {"question": "?"}})
     assert lines == [
@@ -109,7 +109,7 @@ async def test_a_stop_reaches_the_running_tool(tmp_path):
         import tempfile  # noqa: PLC0415
 
         socket_path = tempfile.mkdtemp(prefix="eng", dir="/tmp") + "/e.sock"
-    runner = FixtureToolRunner(settings(fixture_step_seconds=0.05), artifact_client_factory=lambda _s: None)
+    runner = FixtureToolRunner(settings(fixture_step_seconds=0.05))
     server = uvicorn.Server(uvicorn.Config(create_sidecar(settings(), runner), uds=socket_path, log_level="warning", lifespan="off"))
     serving = asyncio.create_task(server.serve())
     try:
