@@ -1,0 +1,189 @@
+name: CI — DeepWiki real engine
+
+# DWIKI-014/014b — the REAL DeepWiki analysis engine driven through the product,
+# by `apps/elitea-web/scripts/deepwiki-real-engine.sh`: the standalone stack
+# plus deploy/docker-compose.deepwiki-real-engine.yml, which puts the `-engine`
+# image behind the Go sub-app host, serves the repository under analysis from a
+# git daemon, and answers the engine's model calls with a deterministic stub.
+#
+# ── WHY THIS IS NOT ON `pull_request` OR `push` ──────────────────────────────
+#
+# The `deepwiki-stack` job in ci-web-e2e.yml is the per-change gate: it runs the
+# same product surface against the provider's FIXTURE engine, and it is what
+# must stay green on every PR. This workflow swaps one thing out — the fixture
+# engine for the real one — and that one thing costs:
+#
+#   * the `-engine` image is the deepwiki image plus a ~92-package ML closure
+#     (torch, transformers, faiss-cpu, tree-sitter grammars), ~2 GB. ADR-0022
+#     keeps it out of the default bake group and out of the release for the same
+#     reason, and scripts/ci/image-matrix.sh records it as built-but-unpublished;
+#   * a cold build of it is tens of minutes, and a GHA-cached one still has to
+#     export and load ~2 GB before the stack can start;
+#   * on top of that comes the full standalone stack, the seeds, and a real
+#     embedding + generation pass over a real repository.
+#
+# Put on `pull_request` that is minutes of runner time added to every change,
+# most of which cannot affect the engine at all, and a cache miss (a base image
+# rollover, a dependency bump) turns into a queue-blocking build. The value it
+# adds over `deepwiki-stack` is drift between the fixture engine and the real
+# one, which appears on the scale of weeks, not commits.
+#
+# So: a weekly cadence plus `workflow_dispatch`, the same shape and for the same
+# reason as ci-web-mutation.yml. Dispatch it deliberately when a change touches
+# services/elitea-deepwiki/src/elitea_deepwiki/engine/** or the engine extras.
+#
+# There is no push arm at all, which the workflow-branch-coverage gate
+# (scripts/ci/check_workflow_branch_coverage.py) requires to be a recorded
+# decision rather than a silence — the entry for this file is in that script's
+# EXEMPT_WORKFLOWS table.
+
+on:
+  schedule:
+    # Sundays, 04:23 UTC. Deliberately far from ci-web-mutation.yml's Wednesday
+    # 08:47 and from ci-image-scan.yml's daily 05:17, so the three heavy cadence
+    # jobs never contend for the same runner window.
+    - cron: "23 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      engine_image:
+        description: >-
+          Optional: an already-built engine image to run instead of building one
+          here (for example a tag pushed by hand, or a previous run's). When set
+          the image is PULLED and the bake step is skipped, so a run in this mode
+          says nothing about whether the engine still builds from this revision.
+          Leave blank for the normal path.
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  # One at a time. Two of these on the same ref would each want the fixed
+  # oidc-mock port 9400, and both would want the whole runner's disk.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  real-engine:
+    name: DeepWiki journeys against the real engine (DWIKI-014)
+    runs-on: ubuntu-latest
+    # A cold engine build plus the stack plus a real analysis pass. Generous,
+    # because a run that is killed at the default 360 min tells us nothing, and
+    # this job has no PR to hold up.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The engine, main, web and worker images all build from repo-root
+          # context, and the stack scripts read git metadata.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+
+      - name: Install (locked)
+        working-directory: apps/elitea-web
+        run: npm ci
+
+      - name: Make room for the engine image
+        # The `-engine` closure plus the standalone stack's own images does not
+        # fit comfortably beside the runner's preinstalled toolchains. Bounded
+        # and NON-FATAL: if a path is already gone, or `rm` is refused, the run
+        # continues and the build fails honestly on ENOSPC rather than on this
+        # step. Reported either way so a future disk failure is not a mystery.
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache/CodeQL}" \
+            || echo "::warning::could not remove every preinstalled toolchain; continuing"
+          df -h / | tail -1
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Pre-pull the pinned Playwright container
+        # Bounded and NON-FATAL, for the reasons ci-web-e2e.yml's copies of this
+        # step spell out: the script's own `docker run` pulls the image inline if
+        # this fails, so a stalled pull costs the overlap and never the run.
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+
+      - name: Build the engine image (bake, GHA layer cache)
+        # `docker buildx bake elitea-deepwiki-engine` rather than a bare
+        # `docker build`: the bake target is the ONE definition of the engine
+        # build (EXTRAS=[engine,storage-postgres]) and it already declares
+        # `type=gha,scope=elitea-deepwiki-engine`, which is the cache the publish
+        # matrix uses for every other image. A second copy of the build line here
+        # would be free to drift from what a release would produce.
+        #
+        # TAG=local makes bake write `ghcr.io/eliteaai/elitea-deepwiki:local-engine`
+        # — byte for byte the tag the overlay and the runner script default to,
+        # so nothing has to be retagged or overridden.
+        #
+        # `--load` is load-bearing and is the bug ci-web-e2e.yml's image step
+        # records: a bake without it leaves the result in the BUILDER's cache
+        # only, `docker images` never sees the tag, and compose falls through to
+        # a registry pull that is denied.
+        # `!inputs.…` rather than `inputs.… == ''`: on a `schedule` run the whole
+        # `inputs` context is null, and `null == ''` is FALSE — the comparison
+        # form would skip the build on exactly the runs nobody is watching.
+        if: ${{ !inputs.engine_image }}
+        env:
+          TAG: local
+        run: docker buildx bake --set '*.platform=linux/amd64' --load elitea-deepwiki-engine
+
+      - name: Pull the supplied engine image
+        # The dispatch override. Pulling here (rather than letting compose do it)
+        # keeps the failure attached to a step whose name says what happened.
+        if: ${{ inputs.engine_image }}
+        run: docker pull "${{ inputs.engine_image }}"
+
+      - name: Run the DeepWiki journeys against the real engine
+        # The script owns the whole lifecycle — it applies the real-engine
+        # overlay, then delegates to chat-stream-e2e.sh for the PKI, compose up,
+        # the seeds and Playwright, and tears down on exit. Its own compose
+        # project and port keep it off the other stacks' state.
+        #
+        # DEEPWIKI_ENGINE_IMAGE is set unconditionally so the value this job ran
+        # is visible in the log, and so the script's "is it already built?" probe
+        # finds the image the step above produced instead of rebuilding it.
+        #
+        # PLAYWRIGHT_CONTAINER_IMAGE runs the specs inside the pinned container.
+        # The tag is written HERE and not in the script on purpose:
+        # apps/elitea-web/scripts/check-playwright-image-tag.mjs only scans
+        # .github/workflows/, so a reference in this file is gated against the
+        # pinned @playwright/test and one inside the script would not be.
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          DEEPWIKI_ENGINE_IMAGE: ${{ inputs.engine_image || 'ghcr.io/eliteaai/elitea-deepwiki:local-engine' }}
+          DEEPWIKI_REAL_PROJECT: elitea-deepwiki-real-ci
+          # NOT 8087: that is `deepwiki-stack`'s port in ci-web-e2e.yml. They run
+          # on separate runners today; keeping the numbers distinct means that
+          # stays true if they ever do not.
+          DEEPWIKI_REAL_PORT: "8088"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+        run: bash apps/elitea-web/scripts/deepwiki-real-engine.sh
+
+      - name: Give the report back to the runner user
+        # The Playwright container runs as root, so playwright-report/ comes back
+        # root-owned — the same trap and the same fix as the ci-web-e2e.yml jobs.
+        if: always()
+        working-directory: apps/elitea-web
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-deepwiki-real-engine
+          path: |
+            apps/elitea-web/playwright-report/
+            apps/elitea-web/playwright-results/
+          if-no-files-found: ignore
+          retention-days: 14
