@@ -4,12 +4,13 @@ version = 4
 
 [[package]]
 name = "adk-agent"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb2571ee7d3afe8b8dd9e56065255d996b8d2349873414a5d9fd9761c5ac0096"
+checksum = "e150b28775ad28d4a4d0a49267a64298052346b8faf6f93ce075d025faecdcb8"
 dependencies = [
  "adk-core",
  "adk-telemetry",
+ "adk-tool",
  "async-stream",
  "async-trait",
  "chrono",
@@ -21,13 +22,14 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "adk-anthropic"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9c3a0f8b3cf02ae1c5c858bc8e0bdddcf1b25ebb2fb920219a27e1fefcd5c53"
+checksum = "c6cd2a5536c5a04c872c75c6b25e7b26390d5850174123be50a202285d85c51d"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -47,9 +49,9 @@ dependencies = [
 
 [[package]]
 name = "adk-core"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9b5bd998520887e88fa7d31cf64ecfbdb8944f71326234ccf4c682a239ce48c"
+checksum = "040e96a250780592a2d9fb2e1813bcfa035d191494c383675b785ad36d889388"
 dependencies = [
  "async-trait",
  "chrono",
@@ -64,9 +66,9 @@ dependencies = [
 
 [[package]]
 name = "adk-graph"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4feefce6e66445eb1fca10837310260d27c85736c5d14af5a9843d2c9d70696"
+checksum = "61088da266986040901884ca089ab684c09f1ee82193849aa6407f722553f075"
 dependencies = [
  "adk-core",
  "async-stream",
@@ -83,9 +85,9 @@ dependencies = [
 
 [[package]]
 name = "adk-model"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a20614f7ac6ea4d5fac4d4e329a02052d85218080391c91eb237d096436b6a91"
+checksum = "cc0c979791e694c205142ca6eb86c26f9559411ddbc19e85fa74b1b8fafd38b1"
 dependencies = [
  "adk-anthropic",
  "adk-core",
@@ -104,9 +106,9 @@ dependencies = [
 
 [[package]]
 name = "adk-runner"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3d058f1c36543fff2097550ea64970e15d36a9c56de6eb7e5b3e992e205d921"
+checksum = "bcb69638c50904de4d8d332420bebacdfe40241f64eabf3f92f463b36928bd7a"
 dependencies = [
  "adk-core",
  "adk-session",
@@ -124,9 +126,9 @@ dependencies = [
 
 [[package]]
 name = "adk-rust"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "951bb46102b9a455766869cb7b3aac5ac5e77121db0f60c43b43086d463126f8"
+checksum = "b5244ddd601fb2f9a9671a2407312d8c25914b211381e6e6bf62e0b8eadba72e"
 dependencies = [
  "adk-agent",
  "adk-core",
@@ -141,13 +143,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "adk-rust-macros"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c4d3ff99c23c3fa5f834aeb11299d65e95b51f9f978c1be46c14b3c2e1e7d7e"
+checksum = "50f3f3d7d5ae81cdb5ca2b8530eec989885c54a2eff7c1acc8fcbeeb9d4c4ff5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -156,9 +159,9 @@ dependencies = [
 
 [[package]]
 name = "adk-session"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4a056e4ff2c4c1ec0a274ae5a78a4628d74243ac8edc3a7fadc95e9d243c776"
+checksum = "aa07a7f4c885720ba4c991dd13be3f7ba8ab9d009589bf52f6b396946e9737ce"
 dependencies = [
  "adk-core",
  "async-trait",
@@ -171,9 +174,9 @@ dependencies = [
 
 [[package]]
 name = "adk-telemetry"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e51bee9c6aea4912aac7ed274e3a249ec8aa9cba73c7b7a5a10c379694f6feeb"
+checksum = "56a2070444d3220c60513f32f0438d79fdc74a2c987b01be150c47f4c33df9de"
 dependencies = [
  "thiserror",
  "tracing",
@@ -182,9 +185,9 @@ dependencies = [
 
 [[package]]
 name = "adk-tool"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd3810b09a6b43ea538c75b38d9a0bb5cf7c32fbe168da71df49efd5bafe256e"
+checksum = "9c2af72d2b23b241d363ed0920724aa0ec6834684f91efa3346383e96dd6fd06"
 dependencies = [
  "adk-core",
  "adk-rust-macros",
@@ -1270,9 +1273,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72"
+checksum = "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1744,9 +1747,9 @@ dependencies = [
 
 [[package]]
 name = "minijinja"
-version = "2.23.0"
+version = "2.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42d74234349a775546a83af0f0c0c0e3a73227dee4950a542cda81a47240b3e6"
+checksum = "86886cf6dbf4e614b19c9a1eec9775f021869d7eadde0fc73921a81b90c9b4c9"
 dependencies = [
  "memo-map",
  "serde",
@@ -2112,9 +2115,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.3"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -2382,9 +2385,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.4.1"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0b9503711b03773e43b31668c7b5bd279ee7cd9b7d18cff7c23a42cc1d08e5a"
+checksum = "e37a4ca5c6ca42aa3e6df2fd32b987a65d32a4c2159a6f3fe0fd1df306a2658f"
 dependencies = [
  "arcstr",
  "async-lock",
@@ -3431,9 +3434,9 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.14.2"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb7613188ce9f7df5bfe185db26c5814347d110db17920415cf2fbcad85e7203"
+checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
 dependencies = [
  "async-trait",
  "axum",
@@ -3473,9 +3476,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-prost"
-version = "0.14.2"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66bd50ad6ce1252d87ef024b3d64fe4c3cf54a86fb9ef4c631fdd0ded7aeaa67"
+checksum = "50849f68853be452acf590cde0b146665b8d507b3b8af17261df47e02c209ea0"
 dependencies = [
  "bytes",
  "prost",
@@ -3484,9 +3487,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-prost-build"
-version = "0.14.2"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4a16cba4043dc3ff43fcb3f96b4c5c154c64cbd18ca8dce2ab2c6a451d058a2"
+checksum = "654e5643eff75d7f8c99197ce1440ed19a3474eada74c12bbac488b2cafdae27"
 dependencies = [
  "prettyplease",
  "proc-macro2",
