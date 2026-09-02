@@ -26,7 +26,7 @@ dependencies = [
   #
   # langsmith is TRANSITIVE (langchain-core requires langsmith>=0.3.45,<1.0.0),
   # so nothing here named it and nothing here bounded it. This is the same
-  # class the mcp==1.27.1 pin below was written for, and the same remedy: state
+  # class the mcp==1.28.1 pin below was written for, and the same remedy: state
   # the boundary explicitly so a clean build cannot silently cross it.
   #
   # MEASURED, not guessed: 0.11.2 requires httpx<1,>=0.23.0 and 0.12.0 requires
@@ -51,7 +51,7 @@ agent-current = [
   # which conflicts with the current SDK's admitted httpcore==1.0.7/h11<0.15.
   # Pin the current deployed baseline explicitly so clean image builds cannot
   # silently cross that incompatible major-version boundary.
-  "mcp==1.27.1",
+  "mcp==1.28.1",
   "langgraph-checkpoint-postgres==2.0.21",
 ]
 indexing-current = [
