@@ -1,0 +1,144 @@
+# The commodity infrastructure the chart deliberately does NOT create
+# (see the "What this chart does NOT create" block in values.yaml):
+# PostgreSQL, Redis and an S3-compatible object store. The runtime Redis the
+# Form authentication plane needs is NOT here — the chart renders that one
+# (runtimeRedis.enabled in values-kind.yaml). Nothing here is production
+# shaped: single replicas, emptyDir storage, passwords in plain manifests.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: elitea
+data:
+  # dbInit is off in values-kind.yaml, so this is what creates the extension
+  # the index plane's unqualified DDL needs. `vector` ships in the image; the
+  # extension still has to be created in the database.
+  00-extensions.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: elitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: docker.io/pgvector/pgvector:0.8.5-pg16
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: POSTGRES_USER, value: elitea }
+            - { name: POSTGRES_PASSWORD, value: elitea }
+            - { name: POSTGRES_DB, value: elitea }
+            # The default PGDATA is the mount point itself, and a mounted
+            # directory is not empty — initdb refuses it. A subdirectory is.
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: initdb, mountPath: /docker-entrypoint-initdb.d }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "elitea"] }
+            periodSeconds: 3
+            failureThreshold: 30
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+      volumes:
+        - { name: data, emptyDir: {} }
+        - { name: initdb, configMap: { name: postgres-initdb } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: elitea
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: elitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: docker.io/library/redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 3
+            failureThreshold: 30
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: elitea
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: elitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rustfs }
+  template:
+    metadata:
+      labels: { app: rustfs }
+    spec:
+      containers:
+        - name: rustfs
+          image: docker.io/rustfs/rustfs:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: RUSTFS_ACCESS_KEY, value: elitea }
+            - { name: RUSTFS_SECRET_KEY, value: elitea-dev-secret }
+          ports: [{ containerPort: 9000 }]
+          readinessProbe:
+            # The image ships no curl, and wget's exit code cannot tell
+            # "reachable but 403" from "refused" — the same workaround the two
+            # compose stacks carry.
+            exec:
+              command:
+                - sh
+                - -c
+                - 'out=$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $? -eq 0 ] || echo "$out" | grep -q "server returned error"'
+            periodSeconds: 3
+            failureThreshold: 40
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: elitea
+spec:
+  selector: { app: rustfs }
+  ports: [{ port: 9000, targetPort: 9000 }]

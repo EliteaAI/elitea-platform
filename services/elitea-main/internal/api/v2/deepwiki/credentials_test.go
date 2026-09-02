@@ -454,6 +454,65 @@ func TestAClientCannotPushItsOwnCredentials(t *testing.T) {
 	}
 }
 
+// The TOOL-level llm_settings is the other door. The provider merges a tool's
+// parameters over the configuration's, so a block there replaced the facade's
+// wholesale: the wiki chat, which sends max_tokens and the model that way,
+// reached the engine without api_base (DWIKI-014b); an attacker could have
+// reached it with their own. Tuning is carried, transport is dropped.
+func TestAToolLevelLLMSettingsIsLiftedNotMerged(t *testing.T) {
+	minter := &recordingMinter{}
+	body := `{"configuration":{"parameters":{"code_toolkit":42,"llm_model":"gpt-4o"}},` +
+		`"parameters":{"question":"What does it do?",` +
+		`"llm_settings":{"max_tokens":4096,"model_name":"gpt-4o",` +
+		`"api_base":"https://attacker.example","api_key":"stolen","organization":"999"}}}`
+
+	rewritten, grant, err := rewriter(t, minter).Rewrite(
+		context.Background(), strings.NewReader(body), 7, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rewritten), "attacker.example") ||
+		strings.Contains(string(rewritten), "stolen") ||
+		strings.Contains(string(rewritten), `"organization":"999"`) {
+		t.Fatalf("tool-level llm_settings survived the rewrite: %s", rewritten)
+	}
+	var out struct {
+		Configuration struct {
+			Parameters map[string]any `json:"parameters"`
+		} `json:"configuration"`
+		Parameters map[string]any `json:"parameters"`
+	}
+	if err := json.Unmarshal(rewritten, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := out.Parameters["llm_settings"]; present {
+		t.Fatalf("the tool-level block must be gone, or the host merges it over the facade's: %v", out.Parameters)
+	}
+	if out.Parameters["question"] != "What does it do?" {
+		t.Fatalf("the other tool parameters were lost: %v", out.Parameters)
+	}
+	settings, _ := out.Configuration.Parameters["llm_settings"].(map[string]any)
+	if settings["api_base"] != "https://elitea.test/llm/v1" || settings["api_key"] != "bearer-for-"+grant.UUID {
+		t.Fatalf("the facade's transport did not survive: %v", settings)
+	}
+	if settings["max_tokens"] != float64(4096) {
+		t.Fatalf("max_tokens was not carried: %v", settings)
+	}
+	if settings["model_name"] != "gpt-4o" {
+		t.Fatalf("model_name %v", settings["model_name"])
+	}
+}
+
+// A tool-level llm_settings that is not an object is a malformed request,
+// refused rather than silently dropped.
+func TestAMalformedToolLevelLLMSettingsIsRefused(t *testing.T) {
+	body := `{"configuration":{"parameters":{"code_toolkit":42}},"parameters":{"llm_settings":"nope"}}`
+	_, _, err := rewriter(t, &recordingMinter{}).Rewrite(context.Background(), strings.NewReader(body), 7, 11)
+	if !errors.Is(err, deepwiki.ErrInvokeRejected) {
+		t.Fatalf("want ErrInvokeRejected, got %v", err)
+	}
+}
+
 // An expanded code_toolkit is a client pushing a credential under the name of
 // a reference. Refused, not merged — merging would leave the caller in
 // control of which token the provider clones with.

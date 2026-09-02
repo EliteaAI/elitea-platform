@@ -10,8 +10,9 @@
 #
 # Everything is chat-stream-e2e.sh: the same stack, certificates, seeds and
 # stack assertions; only the Playwright project and the compose project /
-# port differ, so this can run beside a chat-stream stack on one host
-# (oidc-mock's port is per compose project there too — see that script).
+# port differ. Beside the E2E stack, yes; beside another STANDALONE stack,
+# no: oidc-mock's port is fixed at 9400 (see that script), so a kept
+# chat-stream or real-engine stack must come down first.
 set -euo pipefail
 export PLAYWRIGHT_PROJECT=deepwiki-stack
 export CHAT_STREAM_PROJECT="${DEEPWIKI_STREAM_PROJECT:-elitea-deepwiki}"

@@ -19,6 +19,13 @@
 # Build from the repository root.
 
 FROM python:3.12.14-slim AS build
+# The engine extra compiles pysqlite3 from source (no binary wheel on
+# arm64, and none pinned for amd64 either), which needs a C compiler and
+# the SQLite headers. Builder stage only: the runtime image copies wheels
+# and never sees these packages.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG EXTRAS=""
 
@@ -59,6 +66,26 @@ RUN useradd --create-home --uid 10001 deepwiki \
     && chown deepwiki:deepwiki /var/scratch/deepwiki
 
 ARG EXTRAS=""
+
+# The engine clones with the git CLI (subprocess, not a library), so the
+# engine build carries git; the default build does not — its runner refuses
+# every tool and would never clone. MEASURED: the first real-engine run
+# through the host failed at `[Errno 2] No such file or directory: 'git'`.
+RUN case "${EXTRAS}" in *engine*) \
+      apt-get update \
+      && apt-get install -y --no-install-recommends git \
+      && rm -rf /var/lib/apt/lists/* ;; \
+    esac
+
+# The engine's ask/research answer over the UnifiedWikiDB (sqlite-vec) the
+# indexer writes; the classic path they take WITHOUT this flag loads a FAISS
+# cache the indexer stopped building ("Skipping legacy vectorstore build
+# (UnifiedWikiDB only)"), so every question answered `No wiki index found`
+# beside a freshly generated wiki. Every legacy deployment sets it
+# (legacy/deploy/*/pylon_deepwiki: DEEPWIKI_ASK_AGENTIC "1"); here it is the
+# image default so a chart, a compose file or a kind stack cannot forget it.
+# MEASURED on the first real-engine chat through the product (DWIKI-014b).
+ENV DEEPWIKI_ASK_AGENTIC=1
 
 COPY --from=build /wheels /wheels
 RUN --mount=type=cache,target=/root/.cache/pip \

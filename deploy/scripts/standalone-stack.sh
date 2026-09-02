@@ -97,6 +97,14 @@ standalone_psql_read() {
 }
 
 PORT="${STANDALONE_PORT:-8084}"
+# SEED_EXTRA_PROJECTS: comma-separated project ids that `seed-llm` and
+# `seed-index` write model rows into IN ADDITION to project 1 and every
+# personal project. The gateway resolves a model per project (a row in
+# p_<id>.configuration, or a shared row in the public project), so a journey
+# that runs a model call under some OTHER seeded project — the DeepWiki
+# real-engine run bills project 90200, the E2E seed's — gets nothing but
+# `model is not configured for this project` without its own rows.
+SEED_EXTRA_PROJECTS="${SEED_EXTRA_PROJECTS:-}"
 
 # How long `check` waits for the agent worker to join its Redis consumer group.
 # The worker has no healthcheck, so `compose up -d --wait` returns before it has
@@ -444,7 +452,8 @@ seed_llm_main() {
          JOIN public.auth_core__token t
            ON t.user_id = pur.user_id AND t.uuid IS NOT NULL
           AND (t.expires IS NULL OR t.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
-        WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+        WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%'
+               OR p.id = ANY(string_to_array(NULLIF('${SEED_EXTRA_PROJECTS:-}', ''), ',')::int[]))
           AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
                        WHERE nspname = 'p_' || p.id::text)
         ORDER BY p.id, pur.user_id, t.id" | tr -d '\r')"
@@ -849,7 +858,8 @@ SQL
     INDEX_TARGETS="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT p.id FROM centry.project p
-          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%'
+                 OR p.id = ANY(string_to_array(NULLIF('${SEED_EXTRA_PROJECTS:-}', ''), ',')::int[]))
             AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
                          WHERE nspname = 'p_' || p.id::text)
           ORDER BY p.id" 2>/dev/null | tr -d '\r')"
