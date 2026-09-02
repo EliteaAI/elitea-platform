@@ -1039,6 +1039,29 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	var runtimeRoot *runtimecomposition.Runtime
 	var productionRuntime *api.ProductionRuntimeRoutes
+	// The credential set the whole /api/v2 group authenticates with — built
+	// here, ahead of the provider facades, because they take the SAME set
+	// (ADR-0023 decision 5): under production Form authentication that is the
+	// graph's token validator and the forwarded-identity verifier; under
+	// OIDC-only it is the session cookie plus the LocalValidator for the
+	// tokens APPLICATION_SECRET_KEY signs — which is also how a provider's
+	// callback bearer, minted by the same key, is read back on its upload.
+	// See apiGroupAuthConfig for the two shapes and why each carries a
+	// principal validator.
+	var sessionTokens apimw.TokenValidator
+	if secretKey := os.Getenv("APPLICATION_SECRET_KEY"); secretKey != "" && pool != nil {
+		sessionTokens = authsvc.NewLocalValidator(pool, secretKey)
+	}
+	apiGroupAuth := apiGroupAuthConfig(
+		formGraph,
+		principalValidator,
+		forwardedIdentityVerifier,
+		authsvc.NewPrincipalValidator(pool),
+		sessionTokens,
+		os.Getenv("APPLICATION_SECRET_KEY"),
+		oidcSessionHandler != nil,
+	)
+
 	// The DeepWiki facade (ADR-0022 P2). Composed OUTSIDE the runtime-plane
 	// block: it proxies to an independently deployed service and needs nothing
 	// the runtime provides, so tying it to ELITEA_RUNTIME_ENABLED would make a
@@ -1056,17 +1079,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return fmt.Errorf("read Inventory facade configuration: %w", err)
 	}
 	if inventoryConfig.Enabled {
-		if principalValidator == nil || forwardedIdentityVerifier == nil {
-			return errors.New("ELITEA_INVENTORY_ENABLED requires production authentication")
-		}
 		inventoryRoute, err = v2inventory.NewRoute(
 			inventoryConfig,
-			apimw.AuthConfig{
-				Validator:                 formGraph,
-				PrincipalValidator:        principalValidator,
-				ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				SessionSecret:             os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			// The API group's credential set, in either authentication mode.
+			apiGroupAuth,
 			legacyrbac.NewPostgresResolver(pool),
 			logger,
 		)
@@ -1081,10 +1097,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return fmt.Errorf("read DeepWiki facade configuration: %w", err)
 	}
 	if deepwikiConfig.Enabled {
-		if principalValidator == nil || forwardedIdentityVerifier == nil {
-			return errors.New(
-				"ELITEA_DEEPWIKI_ENABLED requires production authentication")
-		}
 		// The credential resolver and the callback minter. Both are built
 		// here rather than inside the route because both are database-backed
 		// and the facade's own tests must not need a database to exercise a
@@ -1139,16 +1151,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 		deepwikiRoute, err = v2deepwiki.NewRoute(
 			deepwikiConfig,
-			apimw.AuthConfig{
-				Validator:                 formGraph,
-				PrincipalValidator:        principalValidator,
-				ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				// The browser's only credential, for the reason the agent-start
-				// route gives below: the UI reaches this with a session cookie
-				// and nothing else. It does not widen what a caller may do —
-				// the permission gates below still run.
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			// The API group's credential set, in either authentication mode.
+			apiGroupAuth,
 			legacyrbac.NewPostgresResolver(pool),
 			deepwikiCredentials,
 			v2deepwiki.NewAuthCallbackMinter(deepwikiTokens),
@@ -1519,19 +1523,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// issues, so the validator must read them back with that exact key.
 	// The variable stays a nil interface when the key is absent: a boxed nil
 	// pointer would read as "configured" downstream (#86).
-	var sessionTokens apimw.TokenValidator
-	if secretKey := os.Getenv("APPLICATION_SECRET_KEY"); secretKey != "" && pool != nil {
-		sessionTokens = authsvc.NewLocalValidator(pool, secretKey)
-	}
-	apiGroupAuth := apiGroupAuthConfig(
-		formGraph,
-		principalValidator,
-		forwardedIdentityVerifier,
-		authsvc.NewPrincipalValidator(pool),
-		sessionTokens,
-		os.Getenv("APPLICATION_SECRET_KEY"),
-		oidcSessionHandler != nil,
-	)
 
 	var adminUICfg *adminui.Config
 	if dir := os.Getenv("ADMIN_UI_STATIC_DIR"); dir != "" {

@@ -507,6 +507,12 @@ func TestCompositionRefusesAHalfWiredAuthenticationChain(t *testing.T) {
 	if _, err := deepwiki.NewRoute(cfg, full, nil, testCredentialResolver(t), &recordingMinter{}, nil); !errors.Is(err, deepwiki.ErrInvalidRoute) {
 		t.Fatalf("a nil permission resolver was accepted: %v", err)
 	}
+	// The OIDC-only credential set — a token validator in place of the
+	// forwarded-identity verifier — composes (ADR-0023 decision 5).
+	oidcOnly := apimw.AuthConfig{PrincipalValidator: full.PrincipalValidator, Validator: stubTokenValidator{}, SessionSecret: "s"}
+	if _, err := deepwiki.NewRoute(cfg, oidcOnly, resolver(), testCredentialResolver(t), &recordingMinter{}, nil); err != nil {
+		t.Fatalf("the OIDC-only credential set was refused: %v", err)
+	}
 }
 
 // A plain-HTTP base URL cannot work — the provider serves nothing there — so
@@ -567,4 +573,12 @@ func TestThePermissionStringsMatchTheMigration(t *testing.T) {
 		t.Fatalf("route constants drifted from shared/0106: read=%q generate=%q mode=%q",
 			deepwiki.ReadPermission, deepwiki.GeneratePermission, deepwiki.Mode)
 	}
+}
+
+// stubTokenValidator stands in for the LocalValidator an OIDC-only
+// deployment reads APPLICATION_SECRET_KEY-signed tokens back with.
+type stubTokenValidator struct{}
+
+func (stubTokenValidator) ValidateToken(context.Context, string) (auth.User, error) {
+	return auth.User{ID: "7"}, nil
 }
