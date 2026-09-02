@@ -53,6 +53,8 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  BrandingSettings,
+  BrandingSettingsSave,
   ErrorResponse,
   GetUserProjectPermissionsParams,
   GlobalUserInviteRequest,
@@ -1910,6 +1912,430 @@ export function useInviteUserGlobally<
 } {
   const queryOptions = getInviteUserGloballyQueryOptions(
     globalUserInviteRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getBrandingSettingsResponse200 = {
+  data: BrandingSettings;
+  status: 200;
+};
+
+export type getBrandingSettingsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getBrandingSettingsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getBrandingSettingsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type getBrandingSettingsResponseSuccess =
+  getBrandingSettingsResponse200 & {
+    headers: Headers;
+  };
+export type getBrandingSettingsResponseError = (
+  | getBrandingSettingsResponse401
+  | getBrandingSettingsResponse403
+  | getBrandingSettingsResponse500
+) & {
+  headers: Headers;
+};
+
+export type getBrandingSettingsResponse =
+  getBrandingSettingsResponseSuccess | getBrandingSettingsResponseError;
+
+export const getGetBrandingSettingsUrl = () => {
+  return `/admin/branding/administration`;
+};
+
+/**
+ * Returns the `branding` section's declared keys with stored values
+ * overlaid on the schema defaults (an empty string or 0 means "inherit
+ * from the layer below"), which of the two operator layers contribute to
+ * the served pack, the merged pack `GET /branding/bootstrap.js` serves
+ * right now (null when nothing is served), and its unquoted ETag.
+ * @summary Read the brand pack's database layer and the effective pack
+ */
+export const getBrandingSettings = async (
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getBrandingSettingsResponse> => {
+  return eliteaFetch<getBrandingSettingsResponse>(getGetBrandingSettingsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetBrandingSettingsQueryKey = () => {
+  return [`/admin/branding/administration`] as const;
+};
+
+export const getGetBrandingSettingsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBrandingSettings>>,
+  TError = N401Response | N403Response | N500Response,
+>(options?: {
+  query?: Partial<
+    UseQueryOptions<
+      Awaited<ReturnType<typeof getBrandingSettings>>,
+      TError,
+      TData
+    >
+  >;
+  request?: SecondParameter<typeof eliteaFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetBrandingSettingsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getBrandingSettings>>
+  > = ({ signal }) => getBrandingSettings({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getBrandingSettings>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetBrandingSettingsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getBrandingSettings>>
+>;
+export type GetBrandingSettingsQueryError =
+  N401Response | N403Response | N500Response;
+
+export function useGetBrandingSettings<
+  TData = Awaited<ReturnType<typeof getBrandingSettings>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingSettings>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getBrandingSettings>>,
+          TError,
+          Awaited<ReturnType<typeof getBrandingSettings>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetBrandingSettings<
+  TData = Awaited<ReturnType<typeof getBrandingSettings>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingSettings>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getBrandingSettings>>,
+          TError,
+          Awaited<ReturnType<typeof getBrandingSettings>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetBrandingSettings<
+  TData = Awaited<ReturnType<typeof getBrandingSettings>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingSettings>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Read the brand pack's database layer and the effective pack
+ */
+
+export function useGetBrandingSettings<
+  TData = Awaited<ReturnType<typeof getBrandingSettings>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingSettings>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetBrandingSettingsQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type saveBrandingSettingsResponse200 = {
+  data: BrandingSettings;
+  status: 200;
+};
+
+export type saveBrandingSettingsResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type saveBrandingSettingsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type saveBrandingSettingsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type saveBrandingSettingsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type saveBrandingSettingsResponseSuccess =
+  saveBrandingSettingsResponse200 & {
+    headers: Headers;
+  };
+export type saveBrandingSettingsResponseError = (
+  | saveBrandingSettingsResponse400
+  | saveBrandingSettingsResponse401
+  | saveBrandingSettingsResponse403
+  | saveBrandingSettingsResponse500
+) & {
+  headers: Headers;
+};
+
+export type saveBrandingSettingsResponse =
+  saveBrandingSettingsResponseSuccess | saveBrandingSettingsResponseError;
+
+export const getSaveBrandingSettingsUrl = () => {
+  return `/admin/branding/administration`;
+};
+
+/**
+ * Stores the supplied keys in one transaction (unknown keys are refused
+ * with 400, as are a hue that is not six hex digits, a link that is not
+ * an absolute http(s) URL and an asset that is not a path on this
+ * origin), invalidates the resolver's cache so the next bootstrap
+ * request on this replica serves the new brand, and answers with a
+ * fresh read of the same shape as GET with `saved: true`.
+ * @summary Write the brand pack's database layer
+ */
+export const saveBrandingSettings = async (
+  brandingSettingsSave: BrandingSettingsSave,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<saveBrandingSettingsResponse> => {
+  return eliteaFetch<saveBrandingSettingsResponse>(
+    getSaveBrandingSettingsUrl(),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(brandingSettingsSave),
+    },
+  );
+};
+
+export const getSaveBrandingSettingsQueryKey = (
+  brandingSettingsSave?: BrandingSettingsSave,
+) => {
+  return [
+    "PUT",
+    `/admin/branding/administration`,
+    brandingSettingsSave,
+  ] as const;
+};
+
+export const getSaveBrandingSettingsQueryOptions = <
+  TData = Awaited<ReturnType<typeof saveBrandingSettings>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  brandingSettingsSave: BrandingSettingsSave,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof saveBrandingSettings>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getSaveBrandingSettingsQueryKey(brandingSettingsSave);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof saveBrandingSettings>>
+  > = ({ signal }) =>
+    saveBrandingSettings(brandingSettingsSave, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof saveBrandingSettings>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type SaveBrandingSettingsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof saveBrandingSettings>>
+>;
+export type SaveBrandingSettingsQueryError =
+  N400Response | N401Response | N403Response | N500Response;
+
+export function useSaveBrandingSettings<
+  TData = Awaited<ReturnType<typeof saveBrandingSettings>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  brandingSettingsSave: BrandingSettingsSave,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof saveBrandingSettings>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof saveBrandingSettings>>,
+          TError,
+          Awaited<ReturnType<typeof saveBrandingSettings>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useSaveBrandingSettings<
+  TData = Awaited<ReturnType<typeof saveBrandingSettings>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  brandingSettingsSave: BrandingSettingsSave,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof saveBrandingSettings>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof saveBrandingSettings>>,
+          TError,
+          Awaited<ReturnType<typeof saveBrandingSettings>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useSaveBrandingSettings<
+  TData = Awaited<ReturnType<typeof saveBrandingSettings>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  brandingSettingsSave: BrandingSettingsSave,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof saveBrandingSettings>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Write the brand pack's database layer
+ */
+
+export function useSaveBrandingSettings<
+  TData = Awaited<ReturnType<typeof saveBrandingSettings>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  brandingSettingsSave: BrandingSettingsSave,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof saveBrandingSettings>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getSaveBrandingSettingsQueryOptions(
+    brandingSettingsSave,
     options,
   );
 

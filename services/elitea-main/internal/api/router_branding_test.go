@@ -21,7 +21,7 @@ import (
 )
 
 // minimalValidBrandPack is a schema-valid pack (spec §4.2) with a marker id,
-// used to prove the BRAND_PACK_PATH env var is wired through NewRouter.
+// used to prove RouterConfig.BrandPackPath is wired through NewRouter.
 const minimalValidBrandPack = `{
   "$schema": "https://elitea.ai/schemas/brand-pack/1.json",
   "id": "router-wired",
@@ -40,9 +40,9 @@ func TestBrandingBootstrap_UnauthenticatedReachable(t *testing.T) {
 	if err := os.WriteFile(packPath, []byte(minimalValidBrandPack), 0o600); err != nil {
 		t.Fatalf("writing pack: %v", err)
 	}
-	t.Setenv("BRAND_PACK_PATH", packPath)
-
-	r := api.NewRouter(buildMinimalRouterConfig(t, nil, nil, nil))
+	cfg := buildMinimalRouterConfig(t, nil, nil, nil)
+	cfg.BrandPackPath = packPath
+	r := api.NewRouter(cfg)
 
 	// No Authorization header, no session cookie, no forward-auth headers.
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/branding/bootstrap.js", nil)
@@ -57,7 +57,7 @@ func TestBrandingBootstrap_UnauthenticatedReachable(t *testing.T) {
 		t.Errorf("body is not a window.elitea_brand assignment:\n%s", body)
 	}
 	if !strings.Contains(body, `"id":"router-wired"`) {
-		t.Errorf("BRAND_PACK_PATH env var not wired through NewRouter; body:\n%s", body)
+		t.Errorf("BrandPackPath not wired through NewRouter; body:\n%s", body)
 	}
 	// zod-parseable on the UI side implies at least: valid JSON payload.
 	payload := strings.TrimSuffix(strings.TrimPrefix(body, "window.elitea_brand = "), ";")
@@ -75,7 +75,6 @@ func TestBrandingBootstrap_UnauthenticatedReachable(t *testing.T) {
 // /api/v2 mount and 401s. CDN and monitoring probes expect HEAD to behave
 // like GET minus the body (RFC 9110 §9.3.2).
 func TestBrandingBootstrap_HEADUnauthenticated(t *testing.T) {
-	t.Setenv("BRAND_PACK_PATH", "")
 
 	r := api.NewRouter(buildMinimalRouterConfig(t, nil, nil, nil))
 
@@ -102,7 +101,6 @@ func TestBrandingBootstrap_HEADUnauthenticated(t *testing.T) {
 // /api/v2 route (registered unconditionally inside the Auth group) still
 // rejects the same credential-less request.
 func TestBrandingBootstrap_AuthContrast(t *testing.T) {
-	t.Setenv("BRAND_PACK_PATH", "")
 
 	r := api.NewRouter(buildMinimalRouterConfig(t, nil, nil, nil))
 

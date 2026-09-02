@@ -110,6 +110,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
 // resourcesSectionID is the only section this platform stores and reads back.
@@ -216,6 +217,15 @@ func (h *Handler) AdministrationPluginConfigValuesSave(w http.ResponseWriter, r 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": reason})
 		return
 	}
+	// The branding section carries field rules the schema cannot express
+	// (a hue, an asset path); they apply through this door as well as the
+	// typed one, so neither editor can store what the other refuses.
+	if section.id == platformconfig.SectionBranding {
+		if reason := validateBrandingValues(body.Values); reason != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": reason})
+			return
+		}
+	}
 
 	principal, _ := auth.UserFromContext(r.Context())
 	author := principal.Email
@@ -228,6 +238,9 @@ func (h *Handler) AdministrationPluginConfigValuesSave(w http.ResponseWriter, r 
 			"error": "could not write the platform configuration store",
 		})
 		return
+	}
+	if section.id == platformconfig.SectionBranding {
+		h.invalidateBranding()
 	}
 
 	// Re-READ rather than echo. An echo would make a write that silently failed

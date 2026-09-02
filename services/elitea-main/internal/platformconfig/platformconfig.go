@@ -22,6 +22,7 @@ package platformconfig
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,6 +40,10 @@ const (
 	SectionMaintenance      = "maintenance"
 	SectionSupportAssistant = "support_assistant"
 	SectionAnalytics        = "analytics"
+	// SectionBranding is the DATABASE layer of the brand pack (ADR-0024
+	// decision 1). Its keys are declared in branding.go beside the resolver
+	// that reads them.
+	SectionBranding = "branding"
 )
 
 // Field keys, for the same reason.
@@ -214,6 +219,23 @@ func (v Values) String(key string, fallback string) string {
 		return fallback
 	}
 	return got
+}
+
+// Float reads a single JSON number, yielding 0 when the key is absent or holds
+// something else — the wrong-type-is-absent rule Bool applies. Callers that use
+// it treat 0 as "not set", which is why it has no fallback parameter: the only
+// consumer so far (the brand overlay) has no field for which 0 is a value.
+func (v Values) Float(key string) float64 {
+	number, ok := v[key].(float64)
+	if !ok {
+		return 0
+	}
+	return number
+}
+
+// trimmed reads a string with surrounding whitespace removed, "" when absent.
+func (v Values) trimmed(key string) string {
+	return strings.TrimSpace(v.String(key, ""))
 }
 
 // StringLists reads a `map[string][]string` — the shape both guardrail tool maps
