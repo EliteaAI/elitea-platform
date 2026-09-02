@@ -19,6 +19,20 @@ export interface ResearchTodosPanelProps {
   readonly todos: readonly ChatTodo[] | null;
 }
 
+/** The provider's own status vocabulary, translated; anything else is shown as sent. */
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'pending':
+      return t('widgets.deepwiki.chat.todoPending', 'Pending');
+    case 'in_progress':
+      return t('widgets.deepwiki.chat.todoInProgress', 'In progress');
+    case 'completed':
+      return t('widgets.deepwiki.chat.todoCompleted', 'Done');
+    default:
+      return status;
+  }
+}
+
 export const ResearchTodosPanel = memo(function ResearchTodosPanel({
   todos,
 }: ResearchTodosPanelProps) {
@@ -26,7 +40,7 @@ export const ResearchTodosPanel = memo(function ResearchTodosPanel({
 
   return (
     <Box data-testid="wiki-chat-todos" sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
-      <Typography variant="overline" color="text.secondary">
+      <Typography variant="subtitle" color="text.secondary">
         {t('widgets.deepwiki.chat.researchPlan', 'Research plan')}
       </Typography>
       <Stack sx={{ gap: 0.5, mt: 0.5 }}>
@@ -39,8 +53,8 @@ export const ResearchTodosPanel = memo(function ResearchTodosPanel({
             key={todo.id ?? index}
             sx={{ flexDirection: 'row', gap: 1, alignItems: 'center' }}
           >
-            {todo.status ? <Chip size="small" variant="outlined" label={todo.status} /> : null}
-            <Typography variant="body2">
+            {todo.status ? <Chip size="small" variant="outlined" label={statusLabel(todo.status)} /> : null}
+            <Typography variant="bodyMedium">
               {todo.title ?? t('widgets.deepwiki.chat.untitledStep', 'Untitled step')}
             </Typography>
           </Stack>

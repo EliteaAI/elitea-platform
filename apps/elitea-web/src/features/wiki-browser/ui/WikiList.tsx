@@ -15,9 +15,9 @@
 import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
-import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
+import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import type { WikiManifest } from '@/entities/wiki';
 
 export interface WikiListProps {
@@ -38,14 +38,17 @@ export function WikiList({
   if (wikis.length === 0) {
     const otherWikisExist = allWikis.length > 0;
     return (
-      <Typography variant="body2" color="text.secondary">
-        {otherWikisExist
-          ? t(
-              'deepwiki.list.noneForThisRepository',
-              'No wiki has been generated for this repository and branch yet. Other wikis exist in this project; check the repository and branch in the toolkit settings.',
-            )
-          : t('deepwiki.list.empty', 'No wiki has been generated for this project yet.')}
-      </Typography>
+      <NoResultsMessage
+        title={t('deepwiki.list.emptyTitle', 'No wiki yet')}
+        description={
+          otherWikisExist
+            ? t(
+                'deepwiki.list.noneForThisRepository',
+                'No wiki has been generated for this repository and branch yet. Other wikis exist in this project; check the repository and branch in the toolkit settings.',
+              )
+            : t('deepwiki.list.empty', 'No wiki has been generated for this project yet.')
+        }
+      />
     );
   }
 

@@ -93,9 +93,14 @@ export async function fetchWikiToolkit(
 /**
  * One query-key namespace, declared once — the read/write key-namespace split
  * that made saved data look absent in #132.
+ *
+ * ROOTED AT `deepwiki`, not `wiki`. `useSaveWikiSettings` and `useDeleteWiki`
+ * invalidate `['deepwiki']` after a write; a toolkit key rooted anywhere else
+ * is exactly the split #132 describes — the save succeeds, the settings screen
+ * keeps showing the previous values, and nothing reports it.
  */
 const wikiToolkitQueryKey = (projectId: string, toolkitId: string) =>
-  ['wiki', 'toolkit', projectId, toolkitId] as const;
+  ['deepwiki', 'toolkit', projectId, toolkitId] as const;
 
 export function useWikiToolkit(
   projectId: string,
@@ -178,7 +183,7 @@ export async function listWikiToolkits(projectId: string): Promise<WikiToolkitSu
 }
 
 const wikiToolkitListQueryKey = (projectId: string) =>
-  ['wiki', 'toolkit', 'list', projectId] as const;
+  ['deepwiki', 'toolkit', 'list', projectId] as const;
 
 export function useWikiToolkits(projectId: string): UseQueryResult<WikiToolkitSummary[], Error> {
   return useQuery({

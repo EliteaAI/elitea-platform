@@ -24,7 +24,7 @@
  * toolkit-addressed route had never rendered at all. Caught by the journey that
  * asks for a toolkit which does not exist and expects to be told so.
  */
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 
 import Box from '@mui/material/Box';
 import List from '@mui/material/List';
@@ -35,6 +35,8 @@ import Typography from '@mui/material/Typography';
 import { useWikiToolkits } from '@/entities/wiki';
 import { hasBackendCapability } from '@/shared/config/backendCapabilities';
 import { t } from '@/shared/i18n';
+import { BannerMessage } from '@/shared/ui/BannerMessage';
+import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
@@ -49,15 +51,19 @@ export const Route = createFileRoute('/_shell/deepwiki/')({
 function DeepWikiIndexRoute(): React.JSX.Element | null {
   const projectId = useSelectedProjectStore((state) => state.project?.id ?? '');
   const query = useWikiToolkits(projectId);
+  const navigate = useNavigate();
 
   if (!hasBackendCapability('deepwiki')) return null;
   if (query.isPending) return <RoutePending />;
 
   if (query.isError) {
     return (
-      <Typography variant="body2" color="error" data-testid="deepwiki-toolkits-error">
-        {t('deepwiki.toolkitsFailed', 'The wiki toolkits for this project could not be listed.')}
-      </Typography>
+      <Box data-testid="deepwiki-toolkits-error" sx={{ p: '1.5rem' }}>
+        <BannerMessage
+          variant="error"
+          message={t('deepwiki.toolkitsFailed', 'The wiki toolkits for this project could not be listed.')}
+        />
+      </Box>
     );
   }
 
@@ -68,12 +74,15 @@ function DeepWikiIndexRoute(): React.JSX.Element | null {
     // wiki has no pages" are different facts, and only the first one tells the
     // user what to do next.
     return (
-      <Typography variant="body2" data-testid="deepwiki-no-toolkits">
-        {t(
-          'deepwiki.noToolkits',
-          'This project has no wiki toolkit. Add one to generate and browse wikis.',
-        )}
-      </Typography>
+      <Box data-testid="deepwiki-no-toolkits" sx={{ p: '1.5rem' }}>
+        <NoResultsMessage
+          title={t('deepwiki.noToolkitsTitle', 'No wiki toolkit')}
+          description={t(
+            'deepwiki.noToolkits',
+            'This project has no wiki toolkit. Add one to generate and browse wikis.',
+          )}
+        />
+      </Box>
     );
   }
 
@@ -83,7 +92,7 @@ function DeepWikiIndexRoute(): React.JSX.Element | null {
 
   return (
     <Box data-testid="deepwiki-toolkit-chooser">
-      <Typography variant="h6" sx={{ mb: 1 }}>
+      <Typography variant="headingMedium" sx={{ mb: 1 }}>
         {t('deepwiki.chooseToolkit', 'Choose a wiki')}
       </Typography>
       <List>
@@ -92,16 +101,14 @@ function DeepWikiIndexRoute(): React.JSX.Element | null {
           // app's MUI build does not expose the polymorphic `component` prop on
           // ListItemButton's types, and a plain onClick would lose the middle
           // click and the copyable href a router Link gives for free.
-          <Link
+          <ListItemButton
             key={toolkit.id}
-            to="/deepwiki/$toolkitId"
-            params={{ toolkitId: toolkit.id }}
-            style={{ textDecoration: 'none', color: 'inherit' }}
+            onClick={() => {
+              void navigate({ to: '/deepwiki/$toolkitId', params: { toolkitId: toolkit.id } });
+            }}
           >
-            <ListItemButton>
-              <ListItemText primary={toolkit.name} />
-            </ListItemButton>
-          </Link>
+            <ListItemText primary={toolkit.name} />
+          </ListItemButton>
         ))}
       </List>
     </Box>

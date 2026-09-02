@@ -29,7 +29,7 @@ describe('ResearchTodosPanel', () => {
     );
     expect(screen.getByTestId('wiki-chat-todos')).toBeVisible();
     expect(screen.getByText('Read the README')).toBeVisible();
-    expect(screen.getByText('pending')).toBeVisible();
+    expect(screen.getByText('Pending')).toBeVisible();
     expect(screen.getByText('Trace the router')).toBeVisible();
   });
 
