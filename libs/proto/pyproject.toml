@@ -5,7 +5,7 @@ description = "Generated Elitea runtime v1 Protocol Buffer bindings"
 requires-python = ">=3.12"
 dependencies = [
   "grpcio==1.76.0",
-  "protobuf==6.33.6",
+  "protobuf==7.36.0",
 ]
 
 [project.optional-dependencies]
