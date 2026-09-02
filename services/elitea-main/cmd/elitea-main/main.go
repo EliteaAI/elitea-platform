@@ -1073,12 +1073,27 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// The SECOND provider facade. Composed the same way as the first and in
 	// far fewer lines, because providerhost/{facade,proxy,spi} carry what the
 	// two have in common — which is what ADR-0012's budget measured.
+	// The admission posture, read BEFORE either facade and unconditionally.
+	// An unrecognised spelling is a boot failure whether or not a provider is
+	// enabled today: an operator who mistyped it must learn now, and not at
+	// the moment they turn a provider on.
+	admissionPosture, err := facade.AdmissionPostureFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("read provider admission posture: %w", err)
+	}
+
 	var inventoryRoute *v2inventory.Route
 	inventoryConfig, err := facade.ConfigFromEnv(v2inventory.EnvNames, os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("read Inventory facade configuration: %w", err)
 	}
 	if inventoryConfig.Enabled {
+		// The registrar starts FIRST: it is what learns the provider's own
+		// name, and the gate the route carries reads that name per request.
+		inventoryConfig.Admission = providerAdmissionGate(logger, pool,
+			currentConfigurationsConfig.PublicProjectID, admissionPosture,
+			startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
+				"inventory", inventoryConfig, v2inventory.EnvNames.BaseURL))
 		inventoryRoute, err = v2inventory.NewRoute(
 			inventoryConfig,
 			// The API group's credential set, in either authentication mode.
@@ -1089,8 +1104,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("build the Inventory facade: %w", err)
 		}
-		startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
-			"inventory", inventoryConfig, v2inventory.EnvNames.BaseURL)
 	}
 
 	var deepwikiRoute *v2deepwiki.Route
@@ -1151,6 +1164,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose DeepWiki callback token minter: %w", minterErr)
 		}
 
+		// Registered before the route is built, for the reason the Inventory
+		// facade gives above: the gate needs the provider's own name, and
+		// only the registrar ever learns it.
+		deepwikiConfig.Admission = providerAdmissionGate(logger, pool,
+			currentConfigurationsConfig.PublicProjectID, admissionPosture,
+			startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
+				"deepwiki", facade.Config{
+					Enabled:        true,
+					BaseURL:        deepwikiConfig.BaseURL,
+					ClientCertFile: deepwikiConfig.ClientCertFile,
+					ClientKeyFile:  deepwikiConfig.ClientKeyFile,
+					CAFile:         deepwikiConfig.CAFile,
+					ServerName:     deepwikiConfig.ServerName,
+					IdentitySecret: deepwikiConfig.IdentitySecret,
+					Timeout:        deepwikiConfig.Timeout,
+				}, v2deepwiki.BaseURLEnv))
+
 		deepwikiRoute, err = v2deepwiki.NewRoute(
 			deepwikiConfig,
 			// The API group's credential set, in either authentication mode.
@@ -1163,17 +1193,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose DeepWiki facade: %w", err)
 		}
-		startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
-			"deepwiki", facade.Config{
-				Enabled:        true,
-				BaseURL:        deepwikiConfig.BaseURL,
-				ClientCertFile: deepwikiConfig.ClientCertFile,
-				ClientKeyFile:  deepwikiConfig.ClientKeyFile,
-				CAFile:         deepwikiConfig.CAFile,
-				ServerName:     deepwikiConfig.ServerName,
-				IdentitySecret: deepwikiConfig.IdentitySecret,
-				Timeout:        deepwikiConfig.Timeout,
-			}, v2deepwiki.BaseURLEnv)
 	}
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler

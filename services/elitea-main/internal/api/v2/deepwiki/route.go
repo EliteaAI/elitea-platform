@@ -100,6 +100,7 @@ func NewRoute(
 		Permissions:      permissions,
 		Forward:          proxy.Forward,
 		UserID:           userIDFrom,
+		Admission:        cfg.Admission,
 		// The one route this facade serves itself: the body is rewritten
 		// (credentials expanded, a callback grant minted) before the hop.
 		Invoke: func(w http.ResponseWriter, r *http.Request) {
