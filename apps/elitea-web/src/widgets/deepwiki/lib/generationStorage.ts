@@ -18,7 +18,7 @@ const store = createStorage('local');
 /** The legacy TTL, unchanged: `4 * 60 * 60 * 1000`. */
 export const GENERATION_STATE_TTL_MS = 4 * 60 * 60 * 1000;
 
-export interface StoredGeneration {
+interface StoredGeneration {
   /** The facade's invocation id — what a reload polls to resume. */
   readonly invocationId: string;
   /** When the run started, so the TTL can be applied on load. */

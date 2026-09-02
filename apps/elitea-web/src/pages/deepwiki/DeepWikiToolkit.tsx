@@ -56,6 +56,7 @@ export function DeepWikiToolkit({
       identity={query.data.identity}
       toolkitId={toolkitId}
       settings={query.data.settings}
+      toolkit={query.data.toolkit as Record<string, unknown>}
     />
   );
 }

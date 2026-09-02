@@ -26,7 +26,15 @@ import Stack from '@mui/material/Stack';
 
 import { useWikiList, WikiList, WikiPageView } from '@/features/wiki-browser';
 import type { RepositoryIdentity, ToolkitSettings, WikiManifest } from '@/entities/wiki';
-import { WikiChatDrawer, type WikiChatTarget } from '@/widgets/deepwiki';
+import {
+  DeleteWikiButton,
+  WikiChatDrawer,
+  WikiGenerationPanel,
+  WikiPageEditor,
+  WikiPageReader,
+  WikiSettingsPanel,
+  type WikiChatTarget,
+} from '@/widgets/deepwiki';
 import { hasBackendCapability } from '@/shared/config/backendCapabilities';
 import { t } from '@/shared/i18n';
 
@@ -61,6 +69,8 @@ export interface DeepWikiProps {
    */
   readonly toolkitId?: string;
   readonly settings?: ToolkitSettings;
+  /** The toolkit row as last read — the settings PUT replaces the whole resource. */
+  readonly toolkit?: Record<string, unknown>;
 }
 
 export function DeepWiki({
@@ -68,9 +78,12 @@ export function DeepWiki({
   identity,
   toolkitId,
   settings,
+  toolkit,
 }: DeepWikiProps): React.JSX.Element | null {
   const [selected, setSelected] = useState<WikiManifest | undefined>(undefined);
   const [chatOpen, setChatOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editing, setEditing] = useState<{ pageKey: string; markdown: string } | null>(null);
   const enabled = hasBackendCapability('deepwiki');
   const query = useWikiList(projectId, identity, { enabled });
 
@@ -87,37 +100,22 @@ export function DeepWiki({
     );
   }
 
-  // The chat needs a toolkit to ask THROUGH: its settings carry the model and
-  // the repository the question is about. A route that has not resolved one
-  // renders the browser and no chat rather than a chat that cannot send.
-  const chatTarget: WikiChatTarget | null =
-    toolkitId === undefined || settings === undefined
-      ? null
-      : {
-          projectId: Number(projectId),
-          toolkitId: Number(toolkitId),
-          toolkitName: WIKI_TOOLKIT_NAME,
-          toolkitType: WIKI_TOOLKIT_NAME,
-          settings,
-          repoIdentifierOverride: identity?.repository ?? undefined,
-        };
+  const chatTarget = chatTargetFor(projectId, toolkitId, settings, identity);
+  const open = selected ?? query.data.wikis[0];
 
   return (
     <Box>
-      <Stack sx={{ flexDirection: 'row', alignItems: 'center', gap: 1, mb: 1 }}>
-        <Box sx={{ flex: 1 }} />
-        {chatTarget === null ? null : (
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={() => {
-              setChatOpen(true);
-            }}
-          >
-            {t('deepwiki.openChat', 'Ask about this repository')}
-          </Button>
-        )}
-      </Stack>
+      <ToolkitControls
+        projectId={projectId}
+        toolkitId={toolkitId}
+        settings={settings}
+        toolkit={toolkit}
+        hasWiki={open !== undefined}
+        settingsOpen={settingsOpen}
+        onToggleSettings={() => { setSettingsOpen((v) => !v); }}
+        chatAvailable={chatTarget !== null}
+        onOpenChat={() => { setChatOpen(true); }}
+      />
 
       <WikiList
         wikis={query.data.wikis}
@@ -129,10 +127,24 @@ export function DeepWiki({
       {/* The first wiki is opened by default. A list that needs a click before
           it shows anything reads as an empty screen on a project with one
           wiki, which is the common case. */}
-      {(() => {
-        const open = selected ?? query.data.wikis[0];
-        return open === undefined ? null : <WikiPageView projectId={projectId} wiki={open} />;
-      })()}
+      {open === undefined ? null : (
+        <ReaderArea
+          projectId={projectId}
+          wiki={open}
+          onDeleted={() => { setSelected(undefined); }}
+          onEdit={(pageKey, markdown) => { setEditing({ pageKey, markdown }); }}
+        />
+      )}
+
+      {editing === null ? null : (
+        <WikiPageEditor
+          open
+          onClose={() => { setEditing(null); }}
+          projectId={projectId}
+          pageKey={editing.pageKey}
+          markdown={editing.markdown}
+        />
+      )}
 
       {chatTarget === null ? null : (
         <WikiChatDrawer
@@ -145,4 +157,114 @@ export function DeepWiki({
       )}
     </Box>
   );
+}
+
+interface ToolkitControlsProps {
+  readonly projectId: string;
+  readonly toolkitId: string | undefined;
+  readonly settings: ToolkitSettings | undefined;
+  readonly toolkit: Record<string, unknown> | undefined;
+  readonly hasWiki: boolean;
+  readonly settingsOpen: boolean;
+  readonly onToggleSettings: () => void;
+  readonly chatAvailable: boolean;
+  readonly onOpenChat: () => void;
+}
+
+/** The toolbar and the two toolkit-level panels: generation and settings. */
+function ToolkitControls({
+  projectId,
+  toolkitId,
+  settings,
+  toolkit,
+  hasWiki,
+  settingsOpen,
+  onToggleSettings,
+  chatAvailable,
+  onOpenChat,
+}: ToolkitControlsProps): React.JSX.Element {
+  const hasToolkit = toolkitId !== undefined && settings !== undefined;
+  return (
+    <>
+      <Stack sx={{ flexDirection: 'row', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+        <Box sx={{ flex: 1 }} />
+        {hasToolkit ? (
+          <Button size="small" variant="text" onClick={onToggleSettings} data-testid="wiki-settings-toggle">
+            {settingsOpen ? t('deepwiki.settings.hide', 'Hide settings') : t('deepwiki.settings.show', 'Settings')}
+          </Button>
+        ) : null}
+        {chatAvailable ? (
+          <Button size="small" variant="outlined" onClick={onOpenChat}>
+            {t('deepwiki.openChat', 'Ask about this repository')}
+          </Button>
+        ) : null}
+      </Stack>
+
+      {hasToolkit && settingsOpen && toolkit !== undefined ? (
+        <Box sx={{ mb: 2 }}>
+          <WikiSettingsPanel projectId={projectId} toolkitId={toolkitId} toolkit={toolkit} settings={settings} />
+        </Box>
+      ) : null}
+
+      {hasToolkit ? (
+        <Box sx={{ mb: 2 }}>
+          <WikiGenerationPanel projectId={projectId} toolkitId={toolkitId} settings={settings} hasWiki={hasWiki} />
+        </Box>
+      ) : null}
+    </>
+  );
+}
+
+interface ReaderAreaProps {
+  readonly projectId: string;
+  readonly wiki: WikiManifest;
+  readonly onDeleted: () => void;
+  readonly onEdit: (pageKey: string, markdown: string) => void;
+}
+
+/** The selected wiki: delete, and its pages rendered with the quick fix. */
+function ReaderArea({ projectId, wiki, onDeleted, onEdit }: ReaderAreaProps): React.JSX.Element {
+  return (
+    <Box sx={{ mt: 1 }}>
+      <Stack sx={{ flexDirection: 'row', gap: 1, mb: 1 }}>
+        <DeleteWikiButton projectId={projectId} wiki={wiki} onDeleted={onDeleted} />
+      </Stack>
+      <WikiPageView
+        projectId={projectId}
+        wiki={wiki}
+        renderContent={(markdown, pageKey) => (
+          <Box>
+            <Stack sx={{ flexDirection: 'row', justifyContent: 'flex-end', mb: 0.5 }}>
+              <Button size="small" onClick={() => { onEdit(pageKey, markdown); }} data-testid="wiki-page-edit">
+                {t('deepwiki.editor.open', 'Edit page')}
+              </Button>
+            </Stack>
+            <WikiPageReader projectId={projectId} pageKey={pageKey} markdown={markdown} />
+          </Box>
+        )}
+      />
+    </Box>
+  );
+}
+
+/**
+ * The chat needs a toolkit to ask THROUGH: its settings carry the model and
+ * the repository the question is about. A route that has not resolved one
+ * renders the browser and no chat rather than a chat that cannot send.
+ */
+function chatTargetFor(
+  projectId: string,
+  toolkitId: string | undefined,
+  settings: ToolkitSettings | undefined,
+  identity: RepositoryIdentity | null,
+): WikiChatTarget | null {
+  if (toolkitId === undefined || settings === undefined) return null;
+  return {
+    projectId: Number(projectId),
+    toolkitId: Number(toolkitId),
+    toolkitName: WIKI_TOOLKIT_NAME,
+    toolkitType: WIKI_TOOLKIT_NAME,
+    settings,
+    repoIdentifierOverride: identity?.repository ?? undefined,
+  };
 }
