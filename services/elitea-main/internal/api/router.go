@@ -119,8 +119,14 @@ type RouterConfig struct {
 	HealthDeps         health.Deps
 	Pool               *pgxpool.Pool
 	// BrandPackPath is the brand pack's file layer (BRAND_PACK_PATH, read in
-	// cmd/elitea-main/brand_pack_config.go). Empty means no file layer.
+	// cmd/elitea-main/brand_pack_config.go). Empty means no file layer. Used
+	// only when Branding is nil.
 	BrandPackPath string
+	// Branding is the resolver main.go builds once and shares with the login
+	// page (ADR-0024 WP5), so the bootstrap route, the admin surface and the
+	// login page can never disagree about the brand. Nil builds one here
+	// from BrandPackPath and Pool — the shape every test uses.
+	Branding *v2branding.Resolver
 	// AuditRecorder overrides the Pool-backed `centry.audit_events` writer
 	// mounted on the /api/v2 group. Tests inject one to assert WHICH events a
 	// request produces without a live database; production leaves it unset and
@@ -882,10 +888,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// under the BRAND_PACK_PATH file under the admin-authored `branding`
 	// section, read through cfg.Pool and cached briefly. The admin routes
 	// below invalidate the same resolver on a save.
-	brandingResolver := v2branding.NewResolver(v2branding.ResolverConfig{
-		PackPath: cfg.BrandPackPath,
-		Pool:     cfg.Pool,
-	})
+	brandingResolver := cfg.Branding
+	if brandingResolver == nil {
+		brandingResolver = v2branding.NewResolver(v2branding.ResolverConfig{
+			PackPath: cfg.BrandPackPath,
+			Pool:     cfg.Pool,
+		})
+	}
 	brandingHandler := v2branding.NewHandler(v2branding.Config{Resolver: brandingResolver})
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)

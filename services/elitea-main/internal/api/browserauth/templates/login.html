@@ -3,12 +3,18 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Centry login</title>
+    <title>{{.Brand.ProductName}} login</title>
+    {{if .Brand.FaviconURL}}<link rel="icon" href="{{.Brand.FaviconURL}}">{{end}}
     <style>{{.Style}}</style>
+    {{if .Brand.Style}}<style>{{.Brand.Style}}</style>{{end}}
   </head>
   <body class="auth-login-page" data-auth-form="form">
     <main class="card card-signin">
       <div class="form-signin">
+        <header class="brand-header">
+          {{if .Brand.LogoURL}}<img class="brand-logo" src="{{.Brand.LogoURL}}" alt="{{.Brand.ProductName}}">{{else}}<p class="brand-name">{{.Brand.ProductName}}</p>{{end}}
+          {{if .Brand.Tagline}}<p class="brand-tagline">{{.Brand.Tagline}}</p>{{end}}
+        </header>
         <h1>Sign in</h1>
         <form action="/forward-auth/auth_form/authorize" method="post">
           <div class="form-floating">

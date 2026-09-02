@@ -276,7 +276,7 @@ func TestFormPageUsesSelfContainedCurrentPresentation(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, marker := range []string{
-		"<title>Centry login</title>",
+		"<title>Elitea login</title>",
 		`data-auth-form="form"`,
 		`class="card card-signin"`,
 		`class="form-control"`,
@@ -288,6 +288,8 @@ func TestFormPageUsesSelfContainedCurrentPresentation(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"<link", "<script", " src=", "http://", "https://", "highly-sensitive-password",
+		// No pack: no brand stylesheet, no logo, and the page names the product.
+		"<style></style>", `class="brand-logo"`,
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("login page contains forbidden external or secret material %q", forbidden)
