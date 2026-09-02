@@ -9,7 +9,7 @@ description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=48.0.1,<49",
-  "elitea-sdk==0.9.40",
+  "elitea-sdk==0.9.8",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
   "h2>=4.2,<5",
@@ -18,7 +18,7 @@ dependencies = [
   # registry's lightweight tools package initializer. Keep these aligned with
   # the pinned SDK runtime extra without installing the full indexing stack in
   # the configuration-validation worker image.
-  "langchain-core==1.6.1",
+  "langchain-core==1.2.7",
   # langsmith 0.12.0 moved its HTTP stack from httpx to httpx2/httpcore2, which
   # requires h11>=0.16 — and httpx<1 above resolves httpcore 1.0.7, which
   # requires h11<0.15. The two cannot coexist, so every image build failed with
@@ -33,7 +33,7 @@ dependencies = [
   # httpx2<3,>=2 (PyPI metadata). Lift this when the SDK's own stack moves to
   # httpx2 — not before, or the conflict simply returns.
   "langsmith>=0.3.45,<0.12",
-  "langgraph==1.2.11",
+  "langgraph==1.0.7",
   "protobuf>=5.29,<7",
   "pydantic>=2.10,<3",
   "redis>=6.2,<8.2",
