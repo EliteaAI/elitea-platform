@@ -96,14 +96,33 @@ describe('TabGroupButton', () => {
     expect(getByRole('button', { name: 'Board' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('keeps every button independently reachable by Tab (MUI ToggleButtonGroup does not roam focus on arrow keys)', async () => {
+  // MUI 9.4.0 gave ToggleButtonGroup a roving tab index (@mui/utils
+  // useRovingTabIndex): the group is ONE Tab stop — exactly one button
+  // carries tabindex=0 and MUI decides which — and Left/Right/Home/End move
+  // focus inside it, wrapping. Before 9.4 every button was its own Tab
+  // stop, which is what this test used to pin; #680's bump turned that red.
+  it('is one Tab stop, and arrow keys rove inside it', async () => {
     const user = userEvent.setup();
-    const { getByRole } = renderWithTheme(<TabGroupButton items={items} />);
+    const { getAllByRole, getByRole } = renderWithTheme(<TabGroupButton items={items} />);
+    const buttons = getAllByRole('button');
+    const owners = buttons.filter((button) => button.getAttribute('tabindex') === '0');
+    expect(owners).toHaveLength(1);
+    expect(buttons.filter((button) => button.getAttribute('tabindex') === '-1')).toHaveLength(2);
+
+    await user.tab();
+    expect(owners[0]).toHaveFocus();
+
     getByRole('button', { name: 'List' }).focus();
-    await user.tab();
+    await user.keyboard('{ArrowRight}');
     expect(getByRole('button', { name: 'Grid' })).toHaveFocus();
-    await user.tab();
+    await user.keyboard('{End}');
     expect(getByRole('button', { name: 'Board' })).toHaveFocus();
+    await user.keyboard('{ArrowRight}');
+    expect(getByRole('button', { name: 'List' })).toHaveFocus();
+
+    // Tab LEAVES the group rather than stepping to the next button.
+    await user.tab();
+    for (const button of buttons) expect(button).not.toHaveFocus();
   });
 
   it('activates a focused button with the keyboard (Enter)', async () => {
