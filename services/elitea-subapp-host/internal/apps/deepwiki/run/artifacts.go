@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"regexp"
@@ -124,7 +125,17 @@ func (c *HTTPArtifactClient) ObjectsURL(bucket string) string {
 func (c *HTTPArtifactClient) Upload(ctx context.Context, bucket, name string, data []byte) error {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", name)
+	// No Content-Type on the part, deliberately. The Python client sent
+	// none and elitea-main then derives the object's type from the key's
+	// extension (.json → application/json, .md → text/markdown), which is
+	// what the wiki browser's manifest read depends on. multipart's
+	// CreateFormFile would label every part application/octet-stream, the
+	// server would keep that, and a manifest served as octet-stream is a
+	// wiki the browser cannot see — the local E2E run that found this had
+	// every page land and no title.
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeQuotes(name)))
+	part, err := writer.CreatePart(header)
 	if err != nil {
 		return err
 	}
@@ -155,6 +166,11 @@ func (c *HTTPArtifactClient) Upload(ctx context.Context, bucket, name string, da
 		return fmt.Errorf("Failed to upload artifact: HTTP %d — %s", response.StatusCode, clip(string(text), 500)) //nolint:staticcheck // legacy message text
 	}
 	return nil
+}
+
+// escapeQuotes is multipart's own (unexported) quoting for a filename.
+func escapeQuotes(s string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(s)
 }
 
 func clip(s string, n int) string {

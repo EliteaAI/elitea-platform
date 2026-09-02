@@ -16,7 +16,7 @@ import (
 // object in the `file` part, overwrite=true — and a refusal carries the
 // platform's own text so the in-band message says why.
 func TestTheHTTPClientUploadsTheWayThePythonClientDid(t *testing.T) {
-	type seen struct{ method, path, query, auth, filename, body string }
+	type seen struct{ method, path, query, auth, filename, body, partType string }
 	var got seen
 	status := http.StatusCreated
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +36,7 @@ func TestTheHTTPClientUploadsTheWayThePythonClientDid(t *testing.T) {
 		}
 		_, params, _ := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
 		data, _ := io.ReadAll(part)
-		got = seen{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), params["filename"], string(data)}
+		got = seen{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), params["filename"], string(data), part.Header.Get("Content-Type")}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"key":"` + params["filename"] + `"}`))
 	}))
@@ -56,6 +56,12 @@ func TestTheHTTPClientUploadsTheWayThePythonClientDid(t *testing.T) {
 	if got.method != http.MethodPost || got.path != "/api/v2/artifacts/objects/90200/wiki-artifacts" || got.query != "overwrite=true" ||
 		got.auth != "Bearer minted" || got.filename != "acme--x--main/wiki_pages/a/b.md" || got.body != "# b" {
 		t.Fatalf("%+v", got)
+	}
+	// No Content-Type on the part: elitea-main types the object by its
+	// extension, and a manifest labelled octet-stream is invisible to the
+	// wiki browser.
+	if got.partType != "" {
+		t.Fatalf("the part carried Content-Type %q", got.partType)
 	}
 	status = http.StatusForbidden
 	err = client.Upload(context.Background(), "wiki-artifacts", "k", nil)
