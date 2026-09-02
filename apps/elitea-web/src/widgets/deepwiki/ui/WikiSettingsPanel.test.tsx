@@ -43,8 +43,12 @@ async function replaceDraft(user: ReturnType<typeof userEvent.setup>, text: stri
   if (!(editor instanceof HTMLElement)) throw new Error('no editor');
   await user.click(editor);
   await user.keyboard('{Control>}a{/Control}{Backspace}');
-  // `{` opens a key descriptor in user-event's grammar; `{{` types a brace.
-  await user.keyboard(text.replaceAll('{', '{{').replaceAll('[', '[['));
+  // Pasted, not typed: typing `{` key by key runs CodeMirror's bracket
+  // auto-closing, which on a slow runner interleaved with the keystrokes and
+  // left a draft that was not the text asked for (the CI shard saw the
+  // "not JSON" problem where the "no repository" one was expected). A paste
+  // is one transaction carrying the exact text.
+  await user.paste(text);
 }
 
 describe('WikiSettingsPanel', () => {
