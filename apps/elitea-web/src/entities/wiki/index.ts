@@ -14,6 +14,10 @@ export type { RepositoryIdentity, ToolkitSettings, WikiManifest } from './model/
 export { filterManifestsByRepo } from './lib/repoMatch';
 // Added in P5, when the settings feature became its first consumer.
 export { getConfiguredRepoIdentity } from './lib/toolkitSettings';
+// Added with the real-engine run: the page view needs the same key the fetch
+// resolves, for the edit that saves back over it.
+export { wikiPageObjectKey } from './lib/pageKey';
+export { chatPinsFor } from './lib/chatPins';
 export {
   fetchWikiManifest,
   fetchWikiPage,

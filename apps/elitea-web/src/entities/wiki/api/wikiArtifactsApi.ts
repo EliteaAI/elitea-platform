@@ -19,6 +19,7 @@
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
 import type { WikiManifest, WikiObject } from '../model/types';
+import { wikiPageObjectKey } from '../lib/pageKey';
 
 /** The bucket wikis are stored in. Fixed by the provider at invoke time. */
 // Not exported: nothing outside this module names the bucket yet. The
@@ -115,7 +116,7 @@ export async function fetchWikiPage(
   page: string,
   bucket: string = WIKI_BUCKET,
 ): Promise<string | undefined> {
-  const response = await eliteaFetch<unknown>(objectPath(projectId, bucket, `${wikiId}/${page}`));
+  const response = await eliteaFetch<unknown>(objectPath(projectId, bucket, wikiPageObjectKey(wikiId, page)));
   const body = isRecord(response) && 'data' in response ? response.data : response;
   return typeof body === 'string' ? body : undefined;
 }

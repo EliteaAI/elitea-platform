@@ -46,7 +46,17 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "elitea-deepwiki.serviceAccountName" . }}
+      # DELIBERATELY the namespace default ServiceAccount, not this component's
+      # own. This Job is a pre-install HOOK and templates/deepwiki/
+      # serviceaccount.yaml is an ordinary release object, so on a FIRST
+      # install the hook runs before that object exists and every attempt is
+      # refused with `serviceaccount "elitea-deepwiki" not found` — the Job
+      # never creates a pod, and `helm install --wait` sits until it times out
+      # with nothing in any pod log to read. Measured on a fresh kind install.
+      # main/migrations.serviceAccountName records the same trap from the other
+      # direction (values.yaml: "the chart's own ServiceAccount cannot be used
+      # here"). The migration needs no Kubernetes API access — it opens
+      # ELITEA_DEEPWIKI_DATABASE_URL and nothing else.
       {{- include "elitea.imagePullSecrets" (dict "local" .Values.deepwiki.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
       containers:
         - name: migrate

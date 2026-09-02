@@ -167,7 +167,11 @@ func (rw *InvokeRewriter) Rewrite(
 	}
 	parameters["code_toolkit"] = encodedToolkit
 
-	settings, err := json.Marshal(rw.llmSettings(parameters, grant, projectID))
+	block := rw.llmSettings(parameters, grant, projectID)
+	if err := liftToolLLMSettings(envelope, block); err != nil {
+		return nil, grant, err
+	}
+	settings, err := json.Marshal(block)
 	if err != nil {
 		return nil, grant, fmt.Errorf("%w: %s", ErrInvokeRejected, err)
 	}
@@ -219,6 +223,55 @@ func (rw *InvokeRewriter) llmSettings(
 		settings["model_name"] = model
 	}
 	return settings
+}
+
+// toolLLMSettingsCarried are the keys of a TOOL-level llm_settings block the
+// facade carries into its own: tuning, never transport. Everything else in
+// that block is dropped with it.
+var toolLLMSettingsCarried = []string{"max_tokens", "temperature"}
+
+// liftToolLLMSettings removes a client's llm_settings from the tool-level
+// `parameters` and lifts its tuning keys into the facade's block.
+//
+// The provider merges the tool's own parameters OVER the configuration's
+// (the legacy `if key not in params or value` rule, kept by the host), so a
+// tool-level `llm_settings` — which the wiki chat sends, carrying
+// max_tokens and the model — replaced the facade's block wholesale and the
+// engine refused with `llm_settings.api_base is required`. MEASURED on the
+// first real-engine chat through the product (DWIKI-014b). The same hole let
+// a client push api_base/api_key past the rewrite that exists to stop that:
+// the configuration-level block was replaced, the tool-level one merged.
+func liftToolLLMSettings(envelope map[string]json.RawMessage, block map[string]any) error {
+	encoded, ok := envelope["parameters"]
+	if !ok || isJSONNull(encoded) {
+		return nil
+	}
+	tool := map[string]json.RawMessage{}
+	if err := json.Unmarshal(encoded, &tool); err != nil {
+		return fmt.Errorf("%w: parameters is not an object", ErrInvokeRejected)
+	}
+	raw, ok := tool["llm_settings"]
+	if !ok {
+		return nil
+	}
+	delete(tool, "llm_settings")
+	if !isJSONNull(raw) {
+		var client map[string]any
+		if err := json.Unmarshal(raw, &client); err != nil {
+			return fmt.Errorf("%w: parameters.llm_settings is not an object", ErrInvokeRejected)
+		}
+		for _, key := range toolLLMSettingsCarried {
+			if v, ok := client[key]; ok && v != nil {
+				block[key] = v
+			}
+		}
+	}
+	rewritten, err := json.Marshal(tool)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrInvokeRejected, err)
+	}
+	envelope["parameters"] = rewritten
+	return nil
 }
 
 // invokeParameters extracts configuration.parameters as a mutable map.
