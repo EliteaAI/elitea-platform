@@ -114,7 +114,7 @@ engine = [
   "frozenlist==1.8.0",
   "websockets==16.0",
   "torch==2.10.0",
-  "transformers==5.10.1",
+  "transformers==5.16.1",
   "tokenizers==0.22.2",
   "safetensors==0.7.0",
   "numpy==2.4.2",
