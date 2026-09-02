@@ -110,6 +110,12 @@ interface VisualRoute {
    * to catch.
    */
   readonly project?: { readonly id: string; readonly name: string };
+  /**
+   * An interaction the shot needs after the shell has settled — opening a
+   * drawer, toggling a panel. Runs before the landmark is awaited, so the
+   * landmark can be what the interaction reveals.
+   */
+  readonly prepare?: (page: Page) => Promise<void>;
 }
 
 /**
@@ -467,6 +473,29 @@ const ROUTES: readonly VisualRoute[] = [
     landmark: (page) => page.getByText('E2E Service Wiki'),
     light: true,
   },
+  {
+    // @covers /deepwiki
+    // The toolkit settings panel, open: the JSON draft editor and its Save.
+    name: 'deepwiki-settings',
+    path: '/app/deepwiki',
+    project: { id: '90200', name: 'e2e-deepwiki' },
+    prepare: async (page) => {
+      await page.getByTestId('wiki-settings-toggle').click();
+    },
+    landmark: (page) => page.getByTestId('wiki-settings-panel'),
+  },
+  {
+    // @covers /deepwiki
+    // The wiki chat drawer, open and empty: the composer, the mode switch,
+    // the invitation. Nothing has been asked, so nothing here is volatile.
+    name: 'deepwiki-chat',
+    path: '/app/deepwiki',
+    project: { id: '90200', name: 'e2e-deepwiki' },
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Ask about this repository' }).click();
+    },
+    landmark: (page) => page.getByTestId('wiki-chat-drawer'),
+  },
 ];
 
 for (const route of ROUTES) {
@@ -474,6 +503,7 @@ for (const route of ROUTES) {
     const projectName = await selectProject(page, route);
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page, projectName);
+    if (route.prepare) await route.prepare(page);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     await settle(page);
 
@@ -536,6 +566,7 @@ for (const route of ROUTES.filter((r) => r.light)) {
 
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page, projectName);
+    if (route.prepare) await route.prepare(page);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     // The scheme must still be light on the route under test — a navigation
     // that reset it would otherwise produce a second dark baseline under a
