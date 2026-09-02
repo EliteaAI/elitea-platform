@@ -63,9 +63,16 @@ def _refuse(status_code: int, message: str) -> JSONResponse:
 class MutualTLSMiddleware(BaseHTTPMiddleware):
     """Refuse hops that are not mutually authenticated, when that is required."""
 
-    def __init__(self, app, *, required: bool) -> None:
+    def __init__(self, app, *, required: bool, verified_at_transport: bool = False) -> None:
         super().__init__(app)
         self._required = required
+        # True when THIS process terminates TLS with CERT_REQUIRED
+        # (config.terminates_mtls): the handshake already refused every
+        # client without a CA-verified certificate, so an https request that
+        # reached the app IS the proof. Needed because uvicorn populates no
+        # ASGI ``tls`` extension — with that as the only evidence, every
+        # authenticated hop was refused with 496.
+        self._verified_at_transport = verified_at_transport
 
     async def dispatch(self, request, call_next):
         if not self._required or request.url.path in UNAUTHENTICATED_PATHS:
@@ -81,9 +88,12 @@ class MutualTLSMiddleware(BaseHTTPMiddleware):
             )
             return _refuse(421, "Misdirected Request")
 
-        # uvicorn puts the peer certificate here when ssl_cert_reqs requires
-        # one. Absent means TLS terminated without client verification, which
-        # is a misconfiguration rather than an attack — and is refused all the
+        if self._verified_at_transport:
+            return await call_next(request)
+        # A server that populates the ASGI ``tls`` extension (uvicorn does
+        # not) puts the verified peer certificate here. Absent means TLS was
+        # terminated somewhere that did not verify a client, which is a
+        # misconfiguration rather than an attack — and is refused all the
         # same, because the alternative is serving as if mTLS were on.
         if not scope.get("extensions", {}).get("tls", {}).get("client_cert_chain"):
             peer = scope.get("client")

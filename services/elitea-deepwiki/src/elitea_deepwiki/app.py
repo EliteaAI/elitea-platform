@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from . import errors
-from .config import ConfigError, Settings
+from .config import ConfigError, Settings, terminates_mtls
 from .security.egress import EgressPolicy
 from .descriptor import provider_descriptor
 from .toolrunner import ToolRunner, build_runner
@@ -132,7 +132,11 @@ def create_app(
     app.add_middleware(
         IdentityMiddleware, secret=secret, required=bool(settings.tls_ca_file)
     )
-    app.add_middleware(MutualTLSMiddleware, required=bool(settings.tls_ca_file))
+    app.add_middleware(
+        MutualTLSMiddleware,
+        required=bool(settings.tls_ca_file),
+        verified_at_transport=terminates_mtls(settings),
+    )
 
     # -- descriptor --------------------------------------------------------
 

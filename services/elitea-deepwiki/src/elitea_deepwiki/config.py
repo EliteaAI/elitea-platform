@@ -67,6 +67,25 @@ def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     return value
 
 
+def terminates_mtls(settings) -> bool:
+    """Whether THIS process is the mutual-TLS terminus.
+
+    True exactly when the entrypoint configures uvicorn with a server
+    certificate AND a client CA — the condition under which it also sets
+    ``ssl_cert_reqs=CERT_REQUIRED``, so every request that reaches the ASGI
+    app has already presented a certificate the CA verified. The middleware
+    reads this instead of an ASGI ``tls`` extension, because uvicorn (0.52 as
+    of this writing) never populates one: with the extension as the only
+    proof, a fully authenticated hop was refused with 496, which the P0
+    fixtures could not see (they drive the app in-process).
+    """
+    return bool(
+        getattr(settings, "tls_certfile", None)
+        and getattr(settings, "tls_keyfile", None)
+        and getattr(settings, "tls_ca_file", None)
+    )
+
+
 def _seconds(name: str, default: float) -> float:
     raw = _raw(name)
     if raw is None or raw == "":
