@@ -55,7 +55,7 @@ engine = [
   "langchain-community==0.4.1",
   "langchain-text-splitters==1.1.1",
   "langchain-openai==1.1.10",
-  "langchain-anthropic==1.3.4",
+  "langchain-anthropic==1.7.0",
   "langsmith==0.7.7",
   "langgraph==1.0.9",
   "langgraph-checkpoint==4.0.0",
