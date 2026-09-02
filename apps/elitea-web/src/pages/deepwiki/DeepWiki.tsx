@@ -1,3 +1,24 @@
+/**
+ * DWIKI-001 `/deepwiki` — the native wiki browser, and everything mounted
+ * around it: generation, settings, the reader with its editor and mermaid
+ * quick fix, delete, and the chat drawer.
+ *
+ * The page reads params and permission, renders error and pending, and
+ * composes. It does not fetch: that is `features/wiki-browser`'s model, per
+ * spec §3 (a page that fetches is a page that cannot be reused).
+ *
+ * BEHIND `BackendCapability.deepwiki`, WHICH IS ON. It was off while the
+ * PROVIDER wrote wiki content through a path family elitea-main serves no
+ * route in — the browser would have listed nothing, on a screen with no way
+ * to tell that from "you have not generated a wiki yet". #665 fixed the
+ * provider's client to write where this reads, so the flag flipped with it.
+ *
+ * WHAT THE FLAG DOES NOT BUY. Generating and chatting need the provider
+ * SERVICE to be reachable through the facade; a deployment without one lists
+ * and reads wikis and refuses to generate. That is a deployment fact, not a
+ * capability this flag gates, and the generation panel reports it rather
+ * than this page hiding.
+ */
 import { useState } from 'react';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
