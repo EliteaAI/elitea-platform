@@ -95,6 +95,70 @@ interface VisualRoute {
   readonly landmark: (page: Page) => ReturnType<Page['locator']>;
   /** Also capture a light-scheme variant. */
   readonly light?: boolean;
+  /**
+   * Photograph this route with a DIFFERENT project selected.
+   *
+   * Every route here otherwise uses the persona's own project, which is right:
+   * a shot should show what the user who signed in sees. The exception is a
+   * fixture that cannot live in the shared project — the seeded wiki is in one
+   * of its own, because a permanent toolkit in project 1 makes J17.1's
+   * empty-list premise unreachable (#519's lesson).
+   *
+   * Without this the shot would photograph a project with no wiki, whose
+   * "No wiki has been generated for this project yet." is the SAME screen a
+   * stalled listing shows — a baseline that records the failure it was added
+   * to catch.
+   */
+  readonly project?: { readonly id: string; readonly name: string };
+}
+
+/**
+ * Select `route.project` THROUGH THE SWITCHER, the way a user does.
+ *
+ * The first version wrote `el.project.id` with `addInitScript` before the first
+ * navigation. It works in a journey and it did NOT work here: the run came back
+ * with the switcher still on Default Project and the landmark missing, so the
+ * seeded wiki's project was never selected and the shot would have photographed
+ * a project with no wiki. Whatever the interaction with the restored
+ * `storageState` is, writing another test's storage internals is a mechanism
+ * this suite has no way to notice breaking.
+ *
+ * Clicking is slower and it is the product's own path: the switcher is the only
+ * supported way to change project, J7 covers it end to end, and the selection
+ * persists to both storage areas by the app's own code rather than by ours.
+ *
+ * Returns the name the shell should then settle on, so the caller cannot wait
+ * for one project while having selected another.
+ */
+async function selectProject(page: Page, route: VisualRoute): Promise<string> {
+  const project = route.project;
+  // The early return is for the routes that want the persona's own project,
+  // which is nearly all of them. It is also how this helper silently did
+  // nothing for a whole run: the route entry lost its `project` field to a
+  // careless `git checkout`, every call took this branch, and the shot was
+  // photographed against the wrong project with no assertion able to say so.
+  // `shellSettled` is given the name this returns, so the two can no longer
+  // disagree — a route that fails to switch now fails on the switcher's own
+  // name rather than twenty seconds later on its landmark.
+  if (!project) return 'Default Project';
+
+  await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
+  await shellSettled(page);
+
+  const trigger = page.getByRole('button', { name: /Project:/ });
+  await expect(trigger).toBeVisible({ timeout: 20_000 });
+  await trigger.click();
+
+  const listbox = page.getByRole('listbox');
+  await expect(listbox).toBeVisible({ timeout: 10_000 });
+  await listbox.getByRole('option', { name: project.name }).click();
+
+  // The switch really landed before the route is opened. Without this the
+  // navigation below can race the selection and fetch for the old project.
+  await expect(trigger).toHaveAccessibleName(new RegExp(`Project:\\s*${project.name}`), {
+    timeout: 20_000,
+  });
+  return project.name;
 }
 
 /*
@@ -378,12 +442,38 @@ const ROUTES: readonly VisualRoute[] = [
     landmark: (page) => page.getByText('Business Analyst'),
     light: true,
   },
+  {
+    // @covers /deepwiki
+    name: 'deepwiki-browser',
+    path: '/app/deepwiki',
+    // The wiki's own project, not the persona's. The seeded wiki cannot live in
+    // the shared project 1 — a permanent toolkit there makes J17.1's empty-list
+    // premise unreachable — so this shot switches to the project the fixture is
+    // in. Without it the baseline photographs a project with no wiki toolkit,
+    // and `selectProject` below returns early with the default name.
+    project: { id: '90200', name: 'e2e-deepwiki' },
+    // THE SEEDED WIKI'S TITLE, which lives only in a manifest object in the
+    // artifact store. Every other candidate on this screen fails the rule:
+    // the page has no static heading of its own, the toolkit chooser does not
+    // render for a project with one toolkit, and the empty state
+    // ("No wiki has been generated for this project yet.") is what a STALLED
+    // listing shows as well as an empty one — a baseline photographed against
+    // it would record the screen this feature spent a phase not shipping.
+    //
+    // The title comes from two chained reads: the bucket listing, then the
+    // manifest itself. Neither can resolve under a stall, and neither can be
+    // produced by a screen that is merely mounted.
+    // Measured: loaded YES, stalled no.
+    landmark: (page) => page.getByText('E2E Service Wiki'),
+    light: true,
+  },
 ];
 
 for (const route of ROUTES) {
   test(`@visual ${route.name}`, async ({ page }) => {
+    const projectName = await selectProject(page, route);
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
-    await shellSettled(page);
+    await shellSettled(page, projectName);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     await settle(page);
 
@@ -442,9 +532,10 @@ async function useLightScheme(page: Page): Promise<void> {
 for (const route of ROUTES.filter((r) => r.light)) {
   test(`@visual ${route.name}-light`, async ({ page }) => {
     await useLightScheme(page);
+    const projectName = await selectProject(page, route);
 
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
-    await shellSettled(page);
+    await shellSettled(page, projectName);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     // The scheme must still be light on the route under test — a navigation
     // that reset it would otherwise produce a second dark baseline under a

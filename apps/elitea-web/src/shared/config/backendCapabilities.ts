@@ -62,20 +62,25 @@ export type BackendCapability =
  * trigger read the application-information panel makes. The Chat Message
  * trigger type calls no endpoint and stays available.
  *
- * `deepwiki` gates the native wiki feature while it is being built. It is off
- * for a reason this module has not had before: the routes it needs ARE served,
- * and the feature still cannot work end to end, because the PROVIDER writes
- * wiki content through a path family elitea-main serves no route in
- * (parity/notes/deepwiki-artifact-store.md, issue #665). Turning this on before
- * the provider is fixed produces a wiki browser that lists nothing, which is
- * exactly the affordance-the-user-cannot-repair this module exists to prevent.
+ * `deepwiki` gated the native wiki feature while it was being built, and is
+ * now ON. It was off for a reason this module had not had before: the routes it
+ * needs were served and the feature still could not work end to end, because
+ * the PROVIDER wrote wiki content through a path family elitea-main serves no
+ * route in (parity/notes/deepwiki-artifact-store.md, issue #665). Turning it on
+ * then would have produced a wiki browser that listed nothing — exactly the
+ * affordance-the-user-cannot-repair this module exists to prevent. #665 fixed
+ * the provider's client to write where this feature reads, and the flag
+ * followed it.
  *
- * It also stages the port: every intermediate change is shippable and fully
- * tested while invisible.
+ * WHAT THIS FLAG DOES NOT GATE. Generating a wiki and asking questions about
+ * one need the provider SERVICE to be reachable over the facade's mTLS hop. A
+ * deployment without one browses and reads wikis and cannot generate, and the
+ * generation surface reports that. It is a deployment fact, not a capability —
+ * the same distinction as `llmPredictBlocking` above.
  */
 const SERVED: Readonly<Record<BackendCapability, boolean>> = {
   aiGeneration: false,
-  deepwiki: false,
+  deepwiki: true,
   llmPredictBlocking: true,
   llmPredictStreaming: false,
   pipelineTriggers: false,
