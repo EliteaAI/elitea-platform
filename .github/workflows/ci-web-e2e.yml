@@ -69,6 +69,7 @@ on:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
       - "services/elitea-main/**"
+      - "services/elitea-deepwiki/**"
       # The `chat-stream-rust` job runs the journeys against the native Rust
       # runtime, so a change to it can break a browser journey while touching
       # nothing under apps/elitea-web. Without this path the job that exists to
@@ -84,6 +85,7 @@ on:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
       - "services/elitea-main/**"
+      - "services/elitea-deepwiki/**"
       # The `chat-stream-rust` job runs the journeys against the native Rust
       # runtime, so a change to it can break a browser journey while touching
       # nothing under apps/elitea-web. Without this path the job that exists to
@@ -200,13 +202,6 @@ jobs:
             --tag ghcr.io/eliteaai/elitea-web:e2e \
             --platform linux/amd64 \
             .
-          # The DeepWiki provider, SPI shell only (no `engine` extra): the E2E
-          # compose runs it with ELITEA_DEEPWIKI_RUNNER=fixture.
-          docker build \
-            --file services/elitea-deepwiki/Containerfile \
-            --tag ghcr.io/eliteaai/elitea-deepwiki:e2e \
-            --platform linux/amd64 \
-            .
           # The subshell above swallows its own failure, so this only joins the
           # background job — it cannot fail the step.
           wait "$pw_pull"
@@ -216,7 +211,7 @@ jobs:
         # state instead of trusting the build step's exit code, and print the
         # digests so a run's provenance is legible from its log.
         run: |
-          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e ghcr.io/eliteaai/elitea-deepwiki:e2e; do
+          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e; do
             id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
             if [ -z "$id" ]; then
               echo "::error::$img was not loaded into the local image store."
@@ -511,6 +506,52 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report-chat-stream-rust
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  deepwiki-stack:
+    name: DeepWiki journeys through the facade and the provider
+    # The provider-backed DeepWiki journeys (DWIKI-005/006/010/011/012):
+    # generate → the provider's fixture engine → pages uploaded through the
+    # callback bearer → read back by the browser; stop, resume, settings,
+    # delete and chat. The FULL standalone stack, because the facade needs
+    # production Form authentication and the E2E stack is OIDC-only — see
+    # apps/elitea-web/scripts/deepwiki-e2e.sh. Its own compose project and
+    # port so it can share a host with the two chat jobs' stacks.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Pre-pull the pinned Playwright container
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+      - name: Run the DeepWiki journeys against a fresh standalone stack
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          DEEPWIKI_STREAM_PROJECT: elitea-deepwiki-ci
+          DEEPWIKI_STREAM_PORT: "8087"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+        run: bash apps/elitea-web/scripts/deepwiki-e2e.sh
+      - name: Give the report back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-deepwiki-stack
           path: apps/elitea-web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14

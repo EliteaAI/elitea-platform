@@ -664,6 +664,31 @@ services:
       # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition. The
       # compatibility route this stack serves already writes status_ok itself.
       ELITEA_CONFIGURATIONS_ENABLED: "true"
+      # ── The DeepWiki facade (ADR-0022 P2) ──────────────────────────────
+      # This stack is where the facade can run at all: it needs production
+      # Form authentication (the E2E stack is OIDC-only and has no token
+      # validator, so neither the facade nor the provider's callback bearer
+      # could authenticate there). Everything on this side is the production
+      # path — the mTLS hop, the identity signature, the vault credential
+      # resolution, the callback bearer; what is canned is the provider's
+      # ENGINE (ELITEA_DEEPWIKI_RUNNER=fixture on the service below).
+      ELITEA_DEEPWIKI_ENABLED: "true"
+      # 8080 is the port the provider LISTENS on (uvicorn in __main__.py, the
+      # EXPOSE in its Containerfile, the Helm chart); docker-compose.yml said
+      # 8443 and the hop was refused on connect.
+      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8080"
+      ELITEA_DEEPWIKI_SERVER_NAME: "elitea-deepwiki"
+      # The gateway's client material, issued by the same deploy/certs CA that
+      # gen-deepwiki-certs.sh reuses — one trust root for both hops.
+      ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /run/certs/client.crt
+      ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /run/certs/client.key
+      ELITEA_DEEPWIKI_CA_FILE: /run/certs/ca.crt
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "standalone-deepwiki-identity"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      # Where the provider calls BACK to upload the pages it generated: this
+      # service on the compose network, plain HTTP — the minted bearer is the
+      # credential; mTLS is on the hop the other way.
+      ELITEA_DEEPWIKI_CALLBACK_BASE_URL: "http://elitea-main:8080"
       # The project whose configurations are treated as PUBLIC and merged into
       # every other project's option lookups.
       #
@@ -825,6 +850,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      elitea-deepwiki:
+        condition: service_healthy
       redis:
         condition: service_healthy
       elitea-migrate:
@@ -847,6 +874,52 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
+
+  # ── The DeepWiki provider, SPI shell over the FIXTURE runner ─────────────
+  # ELITEA_DEEPWIKI_RUNNER=fixture is the real LegacyToolRunner with its tools
+  # injected (the P0 composition tests' own mechanism): parameter merge,
+  # egress check, composition and the artifact upload are the production
+  # code; only what the engine would have computed is canned. The journeys
+  # in apps/elitea-web/e2e/journeys/deepwiki (Playwright project
+  # `deepwiki-stack`, scripts/deepwiki-e2e.sh) drive generate → land → read
+  # against it.
+  #
+  # No ELITEA_DEEPWIKI_DATABASE_URL: invocations stay in memory and index
+  # publishing is skipped, which is fine for a stack that never asks a second
+  # replica. The mTLS material comes from gen-deepwiki-certs.sh, which
+  # `standalone-stack.sh certs` runs after the gateway's, sharing its CA.
+  elitea-deepwiki:
+    image: ghcr.io/eliteaai/elitea-deepwiki:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-deepwiki/Containerfile
+    environment:
+      ELITEA_DEEPWIKI_RUNNER: "fixture"
+      # One second between progress steps: long enough for a browser to see
+      # the run in flight and stop it, short enough for a CI job.
+      ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "${DEEPWIKI_FIXTURE_STEP_SECONDS:-1}"
+      ELITEA_DEEPWIKI_TLS_CERTFILE: /certs/deepwiki-server.crt
+      ELITEA_DEEPWIKI_TLS_KEYFILE: /certs/deepwiki-server.key
+      # Setting the CA turns mutual authentication ON (496 without a client cert).
+      ELITEA_DEEPWIKI_TLS_CA_FILE: /certs/ca.crt
+      # Must equal elitea-main's ELITEA_DEEPWIKI_IDENTITY_SECRET.
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "standalone-deepwiki-identity"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
+      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
+    volumes:
+      - ./certs/deepwiki-server.crt:/certs/deepwiki-server.crt:ro
+      - ./certs/deepwiki-server.key:/certs/deepwiki-server.key:ro
+      - ./certs/ca.crt:/certs/ca.crt:ro
+    healthcheck:
+      # The image has python and nothing else; a TCP accept is the liveness
+      # signal (the listener is TLS, so a plain HTTP GET would not be one).
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
 
   elitea-web:
     image: ghcr.io/eliteaai/elitea-web:standalone

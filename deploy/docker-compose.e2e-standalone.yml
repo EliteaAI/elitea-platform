@@ -185,28 +185,6 @@ services:
       S3_SECRET_KEY: "elitea-dev-secret"
       S3_REGION: "us-east-1"
       S3_FORCE_PATH_STYLE: "true"
-      # ── The DeepWiki facade (ADR-0022 P2) ──────────────────────────────
-      # Real on this stack: the mTLS hop, the identity signature, the vault
-      # credential resolution and the callback bearer are all the production
-      # code paths. What is canned is the provider's ENGINE (see the
-      # elitea-deepwiki service below), never the platform side.
-      ELITEA_DEEPWIKI_ENABLED: "true"
-      # 8080 is the port the provider LISTENS on (uvicorn, __main__.py) and
-      # the one its image exposes; the standalone compose said 8443 and the
-      # hop was dead on arrival there.
-      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8080"
-      ELITEA_DEEPWIKI_SERVER_NAME: "elitea-deepwiki"
-      ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /certs/client.crt
-      ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /certs/client.key
-      ELITEA_DEEPWIKI_CA_FILE: /certs/ca.crt
-      ELITEA_DEEPWIKI_IDENTITY_SECRET: "e2e-deepwiki-identity"
-      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
-      # Where the provider calls BACK to upload the pages it generated: this
-      # service, on the compose network, plain HTTP (the bearer is the
-      # credential; the hop the other way is the one under mTLS).
-      ELITEA_DEEPWIKI_CALLBACK_BASE_URL: "http://elitea-main:8080"
-    volumes:
-      - ./certs:/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -216,54 +194,12 @@ services:
         condition: service_healthy
       rustfs-bucket-init:
         condition: service_completed_successfully
-      elitea-deepwiki:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "/elitea-main", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 15s
-
-  # ── The DeepWiki provider, SPI shell over the FIXTURE runner ─────────────
-  # ELITEA_DEEPWIKI_RUNNER=fixture is the real LegacyToolRunner with its tools
-  # injected (the P0 composition tests' own mechanism): parameter merge,
-  # egress check, composition and the artifact upload are the production
-  # code; only what the engine would have computed is canned. The journeys
-  # under e2e/journeys/deepwiki drive generate → land → read against it.
-  #
-  # No ELITEA_DEEPWIKI_DATABASE_URL: invocations stay in memory (the service
-  # reports durable_invocations=false) and index publishing is skipped, which
-  # is fine for a stack that never asks a second replica.
-  elitea-deepwiki:
-    image: ghcr.io/eliteaai/elitea-deepwiki:${E2E_IMAGE_TAG:-e2e}
-    build:
-      context: ..
-      dockerfile: services/elitea-deepwiki/Containerfile
-    environment:
-      ELITEA_DEEPWIKI_RUNNER: "fixture"
-      # One second between progress steps: long enough for a browser to see
-      # the run in flight and stop it, short enough for a CI job.
-      ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "1"
-      ELITEA_DEEPWIKI_TLS_CERTFILE: /certs/deepwiki-server.crt
-      ELITEA_DEEPWIKI_TLS_KEYFILE: /certs/deepwiki-server.key
-      # Setting the CA turns mutual authentication ON (496 without a client cert).
-      ELITEA_DEEPWIKI_TLS_CA_FILE: /certs/ca.crt
-      # Must equal elitea-main's ELITEA_DEEPWIKI_IDENTITY_SECRET.
-      ELITEA_DEEPWIKI_IDENTITY_SECRET: "e2e-deepwiki-identity"
-      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
-      ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
-      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
-    volumes:
-      - ./certs:/certs:ro
-    healthcheck:
-      # The image has python and nothing else; a TCP accept is the liveness
-      # signal (the listener is TLS, so a plain HTTP GET would not be one).
-      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 10s
 
   elitea-web:
     image: ghcr.io/eliteaai/elitea-web:${E2E_IMAGE_TAG:-e2e}

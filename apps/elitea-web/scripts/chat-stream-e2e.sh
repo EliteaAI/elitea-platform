@@ -228,6 +228,11 @@ REPEAT_ARGS=""
 # intact). The projection now carries the version's real list, so that spec
 # runs one assertion on BOTH legs.
 E2E_WORKER="${STANDALONE_WORKER:-python}"
+# Which Playwright project to run against the stack. `chat-stream` is the
+# original; `deepwiki-stack` (scripts/deepwiki-e2e.sh) reuses everything
+# above it — the same stack, seeds and assertions — for the provider-backed
+# DeepWiki journeys.
+PLAYWRIGHT_PROJECT="${PLAYWRIGHT_PROJECT:-chat-stream}"
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
@@ -237,10 +242,10 @@ if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
     -e E2E_WORKER="$E2E_WORKER" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
-    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
+    npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
   E2E_WORKER="$E2E_WORKER" \
-    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
+    npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 fi

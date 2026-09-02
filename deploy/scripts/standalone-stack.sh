@@ -607,6 +607,11 @@ case "${1:-}" in
     # identities authorized to call into elitea-main. Merging them would let an
     # egress client cert authenticate as a workload.
     "${REPO_ROOT}/deploy/scripts/gen-gateway-certs.sh"
+    # After the gateway's: the DeepWiki script REUSES a fresh deploy/certs CA
+    # and client certificate, and only issues the provider's server cert —
+    # one trust root for both mTLS hops out of elitea-main.
+    DEEPWIKI_CERT_SANS="DNS:elitea-deepwiki,DNS:localhost,IP:127.0.0.1" \
+      "${REPO_ROOT}/deploy/scripts/gen-deepwiki-certs.sh"
     exec "${REPO_ROOT}/deploy/scripts/gen-runtime-certs.sh"
     ;;
 
@@ -621,6 +626,10 @@ case "${1:-}" in
     # dependent service is stuck in `created` with no obvious cause.
     if [ ! -f "${REPO_ROOT}/deploy/certs/runtime/runtime-ca.crt" ]; then
       echo "ERROR: runtime-plane material missing. Run: $0 certs" >&2
+      exit 1
+    fi
+    if [ ! -f "${REPO_ROOT}/deploy/certs/deepwiki-server.crt" ]; then
+      echo "ERROR: DeepWiki provider material missing. Run: $0 certs" >&2
       exit 1
     fi
     # oidc-mock's published port must equal its container port (the issuer is

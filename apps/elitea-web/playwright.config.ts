@@ -118,6 +118,14 @@ export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
  * the whole webkit project passed locally while being unrunnable on Linux.
  * They are Chromium flags and have never meant anything to WebKit.
  */
+/**
+ * DeepWiki journeys that need the provider behind the facade. The E2E stack
+ * (chromium/webkit projects) cannot compose the facade, so these run only in
+ * the `deepwiki-stack` project; the read-only DeepWiki journeys (list, read,
+ * edit, quick fix) stay in the ordinary projects.
+ */
+const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat)\.spec\.ts/;
+
 const CHROMIUM_LAUNCH_OPTIONS = {
   args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
 };
@@ -161,6 +169,7 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /journeys\/.+\.spec\.ts/,
+      testIgnore: PROVIDER_BACKED_JOURNEYS,
     },
 
     // ── webkit (spec §6.2: "chromium + webkit") ───────────────────────────
@@ -172,6 +181,7 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /journeys\/.+\.spec\.ts/,
+      testIgnore: PROVIDER_BACKED_JOURNEYS,
     },
 
     /*
@@ -216,6 +226,24 @@ export default defineConfig({
      * Chromium only: this asserts a transport and a render, not a rasteriser,
      * and a second engine would double the stack time for no new signal.
      */
+    {
+      /**
+       * The DeepWiki journeys that need the PROVIDER: generation, chat,
+       * delete-after-generation. They run against the FULL standalone stack
+       * (scripts/deepwiki-e2e.sh), the only stack where the facade can be
+       * composed — it needs production Form authentication, which the E2E
+       * stack's OIDC-only mode does not have. Serial: they share toolkit 9002.
+       */
+      name: 'deepwiki-stack',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.member,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: PROVIDER_BACKED_JOURNEYS,
+      fullyParallel: false,
+    },
     {
       name: 'chat-stream',
       use: {
