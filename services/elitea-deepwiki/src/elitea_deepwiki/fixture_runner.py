@@ -23,7 +23,6 @@ import asyncio
 import json
 from typing import Any
 
-from .invocations import InvocationContext
 from .legacy_runner import LegacyToolRunner
 
 #: Progress the fixture emits before each tool answers, in order. The legacy
@@ -176,9 +175,7 @@ class FixtureToolRunner(LegacyToolRunner):
         )
         self._step_seconds = float(getattr(settings, "fixture_step_seconds", 0.0) or 0.0)
 
-    async def _call(
-        self, tool_name: str, params: dict[str, Any], context: InvocationContext
-    ) -> Any:
+    async def _paced(self, tool_name: str, context: Any) -> None:
         for step in STEPS.get(tool_name, ()):
             # The checkpoint is what makes Stop work mid-run: a cancelled
             # invocation raises here instead of finishing and uploading.
@@ -186,4 +183,3 @@ class FixtureToolRunner(LegacyToolRunner):
             await context.thinking(step)
             if self._step_seconds > 0:
                 await asyncio.sleep(self._step_seconds)
-        return await super()._call(tool_name, params, context)

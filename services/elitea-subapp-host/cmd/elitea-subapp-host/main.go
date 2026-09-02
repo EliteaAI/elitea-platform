@@ -1,7 +1,8 @@
 // elitea-subapp-host serves the provider SPI for one sub-application.
 //
 //	ELITEA_SUBAPP=deepwiki|echo     which application (default: deepwiki)
-//	ELITEA_<APP>_RUNNER=unavailable|echo|fixture (fixture: DeepWiki only)
+//	ELITEA_<APP>_RUNNER=unavailable|echo|fixture|legacy (fixture, legacy: DeepWiki only)
+//	ELITEA_<APP>_ENGINE_SOCKET      the engine sidecar's Unix socket (legacy)
 //	ELITEA_<APP>_*                  the host settings under the app's prefix
 //
 // One binary, one application per process; the prefix keeps each
@@ -197,12 +198,21 @@ func compose(lookup spi.Lookup) (spi.App, spi.Settings, error) {
 			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=fixture is DeepWiki's runner, not %s's", spi.ErrConfig, prefix, name)
 		}
 		runner = deepwikirun.NewFixtureRunner(settings, step)
+	case "legacy":
+		// The analysis engine, reached as a sidecar over a local socket
+		// (ADR-0023 H2): the engine's dependency closure stays in Python;
+		// composition, upload and the SPI are this host's. A host asked for
+		// the engine with no socket to reach it must not come up looking
+		// healthy.
+		if name != "deepwiki" {
+			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=legacy is DeepWiki's runner, not %s's", spi.ErrConfig, prefix, name)
+		}
+		if settings.EngineSocket == "" {
+			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=legacy needs %sENGINE_SOCKET, the engine sidecar's Unix socket", spi.ErrConfig, prefix, prefix)
+		}
+		runner = deepwikirun.NewEngineRunner(settings)
 	default:
-		// "legacy" is the Python shell's engine runner; reaching that engine
-		// from this host is ADR-0023 H2 and is refused, loudly, until it
-		// lands — a host that asked for an engine and did not get it must not
-		// come up looking healthy.
-		return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=%q is not served by this host (unavailable, echo, fixture)", spi.ErrConfig, prefix, runnerName)
+		return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=%q is not served by this host (unavailable, echo, fixture, legacy)", spi.ErrConfig, prefix, runnerName)
 	}
 	switch name {
 	case "deepwiki":

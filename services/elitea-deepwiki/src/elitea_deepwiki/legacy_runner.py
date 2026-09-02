@@ -686,16 +686,33 @@ class LegacyToolRunner:
     async def _call(
         self, tool_name: str, params: dict[str, Any], context: InvocationContext
     ) -> Any:
+        return await self.run_engine_tool(tool_name, _arguments_for(tool_name, params), context)
+
+    async def _paced(self, tool_name: str, context: Any) -> None:
+        """Progress emitted before the engine answers; the fixture paces here."""
+
+    async def run_engine_tool(
+        self, tool_name: str, arguments: dict[str, Any], context: Any
+    ) -> Any:
+        """Run one engine tool with an already-derived keyword set.
+
+        The sidecar's entry point (ADR-0023 H2): the Go host derives the
+        legacy keyword set itself and hands it over; this binds the tool to
+        the host hooks and runs it off the event loop.
+
+        The engine is synchronous and CPU/IO heavy. Running it on the event
+        loop would stall every poll for the whole generation.
+        """
         import asyncio  # noqa: PLC0415
         import functools  # noqa: PLC0415
 
+        await self._paced(tool_name, context)
         tool = self._bound_tool(tool_name, context)
-        arguments = _arguments_for(tool_name, params)
-
-        # The engine is synchronous and CPU/IO heavy. Running it on the event
-        # loop would block every other invocation's poll, so it goes to a
-        # worker thread; cancellation still arrives through the checkpoint.
         return await asyncio.to_thread(functools.partial(tool, **arguments))
+
+    async def publish(self, result: dict[str, Any], context: Any) -> None:
+        """Publish a generated index — the sidecar's name for ``_publish``."""
+        await self._publish(result, context)
 
 
 def _arguments_for(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:

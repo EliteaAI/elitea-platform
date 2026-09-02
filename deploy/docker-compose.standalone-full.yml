@@ -898,7 +898,11 @@ services:
       dockerfile: services/elitea-subapp-host/Containerfile
     environment:
       ELITEA_SUBAPP: deepwiki
-      ELITEA_DEEPWIKI_RUNNER: "fixture"
+      # The Go host reaches the engine over the sidecar's Unix socket
+      # (ADR-0023 H2); the engine service below runs the fixture engine, so
+      # this stack proves the hop without the analysis engine's image.
+      ELITEA_DEEPWIKI_RUNNER: "legacy"
+      ELITEA_DEEPWIKI_ENGINE_SOCKET: /run/deepwiki/engine.sock
       # One second between progress steps: long enough for a browser to see
       # the run in flight and stop it, short enough for a CI job.
       ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "${DEEPWIKI_FIXTURE_STEP_SECONDS:-1}"
@@ -912,13 +916,48 @@ services:
       ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
       ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
     volumes:
+      - deepwiki-engine-sock:/run/deepwiki
       - ./certs/deepwiki-server.crt:/certs/deepwiki-server.crt:ro
       - ./certs/deepwiki-server.key:/certs/deepwiki-server.key:ro
       - ./certs/ca.crt:/certs/ca.crt:ro
+    depends_on:
+      elitea-deepwiki-engine:
+        condition: service_healthy
     healthcheck:
       # The image has python and nothing else; a TCP accept is the liveness
       # signal (the listener is TLS, so a plain HTTP GET would not be one).
       test: ["CMD", "/elitea-subapp-host", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── The DeepWiki ENGINE sidecar (ADR-0023 H2) ──────────────────────────────
+  # The Python engine process the Go host calls over a Unix socket: the
+  # copied tool layer and, in production, its dependency closure (the
+  # `-engine` image). Here it serves the FIXTURE engine — canned results,
+  # paced progress, a stop that lands — so the hop is exercised end to end
+  # without the analysis engine. No SPI, no TLS, no identity: the socket is
+  # reachable only through the shared volume.
+  elitea-deepwiki-engine:
+    image: ghcr.io/eliteaai/elitea-deepwiki:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-deepwiki/Containerfile
+    # The image's ENTRYPOINT is the SPI shell; the sidecar is a different
+    # module, so the entrypoint is replaced rather than appended to.
+    entrypoint: ["python", "-m", "elitea_deepwiki.sidecar"]
+    environment:
+      ELITEA_DEEPWIKI_RUNNER: "fixture"
+      ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "${DEEPWIKI_FIXTURE_STEP_SECONDS:-1}"
+      ELITEA_DEEPWIKI_ENGINE_SOCKET: /run/deepwiki/engine.sock
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
+    volumes:
+      - deepwiki-engine-sock:/run/deepwiki
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/deepwiki/engine.sock'); s.close()"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -1127,6 +1166,9 @@ services:
         condition: service_healthy
 
 volumes:
+  # The engine sidecar's Unix socket, shared between the Go host and the
+  # Python engine (ADR-0023 H2). Nothing else mounts it.
+  deepwiki-engine-sock:
   standalone_pg_data:
   standalone_rustfs_data:
   # Runtime material, split per consumer so no service holds a key it does not

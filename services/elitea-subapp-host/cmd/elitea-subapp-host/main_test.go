@@ -38,6 +38,10 @@ func TestComposeSelectsTheApplicationAndRefusesWhatItCannotServe(t *testing.T) {
 	if err != nil || app.Name != "elitea-deepwiki" || app.Runner.Name() != "fixture" {
 		t.Fatalf("fixture: %v %+v", err, app)
 	}
+	app, _, err = compose(lookup(map[string]string{"ELITEA_DEEPWIKI_RUNNER": "legacy", "ELITEA_DEEPWIKI_ENGINE_SOCKET": "/run/deepwiki/engine.sock"}))
+	if err != nil || app.Name != "elitea-deepwiki" || app.Runner.Name() != "legacy" {
+		t.Fatalf("legacy: %v %+v", err, app)
+	}
 	for name, pairs := range map[string]map[string]string{
 		"an unknown application":       {"ELITEA_SUBAPP": "inventory"},
 		"the legacy Python runner":     {"ELITEA_DEEPWIKI_RUNNER": "legacy"},

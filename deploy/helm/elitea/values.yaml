@@ -2209,14 +2209,37 @@ deepwiki:
   enabled: false
   replicaCount: 1
 
+  # The provider pod is TWO containers (ADR-0023 H2): the Go sub-application
+  # host, which serves the SPI, composes and uploads, and the Python engine
+  # sidecar, which runs the analysis engine for it over a Unix socket the two
+  # share. `image` is the host; `engine.image` is the Python image, which
+  # must be the `-engine` variant for the legacy runner to run anything.
   image:
-    repository: ghcr.io/eliteaai/elitea-deepwiki
-    # Empty means the chart-wide image.tag. Set this to the `-engine` variant
-    # to get an image that can actually run a tool; the guard in _helpers.tpl
-    # refuses the combination of runner=legacy with a non-engine tag.
+    repository: ghcr.io/eliteaai/elitea-subapp-host
+    # Empty means the chart-wide image.tag.
     tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
+  engine:
+    image:
+      repository: ghcr.io/eliteaai/elitea-deepwiki
+      # Empty means the chart-wide image.tag with `-engine` appended — the
+      # image that carries the engine's dependency closure. The guard in
+      # _helpers.tpl refuses a runner=legacy install whose engine tag lacks
+      # that suffix: the plain image carries the engine SOURCE only and every
+      # tool would fail at invocation time.
+      tag: ""
+      pullPolicy: IfNotPresent
+    # What the SIDECAR runs: legacy (the engine) or fixture (canned results,
+    # for a stack that proves the hop without the engine).
+    runner: legacy
+    socketDir: /run/deepwiki
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 4Gi
 
   service:
     # Named explicitly, not release-derived: the server certificate's SANs name
@@ -2239,7 +2262,11 @@ deepwiki:
     ELITEA_DEEPWIKI_MODEL_ALLOWLIST: ""
     # "unavailable" (the default) refuses every tool and says so; "legacy" runs
     # the ported engine and needs the -engine image tag above.
-    ELITEA_DEEPWIKI_RUNNER: "unavailable"
+    # The host's runner: legacy reaches the engine sidecar over the socket
+    # below; unavailable refuses every tool (no sidecar is rendered then).
+    ELITEA_DEEPWIKI_RUNNER: "legacy"
+    ELITEA_DEEPWIKI_ENGINE_SOCKET: /run/deepwiki/engine.sock
+    ELITEA_SUBAPP: deepwiki
     # "subprocess" for compose and small installs, Kubernetes Jobs for scale.
     # Jobs mode needs cluster access this chart's ServiceAccount does not grant
     # by default; grant it deliberately before turning it on.

@@ -49,6 +49,10 @@ type Settings struct {
 	IdentitySecret string
 	GitAllowlist   string
 	ListenAddr     string
+	// EngineSocket is the Unix socket a sidecar engine listens on, for an
+	// application whose runner reaches its engine out of process (ADR-0023
+	// H2). Empty when the application has no such engine.
+	EngineSocket string
 }
 
 // legacyAliases are the pre-prefix names the Python shell also read.
@@ -121,6 +125,7 @@ func SettingsFromEnv(prefix string, lookup Lookup) (Settings, error) {
 		IdentitySecret:     raw("IDENTITY_SECRET", ""),
 		GitAllowlist:       raw("GIT_ALLOWLIST", ""),
 		ListenAddr:         raw("LISTEN_ADDR", ":8080"),
+		EngineSocket:       raw("ENGINE_SOCKET", ""),
 	}
 	var err error
 	if s.JobsEnabled, err = boolean("SLOTS_MODE", false); err != nil {
