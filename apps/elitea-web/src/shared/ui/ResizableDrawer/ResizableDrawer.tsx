@@ -105,7 +105,7 @@ export function ResizableDrawer({
           left: 0,
           top: 0,
           bottom: 0,
-          width: '6px',
+          width: (theme) => theme.spacing(0.75),
           cursor: 'col-resize',
           zIndex: 1,
           '&:hover': { bgcolor: 'action.hover' },

@@ -1,28 +1,7 @@
-/**
- * DWIKI-001 `/deepwiki` — the native wiki browser.
- *
- * The page reads params and permission, renders error and pending, and
- * composes. It does not fetch: that is `features/wiki-browser`'s model, per
- * spec §3 (a page that fetches is a page that cannot be reused).
- *
- * BEHIND `BackendCapability.deepwiki`, WHICH IS NOW ON. It was off while the
- * PROVIDER wrote wiki content through a path family elitea-main serves no route
- * in — the browser would have listed nothing, on a screen with no way to tell
- * that from "you have not generated a wiki yet". #665 fixed the provider's
- * client to write where this reads, so the flag flipped with it.
- *
- * WHAT THE FLAG DOES NOT BUY. Generating and chatting need the provider
- * SERVICE to be reachable; a deployment without one lists and reads wikis and
- * refuses to generate. That is a deployment fact, not a capability this flag
- * gates, and the generation surface reports it rather than this page hiding.
- */
 import { useState } from 'react';
-
 import Box from '@mui/material/Box';
-import Typography from '@mui/material/Typography';
-
-import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
+import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useWikiList, WikiList, WikiPageView } from '@/features/wiki-browser';
 import type { RepositoryIdentity, ToolkitSettings, WikiManifest } from '@/entities/wiki';
@@ -37,39 +16,40 @@ import {
 } from '@/widgets/deepwiki';
 import { hasBackendCapability } from '@/shared/config/backendCapabilities';
 import { t } from '@/shared/i18n';
+import { AnimatedLoadingText } from '@/shared/ui/AnimatedLoadingText';
+import { BannerMessage } from '@/shared/ui/BannerMessage';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
+import { BaseTab } from '@/shared/ui/BaseTab';
+import { BaseTabs } from '@/shared/ui/BaseTabs';
 
-/**
- * The provider's own toolkit name, which is what the SPI path carries.
- *
- * `/tools/{toolkit_name}/{tool_name}/invoke` — and the descriptor names this
- * provider's single toolkit `Wikis` (conformance fixture
- * descriptor/legacy-v0/provider_descriptor.json). It is NOT the local toolkit
- * row's name, which a user can rename.
- */
+/** The provider's toolkit name — the SPI addresses it lowercased. */
 const WIKI_TOOLKIT_NAME = 'wikis';
 
+/**
+ * The app's page recipe (pages/toolkits/Toolkits.tsx): the page owns its
+ * height, its header bar and its scroll container, because the shell's
+ * <main> supplies none of them and native scrollbars are hidden app-wide —
+ * a page without `overflowY: 'auto'` here could not be scrolled at all.
+ */
+const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
+const tabBarSx: SxProps<Theme> = {
+  flexShrink: 0,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 1,
+  borderBottom: 1,
+  borderColor: 'divider',
+  padding: '0 1.5rem',
+};
+const panelsSx: SxProps<Theme> = { flexShrink: 0, gap: 2, padding: '1rem 1.5rem 0' };
+const tabPanelSx: SxProps<Theme> = { flex: 1, minHeight: 0, overflowY: 'auto', padding: '1.5rem' };
+
 export interface DeepWikiProps {
-  /** The project whose wikis are shown. */
   readonly projectId: string;
-  /**
-   * The repository this project's DeepWiki toolkit is configured for.
-   *
-   * Passed in rather than resolved here: resolving it needs the toolkit, and
-   * following a code-toolkit reference is a second request. The settings
-   * feature owns both (DWIKI-010).
-   */
   readonly identity: RepositoryIdentity | null;
-  /**
-   * The toolkit this wiki belongs to, and its stored settings.
-   *
-   * Both optional because the route resolves them and a caller that has not
-   * (a test, a future embed) still gets a working browser. What they gate is
-   * the CHAT: a question needs a model and a repository to be about, and both
-   * live in the settings.
-   */
   readonly toolkitId?: string;
   readonly settings?: ToolkitSettings;
-  /** The toolkit row as last read — the settings PUT replaces the whole resource. */
+  /** The toolkit row as last read; the settings panel PUTs the whole of it back. */
   readonly toolkit?: Record<string, unknown>;
 }
 
@@ -88,23 +68,32 @@ export function DeepWiki({
   const query = useWikiList(projectId, identity, { enabled });
 
   if (!enabled) return null;
-
   if (query.isPending) {
-    return <Typography variant="body2">{t('deepwiki.loading', 'Loading wikis…')}</Typography>;
+    return (
+      <Box sx={tabPanelSx}>
+        <AnimatedLoadingText text={t('deepwiki.loading', 'Loading wikis…')} />
+      </Box>
+    );
   }
   if (query.isError) {
     return (
-      <Typography variant="body2" color="error">
-        {t('deepwiki.loadFailed', 'The wikis for this project could not be loaded.')}
-      </Typography>
+      <Box sx={tabPanelSx}>
+        <BannerMessage
+          variant="error"
+          message={t('deepwiki.loadFailed', 'The wikis for this project could not be loaded.')}
+        />
+      </Box>
     );
   }
 
   const chatTarget = chatTargetFor(projectId, toolkitId, settings, identity);
+  // The first wiki is opened by default. A list that needs a click before it
+  // shows anything reads as an empty screen on a project with one wiki, which
+  // is the common case.
   const open = selected ?? query.data.wikis[0];
 
   return (
-    <Box>
+    <Box sx={pageSx}>
       <ToolkitControls
         projectId={projectId}
         toolkitId={toolkitId}
@@ -112,40 +101,45 @@ export function DeepWiki({
         toolkit={toolkit}
         hasWiki={open !== undefined}
         settingsOpen={settingsOpen}
-        onToggleSettings={() => { setSettingsOpen((v) => !v); }}
+        onToggleSettings={() => {
+          setSettingsOpen((v) => !v);
+        }}
         chatAvailable={chatTarget !== null}
-        onOpenChat={() => { setChatOpen(true); }}
+        onOpenChat={() => {
+          setChatOpen(true);
+        }}
       />
-
-      <WikiList
-        wikis={query.data.wikis}
-        allWikis={query.data.allWikis}
-        selectedWikiId={selected?.wiki_id}
-        onSelect={setSelected}
-      />
-
-      {/* The first wiki is opened by default. A list that needs a click before
-          it shows anything reads as an empty screen on a project with one
-          wiki, which is the common case. */}
-      {open === undefined ? null : (
-        <ReaderArea
-          projectId={projectId}
-          wiki={open}
-          onDeleted={() => { setSelected(undefined); }}
-          onEdit={(pageKey, markdown) => { setEditing({ pageKey, markdown }); }}
+      <Box sx={tabPanelSx}>
+        <WikiList
+          wikis={query.data.wikis}
+          allWikis={query.data.allWikis}
+          selectedWikiId={selected?.wiki_id}
+          onSelect={setSelected}
         />
-      )}
-
+        {open === undefined ? null : (
+          <ReaderArea
+            projectId={projectId}
+            wiki={open}
+            onDeleted={() => {
+              setSelected(undefined);
+            }}
+            onEdit={(pageKey, markdown) => {
+              setEditing({ pageKey, markdown });
+            }}
+          />
+        )}
+      </Box>
       {editing === null ? null : (
         <WikiPageEditor
           open
-          onClose={() => { setEditing(null); }}
+          onClose={() => {
+            setEditing(null);
+          }}
           projectId={projectId}
           pageKey={editing.pageKey}
           markdown={editing.markdown}
         />
       )}
-
       {chatTarget === null ? null : (
         <WikiChatDrawer
           open={chatOpen}
@@ -171,7 +165,7 @@ interface ToolkitControlsProps {
   readonly onOpenChat: () => void;
 }
 
-/** The toolbar and the two toolkit-level panels: generation and settings. */
+/** The header bar — the page's name and its actions — and the panels under it. */
 function ToolkitControls({
   projectId,
   toolkitId,
@@ -186,30 +180,28 @@ function ToolkitControls({
   const hasToolkit = toolkitId !== undefined && settings !== undefined;
   return (
     <>
-      <Stack sx={{ flexDirection: 'row', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
-        <Box sx={{ flex: 1 }} />
+      <Box sx={tabBarSx}>
+        <BaseTabs value={0} sx={{ flex: 1 }}>
+          <BaseTab label={t('deepwiki.title', 'Wiki')} />
+        </BaseTabs>
         {hasToolkit ? (
-          <Button size="small" variant="text" onClick={onToggleSettings} data-testid="wiki-settings-toggle">
+          <BaseBtn variant="tertiary" size="small" onClick={onToggleSettings} data-testid="wiki-settings-toggle">
             {settingsOpen ? t('deepwiki.settings.hide', 'Hide settings') : t('deepwiki.settings.show', 'Settings')}
-          </Button>
+          </BaseBtn>
         ) : null}
         {chatAvailable ? (
-          <Button size="small" variant="outlined" onClick={onOpenChat}>
+          <BaseBtn variant="secondary" size="small" onClick={onOpenChat}>
             {t('deepwiki.openChat', 'Ask about this repository')}
-          </Button>
+          </BaseBtn>
         ) : null}
-      </Stack>
-
-      {hasToolkit && settingsOpen && toolkit !== undefined ? (
-        <Box sx={{ mb: 2 }}>
-          <WikiSettingsPanel projectId={projectId} toolkitId={toolkitId} toolkit={toolkit} settings={settings} />
-        </Box>
-      ) : null}
-
+      </Box>
       {hasToolkit ? (
-        <Box sx={{ mb: 2 }}>
+        <Stack sx={panelsSx}>
+          {settingsOpen && toolkit !== undefined ? (
+            <WikiSettingsPanel projectId={projectId} toolkitId={toolkitId} toolkit={toolkit} settings={settings} />
+          ) : null}
           <WikiGenerationPanel projectId={projectId} toolkitId={toolkitId} settings={settings} hasWiki={hasWiki} />
-        </Box>
+        </Stack>
       ) : null}
     </>
   );
@@ -222,7 +214,6 @@ interface ReaderAreaProps {
   readonly onEdit: (pageKey: string, markdown: string) => void;
 }
 
-/** The selected wiki: delete, and its pages rendered with the quick fix. */
 function ReaderArea({ projectId, wiki, onDeleted, onEdit }: ReaderAreaProps): React.JSX.Element {
   return (
     <Box sx={{ mt: 1 }}>
@@ -235,9 +226,16 @@ function ReaderArea({ projectId, wiki, onDeleted, onEdit }: ReaderAreaProps): Re
         renderContent={(markdown, pageKey) => (
           <Box>
             <Stack sx={{ flexDirection: 'row', justifyContent: 'flex-end', mb: 0.5 }}>
-              <Button size="small" onClick={() => { onEdit(pageKey, markdown); }} data-testid="wiki-page-edit">
+              <BaseBtn
+                variant="tertiary"
+                size="small"
+                onClick={() => {
+                  onEdit(pageKey, markdown);
+                }}
+                data-testid="wiki-page-edit"
+              >
                 {t('deepwiki.editor.open', 'Edit page')}
-              </Button>
+              </BaseBtn>
             </Stack>
             <WikiPageReader projectId={projectId} pageKey={pageKey} markdown={markdown} />
           </Box>
@@ -247,11 +245,6 @@ function ReaderArea({ projectId, wiki, onDeleted, onEdit }: ReaderAreaProps): Re
   );
 }
 
-/**
- * The chat needs a toolkit to ask THROUGH: its settings carry the model and
- * the repository the question is about. A route that has not resolved one
- * renders the browser and no chat rather than a chat that cannot send.
- */
 function chatTargetFor(
   projectId: string,
   toolkitId: string | undefined,

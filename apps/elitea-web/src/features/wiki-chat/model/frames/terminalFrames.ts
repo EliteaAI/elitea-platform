@@ -123,12 +123,16 @@ function readResultArray(entries: readonly unknown[]): {
   sources: readonly unknown[];
   isError: boolean;
 } {
-  const message = entries.find((entry) => field(entry, 'object_type') === 'message');
-  if (!message) return { answer: '', sources: [], isError: false };
+  // EVERY message object, in order. `ask` answers with two: the answer and a
+  // separate "Sources:" message (legacy_runner.compose_result_objects, pinned
+  // by the P0 fixture). Keeping only the first dropped the sources — DWIKI-012
+  // caught it on the real provider.
+  const messages = entries.filter((entry) => field(entry, 'object_type') === 'message');
+  if (messages.length === 0) return { answer: '', sources: [], isError: false };
   return {
-    answer: asText(firstTruthy(field(message, 'data')) ?? ''),
+    answer: messages.map((message) => asText(firstTruthy(field(message, 'data')) ?? '')).join('\n'),
     sources: [],
-    isError: field(message, 'success') === false,
+    isError: messages.some((message) => field(message, 'success') === false),
   };
 }
 

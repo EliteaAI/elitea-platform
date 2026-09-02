@@ -16,13 +16,7 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import Alert from '@mui/material/Alert';
-import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogContentText from '@mui/material/DialogContentText';
-import DialogTitle from '@mui/material/DialogTitle';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
@@ -41,6 +35,8 @@ import {
 } from '@/shared/api/generated/deepwiki/deepwiki';
 import { unwrapBody } from '@/shared/api/unwrap';
 import { t } from '@/shared/i18n';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
+import { BaseModal } from '@/shared/ui/BaseModal';
 
 import { createGenerationStorage } from '../lib/generationStorage';
 
@@ -192,19 +188,19 @@ export function WikiGenerationPanel({ projectId, toolkitId, settings, hasWiki }:
             label={t('deepwiki.generate.excludeTests', 'Skip tests')}
           />
         ) : null}
-        <Button
-          variant="contained"
+        <BaseBtn
+          variant="elitea"
           size="small"
           disabled={running || !canStart}
           data-testid="wiki-generate"
           onClick={() => { if (hasWiki) setConfirmOpen(true); else void start(); }}
         >
           {generateLabel(running, canStart)}
-        </Button>
+        </BaseBtn>
         {running ? (
-          <Button color="error" size="small" onClick={() => void stop()} disabled={stopping} data-testid="wiki-generate-stop">
-            {stopping ? t('deepwiki.generate.stopping', 'Stopping…') : t('deepwiki.generate.stop', 'Stop generation')}
-          </Button>
+          <BaseBtn variant="alarm" size="small" onClick={() => void stop()} loading={stopping} data-testid="wiki-generate-stop">
+            {t('deepwiki.generate.stop', 'Stop generation')}
+          </BaseBtn>
         ) : null}
       </Stack>
 
@@ -225,20 +221,28 @@ export function WikiGenerationPanel({ projectId, toolkitId, settings, hasWiki }:
         </Stack>
       )}
 
-      <Dialog open={confirmOpen} onClose={() => { setConfirmOpen(false); }}>
-        <DialogTitle>{t('deepwiki.generate.confirmTitle', 'Generate wiki documentation?')}</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
+      <BaseModal
+        open={confirmOpen}
+        onClose={() => { setConfirmOpen(false); }}
+        title={t('deepwiki.generate.confirmTitle', 'Generate wiki documentation?')}
+        content={
+          <Typography variant="bodyMedium">
             {t('deepwiki.generate.confirmBody', 'This regenerates all wiki documentation from the repository. It may take several minutes.')}
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => { setConfirmOpen(false); }}>{t('deepwiki.generate.confirmCancel', 'Cancel')}</Button>
-          <Button variant="contained" onClick={() => void start()} data-testid="wiki-generate-confirm">
-            {t('deepwiki.generate.confirmStart', 'Generate')}
-          </Button>
-        </DialogActions>
-      </Dialog>
+          </Typography>
+        }
+        actions={{
+          node: (
+            <>
+              <BaseBtn variant="secondary" onClick={() => { setConfirmOpen(false); }}>
+                {t('deepwiki.generate.confirmCancel', 'Cancel')}
+              </BaseBtn>
+              <BaseBtn variant="elitea" onClick={() => void start()} data-testid="wiki-generate-confirm">
+                {t('deepwiki.generate.confirmStart', 'Generate')}
+              </BaseBtn>
+            </>
+          ),
+        }}
+      />
     </Stack>
   );
 }

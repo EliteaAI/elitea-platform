@@ -34,8 +34,8 @@ const MARKER: Record<DiffPart['kind'], string> = {
  * raw colour the theme gate refuses (R-T1).
  */
 function groundFor(kind: DiffPart['kind'], theme: Theme): string {
-  if (kind === 'added') return `${theme.vars.palette.success.main}24`;
-  if (kind === 'removed') return `${theme.vars.palette.error.main}24`;
+  if (kind === 'added') return theme.vars.palette.background.indexResult.success;
+  if (kind === 'removed') return theme.vars.palette.background.indexResult.error;
   return 'transparent';
 }
 

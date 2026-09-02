@@ -1,6 +1,6 @@
 import { ThemeProvider } from '@mui/material/styles';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { EditorView } from '@codemirror/view';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -58,6 +58,34 @@ async function replaceDraft(_user: ReturnType<typeof userEvent.setup>, text: str
 }
 
 describe('WikiSettingsPanel', () => {
+  it('a Save pressed before the debounced draft catches up still judges what the editor HOLDS', async () => {
+    let saved = 0;
+    server.use(
+      http.put(`${BASE}/elitea_core/tool/prompt_lib/:projectId/:toolkitId`, () => {
+        saved += 1;
+        return HttpResponse.json({ ...TOOLKIT, settings: {} });
+      }),
+    );
+    show(<WikiSettingsPanel projectId="7" toolkitId="42" toolkit={TOOLKIT} settings={{ repository: 'acme/svc' }} />);
+    const content = document.querySelector('.cm-content');
+    if (!(content instanceof HTMLElement)) throw new Error('no editor');
+    const view = EditorView.findFromDOM(content);
+    if (view === null) throw new Error('no EditorView');
+    // Replace the document and press Save in the same tick: `draft` still
+    // holds the valid seeded settings, the editor holds a draft with no
+    // repository. The journey on the real stack saved the OLD settings here.
+    // Synchronous on purpose: user-event's click has its own awaits, long
+    // enough for the 30ms debounce to deliver the draft first and hide the race.
+    act(() => {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '{"llm_model": "gpt-5"}' } });
+      fireEvent.click(screen.getByTestId('wiki-settings-save'));
+    });
+    const problem = await screen.findByTestId('wiki-settings-problem');
+    expect(problem).toHaveAttribute('data-field', 'repository');
+    expect(saved).toBe(0);
+    expect(screen.queryByTestId('wiki-settings-saved')).toBeNull();
+  });
+
   it('refuses a draft that is not JSON, against the document', async () => {
     const user = userEvent.setup();
     show(<WikiSettingsPanel projectId="7" toolkitId="42" toolkit={TOOLKIT} settings={{ repository: 'acme/svc' }} />);

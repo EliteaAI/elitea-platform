@@ -154,6 +154,22 @@ describe('the capability carried on the answer', () => {
 });
 
 describe('an open thinking block', () => {
+  it('keeps EVERY message object of a completed turn — the answer and its sources', () => {
+    // `ask` answers with two message objects (legacy_runner.compose_result_objects,
+    // pinned by the P0 fixture): the answer, then a separate "Sources:" one.
+    // Keeping only the first dropped the sources — DWIKI-012 caught it on the
+    // real provider.
+    const result = JSON.stringify([
+      { object_type: 'message', result_target: 'response', data: 'Pages live in the bucket.' },
+      { object_type: 'message', result_target: 'response', data: '\n\nSources:\n- wiki_pages/overview/getting-started.md' },
+    ]);
+    const { state } = reduceChatFrame(stateWithOpenBlock(), { type: 'agent_response', content: result }, { now: NOW });
+    const rendered = JSON.stringify(state.messages);
+    expect(rendered).toContain('Pages live in the bucket.');
+    expect(rendered).toContain('Sources:');
+    expect(rendered).toContain('wiki_pages/overview/getting-started.md');
+  });
+
   it('is closed and released by BOTH terminal families', () => {
     for (const frame of [
       { type: 'agent_response', content: 'done' },

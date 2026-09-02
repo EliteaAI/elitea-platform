@@ -18,11 +18,12 @@ import Box from '@mui/material/Box';
 import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
-import Typography from '@mui/material/Typography';
 import { useQuery } from '@tanstack/react-query';
 
 import { fetchWikiPage, type WikiManifest } from '@/entities/wiki';
 import { t } from '@/shared/i18n';
+import { AnimatedLoadingText } from '@/shared/ui/AnimatedLoadingText';
+import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { Markdown } from '@/shared/ui/Markdown';
 
 export interface WikiPageViewProps {
@@ -76,9 +77,12 @@ export function WikiPageView({
 
   if (pages.length === 0) {
     return (
-      <Typography variant="body2" color="text.secondary" data-testid="wiki-page-none">
-        {t('deepwiki.page.none', 'This wiki records no pages.')}
-      </Typography>
+      <Box data-testid="wiki-page-none">
+        <NoResultsMessage
+          title={t('deepwiki.page.noneTitle', 'No pages')}
+          description={t('deepwiki.page.none', 'This wiki records no pages.')}
+        />
+      </Box>
     );
   }
 
@@ -140,7 +144,7 @@ function PageBody({
 }): React.JSX.Element {
   switch (state.kind) {
     case 'loading':
-      return <Typography variant="body2">{t('deepwiki.page.loading', 'Loading the page…')}</Typography>;
+      return <AnimatedLoadingText text={t('deepwiki.page.loading', 'Loading the page…')} />;
     case 'error':
       return (
         <Alert severity="warning" data-testid="wiki-page-error">

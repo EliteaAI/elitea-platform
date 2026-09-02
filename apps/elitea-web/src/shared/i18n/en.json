@@ -3036,5 +3036,12 @@
   "deepwiki.list.empty": "No wiki has been generated for this project yet.",
   "deepwiki.list.noneForThisRepository": "No wiki has been generated for this repository and branch yet. Other wikis exist in this project; check the repository and branch in the toolkit settings.",
   "deepwiki.loadFailed": "The wikis for this project could not be loaded.",
-  "deepwiki.loading": "Loading wikis…"
+  "deepwiki.loading": "Loading wikis…",
+  "deepwiki.list.emptyTitle": "No wiki yet",
+  "deepwiki.noToolkitsTitle": "No wiki toolkit",
+  "deepwiki.page.noneTitle": "No pages",
+  "deepwiki.title": "Wiki",
+  "widgets.deepwiki.chat.todoCompleted": "Done",
+  "widgets.deepwiki.chat.todoInProgress": "In progress",
+  "widgets.deepwiki.chat.todoPending": "Pending"
 }

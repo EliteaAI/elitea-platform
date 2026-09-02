@@ -9,14 +9,15 @@
  */
 import { memo, useState } from 'react';
 
-import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
-import Collapse from '@mui/material/Collapse';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
+import { StyledAccordion } from '@/shared/ui/StyledAccordion';
+import { StyledAccordionDetails } from '@/shared/ui/StyledAccordionDetails';
+import { StyledAccordionSummary } from '@/shared/ui/StyledAccordionSummary';
 import type { ChatThinkingBlock, ChatThinkingStep } from '@/features/wiki-chat';
 
 export interface ThinkingStepsBlockProps {
@@ -26,6 +27,9 @@ export interface ThinkingStepsBlockProps {
 /** The event names that get a chip of their own; everything else is a line. */
 const TOOL_EVENTS = new Set(['tool_start', 'tool_end']);
 
+/** The inline spinner's size, in the theme's spacing unit rather than a bare pixel count. */
+const PROGRESS_SIZE = '0.75rem';
+
 function stepLabel(step: ChatThinkingStep): string {
   return step.message === '' ? step.event : step.message;
 }
@@ -34,8 +38,8 @@ const StepRow = memo(function StepRow({ step }: { readonly step: ChatThinkingSte
   if (step.event === 'llm_thinking') {
     return (
       <Stack sx={{ flexDirection: 'row', gap: 1, alignItems: 'center' }}>
-        <CircularProgress size={12} />
-        <Typography variant="caption" color="text.secondary">
+        <CircularProgress size={PROGRESS_SIZE} />
+        <Typography variant="bodySmall" color="text.secondary">
           {stepLabel(step)}
         </Typography>
       </Stack>
@@ -54,7 +58,7 @@ const StepRow = memo(function StepRow({ step }: { readonly step: ChatThinkingSte
           color={step.event === 'tool_end' ? 'success' : 'default'}
           label={step.event === 'tool_end' ? t('widgets.deepwiki.chat.toolDone', 'Done') : t('widgets.deepwiki.chat.toolRunning', 'Running')}
         />
-        <Typography variant="caption" sx={{ wordBreak: 'break-word' }}>
+        <Typography variant="bodySmall" sx={{ wordBreak: 'break-word' }}>
           {stepLabel(step)}
         </Typography>
       </Stack>
@@ -62,7 +66,7 @@ const StepRow = memo(function StepRow({ step }: { readonly step: ChatThinkingSte
   }
 
   return (
-    <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+    <Typography variant="bodySmall" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
       {stepLabel(step)}
     </Typography>
   );
@@ -75,42 +79,33 @@ export const ThinkingStepsBlock = memo(function ThinkingStepsBlock({
   const running = block.status === 'running';
 
   return (
-    <Box data-testid="wiki-chat-thinking-block" sx={{ my: 1 }}>
-      <Box
-        component="button"
-        type="button"
-        onClick={() => {
-          setExpanded((previous) => !previous);
-        }}
-        aria-expanded={expanded}
-        sx={{
-          display: 'flex',
-          flexDirection: 'row',
-          gap: 1,
-          alignItems: 'center',
-          background: 'none',
-          border: 'none',
-          padding: 0,
-          cursor: 'pointer',
-          color: 'text.secondary',
-        }}
-      >
-        {running ? <CircularProgress size={12} /> : null}
-        <Typography variant="caption">
-          {running
-            ? t('widgets.deepwiki.chat.thinking', 'Working…')
-            : t('widgets.deepwiki.chat.thinkingSteps', 'Steps')}
-          {` (${String(block.steps.length)})`}
-        </Typography>
-      </Box>
-
-      <Collapse in={expanded} unmountOnExit>
-        <Stack sx={{ gap: 0.5, mt: 0.5, pl: 1, borderLeft: 1, borderColor: 'divider' }}>
+    <StyledAccordion
+      data-testid="wiki-chat-thinking-block"
+      expanded={expanded}
+      onChange={(_event, next) => {
+        setExpanded(next);
+      }}
+      slotProps={{ transition: { unmountOnExit: true } }}
+      sx={{ my: 1 }}
+    >
+      <StyledAccordionSummary>
+        <Stack sx={{ flexDirection: 'row', gap: 1, alignItems: 'center' }}>
+          {running ? <CircularProgress size={PROGRESS_SIZE} /> : null}
+          <Typography variant="bodySmall" color="text.secondary">
+            {running
+              ? t('widgets.deepwiki.chat.thinking', 'Working…')
+              : t('widgets.deepwiki.chat.thinkingSteps', 'Steps')}
+            {` (${String(block.steps.length)})`}
+          </Typography>
+        </Stack>
+      </StyledAccordionSummary>
+      <StyledAccordionDetails>
+        <Stack sx={{ gap: 0.5, pl: 1, borderLeft: 1, borderColor: 'divider' }}>
           {block.steps.map((step) => (
             <StepRow key={step.id} step={step} />
           ))}
         </Stack>
-      </Collapse>
-    </Box>
+      </StyledAccordionDetails>
+    </StyledAccordion>
   );
 });

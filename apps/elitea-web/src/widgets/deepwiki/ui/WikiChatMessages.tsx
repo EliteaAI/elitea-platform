@@ -13,6 +13,8 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
+
+import { ScrollableContainer } from '@/shared/ui/ScrollableContainer';
 import Typography from '@mui/material/Typography';
 
 import { Markdown } from '@/shared/ui/Markdown';
@@ -33,12 +35,16 @@ export interface WikiChatMessagesProps {
   readonly streamingText: string;
 }
 
+/** One width for every turn, so a user bubble and an answer align on the same rail. */
+const MESSAGE_MAX_WIDTH = '92%';
+
 export const WikiChatMessages = memo(function WikiChatMessages({
   messages,
   streamingText,
 }: WikiChatMessagesProps) {
   return (
-    <Stack data-testid="wiki-chat-messages" sx={{ gap: 1, flex: 1, overflowY: 'auto', p: 1.5 }}>
+    <ScrollableContainer fillContainer sx={{ flex: 1, minHeight: 0 }}>
+      <Stack data-testid="wiki-chat-messages" sx={{ gap: 1, p: 1.5 }}>
       {messages.map((message, index) => {
         if (isThinkingBlock(message)) {
           return <ThinkingStepsBlock key={message.id} block={message} />;
@@ -55,9 +61,9 @@ export const WikiChatMessages = memo(function WikiChatMessages({
               // eslint-disable-next-line react/no-array-index-key -- see above
               key={`user-${String(index)}`}
               variant="outlined"
-              sx={{ alignSelf: 'flex-end', maxWidth: '85%', p: 1, bgcolor: 'action.hover' }}
+              sx={{ alignSelf: 'flex-end', maxWidth: MESSAGE_MAX_WIDTH, p: 1, backgroundColor: (theme) => theme.vars.palette.background.highlightUserMessage }}
             >
-              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+              <Typography variant="bodyMedium" sx={{ whiteSpace: 'pre-wrap' }}>
                 {message.content}
               </Typography>
             </Paper>
@@ -75,17 +81,18 @@ export const WikiChatMessages = memo(function WikiChatMessages({
 
         return (
           // eslint-disable-next-line react/no-array-index-key -- see above
-          <Box key={`answer-${String(index)}`} data-testid="wiki-chat-answer" sx={{ maxWidth: '95%' }}>
+          <Box key={`answer-${String(index)}`} data-testid="wiki-chat-answer" sx={{ maxWidth: MESSAGE_MAX_WIDTH }}>
             <Markdown>{message.content}</Markdown>
           </Box>
         );
       })}
 
       {streamingText === '' ? null : (
-        <Box data-testid="wiki-chat-streaming" sx={{ maxWidth: '95%' }}>
+        <Box data-testid="wiki-chat-streaming" sx={{ maxWidth: MESSAGE_MAX_WIDTH }}>
           <Markdown>{streamingText}</Markdown>
         </Box>
       )}
-    </Stack>
+      </Stack>
+    </ScrollableContainer>
   );
 });

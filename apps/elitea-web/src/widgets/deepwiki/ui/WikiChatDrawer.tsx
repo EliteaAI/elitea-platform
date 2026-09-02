@@ -32,8 +32,14 @@ import { ResearchTodosPanel } from './ResearchTodosPanel';
 import { WikiChatComposer } from './WikiChatComposer';
 import { WikiChatMessages } from './WikiChatMessages';
 
+/**
+ * Resize bounds in CSS pixels: ResizableDrawer measures the pointer, so its
+ * arithmetic is px by nature (the same reason sidebarWidth.ts exports a px
+ * value beside its rem one). 480px is the 30rem the app's other right-hand
+ * surfaces open at.
+ */
 const DEFAULT_WIDTH = 480;
-const MIN_WIDTH = 350;
+const MIN_WIDTH = 352;
 const MAX_WIDTH = 800;
 
 export interface WikiChatDrawerProps {
@@ -94,7 +100,7 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
       <Stack
         sx={{ flexDirection: 'row', alignItems: 'center', p: 1.5, borderBottom: 1, borderColor: 'divider' }}
       >
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
+        <Typography variant="headingSmall" sx={{ flex: 1 }}>
           {t('widgets.deepwiki.chat.title', 'Wiki chat')}
         </Typography>
         <IconButton size="small" onClick={onClose} aria-label={t('widgets.deepwiki.chat.close', 'Close')}>
@@ -106,7 +112,7 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
 
       {chat.state.messages.length === 0 && chat.state.streamingText === '' ? (
         <Box sx={{ p: 2, flex: 1 }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="bodyMedium" color="text.secondary">
             {t(
               'widgets.deepwiki.chat.empty',
               'Ask a question about this repository, or switch to Research for a longer investigation.',

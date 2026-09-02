@@ -19,11 +19,6 @@ import { useCallback, useMemo, useState } from 'react';
 
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogTitle from '@mui/material/DialogTitle';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useQueryClient } from '@tanstack/react-query';
@@ -32,6 +27,8 @@ import { putWikiPage } from '@/entities/wiki';
 import { MermaidQuickFixButton, useMermaidQuickFix } from '@/features/chat-messages';
 import { extractMermaidBlocks, replaceMermaidBlock } from '@/features/wiki-editing';
 import { t } from '@/shared/i18n';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
+import { BaseModal } from '@/shared/ui/BaseModal';
 import { lineDiff } from '@/shared/lib/lineDiff';
 import { DiffView } from '@/shared/ui/DiffView';
 import { Markdown } from '@/shared/ui/Markdown';
@@ -164,9 +161,9 @@ export function WikiPageReader({ projectId, pageKey, markdown }: WikiPageReaderP
           <Typography variant="bodySmall" color="text.secondary">
             {t('deepwiki.fix.appliedNote', 'A diagram fix has been applied to this page.')}
           </Typography>
-          <Button size="small" onClick={() => void undo()} disabled={saving} data-testid="wiki-fix-undo">
+          <BaseBtn variant="tertiary" size="small" onClick={() => void undo()} disabled={saving} data-testid="wiki-fix-undo">
             {t('deepwiki.fix.undo', 'Undo fix')}
-          </Button>
+          </BaseBtn>
         </Stack>
       )}
 
@@ -206,20 +203,25 @@ export function WikiPageReader({ projectId, pageKey, markdown }: WikiPageReaderP
         ),
       )}
 
-      <Dialog open={pending !== null} onClose={() => { setPending(null); }} maxWidth="md" fullWidth>
-        <DialogTitle>{t('deepwiki.fix.reviewTitle', 'Review the proposed fix')}</DialogTitle>
-        <DialogContent>
-          {pendingDiff === null ? null : <DiffView parts={pendingDiff} data-testid="wiki-fix-diff" />}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => { setPending(null); }} data-testid="wiki-fix-reject">
-            {t('deepwiki.fix.reject', 'Discard')}
-          </Button>
-          <Button variant="contained" onClick={() => void accept()} disabled={saving} data-testid="wiki-fix-accept">
-            {t('deepwiki.fix.accept', 'Accept and save')}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <BaseModal
+        open={pending !== null}
+        onClose={() => { setPending(null); }}
+        variant="complex"
+        title={t('deepwiki.fix.reviewTitle', 'Review the proposed fix')}
+        content={pendingDiff === null ? null : <DiffView parts={pendingDiff} data-testid="wiki-fix-diff" />}
+        actions={{
+          node: (
+            <>
+              <BaseBtn variant="secondary" onClick={() => { setPending(null); }} data-testid="wiki-fix-reject">
+                {t('deepwiki.fix.reject', 'Discard')}
+              </BaseBtn>
+              <BaseBtn variant="elitea" onClick={() => void accept()} loading={saving} data-testid="wiki-fix-accept">
+                {t('deepwiki.fix.accept', 'Accept and save')}
+              </BaseBtn>
+            </>
+          ),
+        }}
+      />
     </Box>
   );
 }

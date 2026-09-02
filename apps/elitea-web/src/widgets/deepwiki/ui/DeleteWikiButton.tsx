@@ -10,13 +10,13 @@
 import { useState } from 'react';
 
 import Alert from '@mui/material/Alert';
-import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 
 import { listWikiObjects, type WikiManifest } from '@/entities/wiki';
 import { useDeleteWiki, type DeleteWikiResult } from '@/features/wiki-settings';
 import { t } from '@/shared/i18n';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
 interface DeleteWikiButtonProps {
@@ -52,9 +52,9 @@ export function DeleteWikiButton({ projectId, wiki, onDeleted }: DeleteWikiButto
 
   return (
     <Stack sx={{ gap: 1 }}>
-      <Button color="error" variant="outlined" size="small" onClick={() => { setOpen(true); }} disabled={wikiId === ''} data-testid="wiki-delete">
+      <BaseBtn variant="alarm" size="small" onClick={() => { setOpen(true); }} disabled={wikiId === ''} data-testid="wiki-delete">
         {t('deepwiki.delete.button', 'Delete wiki')}
-      </Button>
+      </BaseBtn>
       {failure === null ? null : (
         <Alert severity="error" data-testid="wiki-delete-error">{failure}</Alert>
       )}
@@ -63,11 +63,13 @@ export function DeleteWikiButton({ projectId, wiki, onDeleted }: DeleteWikiButto
           <Typography variant="bodySmall">
             {t('deepwiki.delete.partial', '{{deleted}} object(s) deleted; these remain:', { deleted: String(result.deleted) })}
           </Typography>
-          <ul>
+          <Stack component="ul" sx={{ gap: 0.25, m: 0, pl: 2 }}>
             {result.failed.map((key) => (
-              <li key={key}>{key}</li>
+              <Typography key={key} component="li" variant="bodySmall">
+                {key}
+              </Typography>
             ))}
-          </ul>
+          </Stack>
         </Alert>
       ) : null}
       <DeleteEntityModal

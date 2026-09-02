@@ -17,9 +17,12 @@
  * sanctioned shape. Resolving the toolkit is the thing both routes need done
  * before the page can be rendered at all.
  */
+import Box from '@mui/material/Box';
+
 import { useWikiToolkit } from '@/entities/wiki';
 import { DeepWiki } from '@/pages/deepwiki/DeepWiki';
 import { t } from '@/shared/i18n';
+import { BannerMessage } from '@/shared/ui/BannerMessage';
 
 import { RoutePending } from '@/routes/-ui/RouteStatus';
 
@@ -41,12 +44,15 @@ export function DeepWikiToolkit({
   // this screen never learned the name of.
   if (query.isError) {
     return (
-      <p data-testid="deepwiki-toolkit-error">
-        {t(
-          'deepwiki.toolkitFailed',
-          'This wiki toolkit could not be loaded, so its wikis cannot be listed.',
-        )}
-      </p>
+      <Box data-testid="deepwiki-toolkit-error" sx={{ p: '1.5rem' }}>
+        <BannerMessage
+          variant="error"
+          message={t(
+            'deepwiki.toolkitFailed',
+            'This wiki toolkit could not be loaded, so its wikis cannot be listed.',
+          )}
+        />
+      </Box>
     );
   }
 

@@ -7,19 +7,22 @@
  * that their edit is gone. The reason is shown in the editor, the draft stays
  * as typed, and Save can be tried again.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
-import Alert from '@mui/material/Alert';
-import Button from '@mui/material/Button';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogTitle from '@mui/material/DialogTitle';
+import Box from '@mui/material/Box';
+import Stack from '@mui/material/Stack';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { putWikiPage } from '@/entities/wiki';
 import { t } from '@/shared/i18n';
-import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
+import { BannerMessage } from '@/shared/ui/BannerMessage';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
+import { BaseModal } from '@/shared/ui/BaseModal';
+import { CodeMirrorEditor, type CodeMirrorEditorHandle } from '@/shared/ui/CodeMirrorEditor';
+
+/** The editor fills most of the viewport: a page is long, and 60vh is what the app's other in-modal editors take. */
+const EDITOR_HEIGHT = '60vh';
+const EDITOR_MIN_HEIGHT = '20rem';
 
 interface WikiPageEditorProps {
   readonly open: boolean;
@@ -44,13 +47,17 @@ export function WikiPageEditor({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Saved from CodeMirror's own document, not the debounced `draft` mirror —
+  // a Save inside the 30ms window would otherwise write the previous text.
+  const editorRef = useRef<CodeMirrorEditorHandle>(null);
   const save = useCallback(async () => {
+    const text = editorRef.current?.getCode() ?? draft;
     setSaving(true);
     setError(null);
     try {
-      await putWikiPage(projectId, pageKey, draft);
+      await putWikiPage(projectId, pageKey, text);
       void queryClient.invalidateQueries({ queryKey: ['deepwiki', 'page'] });
-      onSaved?.(draft);
+      onSaved?.(text);
       onClose();
     } catch (cause) {
       // The editor stays OPEN with the reason. Closing here would be the
@@ -62,24 +69,37 @@ export function WikiPageEditor({
   }, [draft, onClose, onSaved, pageKey, projectId, queryClient]);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth data-testid="wiki-page-editor">
-      <DialogTitle>{t('deepwiki.editor.title', 'Edit page')}</DialogTitle>
-      <DialogContent>
-        {error === null ? null : (
-          <Alert severity="error" sx={{ mb: 1 }} data-testid="wiki-page-editor-error">
-            {t('deepwiki.editor.saveFailed', 'The page was not saved: {{reason}}', { reason: error })}
-          </Alert>
-        )}
-        <CodeMirrorEditor value={draft} onChange={setDraft} minHeight="320px" height="60vh" />
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={saving}>
-          {t('deepwiki.editor.cancel', 'Cancel')}
-        </Button>
-        <Button variant="contained" onClick={() => void save()} disabled={saving} data-testid="wiki-page-editor-save">
-          {saving ? t('deepwiki.editor.saving', 'Saving…') : t('deepwiki.editor.save', 'Save')}
-        </Button>
-      </DialogActions>
-    </Dialog>
+    <BaseModal
+      open={open}
+      onClose={onClose}
+      variant="complex"
+      title={t('deepwiki.editor.title', 'Edit page')}
+      data-testid="wiki-page-editor"
+      content={
+        <Stack sx={{ gap: 1 }}>
+          {error === null ? null : (
+            <Box data-testid="wiki-page-editor-error">
+              <BannerMessage
+                variant="error"
+                message={t('deepwiki.editor.saveFailed', 'The page was not saved: {{reason}}', { reason: error })}
+              />
+            </Box>
+          )}
+          <CodeMirrorEditor ref={editorRef} value={draft} onChange={setDraft} minHeight={EDITOR_MIN_HEIGHT} height={EDITOR_HEIGHT} />
+        </Stack>
+      }
+      actions={{
+        node: (
+          <>
+            <BaseBtn variant="secondary" onClick={onClose} disabled={saving}>
+              {t('deepwiki.editor.cancel', 'Cancel')}
+            </BaseBtn>
+            <BaseBtn variant="elitea" onClick={() => void save()} loading={saving} data-testid="wiki-page-editor-save">
+              {t('deepwiki.editor.save', 'Save')}
+            </BaseBtn>
+          </>
+        ),
+      }}
+    />
   );
 }
