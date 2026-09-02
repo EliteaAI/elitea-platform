@@ -15,12 +15,13 @@
  */
 import { useEffect, useReducer, useRef } from 'react';
 
-import { framesFromPoll, isTerminalPoll, type InvocationPoll } from '../lib/framesFromPoll';
+import { DEFAULT_POLL_INTERVAL_MS, useInvocationPoll } from '@/entities/provider-run';
+import { framesFromPoll, type InvocationPoll } from '../lib/framesFromPoll';
 import { reduceGeneration } from './reducer';
 import { initialGenerationState, type GenerationFrame, type GenerationState } from './types';
 
 /** How often a running invocation is polled, in milliseconds. */
-export const POLL_INTERVAL_MS = 2000;
+export const POLL_INTERVAL_MS = DEFAULT_POLL_INTERVAL_MS;
 
 export interface WikiGenerationOptions {
   /** Fetch one poll. Injected so the loop is testable without a network. */
@@ -65,42 +66,19 @@ export function useWikiGeneration(
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const settledRef = useRef(false);
-
+  // A NEW INVOCATION STARTS CLEAN — see applyFrames. The loop itself is the
+  // run entity's: one request at a time, stopped by the first terminal poll.
   useEffect(() => {
-    if (!invocationId) return undefined;
-
-    settledRef.current = false;
-    dispatch({ kind: 'reset' });
-    let cancelled = false;
-    let inFlight = false;
-
-    const tick = async (): Promise<void> => {
-      // One request at a time. Without this, a poll slower than the interval
-      // overlaps the next one and the two race for the same read-once events.
-      if (inFlight || cancelled || settledRef.current) return;
-      inFlight = true;
-      try {
-        const poll = await optionsRef.current.poll(invocationId);
-        if (cancelled) return;
-        const frames = framesFromPoll(poll, {
-          messageId: invocationId,
-          streamId: invocationId,
-        });
-        if (frames.length > 0) dispatch({ kind: 'frames', frames });
-        if (isTerminalPoll(poll)) settledRef.current = true;
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    void tick();
-    const timer = setInterval(() => void tick(), optionsRef.current.intervalMs ?? POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+    if (invocationId) dispatch({ kind: 'reset' });
   }, [invocationId]);
+  useInvocationPoll(invocationId, {
+    poll: (id) => optionsRef.current.poll(id),
+    onPoll: (poll, id) => {
+      const frames = framesFromPoll(poll, { messageId: id, streamId: id });
+      if (frames.length > 0) dispatch({ kind: 'frames', frames });
+    },
+    intervalMs: options.intervalMs,
+  });
 
   // onSettled fires from an effect on the STATE, not from inside the poll, so
   // it sees the reduced result rather than the raw frame.

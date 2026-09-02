@@ -38,25 +38,18 @@
  * `in-progress` until then, because a criterion nothing can satisfy is not
  * satisfied by the half of it that is ready.
  */
+import {
+  drainEventMessages,
+  isTerminalPoll,
+  terminalOutcome,
+  type InvocationPoll,
+} from '@/entities/provider-run';
 import { ChatFrameType, type ChatFrame } from '../model/types';
 
-/** One invocation poll, as the facade returns it. */
-export interface ChatInvocationPoll {
-  readonly invocation_id?: string;
-  /** Started | InProgress | Completed | Error | Stopped */
-  readonly status?: string;
-  readonly custom_events?: readonly { readonly data?: { readonly message?: unknown } }[];
-  readonly result?: string;
-  readonly message?: string;
-  readonly error_category?: string;
-  readonly error_type?: string;
-}
-
-/** A poll whose status means the invocation is over. */
-export function isTerminalChatPoll(poll: ChatInvocationPoll | undefined): boolean {
-  const status = poll?.status;
-  return status !== undefined && status !== 'Started' && status !== 'InProgress';
-}
+// The envelope is the run entity's (ADR-0023 d4); the chat names stay for
+// this adapter's callers and tests.
+export type ChatInvocationPoll = InvocationPoll;
+export const isTerminalChatPoll = isTerminalPoll;
 
 /** The identifier echoed onto every synthesised frame. */
 export interface ChatPollContext {
@@ -70,12 +63,7 @@ export function framesFromChatPoll(
   const metadataBase = { stream_id: context.streamId };
   const frames: ChatFrame[] = [];
 
-  for (const event of poll?.custom_events ?? []) {
-    const message = event.data?.message;
-    // An event with no message carries nothing to show. Emitting it would add
-    // a "Processing..." card per empty event, which is the reducer's fallback
-    // for a message it cannot read.
-    if (message === undefined || message === null || message === '') continue;
+  for (const message of drainEventMessages(poll)) {
     frames.push({
       type: ChatFrameType.AgentThinkingStep,
       response_metadata: { ...metadataBase, message },
@@ -92,28 +80,26 @@ function terminalFrame(
   poll: ChatInvocationPoll | undefined,
   metadataBase: { stream_id: string },
 ): ChatFrame | null {
-  if (!poll) return null;
-  if (poll.status === 'Completed') {
+  const outcome = terminalOutcome(poll, 'The request failed.');
+  if (outcome === null) return null;
+  if (outcome.kind === 'completed') {
     return {
       type: ChatFrameType.AgentResponse,
       // The result is passed through UNPARSED. The reducer knows five shapes it
       // can arrive in — a bare string, a JSON envelope, the platform's result
       // array — and picking one here would decide for it.
-      content: poll.result ?? '',
-      response_metadata: { ...metadataBase, status: poll.status },
+      content: outcome.result,
+      response_metadata: { ...metadataBase, status: outcome.status },
     };
   }
-  if (poll.status === 'Error' || poll.status === 'Stopped') {
-    return {
-      type: ChatFrameType.Error,
-      content: poll.result ?? poll.message ?? 'The request failed.',
-      response_metadata: {
-        ...metadataBase,
-        status: poll.status,
-        error_category: poll.error_category,
-        error_type: poll.error_type,
-      },
-    };
-  }
-  return null;
+  return {
+    type: ChatFrameType.Error,
+    content: outcome.message,
+    response_metadata: {
+      ...metadataBase,
+      status: outcome.status,
+      error_category: outcome.errorCategory,
+      error_type: outcome.errorType,
+    },
+  };
 }
