@@ -1,11 +1,16 @@
 package main
 
 // Inventory on the host, composed the way a deployment composes it — through
-// the registry, from the environment. Its engine is ADR-0023 stage I3, so
-// what a deployment gets today is the whole SPI with no engine behind it:
+// the registry, from the environment.
+//
+// With no runner named, a deployment gets the whole SPI and NO engine:
 // /descriptor and /health answer, and every tool the descriptor advertises
 // terminates with a readable refusal rather than an empty success something
-// downstream could be built against.
+// downstream could be built against. That is still the default after
+// ADR-0023 stage I3 gave the application a `legacy` runner, and deliberately:
+// enabling the engine is naming ELITEA_INVENTORY_RUNNER=legacy AND giving it a
+// socket to reach, both explicit. An image built without the engine extra must
+// not look like it has one.
 
 import (
 	"context"
@@ -21,7 +26,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/spi"
 )
 
-func TestInventoryComposesAndRefusesEveryToolUntilItsEngineExists(t *testing.T) {
+func TestInventoryComposesAndRefusesEveryToolWithNoRunnerNamed(t *testing.T) {
 	app, settings, err := compose(lookup(map[string]string{"ELITEA_SUBAPP": "inventory"}))
 	if err != nil {
 		t.Fatal(err)
