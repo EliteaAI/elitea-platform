@@ -175,6 +175,11 @@ func Validate(m *Manifest, baseline string) []string {
 				}
 			}
 			if n < 0 {
+				if tree == "deepwiki-ui" {
+					bad("%s: source file %q is not under %s and could not be read from the commit in %s "+
+						"(a shallow checkout cannot `git show` it — fetch the history)", id, rel, root, deepwikiUIPin)
+					continue
+				}
 				bad("%s: source file %q does not exist under %s", id, rel, root)
 				continue
 			}
