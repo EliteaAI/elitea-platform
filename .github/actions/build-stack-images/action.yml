@@ -31,10 +31,15 @@ description: >-
 # the job fails HERE, with the image named, before compose runs.
 inputs:
   compose-files:
-    description: Newline-separated compose files, repo-root relative, in the order compose would take them.
+    description: >-
+      Newline-separated compose files RELATIVE TO deploy/, in the order compose
+      would take them. bake and the assertion run from deploy/ so the files'
+      relative `context:` paths (`..`, `./mock-llm`) resolve as compose resolves
+      them; bake resolves them against its working directory, not the file,
+      which is how the first run failed with `path "mock-mcp" not found`.
     required: true
   cache-hcl:
-    description: Newline-separated bake HCL files carrying the per-target cache scopes and the `standalone` / `e2e` groups.
+    description: Newline-separated bake HCL files, relative to deploy/, carrying the per-target cache scopes and the `standalone` / `e2e` groups.
     required: true
   targets:
     description: The bake group or targets to build (a group name from the cache HCL).
@@ -85,11 +90,13 @@ runs:
     # per-target cache scopes onto the same-named services, and `load: true`
     # writes every result into the runner's image store (the #154 guard).
     # `source: .` builds from the checked-out tree, not from a fresh git
-    # context, so the compose files' `context: ..` resolves as it does locally.
+    # context; `workdir: deploy` puts bake where the compose files are, so their
+    # relative contexts resolve as compose resolves them.
     - name: Bake the stack images
       uses: docker/bake-action@v6
       with:
         source: .
+        workdir: deploy
         builder: ${{ steps.buildx.outputs.name }}
         files: |
           ${{ inputs.compose-files }}
@@ -108,7 +115,7 @@ runs:
       shell: bash
       # Explicit: a calling workflow's `defaults.run.working-directory` must
       # not move this off the repository root the compose paths are relative to.
-      working-directory: ${{ github.workspace }}
+      working-directory: ${{ github.workspace }}/deploy
       env:
         COMPOSE_FILES: ${{ inputs.compose-files }}
       run: |

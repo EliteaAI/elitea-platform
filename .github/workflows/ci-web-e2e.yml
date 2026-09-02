@@ -188,7 +188,7 @@ jobs:
           compose-files: |
             deploy/docker-compose.e2e-standalone.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
+            ci/bake-cache.hcl
           targets: e2e
           mount-cache-suffix: e2e
       - name: Bring up E2E stack
@@ -365,9 +365,9 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.standalone-full.yml
+            docker-compose.standalone-full.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
+            ci/bake-cache.hcl
           targets: standalone
           mount-cache-suffix: python
       - name: Run the journey against a fresh standalone stack
@@ -463,11 +463,11 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.standalone-full.yml
-            deploy/docker-compose.standalone-rust-agent.yml
+            docker-compose.standalone-full.yml
+            docker-compose.standalone-rust-agent.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
-            deploy/ci/bake-cache-rust.hcl
+            ci/bake-cache.hcl
+            ci/bake-cache-rust.hcl
           targets: standalone
           mount-cache-suffix: rust
       - name: Run the journeys against a fresh Rust-runtime stack
@@ -612,11 +612,11 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.standalone-full.yml
-            deploy/docker-compose.standalone-rust-agent.yml
+            docker-compose.standalone-full.yml
+            docker-compose.standalone-rust-agent.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
-            deploy/ci/bake-cache-rust.hcl
+            ci/bake-cache.hcl
+            ci/bake-cache-rust.hcl
           targets: standalone
           mount-cache-suffix: rust
       - name: Run the journeys against a fresh real-model stack
@@ -697,9 +697,9 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.standalone-full.yml
+            docker-compose.standalone-full.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
+            ci/bake-cache.hcl
           targets: standalone
           mount-cache-suffix: python
       - name: Run the DeepWiki journeys against a fresh standalone stack
@@ -766,9 +766,9 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.standalone-full.yml
+            docker-compose.standalone-full.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
+            ci/bake-cache.hcl
           targets: standalone
           mount-cache-suffix: python
       - name: Run the journey against a fresh standalone stack
@@ -856,7 +856,7 @@ jobs:
           compose-files: |
             deploy/docker-compose.e2e-standalone.yml
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
+            ci/bake-cache.hcl
           targets: e2e
           mount-cache-suffix: e2e
       - name: Bring up the E2E stack (host)

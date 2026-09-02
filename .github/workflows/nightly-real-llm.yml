@@ -75,11 +75,11 @@ jobs:
         uses: ./.github/actions/build-stack-images
         with:
           compose-files: |
-            deploy/docker-compose.standalone-full.yml
-            ${{ matrix.worker == 'rust' && 'deploy/docker-compose.standalone-rust-agent.yml' || '' }}
+            docker-compose.standalone-full.yml
+            ${{ matrix.worker == 'rust' && 'docker-compose.standalone-rust-agent.yml' || '' }}
           cache-hcl: |
-            deploy/ci/bake-cache.hcl
-            ${{ matrix.worker == 'rust' && 'deploy/ci/bake-cache-rust.hcl' || '' }}
+            ci/bake-cache.hcl
+            ${{ matrix.worker == 'rust' && 'ci/bake-cache-rust.hcl' || '' }}
           targets: standalone
           mount-cache-suffix: ${{ matrix.worker }}
       - name: Run the superset against a fresh real-model stack
