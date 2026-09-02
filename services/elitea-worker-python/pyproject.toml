@@ -85,7 +85,7 @@ indexing-current = [
   "langchain-openai==1.6.0",
   "langchain-postgres==0.0.17",
   "langchain-text-splitters==1.1.2",
-  "langgraph-checkpoint==2.1.2",
+  "langgraph-checkpoint==4.1.1",
   "langgraph-prebuilt==1.1.0",
   "langdetect==1.0.9",
   "lxml==5.2.2",
