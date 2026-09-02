@@ -134,6 +134,7 @@ import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 import { AdminIdentityProvidersEditor } from './AdminIdentityProvidersEditor';
 import { AdminLlmProxyEditor } from './AdminLlmProxyEditor';
 import { AdminMcpServersEditor } from './AdminMcpServersEditor';
+import { BrandingSectionCard } from './BrandingSectionCard';
 import { IDENTITY_PROVIDERS_MANAGED_SURFACE } from './api/adminIdentityProvidersApi';
 import { LLM_PROXY_MANAGED_SURFACE } from './api/adminLlmProxyApi';
 import { MCP_SERVERS_MANAGED_SURFACE } from './api/adminMcpServersApi';
@@ -161,9 +162,27 @@ const MANAGED_SECTION_EDITORS: Readonly<Record<string, ComponentType>> = {
 };
 
 /** The dedicated editor for a section, when this build has one. */
+/**
+ * Sections whose dedicated page lives in THIS SPA, keyed on the section id.
+ *
+ * `MANAGED_SECTION_EDITORS` keys on the server's `managed_surface` word, and
+ * that stays the rule for a section whose data lives on another surface. The
+ * `branding` section is different: its rows ARE what the generic form would
+ * edit, so the server declares no other surface for them — the reason not to
+ * render the generic form here is that `/admin/app/branding` edits the same
+ * rows as a brand pack (colour derivation, uploads, a preview) and two forms
+ * over one row set would disagree the first time one of them cleaned a value
+ * the other did not (ADR-0024 WP4). The id is the only handle there is.
+ */
+const SECTION_ID_EDITORS: Readonly<Record<string, ComponentType>> = {
+  branding: BrandingSectionCard,
+};
+
 function managedEditorFor(
-  section: { readonly managed_surface?: string } | undefined,
+  section: { readonly id?: string; readonly managed_surface?: string } | undefined,
 ): ComponentType | undefined {
+  const byId = section?.id === undefined ? undefined : SECTION_ID_EDITORS[section.id];
+  if (byId !== undefined) return byId;
   const surface = section?.managed_surface;
   return surface === undefined ? undefined : MANAGED_SECTION_EDITORS[surface];
 }

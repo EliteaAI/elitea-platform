@@ -16,7 +16,7 @@
  * is a property of the tests, not of the product.
  *
  * So this file uses `goto` exactly ONCE, for the landing page, and reaches all
- * eleven pages by CLICKING. If the nav is removed, unwired, or pointed at a route
+ * twelve pages by CLICKING. If the nav is removed, unwired, or pointed at a route
  * that does not exist, these tests fail; nothing else in the repo would notice.
  *
  * ## What each assertion is protecting against
@@ -64,6 +64,7 @@ const ITEMS = [
     heading: 'Configuration',
     path: '/admin/app/configuration',
   },
+  { id: 'branding', label: 'Branding', heading: 'Branding', path: '/admin/app/branding' },
   { id: 'features', label: 'Features', heading: 'Features', path: '/admin/app/features' },
   {
     id: 'service-descriptors',
@@ -109,7 +110,7 @@ adminTest('J37: the landing page offers a nav, and marks the page it is showing'
   await checkA11y(page);
 });
 
-adminTest('J37b: every one of the eleven pages is reachable by CLICKING the nav', async ({ page }) => {
+adminTest('J37b: every one of the twelve pages is reachable by CLICKING the nav', async ({ page }) => {
   await openAdminLanding(page);
   const nav = page.getByRole('navigation', { name: 'Admin navigation' });
 
@@ -130,7 +131,7 @@ adminTest('J37b: every one of the eleven pages is reachable by CLICKING the nav'
     );
   }
 
-  // Exactly the eleven. A twelfth would mean an item nothing in this list covers.
+  // Exactly the twelve. A thirteenth would mean an item nothing in this list covers.
   await expect(nav.getByRole('link')).toHaveCount(ITEMS.length);
   await checkA11y(page);
 });

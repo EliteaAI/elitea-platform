@@ -187,6 +187,9 @@ const PLATFORM_ISSUED_PERMISSIONS = new Set([
   // migrations/shared/0082_admin_panel_permissions.sql.
   'admin.moderation.edit',
   'configuration.governance',
+  // migrations/shared/0109_branding_permission.sql (ADR-0024 decision 5),
+  // administration mode, super_admin and admin.
+  'configuration.branding',
   'configuration.roles.permissions.edit',
   'configuration.scheduling.schedules.edit',
   'configuration.scheduling.schedules.view',
