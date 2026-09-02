@@ -19,6 +19,10 @@ const GENERATION_TIMEOUT = 90_000;
 test.describe.configure({ mode: 'serial' });
 
 test.describe('DeepWiki generation', () => {
+  // A provider round trip through the facade, plus the fixture's paced steps:
+  // longer than Playwright's 30s default, which killed a passing answer mid-poll.
+  test.setTimeout(120_000);
+
   test.use({ storageState: STORAGE_STATE.member });
 
   test('DWIKI-010: toolkit settings are edited and saved, and a bad draft is refused against the field', async ({

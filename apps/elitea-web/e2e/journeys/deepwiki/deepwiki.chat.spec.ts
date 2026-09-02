@@ -11,6 +11,10 @@ import { STORAGE_STATE } from '../../../playwright.config';
 import { SEEDED, openDeepWiki } from './helpers';
 
 test.describe('DeepWiki chat', () => {
+  // A provider round trip through the facade, plus the fixture's paced steps:
+  // longer than Playwright's 30s default, which killed a passing answer mid-poll.
+  test.setTimeout(120_000);
+
   test.use({ storageState: STORAGE_STATE.member });
 
   test('DWIKI-012: the wiki chat answers a question about the wiki, with its sources', async ({ page }) => {
