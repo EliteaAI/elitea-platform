@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Elitea Admin</title>
+    <!-- Both URLs below start with `/` so Vite resolves them against this
+         entry's publicDir (vite.config.ts, admin mode) and emits them under
+         base `/admin/app/assets/…`, the ONE directory the Go adminui handler
+         serves from disk (handler.go `Routes`: `/assets/*`). -->
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <!-- First-paint colour scheme (ADR-0024 WP3). A FILE, not an inline
+         script: the admin CSP hash-pins exactly one inline script (the
+         `admin_ui_config` one below) and carries no 'unsafe-inline', so a
+         second inline script would be blocked. Same body as the inline
+         script in the main index.html — src/app/schemeInit.test.ts pins it. -->
+    <script src="/assets/scheme-init.js"></script>
     <style>
       /* Skeleton-only system font stack; no external font origins (§3.7). */
       body {
@@ -11,6 +22,12 @@
         font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       }
     </style>
+    <!-- Brand pack, delivery channel C (spec §4.3) — the same blocking tag the
+         main index.html carries. Without it the admin console always rendered
+         the compiled default brand: `AppProviders` is shared, so the pack it
+         resolves comes from this global, which nothing set here. The admin
+         CSP's `script-src 'self'` admits this same-origin script. -->
+    <script src="/api/v2/branding/bootstrap.js" vite-ignore></script>
     <!-- admin_ui_config -->
   </head>
   <body>

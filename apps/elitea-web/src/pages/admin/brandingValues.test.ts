@@ -79,7 +79,12 @@ describe('basePackFrom / effectiveFontFaces', () => {
     expect(basePackFrom(served).product.name).toBe('Acme');
   });
 
-  it('reads the faces the zod schema would strip', () => {
+  it('reads the faces whether or not the parse keeps them', () => {
+    // Since ADR-0024 WP3 the zod schema DECLARES typography.fontFaces, so a
+    // parsed pack keeps them; effectiveFontFaces still reads the raw served
+    // object, which is what matters for a pack that fails the parse (the
+    // page then falls back to the default pack but must not lose the faces
+    // the server stated).
     const served = {
       ...DEFAULT_BRAND_PACK,
       typography: {
@@ -87,7 +92,7 @@ describe('basePackFrom / effectiveFontFaces', () => {
         fontFaces: [{ family: 'Inter', url: '/api/v2/branding/assets/font/a.woff2' }],
       },
     };
-    expect(basePackFrom(served)).not.toHaveProperty('typography.fontFaces');
+    expect(basePackFrom(served)).toHaveProperty('typography.fontFaces');
     expect(effectiveFontFaces(served)).toEqual([
       { family: 'Inter', url: '/api/v2/branding/assets/font/a.woff2' },
     ]);

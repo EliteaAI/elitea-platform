@@ -240,7 +240,6 @@ const styles = (): Record<string, SxProps<Theme>> => ({
     gap: '0.375rem',
   },
   metaLabel: ({ typography }) => ({
-    fontFamily: 'Montserrat, sans-serif',
     fontWeight: 400,
     fontSize: typography.headingSmall.fontSize,
     lineHeight: '1.5rem',
@@ -248,7 +247,6 @@ const styles = (): Record<string, SxProps<Theme>> => ({
     marginRight: '0.5rem',
   }),
   metaValue: ({ typography }) => ({
-    fontFamily: 'Montserrat, sans-serif',
     fontWeight: 400,
     fontSize: typography.headingSmall.fontSize,
     lineHeight: '1.5rem',

@@ -12,6 +12,7 @@
  *      skip-with-notice until src/shared/brand/__tests__/brandPack.contract.test.ts lands)
  *   8. no engine name / vendor docs origin in       (grep, ADR-0024 decision 8 / WP8)
  *      sub-application screens
+ *   9. no fontFamily literals outside shared/brand (grep, ADR-0024 WP3)
  *
  * Usage: node scripts/theme-gate.mjs [--root <dir>]
  * Checks 2–6 and 8 logic lives in scripts/lib/theme-gate-core.mjs (unit-tested);
@@ -25,6 +26,7 @@ import process from 'node:process';
 
 import {
   checkExternalOrigins,
+  checkFontFamilyLiterals,
   checkForkedAssets,
   checkModeBranches,
   checkMuiSelectors,
@@ -157,6 +159,9 @@ function main() {
   failed = report('6-external-origins', checkExternalOrigins(files)) || failed;
   // 8 — runs before 7 because 7 spawns vitest; a text check has no reason to wait for it.
   failed = report('8-subapp-strings', checkSubAppStrings(files)) || failed;
+  // 9 — fontFamily literals outside shared/brand (ADR-0024 WP3). Numbered
+  // after check 7 below because 7 is the spec's own numbering; 9 is additive.
+  failed = report('9-font-family-literals', checkFontFamilyLiterals(files)) || failed;
 
   // 7 — brand-pack round trip (unit T1 owns the test; §4.6 check 7).
   //

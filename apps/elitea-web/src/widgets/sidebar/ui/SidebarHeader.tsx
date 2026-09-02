@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 
-import { LogoMarkIcon } from '@/shared/ui/icons/logo-mark-icon';
+import { BrandLogoMark } from '@/shared/ui/brand-logo';
 import { t } from '@/shared/i18n';
 
 import { NotificationButton } from './NotificationButton';
@@ -26,6 +26,10 @@ export interface SidebarHeaderProps {
  * artwork down to ~28px and the "ELITEA" lettering rendered as an
  * illegible smudge. The mark now exists as its own asset
  * (`icons/svg/logo-mark-icon.svg`), so the substitution is retired.
+ *
+ * Rendered through `BrandLogoMark` (ADR-0024 WP3): a served pack with a
+ * custom `assets.logoMark` shows that image here; the default pack shows the
+ * compiled orb.
  *
  * `SidebarConnectionDot` self-degrades to nothing when no
  * `SocketClientContext.Provider` is mounted (see its own header) — always
@@ -51,7 +55,7 @@ export function SidebarHeader({ collapsed, onToggleCollapsed }: SidebarHeaderPro
         onClick={onToggleCollapsed}
         sx={{ position: 'relative', width: '2.75rem', height: '2.75rem' }}
       >
-        <LogoMarkIcon style={{ width: '2.25rem', height: '2.25rem' }} />
+        <BrandLogoMark style={{ width: '2.25rem', height: '2.25rem' }} />
         <SidebarConnectionDot />
       </IconButton>
       {/*

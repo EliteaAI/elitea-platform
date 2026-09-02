@@ -138,3 +138,32 @@ export function checkSubAppStrings(files) {
     (line) => !NON_COPY_LINE_RE.test(line),
   );
 }
+
+/**
+ * Check 9 (ADR-0024 WP3) — no `fontFamily:` string literal outside
+ * shared/brand. The family comes from the pack (`typography.fontFamily`)
+ * through the theme; a literal such as `fontFamily: 'Montserrat, sans-serif'`
+ * pins one deployment's font into a component and survives a tenant pack
+ * swap. Six such literals existed when this check landed. A literal that is
+ * exactly one CSS generic family or keyword (`'monospace'`, `'inherit'`, …)
+ * passes: it names no font, only a class the browser resolves — sixteen
+ * `'monospace'` sites exist and stay legal. Any non-literal value
+ * (`theme.typography.fontFamily`, `theme.vars.…`) passes too. Test files are
+ * scanned as well: a fixture that states a family is the same drift.
+ *
+ * One exemption beside shared/brand: the admin Branding editor
+ * (`src/pages/admin/branding*`, ADR-0024 WP4) and its tests. There a family
+ * is the operator's DATA — the value of the "Font family" field a draft
+ * carries and a test types into it — not a component pinning a font, and
+ * the editor is the one place the product may spell a family out.
+ */
+const FONT_FAMILY_GENERIC = 'inherit|initial|unset|revert|monospace|sans-serif|serif|system-ui|ui-monospace|ui-sans-serif';
+const FONT_FAMILY_LITERAL_RE = new RegExp(`\\bfontFamily\\s*:\\s*(['"\`])(?!(?:${FONT_FAMILY_GENERIC})\\1)`);
+export function checkFontFamilyLiterals(files) {
+  return grep(files, FONT_FAMILY_LITERAL_RE, (path) => {
+    if (!isTs(path)) return false;
+    if (path.startsWith('src/shared/brand/')) return false;
+    if (/^src\/pages\/admin\/branding/i.test(path)) return false; // Branding*.tsx and branding*.ts alike
+    return true;
+  });
+}

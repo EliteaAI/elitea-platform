@@ -34,23 +34,18 @@ export const COLOR_SCHEME_ATTRIBUTE = 'data-el-scheme';
 export const DEFAULT_COLOR_SCHEME = 'dark';
 
 /**
- * The anti-flash script (spec §4.2: it goes in `index.html` BEFORE the app
- * bundle). Unit F1 owns `index.html` and unit R2 owns the provider tree, so
- * T1 ships the exact snippet rather than editing either:
+ * The anti-flash contract (spec §4.2: a script in `index.html` BEFORE the app
+ * bundle). MUI's `InitColorSchemeScript` was rendered for this once, and
+ * emitted NOTHING under `createRoot` (see `BrandThemeProvider.tsx`), so the
+ * real script is now static: inline in `index.html` for the main SPA, and
+ * `src/entries/admin/public/assets/scheme-init.js` for the admin entry (its
+ * CSP hash-pins one inline script). Both bodies read `modeStorageKey` and
+ * write `COLOR_SCHEME_ATTRIBUTE` with `defaultMode` as the fallback;
+ * `src/app/schemeInit.test.ts` pins them to these three literals.
  *
- * ```tsx
- * // src/app/providers/… (unit R2), rendered before <App/>:
- * import InitColorSchemeScript from '@mui/material/InitColorSchemeScript';
- * import { COLOR_SCHEME_SELECTOR, DEFAULT_COLOR_SCHEME } from '@/shared/brand';
- *
- * <InitColorSchemeScript
- *   attribute={COLOR_SCHEME_SELECTOR}
- *   defaultMode={DEFAULT_COLOR_SCHEME}
- *   modeStorageKey="el-mode"
- * />
- * ```
- *
- * `attribute` MUST equal `colorSchemeSelector` and `defaultMode` MUST equal
+ * The runtime `ThemeProvider` still takes `modeStorageKey` from here, so the
+ * key the script reads and the key MUI writes cannot drift apart. `attribute`
+ * MUST equal `colorSchemeSelector` and `defaultMode` MUST equal
  * `defaultColorScheme`, or the script writes an attribute the stylesheet does
  * not match and the flash it exists to prevent happens anyway (MUI 9.2
  * InitColorSchemeScript "Caveats").

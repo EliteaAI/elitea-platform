@@ -57,7 +57,12 @@ export default defineConfig(({ mode }): UserConfig => {
       plugins: basePlugins,
       root: resolvePath('./src/entries/admin'),
       base: '/admin/app/',
-      publicDir: false,
+      // Copied verbatim into dist/admin. Holds `assets/scheme-init.js` and
+      // `assets/favicon.svg` (ADR-0024 WP3): the Go adminui handler serves
+      // exactly one directory from disk, `/admin/app/assets/*`, and its CSP
+      // admits no second inline script, so the first-paint scheme script
+      // has to be a same-origin FILE under that directory.
+      publicDir: resolvePath('./src/entries/admin/public'),
       build: {
         outDir: resolvePath('./dist/admin'),
         emptyOutDir: true,

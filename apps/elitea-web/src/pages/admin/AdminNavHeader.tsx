@@ -12,7 +12,7 @@ import Typography from '@mui/material/Typography';
 import type { Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
-import { LogoMarkIcon } from '@/shared/ui/icons/logo-mark-icon';
+import { BrandLogoMark } from '@/shared/ui/brand-logo';
 
 import { focusRing } from './AdminNavChrome';
 
@@ -76,9 +76,11 @@ export function AdminNavHeader({ collapsed, onToggle }: AdminNavHeaderProps): Re
           {/*
             * The MARK, not the wordmark. `LogoIcon` is `0 0 99 20`; forcing it
             * into a 1.75rem square rendered as an illegible smudge here — the
-            * same defect the main app's `SidebarHeader` had.
+            * same defect the main app's `SidebarHeader` had. Pack-driven
+            * (ADR-0024 WP3): a served custom `assets.logoMark` renders as an
+            * <img>; otherwise this is the compiled `LogoMarkIcon`.
             */}
-          <LogoMarkIcon style={{ width: '1.75rem', height: '1.75rem' }} />
+          <BrandLogoMark style={{ width: '1.75rem', height: '1.75rem' }} />
         </Box>
         {!collapsed && (
           <Typography

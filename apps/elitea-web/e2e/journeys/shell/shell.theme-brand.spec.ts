@@ -209,3 +209,116 @@ test('J30: brand pack loads logo, primary colour, and product name without rebui
 
   await checkA11y(page);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Journey 30 (assets): the pack's logo, favicon and fonts reach the document
+// ─────────────────────────────────────────────────────────────────────────────
+test('J30 (assets): brand pack swaps the logo <img>, the favicon and injects @font-face without rebuild', async ({
+  page,
+}) => {
+  // ADR-0024 WP3. J30 above proves the pack drives the PALETTE and the
+  // product name; this journey proves the three consumers WP3 added:
+  // `shared/ui/brand-logo` (<img> for a served custom asset),
+  // `app/providers/BrandDocumentHead` (favicon href + `<style data-el-fonts>`).
+  //
+  // The asset paths are DISTINCT from the compiled default pack's
+  // `./brand/*.svg` on purpose — "custom" means served AND different
+  // (`shared/brand/assets.ts`) — and they are served by route mocks so the
+  // journey does not depend on any file the stack ships.
+  const svgBody =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
+  const assetPack = {
+    $schema: 'https://elitea.ai/schemas/brand-pack/1.json',
+    id: 'autotest-assets',
+    version: '1.0.0',
+    product: { name: 'Elitea-assets', shortName: 'Elitea-assets' },
+    assets: {
+      logoFull: '/app/brand/autotest-full.svg',
+      logoMark: '/app/brand/autotest-mark.svg',
+      favicon: '/app/brand/autotest-favicon.svg',
+    },
+    typography: {
+      fontFamily: '"Montserrat", Roboto, Arial, sans-serif',
+      fontFamilyMono: '"Roboto Mono", Consolas, "Courier New", monospace',
+      baseSize: 14,
+      scale: 1.2,
+      fontFaces: [
+        { family: 'Montserrat', url: '/api/v2/branding/assets/font/autotest.woff2', weight: '400' },
+      ],
+    },
+    shape: { radiusSm: 4, radiusMd: 8, radiusLg: 16, radiusPill: 9999, density: 'comfortable' },
+    locale: { default: 'en-GB', dateLocale: 'en-GB' },
+    brand: { hue: '#FF00AA' },
+    schemes: { light: {}, dark: {} },
+  };
+  await page.route('**/api/v2/branding/bootstrap.js', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: `window.elitea_brand = ${JSON.stringify(assetPack)};`,
+    });
+  });
+  await page.route('**/app/brand/autotest-*.svg', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: svgBody });
+  });
+  await page.route('**/api/v2/branding/assets/font/autotest.woff2', async (route) => {
+    // An empty body: the browser discards the face and keeps the fallback
+    // family. The assertion is on the injected rule, not on font rendering.
+    await route.fulfill({ status: 200, contentType: 'font/woff2', body: '' });
+  });
+
+  await page.goto(BASE_URL + '/app/');
+  await page.waitForURL('**/chat**', { timeout: 15_000 });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 20_000 });
+
+  // 1. The sidebar's mark is now an <img> with the pack's src and the product name as alt.
+  const mark = page.getByTestId('brand-logo-mark').first();
+  await expect(mark).toBeVisible();
+  expect(await mark.evaluate((el) => el.tagName)).toBe('IMG');
+  await expect(mark).toHaveAttribute('src', assetPack.assets.logoMark);
+  await expect(mark).toHaveAttribute('alt', assetPack.product.name);
+
+  // 2. The favicon link points at the pack's favicon.
+  await expect
+    .poll(() => page.evaluate(() => document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? null), {
+      timeout: 10_000,
+    })
+    .toBe(assetPack.assets.favicon);
+
+  // 3. A <style data-el-fonts> element carries the @font-face rule for the served face.
+  const fontCss = await page.evaluate(() => document.querySelector('style[data-el-fonts]')?.textContent ?? '');
+  expect(fontCss).toContain('@font-face');
+  expect(fontCss).toContain('font-family:"Montserrat"');
+  expect(fontCss).toContain('url("/api/v2/branding/assets/font/autotest.woff2") format("woff2")');
+  expect(fontCss).toContain('font-display:swap');
+
+  await checkA11y(page);
+});
+
+test('J30 (default): with no served pack the compiled logo, favicon and font stack stay in place', async ({
+  page,
+}) => {
+  // The other half of JRNY-030's acceptance — "the default pack reproduces
+  // the baseline appearance". This stack serves no pack (asserted in J30),
+  // so nothing WP3 added may fire: the mark is the compiled SVG, the favicon
+  // is index.html's static one, and no @font-face style exists.
+  await page.goto(BASE_URL + '/app/');
+  await page.waitForURL('**/chat**', { timeout: 15_000 });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 20_000 });
+
+  const mark = page.getByTestId('brand-logo-mark').first();
+  await expect(mark).toBeVisible();
+  expect(await mark.evaluate((el) => el.tagName.toLowerCase())).toBe('svg');
+
+  const favicon = await page.evaluate(() => document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? null);
+  expect(favicon).toBe('./brand/favicon.svg');
+  // ...and that static favicon resolves from a DEEP path too (spa.conf brand alias).
+  const deep = await page.request.get(BASE_URL + '/app/chat/deep/brand/favicon.svg');
+  expect(deep.status()).toBe(200);
+  expect(deep.headers()['content-type'] ?? '').toContain('image/svg+xml');
+
+  expect(await page.evaluate(() => document.querySelector('style[data-el-fonts]'))).toBeNull();
+
+  // First paint: the static script stamped the scheme before the bundle ran.
+  expect(await readScheme(page)).toBe('dark');
+});

@@ -62,6 +62,23 @@ export const BrandPack = z
       fontFamilyMono: z.string(),
       baseSize: z.number().min(12).max(18).default(14),
       scale: z.number().min(1.05).max(1.5).default(1.2),
+      // [ADR-0024 WP3] Additive and OPTIONAL: the self-hosted faces that make
+      // `fontFamily` resolve. Each entry becomes one `@font-face` rule
+      // (`fontFaces.ts`). `url` is a same-origin path — the Go mirror serves
+      // `/api/v2/branding/assets/font/<digest>.woff2` — and the generator
+      // drops anything else, so the schema stays a plain string here to keep
+      // the two mirrors field-for-field identical. The default pack declares
+      // none: with no face the browser falls through `fontFamily`'s stack.
+      fontFaces: z
+        .array(
+          z.object({
+            family: z.string().min(1),
+            url: z.string().min(1),
+            weight: z.string().optional(),
+            style: z.enum(['normal', 'italic']).optional(),
+          }),
+        )
+        .optional(),
     }),
     shape: z.object({
       radiusSm: z.number(),
@@ -94,3 +111,9 @@ export type SchemeRecord = BrandPack['schemes']['light'];
 
 /** The scheme-independent brand input `toMuiPalette` derives ramps from. */
 export type BrandInput = BrandPack['brand'];
+
+/** One self-hosted face from `typography.fontFaces` (ADR-0024 WP3). */
+export type BrandFontFace = NonNullable<BrandPack['typography']['fontFaces']>[number];
+
+/** The four asset slots of `pack.assets`. */
+export type BrandAssetKey = keyof BrandPack['assets'];

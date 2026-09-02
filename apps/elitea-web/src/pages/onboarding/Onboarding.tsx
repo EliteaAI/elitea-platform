@@ -72,7 +72,7 @@ import { OnboardingTour, Welcome, WorkspaceIsReady } from '@/features/onboarding
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 import { t } from '@/shared/i18n';
 import { createStorage } from '@/shared/lib/storage';
-import { LogoIcon } from '@/shared/ui/icons/logo-icon';
+import { BrandLogoFull } from '@/shared/ui/brand-logo';
 
 import { AuthorUnavailable } from './AuthorUnavailable';
 import { authorOf, displayName, selectRefreshSession } from './Onboarding.selectors';
@@ -257,7 +257,7 @@ const Onboarding = memo(() => {
       )}
       <Box sx={styles.body}>
         <Box sx={styles.logo}>
-          <LogoIcon />
+          <BrandLogoFull />
         </Box>
         <Box
           sx={theme => ({

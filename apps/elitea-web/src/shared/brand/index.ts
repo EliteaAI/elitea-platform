@@ -33,9 +33,16 @@ export { BRAND_PACK_GLOBAL, parseBrandPack, resolveBrandPack } from './channelC'
 /** Brand-derived outbound links (ADR-0024 WP8) — every docs URL and support address comes from here. */
 export { docsBaseUrl, docsLink, supportEmail, supportUrl } from './brandLinks';
 
+/** ADR-0024 WP3 — `pack.assets.*` consumption; see `assets.ts` for the custom-vs-default rule. */
+export { hasServedBrandPack, resolveBrandAsset } from './assets';
+export type { ResolvedBrandAsset } from './assets';
+
+/** ADR-0024 WP3 — `typography.fontFaces` → `@font-face`; see `fontFaces.ts`. */
+export { FONT_FACE_STYLE_ATTRIBUTE, fontFaceRule, fontFaceStylesheet, isSameOriginAssetPath } from './fontFaces';
+
 /** @public Wave-1 surface — W3/channel B+C validate incoming packs with this. */
 export { BrandPack } from './schema';
-export type { BrandInput, SchemeRecord } from './schema';
+export type { BrandAssetKey, BrandFontFace, BrandInput, SchemeRecord } from './schema';
 
 /** @public Wave-1 surface — the admin brand editor's live-preview path (§4.3 E). */
 export { toMuiPalette, resolveScheme, hueDeltaFor, catalogueFor } from './toMuiPalette';
