@@ -74,6 +74,12 @@ describe('the module imports the FUNCTION, not the query hook', () => {
 });
 
 describe('requireLlmModel', () => {
+  it("reads the platform's own key, `llm_model`, before the legacy prefixed one", () => {
+    expect(requireLlmModel({ llm_model: 'gpt-4o-mini' })).toBe('gpt-4o-mini');
+    expect(requireLlmModel({ llm_model: 'gpt-4o-mini', toolkit_configuration_llm_model: 'old' })).toBe('gpt-4o-mini');
+    expect(requireLlmModel({ toolkit_configuration_llm_model: 'old' })).toBe('old');
+  });
+
   it('refuses a toolkit with no model, in the operator’s own terms', () => {
     // Sending the invocation anyway is accepted by the facade and fails inside
     // the provider, where the user is told nothing they can act on.

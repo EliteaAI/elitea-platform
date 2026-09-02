@@ -39,7 +39,10 @@ export interface WikiChatTarget {
  * fails inside the provider, where the user is told nothing useful.
  */
 export function requireLlmModel(settings: Readonly<Record<string, unknown>>): string {
-  const model = settings['toolkit_configuration_llm_model'];
+  // `llm_model` is the platform's key — the facade reads it, the generation
+  // panel sends it, the seed writes it. The `toolkit_configuration_` prefix
+  // is the legacy drawer's spelling, kept for a toolkit saved by the old app.
+  const model = settings['llm_model'] ?? settings['toolkit_configuration_llm_model'];
   if (typeof model !== 'string' || model === '') {
     throw new Error('Toolkit settings missing llm_model. Configure it in toolkit settings first.');
   }
@@ -49,7 +52,7 @@ export function requireLlmModel(settings: Readonly<Record<string, unknown>>): st
 /** The provider's invocation envelope for one question. */
 export function buildInvokeRequest(target: WikiChatTarget, input: ChatInvokeInput) {
   const llmModel = requireLlmModel(target.settings);
-  const maxTokens = target.settings['toolkit_configuration_max_tokens'];
+  const maxTokens = target.settings['max_tokens'] ?? target.settings['toolkit_configuration_max_tokens'];
 
   return {
     configuration: { parameters: { ...target.settings } },

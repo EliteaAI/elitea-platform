@@ -1719,6 +1719,25 @@ VALUES (
 ON CONFLICT (id) DO UPDATE
     SET type = EXCLUDED.type, name = EXCLUDED.name, settings = EXCLUDED.settings;
 
+-- The DeepWiki permissions, on THIS project's roles. Migration 0106 grants
+-- them centrally and to every project that had role overrides at migration
+-- time; 90200 is created afterwards and copies project 1's overrides, which
+-- predate 0106 too — so without these rows every facade call answers 403
+-- (the standalone run of DWIKI-005 saw exactly that, on a member who is an
+-- editor here). Project 1 gets them for the same reason.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT r.project_id, r.id, grant_row.permission
+FROM auth_core__project_role r
+JOIN (VALUES
+    ('admin',  'models.applications.deepwiki.read'),
+    ('editor', 'models.applications.deepwiki.read'),
+    ('viewer', 'models.applications.deepwiki.read'),
+    ('admin',  'models.applications.deepwiki.generate'),
+    ('editor', 'models.applications.deepwiki.generate')
+) AS grant_row(role_name, permission) ON grant_row.role_name = r.name
+WHERE r.project_id IN (1, 90200)
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
 -- The repository toolkit `code_toolkit` names. THE FACADE REQUIRES IT: every
 -- generate/ask resolves `configuration.parameters.code_toolkit` — an integer
 -- naming a p_<project>.configuration row of a repository type — through the
