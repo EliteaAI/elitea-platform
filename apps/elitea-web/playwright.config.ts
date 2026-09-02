@@ -125,7 +125,7 @@ export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
  * project against the full standalone stack, which proves the same path
  * under production Form authentication.
  */
-const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat)\.spec\.ts/;
+const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat|admission)\.spec\.ts/;
 
 const CHROMIUM_LAUNCH_OPTIONS = {
   args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
