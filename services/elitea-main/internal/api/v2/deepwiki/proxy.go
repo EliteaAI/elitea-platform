@@ -85,6 +85,9 @@ func (c Config) hop() facade.Config {
 	}
 }
 
+// The SPI paths. The invoke override forwards to the first; the other two
+// are the shared table's business now, and are named here only so the SPI
+// contract parity test can pin all three against the frozen contract.
 var (
 	providerInvokePath     = spi.InvokePath
 	providerInvocationPath = spi.InvocationPath
