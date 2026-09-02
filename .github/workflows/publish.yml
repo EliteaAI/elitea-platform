@@ -860,9 +860,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          # Must list exactly the images the `build` matrix pushes — the same
-          # rule as the chart array below, and held by the same gate in
-          # helm-lint.yml.
+          # Must list exactly the images the `build` matrix pushes.
+          #
+          # This comment used to say the rule was "held by the same gate in
+          # helm-lint.yml". It was not: that gate cross-checks the CHART matrix
+          # and the CHARTS rollback array and says nothing about images, so this
+          # array could drift from the build matrix with nothing to catch it —
+          # and a reader who added an image had been told otherwise.
+          #
+          # scripts/ci/image-matrix.sh --verify is the real gate, and it holds
+          # all six copies of the image list against docker-bake.hcl.
           IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust" "elitea-deepwiki")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"

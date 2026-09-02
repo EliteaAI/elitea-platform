@@ -1,0 +1,42 @@
+name: Image Matrix
+
+# The published image list has one source, and every copy of it agrees.
+#
+# NOT path-filtered on the workflow files alone, deliberately: a new bake target
+# is a change to docker-bake.hcl and to nothing else, and that is precisely the
+# case this catches.
+
+on:
+  pull_request:
+    paths:
+      - "docker-bake.hcl"
+      - ".github/workflows/publish.yml"
+      - ".github/workflows/ci-image-scan.yml"
+      - ".github/image-scan-exempt.txt"
+      - "scripts/ci/image-matrix.sh"
+      - ".github/workflows/image-matrix.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "docker-bake.hcl"
+      - ".github/workflows/publish.yml"
+      - ".github/workflows/ci-image-scan.yml"
+      - ".github/image-scan-exempt.txt"
+      - "scripts/ci/image-matrix.sh"
+      - ".github/workflows/image-matrix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  image-matrix:
+    name: Every copy of the image list agrees
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # No buildx: the check reads docker-bake.hcl's target declarations
+      # directly. See the script's header for why `bake --print` is not used.
+      - name: Cross-check the image lists
+        run: bash scripts/ci/image-matrix.sh --verify
