@@ -1263,6 +1263,16 @@ func brandingSection() map[string]any {
 			text("logo_mark", "Logo mark", "Path on this origin for the compact mark."),
 			text("favicon", "Favicon", "Path on this origin."),
 			text("login_art", "Login artwork", "Path on this origin for the login page image."),
+			{
+				"key":   "font_faces",
+				"type":  "array",
+				"title": "Self-hosted font faces",
+				"description": "Up to two uploaded WOFF2 faces the app declares as @font-face: " +
+					"[{family, url, weight?, style?}]. url is the path an upload to /admin/branding/assets/font returned.",
+				"section": "branding",
+				"default": []any{},
+				"items":   map[string]any{"type": "object"},
+			},
 		},
 	}
 }

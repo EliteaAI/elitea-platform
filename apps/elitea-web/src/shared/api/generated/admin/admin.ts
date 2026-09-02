@@ -53,6 +53,7 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  BrandingAsset,
   BrandingSettings,
   BrandingSettingsSave,
   ErrorResponse,
@@ -80,6 +81,7 @@ import type {
   Role,
   RoleListParams,
   UpdateUserProjectPermissionsParams,
+  UploadBrandingAssetBody,
   UserDeleteParams,
   UserInviteRequest,
   UserInviteResult,
@@ -2358,6 +2360,281 @@ export function useSaveBrandingSettings<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export type uploadBrandingAssetResponse200 = {
+  data: BrandingAsset;
+  status: 200;
+};
+
+export type uploadBrandingAssetResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type uploadBrandingAssetResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type uploadBrandingAssetResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type uploadBrandingAssetResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type uploadBrandingAssetResponse413 = {
+  data: void;
+  status: 413;
+};
+
+export type uploadBrandingAssetResponse415 = {
+  data: void;
+  status: 415;
+};
+
+export type uploadBrandingAssetResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type uploadBrandingAssetResponseSuccess =
+  uploadBrandingAssetResponse200 & {
+    headers: Headers;
+  };
+export type uploadBrandingAssetResponseError = (
+  | uploadBrandingAssetResponse400
+  | uploadBrandingAssetResponse401
+  | uploadBrandingAssetResponse403
+  | uploadBrandingAssetResponse404
+  | uploadBrandingAssetResponse413
+  | uploadBrandingAssetResponse415
+  | uploadBrandingAssetResponse503
+) & {
+  headers: Headers;
+};
+
+export type uploadBrandingAssetResponse =
+  uploadBrandingAssetResponseSuccess | uploadBrandingAssetResponseError;
+
+export const getUploadBrandingAssetUrl = (
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+) => {
+  return `/admin/branding/assets/${kind}`;
+};
+
+/**
+ * ADR-0024 decision 3. A multipart form with one `file` part. The bytes
+ * are sniffed against the extension, capped per kind (images 512 KiB,
+ * favicon 64 KiB, WOFF2 fonts 300 KiB) and an SVG that could execute or
+ * fetch in this origin is refused with the reason named. The stored
+ * object is content-addressed; the answer's `path` is the value the
+ * branding section's asset fields and `font_faces[].url` take. Gated on
+ * `configuration.branding`.
+ * @summary Upload one brand asset (logo, mark, favicon, login art, e-mail logo, font)
+ */
+export const uploadBrandingAsset = async (
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody: UploadBrandingAssetBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<uploadBrandingAssetResponse> => {
+  const formData = new FormData();
+  formData.append(`file`, uploadBrandingAssetBody.file);
+
+  return eliteaFetch<uploadBrandingAssetResponse>(
+    getUploadBrandingAssetUrl(kind),
+    {
+      ...options,
+      method: "POST",
+      body: formData,
+    },
+  );
+};
+
+export const getUploadBrandingAssetQueryKey = (
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody?: UploadBrandingAssetBody,
+) => {
+  return [
+    "POST",
+    `/admin/branding/assets/${kind}`,
+    uploadBrandingAssetBody,
+  ] as const;
+};
+
+export const getUploadBrandingAssetQueryOptions = <
+  TData = Awaited<ReturnType<typeof uploadBrandingAsset>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody: UploadBrandingAssetBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadBrandingAsset>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getUploadBrandingAssetQueryKey(kind, uploadBrandingAssetBody);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof uploadBrandingAsset>>
+  > = ({ signal }) =>
+    uploadBrandingAsset(kind, uploadBrandingAssetBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: kind !== null && kind !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof uploadBrandingAsset>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type UploadBrandingAssetQueryResult = NonNullable<
+  Awaited<ReturnType<typeof uploadBrandingAsset>>
+>;
+export type UploadBrandingAssetQueryError =
+  N400Response | N401Response | N403Response | N404Response | void;
+
+export function useUploadBrandingAsset<
+  TData = Awaited<ReturnType<typeof uploadBrandingAsset>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody: UploadBrandingAssetBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadBrandingAsset>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof uploadBrandingAsset>>,
+          TError,
+          Awaited<ReturnType<typeof uploadBrandingAsset>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUploadBrandingAsset<
+  TData = Awaited<ReturnType<typeof uploadBrandingAsset>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody: UploadBrandingAssetBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadBrandingAsset>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof uploadBrandingAsset>>,
+          TError,
+          Awaited<ReturnType<typeof uploadBrandingAsset>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUploadBrandingAsset<
+  TData = Awaited<ReturnType<typeof uploadBrandingAsset>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody: UploadBrandingAssetBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadBrandingAsset>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Upload one brand asset (logo, mark, favicon, login art, e-mail logo, font)
+ */
+
+export function useUploadBrandingAsset<
+  TData = Awaited<ReturnType<typeof uploadBrandingAsset>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  uploadBrandingAssetBody: UploadBrandingAssetBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadBrandingAsset>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getUploadBrandingAssetQueryOptions(
+    kind,
+    uploadBrandingAssetBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export type getUserProjectPermissionsResponse200 = {
   data: UserProjectRoleMap;
   status: 200;
@@ -3797,6 +4074,249 @@ export function useGetPlatformSettings<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getGetPlatformSettingsQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getBrandingAssetResponse200ImageSvgXml = {
+  data: Blob;
+  status: 200;
+};
+
+export type getBrandingAssetResponse200ImagePng = {
+  data: Blob;
+  status: 200;
+};
+
+export type getBrandingAssetResponse200ImageWebp = {
+  data: Blob;
+  status: 200;
+};
+
+export type getBrandingAssetResponse200ImageXIcon = {
+  data: Blob;
+  status: 200;
+};
+
+export type getBrandingAssetResponse200FontWoff2 = {
+  data: Blob;
+  status: 200;
+};
+
+export type getBrandingAssetResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type getBrandingAssetResponseSuccess = (
+  | getBrandingAssetResponse200ImageSvgXml
+  | getBrandingAssetResponse200ImagePng
+  | getBrandingAssetResponse200ImageWebp
+  | getBrandingAssetResponse200ImageXIcon
+  | getBrandingAssetResponse200FontWoff2
+) & {
+  headers: Headers;
+};
+export type getBrandingAssetResponseError = getBrandingAssetResponse404 & {
+  headers: Headers;
+};
+
+export type getBrandingAssetResponse =
+  getBrandingAssetResponseSuccess | getBrandingAssetResponseError;
+
+export const getGetBrandingAssetUrl = (
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+) => {
+  return `/branding/assets/${kind}/${file}`;
+};
+
+/**
+ * @summary Download one uploaded brand asset
+ */
+export const getBrandingAsset = async (
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getBrandingAssetResponse> => {
+  return eliteaFetch<getBrandingAssetResponse>(
+    getGetBrandingAssetUrl(kind, file),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetBrandingAssetQueryKey = (
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+) => {
+  return [`/branding/assets/${kind}/${file}`] as const;
+};
+
+export const getGetBrandingAssetQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBrandingAsset>>,
+  TError = N404Response,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingAsset>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetBrandingAssetQueryKey(kind, file);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getBrandingAsset>>
+  > = ({ signal }) =>
+    getBrandingAsset(kind, file, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      kind !== null &&
+      kind !== undefined &&
+      file !== null &&
+      file !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getBrandingAsset>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetBrandingAssetQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getBrandingAsset>>
+>;
+export type GetBrandingAssetQueryError = N404Response;
+
+export function useGetBrandingAsset<
+  TData = Awaited<ReturnType<typeof getBrandingAsset>>,
+  TError = N404Response,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingAsset>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getBrandingAsset>>,
+          TError,
+          Awaited<ReturnType<typeof getBrandingAsset>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetBrandingAsset<
+  TData = Awaited<ReturnType<typeof getBrandingAsset>>,
+  TError = N404Response,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingAsset>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getBrandingAsset>>,
+          TError,
+          Awaited<ReturnType<typeof getBrandingAsset>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetBrandingAsset<
+  TData = Awaited<ReturnType<typeof getBrandingAsset>>,
+  TError = N404Response,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingAsset>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Download one uploaded brand asset
+ */
+
+export function useGetBrandingAsset<
+  TData = Awaited<ReturnType<typeof getBrandingAsset>>,
+  TError = N404Response,
+>(
+  kind:
+    "logo-full" | "logo-mark" | "logo-email" | "favicon" | "login-art" | "font",
+  file: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getBrandingAsset>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetBrandingAssetQueryOptions(kind, file, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,

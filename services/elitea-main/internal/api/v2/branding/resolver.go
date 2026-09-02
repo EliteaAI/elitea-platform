@@ -281,6 +281,16 @@ func applyOverlay(base *Pack, o platformconfig.BrandingOverlay) (*Pack, error) {
 	setString(&merged.Assets.LogoMark, o.LogoMark)
 	setString(&merged.Assets.Favicon, o.Favicon)
 	setOptional(&merged.Assets.LoginArt, o.LoginArt)
+	if len(o.FontFaces) > 0 {
+		faces := make([]FontFace, 0, len(o.FontFaces))
+		for _, f := range o.FontFaces {
+			face := FontFace{Family: f.Family, URL: f.URL}
+			setOptional(&face.Weight, f.Weight)
+			setOptional(&face.Style, f.Style)
+			faces = append(faces, face)
+		}
+		merged.Typography.FontFaces = faces
+	}
 
 	// Round-trip through the validator: the overlay came from rows, and the
 	// only contract that matters is "parses under the UI's schema".

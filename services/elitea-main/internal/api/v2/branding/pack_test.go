@@ -393,3 +393,46 @@ func TestDefaultPack_IsSchemaValid(t *testing.T) {
 		t.Errorf("default pack does not round-trip:\n  out: %+v\n  in:  %+v", def, reparsed)
 	}
 }
+
+func TestParsePack_FontFaces(t *testing.T) {
+	face := func(m map[string]any, faces ...any) { section(m, "typography")["fontFaces"] = faces }
+	good := packJSON(t, func(m map[string]any) {
+		face(m,
+			map[string]any{"family": "Inter", "url": "/api/v2/branding/assets/font/a.woff2", "weight": "100 900", "style": "italic", "extra": 1},
+			map[string]any{"family": "Inter", "url": "/api/v2/branding/assets/font/b.woff2"},
+		)
+	})
+	pack, err := branding.ParsePack(good)
+	if err != nil {
+		t.Fatalf("ParsePack: %v", err)
+	}
+	if len(pack.Typography.FontFaces) != 2 || pack.Typography.FontFaces[0].Family != "Inter" ||
+		pack.Typography.FontFaces[0].Weight == nil || *pack.Typography.FontFaces[0].Weight != "100 900" ||
+		pack.Typography.FontFaces[1].Style != nil {
+		t.Fatalf("fontFaces = %+v", pack.Typography.FontFaces)
+	}
+	served, _ := json.Marshal(pack)
+	if strings.Contains(string(served), `"extra"`) {
+		t.Fatalf("unknown face key leaked: %s", served)
+	}
+	// Absent means absent — no empty array is materialised.
+	plain, _ := branding.ParsePack(packJSON(t, nil))
+	if data, _ := json.Marshal(plain); strings.Contains(string(data), "fontFaces") {
+		t.Fatalf("fontFaces materialised for a pack that declared none: %s", data)
+	}
+
+	for name, mutate := range map[string]func(m map[string]any){
+		"not an array": func(m map[string]any) { section(m, "typography")["fontFaces"] = "Inter" },
+		"null":         func(m map[string]any) { section(m, "typography")["fontFaces"] = nil },
+		"missing url":  func(m map[string]any) { face(m, map[string]any{"family": "Inter"}) },
+		"empty family": func(m map[string]any) { face(m, map[string]any{"family": "", "url": "/x.woff2"}) },
+		"bad style":    func(m map[string]any) { face(m, map[string]any{"family": "I", "url": "/x", "style": "oblique"}) },
+		"null field":   func(m map[string]any) { face(m, map[string]any{"family": "I", "url": nil}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := branding.ParsePack(packJSON(t, mutate)); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+}

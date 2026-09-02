@@ -5612,6 +5612,18 @@ components:
           type: integer
           description: Assignments deleted. Never 0 — an id that matched none is a 404.
 
+    BrandingAsset:
+      type: object
+      required: [kind, digest, extension, content_type, size, path]
+      properties:
+        kind: { type: string }
+        digest: { type: string, description: SHA-256 hex of the bytes. }
+        extension: { type: string }
+        content_type: { type: string }
+        size: { type: integer, format: int64 }
+        path:
+          type: string
+          description: The public same-origin path, /api/v2/branding/assets/{kind}/{digest}.{ext}.
     BrandingSettingsSave:
       type: object
       required: [values]
@@ -5704,6 +5716,17 @@ components:
             fontFamilyMono: { type: string }
             baseSize: { type: number }
             scale: { type: number }
+            fontFaces:
+              type: array
+              description: Self-hosted faces the web app declares as @font-face.
+              items:
+                type: object
+                required: [family, url]
+                properties:
+                  family: { type: string }
+                  url: { type: string, description: Same-origin path of an uploaded font asset. }
+                  weight: { type: string }
+                  style: { type: string, enum: [normal, italic] }
         shape:
           type: object
           required: [radiusSm, radiusMd, radiusLg, radiusPill, density]
@@ -6576,6 +6599,51 @@ paths:
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }
 
+  /admin/branding/assets/{kind}:
+    post:
+      operationId: uploadBrandingAsset
+      summary: Upload one brand asset (logo, mark, favicon, login art, e-mail logo, font)
+      description: |
+        ADR-0024 decision 3. A multipart form with one `file` part. The bytes
+        are sniffed against the extension, capped per kind (images 512 KiB,
+        favicon 64 KiB, WOFF2 fonts 300 KiB) and an SVG that could execute or
+        fetch in this origin is refused with the reason named. The stored
+        object is content-addressed; the answer's `path` is the value the
+        branding section's asset fields and `font_faces[].url` take. Gated on
+        `configuration.branding`.
+      tags: [admin]
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [logo-full, logo-mark, logo-email, favicon, login-art, font] }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: The stored asset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingAsset'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '413':
+          description: The file exceeds the kind's byte cap.
+        '415':
+          description: The extension or the content is not one the kind accepts.
+        '503':
+          description: No object store is configured on this deployment.
+
   /admin/user_project_permissions/administration:
     get:
       operationId: getUserProjectPermissions
@@ -6971,6 +7039,47 @@ paths:
           description: The agent execution pipeline refused to start the run.
         '503':
           description: The assistant is not configured to answer.
+
+  /branding/assets/{kind}/{file}:
+    # Served OUTSIDE the auth group like bootstrap.js: <img src>, <link
+    # rel="icon"> and @font-face fetches carry no credential. The path is a
+    # content address (kind/<sha256>.<ext>) and the route admits no other
+    # shape; every response carries nosniff, a sandboxing CSP and an
+    # attachment disposition (internal/api/v2/branding/assets.go).
+    get:
+      operationId: getBrandingAsset
+      summary: Download one uploaded brand asset
+      tags: [admin]
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [logo-full, logo-mark, logo-email, favicon, login-art, font] }
+        - name: file
+          in: path
+          required: true
+          description: "<sha256 hex>.<ext>"
+          schema: { type: string }
+      responses:
+        '200':
+          description: The asset bytes, immutable for a year.
+          headers:
+            Cache-Control:
+              schema: { type: string }
+            ETag:
+              schema: { type: string }
+          content:
+            image/svg+xml:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+            image/x-icon:
+              schema: { type: string, format: binary }
+            font/woff2:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/404' }
 
   /branding/bootstrap.js:
     # NOTE(W3): served OUTSIDE the auth group — the SPA shell loads this

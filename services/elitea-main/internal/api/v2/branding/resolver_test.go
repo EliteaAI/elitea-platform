@@ -231,3 +231,23 @@ func TestProductDefault_PinnedToTheWebApp(t *testing.T) {
 		t.Fatalf("product_default.pack.json differs from %s; copy the web app's file over it", uiPath)
 	}
 }
+
+func TestResolver_FontFacesOverlay(t *testing.T) {
+	r := NewResolver(ResolverConfig{loadOverlay: overlayLoader(platformconfig.BrandingOverlay{
+		FontFamily: `"Inter", sans-serif`,
+		FontFaces: []platformconfig.FontFaceOverlay{
+			{Family: "Inter", URL: "/api/v2/branding/assets/font/" + strings.Repeat("ab", 32) + ".woff2", Weight: "400"},
+		},
+	}, nil)})
+	snap := r.Current(context.Background())
+	if snap.Pack == nil || len(snap.Pack.Typography.FontFaces) != 1 {
+		t.Fatalf("pack = %+v", snap.Pack)
+	}
+	face := snap.Pack.Typography.FontFaces[0]
+	if face.Family != "Inter" || face.Weight == nil || *face.Weight != "400" || face.Style != nil {
+		t.Fatalf("face = %+v", face)
+	}
+	if !strings.Contains(string(snap.Body), `"fontFaces":[{"family":"Inter"`) {
+		t.Fatalf("body does not carry the face: %s", snap.Body)
+	}
+}

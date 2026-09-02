@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
 	"net/http"
 	"strconv"
 
@@ -19,6 +20,9 @@ type Handler struct {
 	// The brand-pack resolver the Branding surface reads and invalidates
 	// (branding.go). Nil unless WithBranding is applied.
 	branding BrandingResolver
+	// The brand asset store the upload route writes (branding.go). Nil unless
+	// WithBrandingAssets is applied with an available store.
+	brandingAssets *v2branding.AssetStore
 	// The pre-built MCP server catalogue and the vault its client secrets are
 	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
 	// is applied, and the catalogue routes answer 503 while either is.

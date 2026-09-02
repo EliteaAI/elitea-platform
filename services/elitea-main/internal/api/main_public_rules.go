@@ -52,6 +52,10 @@ func CurrentMainRoutePublicRules() []forwardapp.PublicRule {
 		// alternative covers the content-addressed ?v=<etag> URL that
 		// branding.Handler hands out for the immutable cache entry.
 		uriRule("go.branding.bootstrap", `^/api/v2/branding/bootstrap\.js(\?.*)?$`),
+		// Uploaded brand assets: <img src>, <link rel="icon"> and @font-face
+		// fetches carry no credential. The path is content-addressed
+		// (kind/<sha256>.<ext>) and the handler admits nothing else.
+		uriRule("go.branding.assets", `^/api/v2/branding/assets/[a-z-]+/[0-9a-f]{64}\.[a-z0-9]{1,8}$`),
 		// API documentation predates any session.
 		uriRule("go.openapidocs.spec_yaml", `^/api/openapi\.yaml$`),
 		uriRule("go.openapidocs.spec_json", `^/api/openapi\.json$`),

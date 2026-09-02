@@ -134,3 +134,26 @@ func TestObjectRefStorageKey(t *testing.T) {
 		t.Fatalf("StorageKey(\"\") = %q, want BucketPrefix()+Key() = %q", got, want)
 	}
 }
+
+func TestNewPlatformObjectRef(t *testing.T) {
+	ref, err := NewPlatformObjectRef("branding", "logo-full/abc.svg")
+	if err != nil {
+		t.Fatalf("NewPlatformObjectRef: %v", err)
+	}
+	if ref.ProjectID() != PlatformScopeID || ref.Bucket() != "branding" || ref.Key() != "logo-full/abc.svg" {
+		t.Fatalf("ref = %+v", ref)
+	}
+	if got := ref.StorageKey(""); got != "p/platform/b/branding/o/logo-full/abc.svg" {
+		t.Fatalf("StorageKey = %q", got)
+	}
+	// The platform scope can never be a project id, and the key rules still apply.
+	if _, err := NewObjectRef(PlatformScopeID, "branding", "x"); err == nil {
+		t.Fatal("NewObjectRef accepted the platform scope as a project id")
+	}
+	if _, err := NewPlatformObjectRef("branding", "../escape"); err == nil {
+		t.Fatal("NewPlatformObjectRef accepted a .. segment")
+	}
+	if _, err := NewPlatformObjectRef("Bad Bucket", "k"); err == nil {
+		t.Fatal("NewPlatformObjectRef accepted an invalid bucket")
+	}
+}

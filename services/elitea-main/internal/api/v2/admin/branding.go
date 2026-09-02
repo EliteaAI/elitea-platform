@@ -10,7 +10,10 @@ package admin
 // contribute to the pack a user actually sees (the mounted file, the database
 // rows), the EFFECTIVE pack after the merge, and its ETag — the facts the
 // admin Branding page needs to render a preview and a "file versus database"
-// diff. The asset uploads land beside these routes in a later unit.
+// diff. `POST /admin/branding/assets/{kind}` stores the logo, mark, favicon,
+// login artwork, e-mail logo and font files the section's asset fields
+// reference (v2branding.AssetStore), and every save collects the objects the
+// section no longer names.
 //
 // # Validation is one function, reached from both paths
 //
@@ -31,13 +34,18 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/go-chi/chi/v5"
 
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -61,6 +69,119 @@ func WithBranding(resolver BrandingResolver) Option {
 		}
 		h.branding = resolver
 	}
+}
+
+// WithBrandingAssets supplies the asset store the upload route writes and
+// the save path collects from. Without it uploads answer 503 and a save
+// collects nothing.
+func WithBrandingAssets(store *v2branding.AssetStore) Option {
+	return func(h *Handler) {
+		if store == nil || !store.Available() {
+			return
+		}
+		h.brandingAssets = store
+	}
+}
+
+// maxAssetUploadBytes bounds the multipart body before any kind's own cap
+// applies: the largest cap plus the form overhead.
+const maxAssetUploadBytes = 600 * 1024
+
+// BrandingAssetUpload serves `POST /admin/branding/assets/{kind}` with a
+// multipart `file` part. It stores the bytes and answers the asset's public
+// path; the caller then places that path in the section (an upload on its
+// own changes nothing a user sees, so an abandoned upload is a stray object
+// the next save collects, never a stray brand).
+func (h *Handler) BrandingAssetUpload(w http.ResponseWriter, r *http.Request) {
+	kind := chi.URLParam(r, "kind")
+	if !v2branding.KnownKind(kind) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown asset kind"})
+		return
+	}
+	if h.brandingAssets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "brand asset storage is not configured on this deployment",
+		})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAssetUploadBytes)
+	if err := r.ParseMultipartForm(maxAssetUploadBytes); err != nil {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"error": fmt.Sprintf("the upload must be a multipart form under %d KiB", maxAssetUploadBytes/1024),
+		})
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "a multipart part named \"file\" is required"})
+		return
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, v2branding.MaxAssetBytes(kind)+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "could not read the uploaded file"})
+		return
+	}
+
+	asset, err := h.brandingAssets.Put(r.Context(), kind, header.Filename, data)
+	if err != nil {
+		var refusal *v2branding.AssetError
+		if errors.As(err, &refusal) {
+			writeJSON(w, refusal.Status, map[string]any{"error": refusal.Reason})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not store the asset"})
+		return
+	}
+	writeJSON(w, http.StatusOK, asset)
+}
+
+// collectBrandingAssets deletes every stored asset the SAVED section no
+// longer references. It runs after a successful write and never fails the
+// request: a stray object is a cost, not a defect, and the next save tries
+// again. A backend that cannot list (storage.ErrNotSupported) is skipped.
+func (h *Handler) collectBrandingAssets(ctx context.Context, stored map[string]any) {
+	if h.brandingAssets == nil {
+		return
+	}
+	referenced := referencedAssetPaths(stored)
+	paths, err := h.brandingAssets.List(ctx)
+	if err != nil {
+		slog.Debug("branding: asset collection skipped", "reason", err.Error())
+		return
+	}
+	for _, path := range paths {
+		if referenced[path] {
+			continue
+		}
+		if err := h.brandingAssets.Delete(ctx, path); err != nil {
+			slog.Warn("branding: could not collect an unreferenced asset", "path", path, "reason", err.Error())
+		}
+	}
+}
+
+// referencedAssetPaths lists every asset path the stored rows name: the four
+// image fields and every font face's url.
+func referencedAssetPaths(stored map[string]any) map[string]bool {
+	referenced := map[string]bool{}
+	for _, key := range []string{
+		platformconfig.KeyBrandingLogoFull, platformconfig.KeyBrandingLogoMark,
+		platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt,
+	} {
+		if text, ok := stored[key].(string); ok && text != "" {
+			referenced[strings.TrimSpace(text)] = true
+		}
+	}
+	if faces, ok := stored[platformconfig.KeyBrandingFontFaces].([]any); ok {
+		for _, entry := range faces {
+			if object, ok := entry.(map[string]any); ok {
+				if text, ok := object["url"].(string); ok && text != "" {
+					referenced[strings.TrimSpace(text)] = true
+				}
+			}
+		}
+	}
+	return referenced
 }
 
 // brandingResponse is the wire shape of both routes.
@@ -131,6 +252,9 @@ func (h *Handler) BrandingSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.invalidateBranding()
+	if stored, err := h.loadSectionValues(r, section.id); err == nil {
+		h.collectBrandingAssets(r.Context(), stored)
+	}
 	h.writeBrandingState(w, r, section, true)
 }
 
@@ -224,6 +348,8 @@ func validateBrandingValues(values map[string]any) string {
 			reason = validateNumberInRange(key, values[key], 0, maxBrandingRadius)
 		case platformconfig.KeyBrandingDensity:
 			reason = validateDensity(key, values[key])
+		case platformconfig.KeyBrandingFontFaces:
+			reason = validateFontFaces(key, values[key])
 		}
 		if reason != "" {
 			return reason
@@ -305,6 +431,56 @@ func validateNumberInRange(key string, value any, min, max float64) string {
 	}
 	if number < min || number > max {
 		return fmt.Sprintf("%q must be between %v and %v, or 0 to inherit", key, min, max)
+	}
+	return ""
+}
+
+// maxBrandingFontFaces bounds the self-hosted faces: every one is a fetch on
+// every cold load, and two (a text face and a monospace face, or a regular
+// and a bold) cover every corporate identity this feature is for.
+const maxBrandingFontFaces = 2
+
+// validateFontFaces checks the font_faces array: at most two objects, each
+// with a non-empty family, a url that is an uploaded font asset's path, an
+// optional weight and an optional style of normal or italic.
+func validateFontFaces(key string, value any) string {
+	entries, ok := value.([]any)
+	if !ok {
+		return fmt.Sprintf("%q must be an array of font faces", key)
+	}
+	if len(entries) > maxBrandingFontFaces {
+		return fmt.Sprintf("%q may hold at most %d faces", key, maxBrandingFontFaces)
+	}
+	for i, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok {
+			return fmt.Sprintf("%q[%d] must be an object with family and url", key, i)
+		}
+		family, _ := stringValue(object["family"])
+		if family == "" || utf8.RuneCountInString(family) > maxBrandingFontRunes {
+			return fmt.Sprintf("%q[%d].family must be a non-empty string of at most %d characters", key, i, maxBrandingFontRunes)
+		}
+		address, _ := stringValue(object["url"])
+		if kind, _, _, ok := v2branding.ParseAssetPath(address); !ok || kind != v2branding.KindFont {
+			return fmt.Sprintf("%q[%d].url must be the path of an uploaded font asset", key, i)
+		}
+		if weight, present := object["weight"]; present {
+			if text, ok := stringValue(weight); !ok || utf8.RuneCountInString(text) > 16 {
+				return fmt.Sprintf("%q[%d].weight must be a short string such as \"400\" or \"100 900\"", key, i)
+			}
+		}
+		if style, present := object["style"]; present {
+			if text, ok := stringValue(style); !ok || (text != "" && text != "normal" && text != "italic") {
+				return fmt.Sprintf("%q[%d].style must be \"normal\" or \"italic\"", key, i)
+			}
+		}
+		for name := range object {
+			switch name {
+			case "family", "url", "weight", "style":
+			default:
+				return fmt.Sprintf("%q[%d] has an unknown key %q", key, i, name)
+			}
+		}
 	}
 	return ""
 }

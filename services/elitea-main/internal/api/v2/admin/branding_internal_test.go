@@ -7,6 +7,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
+var fontAssetPath = "/api/v2/branding/assets/font/" + strings.Repeat("cd", 32) + ".woff2"
+
 func TestValidateBrandingValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -50,6 +52,33 @@ func TestValidateBrandingValues(t *testing.T) {
 		{name: "scale out of range", values: map[string]any{platformconfig.KeyBrandingScale: float64(2)}, want: "between 1.05 and 1.5"},
 		{name: "negative radius", values: map[string]any{platformconfig.KeyBrandingRadiusSm: float64(-1)}, want: "between 0 and 9999"},
 		{name: "density typo", values: map[string]any{platformconfig.KeyBrandingDensity: "cosy"}, want: "comfortable"},
+
+		{name: "font faces valid", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"family": "Inter", "url": fontAssetPath, "weight": "100 900", "style": "normal"},
+			map[string]any{"family": "Inter", "url": fontAssetPath, "style": "italic"},
+		}}},
+		{name: "font faces empty array", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{}}},
+		{name: "font faces too many", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"family": "A", "url": fontAssetPath},
+			map[string]any{"family": "B", "url": fontAssetPath},
+			map[string]any{"family": "C", "url": fontAssetPath},
+		}}, want: "at most 2"},
+		{name: "font face external url", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"family": "Inter", "url": "https://fonts.gstatic.com/inter.woff2"},
+		}}, want: "uploaded font asset"},
+		{name: "font face image asset as font", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"family": "Inter", "url": "/api/v2/branding/assets/logo-full/" + strings.Repeat("ab", 32) + ".svg"},
+		}}, want: "uploaded font asset"},
+		{name: "font face no family", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"url": fontAssetPath},
+		}}, want: "family"},
+		{name: "font face bad style", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"family": "Inter", "url": fontAssetPath, "style": "oblique"},
+		}}, want: "style"},
+		{name: "font face unknown key", values: map[string]any{platformconfig.KeyBrandingFontFaces: []any{
+			map[string]any{"family": "Inter", "url": fontAssetPath, "src": "x"},
+		}}, want: "unknown key"},
+		{name: "font faces not an array", values: map[string]any{platformconfig.KeyBrandingFontFaces: "Inter"}, want: "array"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +128,7 @@ func TestBrandingSection_DeclaresEveryOverlayKey(t *testing.T) {
 		platformconfig.KeyBrandingRadiusPill, platformconfig.KeyBrandingDensity,
 		platformconfig.KeyBrandingLogoFull, platformconfig.KeyBrandingLogoMark,
 		platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt,
+		platformconfig.KeyBrandingFontFaces,
 	} {
 		if !declared[key] {
 			t.Errorf("overlay key %q is read by platformconfig but not declared by the section", key)

@@ -889,6 +889,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	brandingHandler := v2branding.NewHandler(v2branding.Config{Resolver: brandingResolver})
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
+	// Uploaded brand assets (ADR-0024 decision 3): public for the same
+	// reason as /icons — <img src>, <link rel="icon"> and @font-face fetches
+	// carry no credential. Content-addressed and immutable; the route
+	// applies the icon route's hardening to every object it serves.
+	brandingAssets := v2branding.NewAssetStore(cfg.ObjectStore)
+	r.Get(v2branding.AssetPathPrefix+"{kind}/{file}", brandingAssets.Download)
+	r.Head(v2branding.AssetPathPrefix+"{kind}/{file}", brandingAssets.Download)
 
 	// Share a conversation by link — the ANONYMOUS half.
 	//
@@ -1181,6 +1188,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 				admin.WithIdentityProviders(identityProviderStore, prebuiltMCPVault),
 				admin.WithBranding(brandingResolver),
+				admin.WithBrandingAssets(brandingAssets),
 				// The same store the SCIM tree writes through. One store, so
 				// the screen and a group push can never disagree about which
 				// project a binding names.
@@ -1445,6 +1453,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				requireBranding := central("configuration.branding")
 				r.With(requireBranding).Get("/branding/administration", adminHandler.BrandingRead)
 				r.With(requireBranding).Put("/branding/administration", adminHandler.BrandingSave)
+				r.With(requireBranding).Post("/branding/assets/{kind}", adminHandler.BrandingAssetUpload)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the
