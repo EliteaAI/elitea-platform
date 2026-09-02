@@ -28,6 +28,7 @@
 /** One optional backend surface. */
 export type BackendCapability =
   | 'aiGeneration'
+  | 'deepwiki'
   | 'llmPredictBlocking'
   | 'llmPredictStreaming'
   | 'pipelineTriggers';
@@ -60,9 +61,21 @@ export type BackendCapability =
  * `pipelineTriggers` covers the webhook and scheduled trigger types, and the
  * trigger read the application-information panel makes. The Chat Message
  * trigger type calls no endpoint and stays available.
+ *
+ * `deepwiki` gates the native wiki feature while it is being built. It is off
+ * for a reason this module has not had before: the routes it needs ARE served,
+ * and the feature still cannot work end to end, because the PROVIDER writes
+ * wiki content through a path family elitea-main serves no route in
+ * (parity/notes/deepwiki-artifact-store.md, issue #665). Turning this on before
+ * the provider is fixed produces a wiki browser that lists nothing, which is
+ * exactly the affordance-the-user-cannot-repair this module exists to prevent.
+ *
+ * It also stages the port: every intermediate change is shippable and fully
+ * tested while invisible.
  */
 const SERVED: Readonly<Record<BackendCapability, boolean>> = {
   aiGeneration: false,
+  deepwiki: false,
   llmPredictBlocking: true,
   llmPredictStreaming: false,
   pipelineTriggers: false,

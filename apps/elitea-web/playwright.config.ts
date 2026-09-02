@@ -3,8 +3,13 @@
  *
  * Projects:
  *   setup         — global setup: OIDC login per persona → saves storageState
- *   chromium      — 30 journeys against the real stack, chromium
- *   webkit        — same 30 journeys, webkit (spec §6.2)
+ *   chromium      — every journey under e2e/journeys against the real
+ *                   stack, chromium
+ *   webkit        — the same journeys, webkit (spec §6.2)
+ *
+ * The count is deliberately NOT written here. It was "30" and had drifted:
+ * journeys are discovered by the testMatch glob below, so a number in this
+ * comment is a second source for one fact and the glob always wins.
  *   chat-stream   — the #284 chat journey, against the FULL standalone stack
  *                   (runtime plane + worker + mock LLM); see that project's
  *                   own note and `scripts/chat-stream-e2e.sh`
