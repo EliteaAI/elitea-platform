@@ -3045,5 +3045,17 @@
   "widgets.deepwiki.chat.todoInProgress": "In progress",
   "widgets.deepwiki.chat.todoPending": "Pending",
   "deepwiki.settings.hint.embeddingModel": "No embedding_model is set, so the engine asks this project for {{fallback}}. Models resolve per project: if this project has no such model, indexing is refused and the generation finishes with no pages.",
-  "deepwiki.settings.hint.llmModel": "No llm_model is set, so generation and wiki chat ask this project for {{fallback}}. Models resolve per project: if this project has no such model, every call is refused and the generation finishes with no pages."
+  "deepwiki.settings.hint.llmModel": "No llm_model is set, so generation and wiki chat ask this project for {{fallback}}. Models resolve per project: if this project has no such model, every call is refused and the generation finishes with no pages.",
+  "pages.admin.serviceDescriptors.action.activate": "Activate",
+  "pages.admin.serviceDescriptors.action.deactivate": "Deactivate",
+  "pages.admin.serviceDescriptors.activate.body": "The reviewed manifest is put in force under a policy overlay. If the provider has republished since it was reviewed, the request is refused.",
+  "pages.admin.serviceDescriptors.activate.title": "Activate provider",
+  "pages.admin.serviceDescriptors.cancel": "Cancel",
+  "pages.admin.serviceDescriptors.column.actions": "Actions",
+  "pages.admin.serviceDescriptors.deactivate.body": "The provider stops being in force. Its recorded revision and the policy overlay it ran under are kept.",
+  "pages.admin.serviceDescriptors.deactivate.title": "Deactivate provider",
+  "pages.admin.serviceDescriptors.error.write": "The provider admission could not be changed.",
+  "pages.admin.serviceDescriptors.posture.enforce": "Admission in force: a provider that is not active is refused.",
+  "pages.admin.serviceDescriptors.posture.record": "Admission recorded only: a provider that is not active still serves requests.",
+  "pages.admin.serviceDescriptors.reason.label": "Reason"
 }

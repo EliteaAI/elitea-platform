@@ -200,6 +200,12 @@ var (
 		{"models.admin.audit_trail.view", []string{"admin", "super_admin"}},
 		{"runtime.airun.serviceproviders", []string{"admin", "super_admin"}},
 		{"provider_hub.descriptor.register", []string{"admin", "super_admin"}},
+		// shared/0109_provider_policy_overlay.sql. A CHOSEN string with no
+		// pylon original — pylon had no activation because it had no admission
+		// plane — kept separate from `.register` so that recording a descriptor
+		// and putting it in force are separately grantable. Same two holders,
+		// and no editor: activation is a fact about the deployment.
+		{"provider_hub.descriptor.activate", []string{"admin", "super_admin"}},
 		{"configuration.governance", []string{"admin", "super_admin"}},
 		{"admin.moderation.edit", []string{"admin", "editor", "super_admin"}},
 	}
@@ -218,9 +224,17 @@ var defaultModeSurfaces = map[string][]surfaceGrant{
 	"projects":      projectGrants,
 }
 
-// The count #386 fixes. It is asserted rather than trusted, so a table edited
-// down to fewer strings cannot pass quietly.
-const remainingPermissionCount = 41
+// The count #386 fixes, plus what has been added to this ledger since. It is
+// asserted rather than trusted, so a table edited down to fewer strings cannot
+// pass quietly.
+//
+// 41 → 42: `provider_hub.descriptor.activate`, granted by
+// shared/0109_provider_policy_overlay.sql. This ledger is the holder test for
+// every string it lists, so a new central grant belongs in it or the grant is
+// unmeasured on a clean database — which is the whole failure class #386 exists
+// for. The number moves with the table on purpose: a count derived with len()
+// would agree with any table, including one somebody deleted rows from.
+const remainingPermissionCount = 42
 
 /* ── the ledger: what a clean database grants ──────────────────────────── */
 

@@ -5,12 +5,17 @@ package eliteacore
 //
 // WHAT CHANGED, AND WHAT DID NOT. These routes answered 501 because there was
 // no store — see service_descriptors.go's header for the full account. There is
-// one now, so they answer honestly instead of refusing. What has NOT changed is
-// what this deployment can do: it can RECORD a provider and SHOW it, and it
-// still cannot ACTIVATE one, because activation requires a policy overlay
-// nothing here can issue. That limit is a database constraint
-// (provider_admitted_revision_active_needs_overlay), not a branch in this file,
-// so it cannot be lifted by editing Go.
+// one now, so they answer honestly instead of refusing.
+//
+// THIS PARAGRAPH USED TO SAY THIS DEPLOYMENT COULD NOT ACTIVATE A PROVIDER, and
+// it was true until migration 0109. The limit was a database constraint
+// (provider_admitted_revision_active_needs_overlay) rather than a branch in this
+// file, so it could not be lifted by editing Go — and it has NOT been lifted.
+// 0109 adds the policy overlay table the constraint demands, plus the FOREIGN
+// KEY that makes overlay_revision name a real reviewed policy instead of any
+// non-empty string. Activation lives in provider_activation.go, behind its own
+// permission. Nothing in THIS file activates anything: registration still
+// records an inactive revision, and DELETE still revokes.
 //
 // THREE CONTRACT DECISIONS, each chosen against the shape this replaces:
 //
@@ -129,7 +134,8 @@ SELECT o.project_id,
         SELECT status, reason, manifest_digest
           FROM provider_hub.provider_admitted_revision
          WHERE project_id = o.project_id AND provider_id = o.provider_id
-         ORDER BY admitted_at DESC
+         -- the revision in force first; see providerhub.LatestAdmission
+         ORDER BY (status = 'active') DESC, admitted_at DESC, (status = 'revoked') DESC, revision_id DESC
          LIMIT 1
   ) AS r ON TRUE
  ORDER BY o.project_id, o.provider_id`, int64(providerHealthFreshness.Seconds()))

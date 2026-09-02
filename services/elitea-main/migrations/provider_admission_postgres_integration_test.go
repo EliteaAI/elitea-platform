@@ -94,6 +94,32 @@ VALUES ($1, $2)`, testDigest, []byte(`{"provider":"deepwiki"}`)); err != nil {
 		t.Fatalf("seeding the manifest: %v", err)
 	}
 
+	// THE OVERLAYS ARE REAL NOW, and they were not when this test was written.
+	//
+	// It used to pass 'overlay-1', 'overlay-2' and 'overlay-3' — arbitrary
+	// strings — because `overlay_revision` was a free TEXT column and 0107's
+	// CHECK only asked that it be non-NULL. That is precisely the weakness
+	// migration 0109 closes: its FOREIGN KEY makes the column name a row that
+	// records a reviewed policy, its digest and the manifest it was reviewed
+	// against. The strings this test used to invent are now rejected by
+	// PostgreSQL, which is the whole point, so the fixture issues three actual
+	// overlay revisions instead.
+	issueOverlay := func(digest string) string {
+		t.Helper()
+		revision := "lpo_" + digest[:32]
+		if _, err := pool.Exec(ctx, `
+INSERT INTO provider_hub.provider_policy_overlay
+  (overlay_revision, project_id, provider_id, manifest_digest, body, digest, created_by, approved_by)
+VALUES ($1, 1, $2, $3, '{}'::jsonb, $4, 'test', 'test')`,
+			revision, testProvider, testDigest, digest); err != nil {
+			t.Fatalf("issuing an overlay: %v", err)
+		}
+		return revision
+	}
+	firstOverlay := issueOverlay(strings.Repeat("1", 64))
+	secondOverlay := issueOverlay(strings.Repeat("2", 64))
+	thirdOverlay := issueOverlay(strings.Repeat("3", 64))
+
 	insertActive := func(id, overlay string) error {
 		_, err := pool.Exec(ctx, `
 INSERT INTO provider_hub.provider_admitted_revision
@@ -104,12 +130,12 @@ VALUES ($1, 1, $2, $3, $4, 'active', 'admitted', 'test')`,
 		return err
 	}
 
-	if err := insertActive("r-first", "overlay-1"); err != nil {
+	if err := insertActive("r-first", firstOverlay); err != nil {
 		t.Fatalf("the first active revision was refused: %v", err)
 	}
 	// Two active revisions would make "which manifest is this deployment
 	// running" unanswerable — and the answer would differ per query plan.
-	if err := insertActive("r-second", "overlay-2"); err == nil {
+	if err := insertActive("r-second", secondOverlay); err == nil {
 		t.Fatal("a SECOND active revision was accepted for the same provider")
 	}
 
@@ -122,7 +148,7 @@ UPDATE provider_hub.provider_admitted_revision
  WHERE revision_id = 'r-first'`); err != nil {
 		t.Fatalf("revoking the first revision: %v", err)
 	}
-	if err := insertActive("r-third", "overlay-3"); err != nil {
+	if err := insertActive("r-third", thirdOverlay); err != nil {
 		t.Fatalf("a new active revision was refused after the previous one was revoked, "+
 			"so an admission could never be replaced: %v", err)
 	}

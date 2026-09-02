@@ -2844,6 +2844,37 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(requireDescriptorRegister).
 					Delete("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
 
+				// ACTIVATION (ADR-0012 phase P3, migration 0109). Migration
+				// 0107 could record an admission and physically could not put
+				// one in force: its CHECK requires an overlay revision and
+				// nothing could issue one. 0109 adds the overlay table, and the
+				// FOREIGN KEY it puts on `overlay_revision` is what makes the
+				// constraint mean what it reads as — before it, any string
+				// satisfied the CHECK.
+				//
+				// A DIFFERENT PERMISSION FROM THE TWO ABOVE, and that split is
+				// the point of registering them separately here rather than
+				// reusing `requireDescriptorRegister`. Every facade registrar
+				// files a registration at boot, so `.register` is handed out
+				// freely; `.activate` is the switch that lets agents call the
+				// provider. A holder of `.register` alone gets 403 on these two
+				// routes, which the acceptance suite asserts.
+				//
+				// Both are POST — deactivate is not a DELETE, because DELETE on
+				// this surface already means REVOKE, which is terminal and
+				// records revoked_at/by. Deactivating returns a revision to the
+				// state registration left it in, and spelling two different
+				// lifecycle transitions with one verb is how an operator
+				// reaches for the recoverable one and gets the terminal one.
+				//
+				// Audited: `/api/v2/elitea_core/register_descriptor/` is
+				// already an audited prefix, and these paths sit under it.
+				requireDescriptorActivate := central(v2core.ServiceDescriptorActivatePermission)
+				r.With(requireDescriptorActivate).
+					Post("/register_descriptor/{projectID}/activate", coreHandler.ActivateDescriptor)
+				r.With(requireDescriptorActivate).
+					Post("/register_descriptor/{projectID}/deactivate", coreHandler.DeactivateDescriptor)
+
 				// === Budgets and usage (issue #246) ===
 				//
 				// The port of legacy/plugins/elitea_core/api/v2/

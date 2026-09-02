@@ -30,17 +30,39 @@
  * stub, which is exactly the regression this unit exists to prevent. If the
  * server ever answers 200 with rows, this page shows them.
  *
- * ## What is deliberately absent
+ * ## What this page can do now (migrations 0107 and 0109)
  *
- * **The delete control.** The reference offers a per-row delete behind a
- * `window.confirm`, calling `DELETE /elitea_core/register_descriptor/{project_id}`.
- * That endpoint had no route in this platform and a dead handler answering
- * `{"ok": true}` to a discarded body; it now refuses explicitly. A disabled
- * button with a reason would still imply the row it sits beside exists. There are
- * no rows.
+ * The prose above describes the surface as it stood before the admission plane
+ * existed, and the paragraph that used to follow it -- "there are no rows" --
+ * has been removed rather than annotated, because a stale disclosure reads as
+ * current and nothing fails when it stops being true. There is a store: the
+ * listing answers from tables, registration records an immutable revision, and
+ * migration 0109 adds the policy overlay that lets one be ACTIVATED.
  *
- * **The search box.** It filters a client-side array. With nothing to filter it
- * is a control that does nothing, which is this unit's whole subject.
+ * So this page carries two controls it did not have:
+ *
+ * **Activate**, on an inactive row, behind a dialog with a REQUIRED reason. Not
+ * a `window.confirm`: an activation records an operator's sentence on the
+ * revision row, and a confirm dialog cannot collect one. The request asserts the
+ * row's own `published_manifest_digest`, so a provider that republished between
+ * the review and the click is refused with 422 rather than activated against
+ * bytes nobody read.
+ *
+ * **Deactivate**, on an active row. A separate verb from the reference's delete,
+ * which REVOKES: revocation is terminal and records who and when, while
+ * deactivating returns the revision to the state registration left it in.
+ *
+ * **The search box** is still absent. It filters a client-side array, and the
+ * listing is one row per registered provider -- a handful on any deployment.
+ *
+ * ## The posture line
+ *
+ * `admission_posture` comes from the server (`ELITEA_PROVIDER_ADMISSION`) and is
+ * rendered above the table, because `inactive` means two different things
+ * without it: under `record` an inactive provider still serves every invoke, and
+ * under `enforce` it is refused. Nothing is rendered when the server sent no
+ * posture -- a page that guessed `record` would put a reassuring word on the
+ * screen for a deployment that might be enforcing.
  *
  * ## One more thing worth recording about the reference
  *
@@ -58,10 +80,15 @@
  * see `./adminUiConfig`. The listing is gated server-side on
  * `runtime.airun.serviceproviders` and the two registration verbs on
  * `provider_hub.descriptor.register`, the permissions the pylon originals
- * declare, resolved in `administration` mode. The gate runs BEFORE the refusal,
+ * declare, resolved in `administration` mode. Activation is gated separately on
+ * `provider_hub.descriptor.activate` (migration 0109): every facade registrar
+ * files a registration at boot, so `.register` is handed out freely, while
+ * activation is the switch that lets agents call the provider. The gate runs BEFORE the refusal,
  * so a caller without the permission sees an access error rather than learning
  * which subsystems this deployment runs.
  */
+import { useCallback, useState } from 'react';
+
 import Alert from '@mui/material/Alert';
 import AlertTitle from '@mui/material/AlertTitle';
 import LinearProgress from '@mui/material/LinearProgress';
@@ -70,16 +97,33 @@ import Typography from '@mui/material/Typography';
 import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
+import {
+  ServiceDescriptorDecisionDialog,
+  type AdmissionDecision,
+} from './ServiceDescriptorDecisionDialog';
 import { AdminServiceDescriptorsTable } from './ServiceDescriptorsTable';
 import {
   descriptorFailureReason,
   descriptorFailureStatus,
   useAdminServiceDescriptors,
+  type AdminServiceDescriptor,
 } from './api/adminServiceDescriptorsApi';
-
 
 export function AdminServiceDescriptors() {
   const query = useAdminServiceDescriptors();
+
+  // WHICH ROW is under decision lives here; WHAT IS SENT for it lives in the
+  // dialog. The split is not tidiness — the page's own function tripped the
+  // complexity gate with the dialog inline — but it is also the right seam:
+  // the table produces a decision, the dialog consumes one.
+  const [decision, setDecision] = useState<AdmissionDecision | null>(null);
+  const onActivate = useCallback((descriptor: AdminServiceDescriptor) => {
+    setDecision({ verb: 'activate', descriptor });
+  }, []);
+  const onDeactivate = useCallback((descriptor: AdminServiceDescriptor) => {
+    setDecision({ verb: 'deactivate', descriptor });
+  }, []);
+  const closeDecision = useCallback(() => setDecision(null), []);
 
   const reason = descriptorFailureReason(query.error);
   const status = descriptorFailureStatus(query.error);
@@ -119,10 +163,36 @@ export function AdminServiceDescriptors() {
         </Alert>
       ) : null}
 
+      {/* THE POSTURE, above the table, because `inactive` means two different
+          things without it. Nothing is rendered when the server sent none: a
+          guessed `record` would be a reassuring word on an enforcing
+          deployment. */}
+      {query.isSuccess && query.data.posture !== undefined ? (
+        <Typography variant="body2" color="text.secondary" data-testid="admin-admission-posture">
+          {query.data.posture === 'enforce'
+            ? t(
+                'pages.admin.serviceDescriptors.posture.enforce',
+                'Admission in force: a provider that is not active is refused.',
+              )
+            : t(
+                'pages.admin.serviceDescriptors.posture.record',
+                'Admission recorded only: a provider that is not active still serves requests.',
+              )}
+        </Typography>
+      ) : null}
+
       {/* Rendered whenever the server answered. If a descriptor store ever
           lands, this page shows it without a further change here — which is
           what stops the explanation above from outliving its truth. */}
-      {query.isSuccess ? <AdminServiceDescriptorsTable descriptors={query.data} /> : null}
+      {query.isSuccess ? (
+        <AdminServiceDescriptorsTable
+          descriptors={query.data.rows}
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
+        />
+      ) : null}
+
+      <ServiceDescriptorDecisionDialog decision={decision} onClose={closeDecision} />
     </DrawerPage>
   );
 }
