@@ -19,7 +19,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,6 +38,18 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		// The container probe. The image is distroless — no shell, no curl —
+		// and the listener requires a client certificate at the handshake, so
+		// an HTTP probe from inside the container would need a certificate
+		// it does not have. A TCP connect is what the Python shell's probe
+		// did, and it is what "the listener is up" means.
+		if err := healthcheck(os.LookupEnv); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(logger); err != nil {
 		logger.Error("elitea-subapp-host stopped with an error", "error", err)
 		os.Exit(1)
@@ -61,6 +75,11 @@ func run(logger *slog.Logger) error {
 		Addr:              settings.ListenAddr,
 		Handler:           server,
 		ReadHeaderTimeout: 10 * time.Second,
+		// net/http reports every aborted handshake at error level, and the
+		// container probe aborts one every few seconds by design (see
+		// healthcheck). Those lines are dropped; everything else the server
+		// reports still reaches the log.
+		ErrorLog: log.New(probeNoiseFilter{logger: logger}, "", 0),
 		// No WriteTimeout: a poll is short, but an invoke may hold a long
 		// body, and a deadline here would truncate it with nothing logged.
 	}
@@ -93,6 +112,41 @@ func run(logger *slog.Logger) error {
 		}
 		return err
 	}
+}
+
+// probeNoiseFilter forwards net/http's server errors to the structured log,
+// minus the handshake abort the TCP probe causes.
+type probeNoiseFilter struct{ logger *slog.Logger }
+
+func (f probeNoiseFilter) Write(p []byte) (int, error) {
+	line := strings.TrimSpace(string(p))
+	if !isProbeNoise(line) {
+		f.logger.Warn("http server", "message", line)
+	}
+	return len(p), nil
+}
+
+// isProbeNoise is the exact shape of a connection opened and closed without
+// a handshake: a TLS handshake error from loopback ending in EOF.
+func isProbeNoise(line string) bool {
+	return strings.HasPrefix(line, "http: TLS handshake error from 127.0.0.1:") && strings.HasSuffix(line, ": EOF")
+}
+
+// healthcheck dials the configured listen port on loopback.
+func healthcheck(lookup spi.Lookup) error {
+	_, settings, err := compose(lookup)
+	if err != nil {
+		return err
+	}
+	_, port, err := net.SplitHostPort(settings.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen address %q: %w", settings.ListenAddr, err)
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), 2*time.Second)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // compose picks the application and its runner from the environment.

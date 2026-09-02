@@ -51,6 +51,51 @@ func TestComposeSelectsTheApplicationAndRefusesWhatItCannotServe(t *testing.T) {
 	}
 }
 
+// The container probe: a TCP connect to the listen port, which is all a
+// distroless image behind a client-certificate handshake can do from inside.
+func TestTheHealthcheckDialsTheListenPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	if err := healthcheck(lookup(map[string]string{"ELITEA_DEEPWIKI_LISTEN_ADDR": ":" + port})); err != nil {
+		t.Fatalf("a listening port failed the probe: %v", err)
+	}
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, deadPort, _ := net.SplitHostPort(closed.Addr().String())
+	_ = closed.Close()
+	if err := healthcheck(lookup(map[string]string{"ELITEA_DEEPWIKI_LISTEN_ADDR": ":" + deadPort})); err == nil {
+		t.Fatal("a closed port passed the probe")
+	}
+	if err := healthcheck(lookup(map[string]string{"ELITEA_SUBAPP": "nope"})); !errors.Is(err, spi.ErrConfig) {
+		t.Fatalf("a misconfigured host passed the probe: %v", err)
+	}
+}
+
+func TestOnlyTheProbeHandshakeAbortIsDropped(t *testing.T) {
+	for line, noise := range map[string]bool{
+		"http: TLS handshake error from 127.0.0.1:51066: EOF":                                true,
+		"http: TLS handshake error from 10.0.0.7:51066: EOF":                                 false,
+		"http: TLS handshake error from 127.0.0.1:51066: remote error: tls: bad certificate": false,
+		"http: Accept error: accept tcp: too many open files":                                false,
+	} {
+		if isProbeNoise(line) != noise {
+			t.Errorf("%q: noise=%v", line, !noise)
+		}
+	}
+}
+
 // pki mints a CA, a server certificate for 127.0.0.1 and a client
 // certificate, all signed by the CA, and writes them under dir.
 type pki struct{ ca, serverCert, serverKey, clientCert, clientKey string }

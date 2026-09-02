@@ -889,11 +889,15 @@ services:
   # replica. The mTLS material comes from gen-deepwiki-certs.sh, which
   # `standalone-stack.sh certs` runs after the gateway's, sharing its CA.
   elitea-deepwiki:
-    image: ghcr.io/eliteaai/elitea-deepwiki:standalone
+    # The Go sub-application host (ADR-0023 H1.1) serving DeepWiki's SPI in
+    # the Python shell's place: same ELITEA_DEEPWIKI_* settings, same fixture
+    # runner, one static binary. ELITEA_SUBAPP names the application.
+    image: ghcr.io/eliteaai/elitea-subapp-host:standalone
     build:
       context: ..
-      dockerfile: services/elitea-deepwiki/Containerfile
+      dockerfile: services/elitea-subapp-host/Containerfile
     environment:
+      ELITEA_SUBAPP: deepwiki
       ELITEA_DEEPWIKI_RUNNER: "fixture"
       # One second between progress steps: long enough for a browser to see
       # the run in flight and stop it, short enough for a CI job.
@@ -914,7 +918,7 @@ services:
     healthcheck:
       # The image has python and nothing else; a TCP accept is the liveness
       # signal (the listener is TLS, so a plain HTTP GET would not be one).
-      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"]
+      test: ["CMD", "/elitea-subapp-host", "healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 12
