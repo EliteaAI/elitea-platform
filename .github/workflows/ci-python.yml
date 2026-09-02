@@ -250,7 +250,7 @@ jobs:
       # tag and ci-gateway.yml together.
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           cache-dependency-path: services/elitea-llm-gateway/go.sum
 
       - name: Install current binary indexing prerequisites
