@@ -52,7 +52,7 @@ agent-current = [
   # Pin the current deployed baseline explicitly so clean image builds cannot
   # silently cross that incompatible major-version boundary.
   "mcp==1.27.1",
-  "langgraph-checkpoint-postgres==2.0.21",
+  "langgraph-checkpoint-postgres==3.1.1",
 ]
 indexing-current = [
   # Exact current-baseline indexing closure. This intentionally replaces
