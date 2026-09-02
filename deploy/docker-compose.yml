@@ -187,7 +187,11 @@ services:
       #     bash deploy/scripts/gen-deepwiki-certs.sh
       #     ELITEA_DEEPWIKI_ENABLED=true podman compose --profile deepwiki up -d
       ELITEA_DEEPWIKI_ENABLED: "${ELITEA_DEEPWIKI_ENABLED:-false}"
-      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8443"
+      # 8080: the port the provider listens on (uvicorn in __main__.py, EXPOSE in
+      # its Containerfile, the Helm chart). This said 8443 and nothing checked
+      # it — the hop was refused on connect, before any of the mTLS refusals
+      # this file documents could happen.
+      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8080"
       ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /certs/client.crt
       ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /certs/client.key
       ELITEA_DEEPWIKI_CA_FILE: /certs/ca.crt
@@ -265,7 +269,7 @@ services:
       ELITEA_DEEPWIKI_MODEL_ALLOWLIST: "huggingface.co,*.huggingface.co"
       ELITEA_DEEPWIKI_RUNNER: "unavailable"
       ELITEA_DEEPWIKI_SCRATCH_PATH: /var/scratch/deepwiki
-      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8443"
+      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
     volumes:
       - ./certs:/certs:ro
     depends_on:

@@ -27,31 +27,15 @@
  * page by its content: both come from the object store, and neither can be
  * produced by a screen that is merely mounted.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 
-import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
+import { STORAGE_STATE } from '../../../playwright.config';
+import { openDeepWiki, SEEDED as FIXTURE } from './helpers';
+
+/** The read-only toolkit and its wiki, as scripts/e2e-stack.sh seeds them. */
+const SEEDED = { projectName: FIXTURE.projectName, ...FIXTURE.readOnly } as const;
 
 /** What scripts/e2e-stack.sh seeds. Changing either without the other is a red journey. */
-const SEEDED = {
-  /**
-   * A project of the wiki's OWN, not the shared project 1.
-   *
-   * The first version seeded the toolkit into project 1 and broke J17.1, which
-   * polls until that project's toolkit list reports `total: 0` — a permanent
-   * toolkit makes that unreachable, so a journey this file never mentions could
-   * only time out. The chat work answered the same problem the same way (#290).
-   */
-  projectId: '90200',
-  projectName: 'e2e-deepwiki',
-  wikiTitle: 'E2E Service Wiki',
-  repository: 'acme/e2e-service',
-  page: 'wiki_pages/architecture/router.md',
-  pageHeading: 'Router',
-  toolkitId: '9001',
-} as const;
-
-const ERROR_BOUNDARY_TEXT = /something went wrong|unexpected error/i;
-const NOT_FOUND_TEXT = /not found|404/i;
 
 /**
  * Navigate and wait until the browser is BACK ON THE APP ORIGIN.
@@ -62,26 +46,6 @@ const NOT_FOUND_TEXT = /not found|404/i;
  * redirect is a navigation, and a URL read mid-hop reports the identity
  * provider rather than a routing decision.
  */
-async function openDeepWiki(page: Page, path: string): Promise<void> {
-  // Select the wiki's project BEFORE the app boots. `addInitScript` runs in
-  // every document of this context, so the store hydrates from it rather than
-  // from the persona's saved project — setting it after load would race the
-  // first render and the wiki list would be fetched for project 1.
-  await page.addInitScript(
-    ([id, name]) => {
-      localStorage.setItem('el.project.id', id);
-      localStorage.setItem('el.project.name', name);
-      sessionStorage.setItem('el.project.id', id);
-      sessionStorage.setItem('el.project.name', name);
-    },
-    [SEEDED.projectId, SEEDED.projectName] as const,
-  );
-  await page.goto(`${BASE_URL}${path}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForURL((url) => url.origin === new URL(BASE_URL).origin, { timeout: 30_000 });
-  await page.waitForLoadState('networkidle');
-  await expect(page.getByText(NOT_FOUND_TEXT)).toHaveCount(0);
-  await expect(page.getByText(ERROR_BOUNDARY_TEXT)).toHaveCount(0);
-}
 
 test.describe('DeepWiki', () => {
   test.use({ storageState: STORAGE_STATE.member });

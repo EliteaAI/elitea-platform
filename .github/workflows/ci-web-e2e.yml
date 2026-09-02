@@ -200,6 +200,13 @@ jobs:
             --tag ghcr.io/eliteaai/elitea-web:e2e \
             --platform linux/amd64 \
             .
+          # The DeepWiki provider, SPI shell only (no `engine` extra): the E2E
+          # compose runs it with ELITEA_DEEPWIKI_RUNNER=fixture.
+          docker build \
+            --file services/elitea-deepwiki/Containerfile \
+            --tag ghcr.io/eliteaai/elitea-deepwiki:e2e \
+            --platform linux/amd64 \
+            .
           # The subshell above swallows its own failure, so this only joins the
           # background job — it cannot fail the step.
           wait "$pw_pull"
@@ -209,7 +216,7 @@ jobs:
         # state instead of trusting the build step's exit code, and print the
         # digests so a run's provenance is legible from its log.
         run: |
-          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e; do
+          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e ghcr.io/eliteaai/elitea-deepwiki:e2e; do
             id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
             if [ -z "$id" ]; then
               echo "::error::$img was not loaded into the local image store."
