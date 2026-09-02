@@ -141,6 +141,11 @@ describe('ApplicationEditForm', () => {
       history: createMemoryHistory({ initialEntries: ['/'] }),
       context: { auth: { getSelectedProjectId: () => 'proj-1' } },
     });
+    // A SECOND router swapped in under the same tree: @tanstack/react-router
+    // 1.170.32 (#680) mounts a fresh router's route tree asynchronously, so the
+    // element is not there on the next tick the way 1.170.18 rendered it —
+    // load the router first, then the swap is synchronous like before.
+    await router.load();
     rerender(<RouterProvider router={router} />);
     expect(await screen.findByTestId('agent-name-input')).toHaveValue('Reset Name');
   });
