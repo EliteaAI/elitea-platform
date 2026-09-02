@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
 )
 
 // Environment variables this facade reads. All are optional except the enable
@@ -90,6 +92,14 @@ type Config struct {
 	// checked BEFORE the vault is opened. Fail-closed: unset refuses
 	// everything, which is the same choice the provider service makes.
 	GitEgress GitEgressPolicy
+
+	// Admission is the deployment's answer to "may this provider still be
+	// invoked" (internal/providerhost/admission), asked on the invoke route.
+	// Supplied by the composition root and never by ConfigFromEnv: the gate
+	// needs a database pool and the public project id, and Validate has
+	// nothing to say about it — nil is a deployment with no admission plane,
+	// which forwards unchanged.
+	Admission facade.AdmissionHook
 }
 
 // ConfigFromEnv reads the facade's configuration.

@@ -180,7 +180,9 @@ path, offline. The real analysis engine is proven on compose instead —
 project `deepwiki-real-engine` (DWIKI-014/014b) against
 `deploy/docker-compose.deepwiki-real-engine.yml`: the `-engine` image with
 `ELITEA_DEEPWIKI_RUNNER=legacy`, a git daemon serving the seeded repository,
-and the deterministic LLM stub behind the gateway. The same three things
+and the deterministic LLM stub behind the gateway. In CI that recipe runs from
+`.github/workflows/deepwiki-real-engine.yml` — manual dispatch plus a weekly
+cron, never on a pull request. The same three things
 are what a real-engine kind run would need in-cluster (a git host the engine
 may clone from, a model the gateway resolves for the toolkit's project, the
 engine image built with `DEEPWIKI_ENGINE_EXTRAS='[engine,storage-postgres]'`).

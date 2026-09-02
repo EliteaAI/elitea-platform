@@ -97,6 +97,7 @@ func NewRoute(
 		Auth:             authConfig,
 		Permissions:      permissions,
 		Forward:          hop.Forward,
+		Admission:        cfg.Admission,
 	})
 	if err != nil {
 		return nil, ErrInvalidRoute

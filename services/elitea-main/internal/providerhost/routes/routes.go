@@ -10,6 +10,7 @@
 package routes
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/spi"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhub"
 )
 
 // ErrIncompleteTable is returned for a table that cannot serve: a missing
@@ -49,6 +51,25 @@ type Table struct {
 	// UserID resolves the acting user for the signed identity headers;
 	// nil means facade.UserID.
 	UserID func(*http.Request) string
+	// Admission, when set, is asked before an INVOKE is served: whether this
+	// deployment still admits the provider (internal/providerhost/admission).
+	// Nil forwards unchanged.
+	//
+	// THE INVOKE ONLY, and the other three routes are not an oversight:
+	//
+	//   - /slots is what the UI polls to decide whether to offer the button.
+	//     Refusing it would blank the page rather than explain the refusal,
+	//     and it starts nothing.
+	//   - POLLING an invocation must keep working, or a run accepted before a
+	//     revocation becomes unobservable — the caller is left with a provider
+	//     doing work they can no longer see.
+	//   - CANCELLING must keep working for that same run. A gate that refused
+	//     the cancel would leave the only way to stop the work behind the
+	//     control that just turned the provider off.
+	//
+	// Admission decides what may START. What is already running is finished
+	// or stopped by its owner.
+	Admission facade.AdmissionHook
 }
 
 // Build returns the table's handler, or ErrIncompleteTable.
@@ -76,6 +97,9 @@ func Build(t Table) (http.Handler, error) {
 	if t.Invoke != nil {
 		invoke = t.Invoke
 	}
+	if t.Admission != nil {
+		invoke = admitted(t.Admission, invoke)
+	}
 	router := chi.NewRouter()
 	router.Method(http.MethodGet, t.SlotsPath,
 		guard(t.ReadPermission)(forward(func(*http.Request) string { return spi.SlotsPath })))
@@ -83,6 +107,52 @@ func Build(t Table) (http.Handler, error) {
 	router.Method(http.MethodGet, t.InvocationPath, guard(t.ReadPermission)(forward(invocationPath)))
 	router.Method(http.MethodDelete, t.InvocationPath, guard(t.InvokePermission)(forward(invocationPath)))
 	return router, nil
+}
+
+// admitted asks the hook before serving, and answers 503 when it refuses.
+//
+// It wraps the HANDLER rather than the route, so it runs INSIDE the guard:
+// whether this deployment admits a provider is information about the
+// deployment, and an unauthenticated caller learns nothing from a 401.
+func admitted(hook facade.AdmissionHook, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allow, reason := hook(r); !allow {
+			// 503 and not 403: the caller's permissions are fine, and
+			// retrying with different credentials will not help. This is the
+			// deployment declining to route to a provider — which is what the
+			// disabled-facade path already answers.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"reason":  reason,
+				"message": admissionMessage(reason),
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// admissionMessage is the sentence that goes with a refusal code.
+//
+// ONE SENTENCE FOR THE ROW AND THE REFUSAL in the inactive case: an operator
+// reading the admitted revision and a user reading the 503 must not be told
+// two different things, which is why providerhub.InactiveReason is a constant
+// and not a literal in either place.
+//
+// The revocation's own recorded reason is NOT echoed. It is an operator's
+// free text, written for the audit trail and shown on the administration
+// page, and a provider's callers are not its audience.
+func admissionMessage(reason string) string {
+	switch reason {
+	case "provider_admission_inactive":
+		return providerhub.InactiveReason
+	case "provider_admission_revoked":
+		return "this provider's admission has been revoked in this deployment; " +
+			"an administrator must re-register it before it can be invoked again."
+	default:
+		return "this deployment does not currently admit this provider."
+	}
 }
 
 func invocationPath(r *http.Request) string {

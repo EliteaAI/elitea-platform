@@ -971,6 +971,27 @@ main:
     # disagree would mean an invocation that starts and then fails.
     ELITEA_DEEPWIKI_GIT_ALLOWLIST: ""
 
+    # What this deployment does with a provider the admission plane records
+    # but has not put in force (migration 0107, internal/providerhost/admission).
+    #
+    #   record  — the DEFAULT. An `inactive` provider is invoked normally; a
+    #             REVOKED one is refused, in either posture, because a
+    #             revocation is a decision somebody made and the
+    #             administration surface's one action must not be advisory.
+    #   enforce — only an `active` provider may be invoked.
+    #
+    # RECORD HAS TO BE THE DEFAULT, and that is not timidity. Nothing in this
+    # deployment can reach `active`: activation requires a policy overlay no
+    # issuer exists for, and migration 0107 enforces that as a CHECK
+    # constraint (provider_admitted_revision_active_needs_overlay). Setting
+    # `enforce` today therefore refuses EVERY provider — a deliberate lockout,
+    # not a hardening step, until an overlay issuer ships.
+    #
+    # Empty is record. Anything else is a BOOT FAILURE rather than a quiet
+    # fall back, so `enfroce` cannot leave an operator believing they are
+    # enforcing while everything is admitted.
+    ELITEA_PROVIDER_ADMISSION: "record"
+
     # The primary pgxpool size, per elitea-main replica.
     #
     # The chart set NOTHING here, and cmd/elitea-main/database_pool.go returns

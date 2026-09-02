@@ -3043,5 +3043,7 @@
   "deepwiki.title": "Wiki",
   "widgets.deepwiki.chat.todoCompleted": "Done",
   "widgets.deepwiki.chat.todoInProgress": "In progress",
-  "widgets.deepwiki.chat.todoPending": "Pending"
+  "widgets.deepwiki.chat.todoPending": "Pending",
+  "deepwiki.settings.hint.embeddingModel": "No embedding_model is set, so the engine asks this project for {{fallback}}. Models resolve per project: if this project has no such model, indexing is refused and the generation finishes with no pages.",
+  "deepwiki.settings.hint.llmModel": "No llm_model is set, so generation and wiki chat ask this project for {{fallback}}. Models resolve per project: if this project has no such model, every call is refused and the generation finishes with no pages."
 }

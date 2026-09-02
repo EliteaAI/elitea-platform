@@ -85,6 +85,9 @@ func (r *Runner) Invoke(ctx context.Context, call spi.Invoke, tc *spi.Context) (
 	}
 
 	objects := ComposeResultObjects(call.Tool, result)
+	if err := CheckWikiHasPages(call.Tool, objects, result); err != nil {
+		return nil, err
+	}
 	objects, err = r.upload(ctx, objects, params, tc)
 	if err != nil {
 		return nil, err

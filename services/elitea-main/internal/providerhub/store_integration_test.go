@@ -126,6 +126,99 @@ func TestRegisterFilesOriginManifestAndAnInactiveRevisionOnce(t *testing.T) {
 	}
 }
 
+func TestLatestAdmissionIsWhatTheRequestPathObeys(t *testing.T) {
+	pool := admissionPool(t)
+	ctx := context.Background()
+
+	// Nobody registered: not found, and NOT an error. The gate reads this as
+	// "allow", so conflating it with a failure would refuse every request in
+	// the seconds between a boot and its first registration.
+	if _, found, err := providerhub.LatestAdmission(ctx, pool, 1, "wikis"); found || err != nil {
+		t.Fatalf("an unregistered provider: found=%v err=%v", found, err)
+	}
+
+	first := []byte(`{"name": "wikis", "provided_toolkits": []}`)
+	if _, err := providerhub.Register(ctx, pool, providerhub.Registration{
+		ProjectID: 1, ProviderID: "wikis", Origin: "https://elitea-deepwiki:8080",
+		Manifest: first, Actor: "facade:deepwiki"}); err != nil {
+		t.Fatal(err)
+	}
+	latest, found, err := providerhub.LatestAdmission(ctx, pool, 1, "wikis")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if latest.Status != "inactive" || latest.Reason != providerhub.InactiveReason ||
+		latest.ManifestDigest != providerhub.Digest(first) {
+		t.Fatalf("%+v", latest)
+	}
+
+	// The registrar's own project/provider scoping: a registration under a
+	// different project, and one under a different provider, are invisible
+	// here. Both are read on every invoke, so a leak either way would admit
+	// or refuse the wrong provider.
+	if _, err := providerhub.Register(ctx, pool, providerhub.Registration{
+		ProjectID: 2, ProviderID: "wikis", Origin: "https://elsewhere:8080",
+		Manifest: []byte(`{"name": "wikis", "other": true}`), Actor: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := providerhub.LatestAdmission(ctx, pool, 1, "inventory"); found {
+		t.Fatal("a provider nobody registered under project 1 was found")
+	}
+
+	// REVOKED, the way the administration surface does it.
+	if _, err := pool.Exec(ctx, `
+UPDATE provider_hub.provider_admitted_revision
+   SET status = 'revoked', reason = 'turned off for the incident',
+       revoked_at = clock_timestamp(), revoked_by = 'operator@autotest.local'
+ WHERE project_id = 1 AND provider_id = 'wikis'`); err != nil {
+		t.Fatal(err)
+	}
+	latest, found, err = providerhub.LatestAdmission(ctx, pool, 1, "wikis")
+	if err != nil || !found || latest.Status != "revoked" || latest.Reason != "turned off for the incident" {
+		t.Fatalf("after a revoke: %+v found=%v err=%v", latest, found, err)
+	}
+	// Project 2 is untouched by project 1's revocation.
+	if other, _, _ := providerhub.LatestAdmission(ctx, pool, 2, "wikis"); other.Status != "inactive" {
+		t.Fatalf("project 2 read %q", other.Status)
+	}
+
+	// A NEW manifest is a new revision, and the newest one wins — this is the
+	// only way a revoked provider comes back, because re-registering the same
+	// bytes lands on the same revision_id and the upsert does not touch
+	// `status`. The E2E journey's restore leg depends on exactly this.
+	second := []byte(`{"name": "wikis", "provided_toolkits": [{"name": "Wikis"}]}`)
+	if _, err := providerhub.Register(ctx, pool, providerhub.Registration{
+		ProjectID: 1, ProviderID: "wikis", Origin: "https://elitea-deepwiki:8080",
+		Manifest: second, Actor: "operator@autotest.local"}); err != nil {
+		t.Fatal(err)
+	}
+	latest, _, err = providerhub.LatestAdmission(ctx, pool, 1, "wikis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Status != "inactive" || latest.ManifestDigest != providerhub.Digest(second) {
+		t.Fatalf("the newest revision is %+v", latest)
+	}
+	var revisions int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM provider_hub.provider_admitted_revision
+                             WHERE project_id = 1 AND provider_id = 'wikis'`).Scan(&revisions)
+	if revisions != 2 {
+		t.Fatalf("%d revisions for project 1; the revoked one must survive as audit", revisions)
+	}
+
+	// THE TIE-BREAK. Both revisions stamped with the same admitted_at is the
+	// ambiguous case the ORDER BY exists for, and it must resolve to the
+	// closed answer rather than to whichever row the planner returns.
+	if _, err := pool.Exec(ctx, `
+UPDATE provider_hub.provider_admitted_revision SET admitted_at = TIMESTAMPTZ '2026-01-01 00:00:00Z'
+ WHERE project_id = 1 AND provider_id = 'wikis'`); err != nil {
+		t.Fatal(err)
+	}
+	if tied, _, _ := providerhub.LatestAdmission(ctx, pool, 1, "wikis"); tied.Status != "revoked" {
+		t.Fatalf("a tie resolved to %q, want the refusal", tied.Status)
+	}
+}
+
 func TestRecordHealthOverwritesTheProjectionAndNeedsARegistration(t *testing.T) {
 	pool := admissionPool(t)
 	ctx := context.Background()

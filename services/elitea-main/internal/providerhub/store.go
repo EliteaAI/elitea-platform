@@ -15,8 +15,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -107,6 +109,40 @@ ON CONFLICT (revision_id) DO UPDATE
 		return Admitted{}, fmt.Errorf("commit: %w", err)
 	}
 	return Admitted{RevisionID: revisionID, ManifestDigest: digest, Status: "inactive", Reason: InactiveReason}, nil
+}
+
+// LatestAdmission reads the admission a request path must obey: the most
+// recently admitted revision for one (project, provider), or false when
+// nobody has admitted one.
+//
+// NOT FOUND IS NOT AN ERROR, and the distinction is the whole reason for the
+// bool. A provider whose facade has not finished its first registration has
+// no revision row, and that is a normal state seconds after a boot — a
+// caller that could not tell it from a failed query would have to choose
+// between refusing every early request and ignoring real failures.
+//
+// THE TIE-BREAK ORDERS TOWARDS REFUSAL. Revoking does not touch admitted_at
+// (a revocation is a fact about a revision, not a new admission), so two
+// rows admitted inside the same clock tick could otherwise be read in
+// either order. `revoked` sorts first among equals, so the ambiguous case
+// resolves to the closed answer rather than to whichever row the planner
+// happened to return.
+func LatestAdmission(ctx context.Context, pool *pgxpool.Pool, projectID int64, providerID string) (Admitted, bool, error) {
+	var latest Admitted
+	err := pool.QueryRow(ctx, `
+SELECT revision_id, manifest_digest, status, reason
+  FROM provider_hub.provider_admitted_revision
+ WHERE project_id = $1 AND provider_id = $2
+ ORDER BY admitted_at DESC, (status = 'revoked') DESC, revision_id DESC
+ LIMIT 1`, projectID, providerID).
+		Scan(&latest.RevisionID, &latest.ManifestDigest, &latest.Status, &latest.Reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Admitted{}, false, nil
+	}
+	if err != nil {
+		return Admitted{}, false, fmt.Errorf("latest admission: %w", err)
+	}
+	return latest, true, nil
 }
 
 // RecordHealth overwrites the projection for one (project, provider) with

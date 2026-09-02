@@ -15,6 +15,10 @@
 # own `compose build` leaves it alone. Rebuild after an engine change with
 #   DEEPWIKI_ENGINE_REBUILD=1 apps/elitea-web/scripts/deepwiki-real-engine.sh
 #
+# CI: .github/workflows/deepwiki-real-engine.yml, manual + weekly (Sundays
+# 04:23 UTC) — never on pull_request; the fixture-engine job in ci-web-e2e.yml
+# is the per-change gate.
+#
 # Everything else is chat-stream-e2e.sh (stack, certificates, seeds). Its own
 # compose project and port keep its state apart from the fixture stack
 # (deepwiki-e2e.sh), but not UP beside it: oidc-mock's port is fixed at 9400,
@@ -34,7 +38,11 @@ export CHAT_STREAM_PROJECT="${DEEPWIKI_REAL_PROJECT:-elitea-deepwiki-real}"
 export CHAT_STREAM_PORT="${DEEPWIKI_REAL_PORT:-8087}"
 export DEEPWIKI_ENGINE_IMAGE="${DEEPWIKI_ENGINE_IMAGE:-ghcr.io/eliteaai/elitea-deepwiki:local-engine}"
 CONTAINER_BIN="${CONTAINER_BIN:-$(command -v podman || command -v docker)}"
-if [ -n "${DEEPWIKI_ENGINE_REBUILD:-}" ] || ! "$CONTAINER_BIN" image exists "$DEEPWIKI_ENGINE_IMAGE" 2>/dev/null; then
+# `image inspect`, not podman's `image exists`: `docker image exists` is not a
+# docker subcommand, so under docker the probe always failed and the image was
+# rebuilt from scratch every run — including in CI, where the workflow has
+# already baked the tag. `image inspect` is present in both runtimes.
+if [ -n "${DEEPWIKI_ENGINE_REBUILD:-}" ] || ! "$CONTAINER_BIN" image inspect "$DEEPWIKI_ENGINE_IMAGE" >/dev/null 2>&1; then
   echo "→ Building the engine image ${DEEPWIKI_ENGINE_IMAGE} (once; minutes)…"
   "$CONTAINER_BIN" build -f "${REPO_ROOT}/services/elitea-deepwiki/Containerfile" \
     --build-arg 'EXTRAS=[engine,storage-postgres]' -t "$DEEPWIKI_ENGINE_IMAGE" "$REPO_ROOT"
