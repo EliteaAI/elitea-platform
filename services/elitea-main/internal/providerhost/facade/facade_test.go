@@ -94,7 +94,13 @@ func TestComposableRefusesAnIncompleteAuthConfig(t *testing.T) {
 		t.Error("a nil PrincipalValidator was accepted")
 	}
 	if facade.Composable(apimw.AuthConfig{PrincipalValidator: stubPrincipal{}}, stubResolver{}) {
-		t.Error("a nil ForwardedIdentityVerifier was accepted")
+		t.Error("a configuration that can authenticate nobody was accepted")
+	}
+	// OIDC-only: no forwarded identity, but a token validator for the tokens
+	// APPLICATION_SECRET_KEY signs — which is what reads a callback bearer back.
+	oidcOnly := apimw.AuthConfig{PrincipalValidator: stubPrincipal{}, Validator: stubTokens{}, SessionSecret: "s"}
+	if !facade.Composable(oidcOnly, stubResolver{}) {
+		t.Error("the OIDC-only credential set was refused")
 	}
 	if facade.Composable(complete, nil) {
 		t.Error("a nil permission resolver was accepted")
@@ -120,3 +126,7 @@ func (stubResolver) ResolvePermissions(
 ) (auth.PermissionResolution, error) {
 	return auth.PermissionResolution{}, nil
 }
+
+type stubTokens struct{}
+
+func (stubTokens) ValidateToken(context.Context, string) (auth.User, error) { return auth.User{}, nil }

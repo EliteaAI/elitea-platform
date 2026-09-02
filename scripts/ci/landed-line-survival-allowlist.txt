@@ -1,0 +1,7 @@
+# Accepted removals of a merged pull request's lines — one per line,
+# '<pull request> <path>  # reason'. The pull request number carries NO
+# leading '#': the checker treats everything from a '#' as a comment, so
+# '#634 …' is an empty line. A missing file is an empty allowlist. Add an
+# entry only for a removal that was the POINT of a later change, never to
+# silence a squash that lost a fix.
+634 services/elitea-main/internal/api/production_router.go  # #712 (P2.P9 cutover) deleted the vendored DeepWiki SPA that #634 introduced; its router mount went with it on purpose

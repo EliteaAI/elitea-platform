@@ -402,14 +402,13 @@ func invoke(
 	// of every route, so the sink was not exploitable; ModifyResponse is
 	// simply the seam the standard library provides for reading a proxied
 	// status, and using it means there is no wrapper to reason about.
-	outcome := &proxyOutcome{}
-	proxy.Forward(w, r.WithContext(withProxyOutcome(r.Context(), outcome)),
+	status := proxy.ForwardObserved(w, r,
 		providerPath, strconv.FormatInt(projectID, 10),
 		strconv.FormatInt(userID, 10))
 
 	// Zero means ModifyResponse never ran, which is a transport failure — the
 	// provider was never reached, so the invocation certainly did not start.
-	if outcome.status >= 400 || outcome.status == 0 {
+	if status >= 400 || status == 0 {
 		revoke(r.Context(), rewriter, logger, userID, grant.UUID)
 	}
 }
