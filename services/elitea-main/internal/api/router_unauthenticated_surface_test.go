@@ -79,7 +79,6 @@ var publicPrefixes = []struct{ prefix, reason string }{
 	{"/forward-auth", "the login surface itself. A caller here has no session yet — that is what it is for."},
 	{"/api/v2/branding", "the brand pack a browser loads BEFORE it has a session, so the login page can be branded."},
 	{"/admin/app", "the admin SPA's static assets. A <script src> carries no credential; the page's data calls are gated."},
-	{"/app/deepwiki", "the DeepWiki SPA's assets, same reason. Its page IS gated — see deepwikiui.NewHandler."},
 }
 
 var pathParameter = regexp.MustCompile(`\{[^}]*\}`)

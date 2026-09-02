@@ -11,7 +11,6 @@ import (
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	deepwikiapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
-	deepwikiuiapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwikiui"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	inventoryapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/inventory"
@@ -160,12 +159,6 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	// The DeepWiki facade. Each method is registered separately because the
 	// two that share the invocation path do NOT share a permission: polling is
 	// a read and cancelling is not.
-	// The vendored SPA. Mounted rather than Method-registered: it owns a
-	// prefix with its own asset routes and client-side deep links, so the
-	// paths under it are its business and not this router's.
-	if cfg.DeepWikiUI != nil {
-		r.Mount(deepwikiuiapi.BasePath, cfg.DeepWikiUI)
-	}
 	if cfg.DeepWiki != nil {
 		r.Method(http.MethodGet, deepwikiapi.SlotsPath, cfg.DeepWiki)
 		r.Method(http.MethodPost, deepwikiapi.InvokePath, cfg.DeepWiki)

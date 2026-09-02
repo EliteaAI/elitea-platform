@@ -28,7 +28,6 @@ import (
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	v2deepwiki "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
-	v2deepwikiui "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwikiui"
 	v2core "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 	v2evaluation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/evaluation"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
@@ -278,12 +277,7 @@ type RouterConfig struct {
 
 	// Inventory is the facade in front of the Inventory provider service —
 	// the second provider, mounted through the same shared packages.
-	Inventory *v2inventory.Route
-	// DeepWikiUI is the vendored SPA (ADR-0022 decision 8). Nil when the
-	// facade is off or the image carries no bundle — two separate conditions,
-	// and a page with no facade behind it would render and then fail on its
-	// first call.
-	DeepWikiUI        *v2deepwikiui.Handler
+	Inventory         *v2inventory.Route
 	CurrentAgentStart http.Handler
 	// SupportAssistantStart is the agent-execution use case the support
 	// assistant's predict route delegates to — the SAME use case

@@ -868,4 +868,7 @@ jobs:
         # that really does fire, and is where the audit is meant to bite.
         if: startsWith(github.ref, 'refs/heads/cutover/')
         working-directory: .
-        run: go run ./tools/uictl parity-manifest --require-must
+        # Scoped to the domain the branch names (cutover/<domain>): the audit
+        # is meant to bite on the domain being cut over; the rest of the
+        # backlog is tracked, not blocked on, here.
+        run: go run ./tools/uictl parity-manifest --require-must --domain "${GITHUB_REF_NAME#cutover/}"

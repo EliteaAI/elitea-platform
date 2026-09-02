@@ -73,6 +73,7 @@ func cmdParityManifest(args []string) int {
 	fs := flag.NewFlagSet("parity-manifest", flag.ExitOnError)
 	validate := fs.Bool("validate", false, "run schema + evidence validation")
 	requireMust := fs.Bool("require-must", false, "fail unless every priority:must item is status:verified")
+	domain := fs.String("domain", "", "with --require-must: audit only this domain (a cutover/<domain> branch)")
 	manifestPath := fs.String("manifest", defaultManifest, "path to manifest.json")
 	baseline := fs.String("baseline", defaultBaseline, "path to the pinned apps/elitea-ui checkout")
 	_ = fs.Parse(args)
@@ -101,7 +102,12 @@ func cmdParityManifest(args []string) int {
 		}
 	}
 	if *requireMust {
-		unverified := manifest.UnverifiedMust(m)
+		if *domain != "" && !manifest.HasDomain(m, *domain) {
+			// A typo here would audit nothing and pass. Refuse instead.
+			fmt.Fprintf(os.Stderr, "uictl parity-manifest --require-must: no item carries domain %q\n", *domain)
+			return 2
+		}
+		unverified := manifest.UnverifiedMust(m, *domain)
 		if len(unverified) > 0 {
 			for _, id := range unverified {
 				fmt.Fprintf(os.Stderr, "NOT VERIFIED: %s\n", id)
@@ -109,7 +115,11 @@ func cmdParityManifest(args []string) int {
 			fmt.Fprintf(os.Stderr, "uictl parity-manifest --require-must: %d priority:must item(s) not verified\n", len(unverified))
 			rc = 1
 		} else {
-			fmt.Printf("uictl parity-manifest --require-must: OK (every must item verified)\n")
+			scope := "every must item"
+			if *domain != "" {
+				scope = "every must item in domain " + *domain
+			}
+			fmt.Printf("uictl parity-manifest --require-must: OK (%s verified)\n", scope)
 		}
 	}
 	return rc
