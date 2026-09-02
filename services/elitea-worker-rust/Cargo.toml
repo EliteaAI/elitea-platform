@@ -20,7 +20,7 @@ hmac = "=0.12.1"
 hyper = { version = "=1.11.1", default-features = false, features = ["client", "http1", "http2"] }
 hyper-rustls = { version = "=0.27.9", default-features = false, features = ["http1", "http2", "native-tokio", "ring"] }
 hyper-util = { version = "=0.1.20", default-features = false, features = ["client-legacy", "http1", "http2", "tokio"] }
-md-5 = "=0.10.6"
+md-5 = "=0.11.0"
 minijinja = { version = "=2.24.0", default-features = false, features = ["builtins", "fuel", "serde"] }
 opentelemetry = { version = "=0.32.0", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "=0.32.0", default-features = false, features = ["http-proto", "reqwest-client", "reqwest-rustls", "trace"] }
