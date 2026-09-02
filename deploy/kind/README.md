@@ -5,8 +5,8 @@ chart** (`deploy/helm/elitea`) with the DeepWiki provider enabled in the shape
 it ships to production (ADR-0023):
 
 * the provider pod is **two containers** — the Go sub-application host
-  (`ghcr.io/eliteaai/elitea-subapp-host`) with `ELITEA_DEEPWIKI_RUNNER=legacy`,
-  and the Python **engine sidecar** (`ghcr.io/eliteaai/elitea-deepwiki`) it
+  (`ghcr.io/elitea-ng/elitea-subapp-host`) with `ELITEA_DEEPWIKI_RUNNER=legacy`,
+  and the Python **engine sidecar** (`ghcr.io/elitea-ng/elitea-deepwiki`) it
   reaches over a Unix socket they share (`/run/deepwiki/engine.sock`);
 * the `elitea-main → provider` hop is **mutually authenticated**, both
   certificates issued by cert-manager from one internal CA `ClusterIssuer`

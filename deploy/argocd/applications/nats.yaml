@@ -14,7 +14,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/eliteaai/elitea-platform
+    repoURL: https://github.com/elitea-ng/elitea-platform
     targetRevision: main
     path: deploy/helm/nats
     helm:

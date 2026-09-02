@@ -56,9 +56,9 @@ immutable" error. The names are historical, the images are not.
 {{- if .Values.worker.image.repository -}}
 {{- .Values.worker.image.repository -}}
 {{- else if eq .Values.worker.implementation "rust" -}}
-ghcr.io/eliteaai/elitea-worker-rust
+ghcr.io/elitea-ng/elitea-worker-rust
 {{- else -}}
-ghcr.io/eliteaai/elitea-worker-python
+ghcr.io/elitea-ng/elitea-worker-python
 {{- end -}}
 {{- end }}
 

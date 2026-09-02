@@ -12,7 +12,7 @@ services:
       ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES: ""
 
   elitea-worker:
-    image: ghcr.io/eliteaai/elitea-worker-rust:standalone
+    image: ghcr.io/elitea-ng/elitea-worker-rust:standalone
     build:
       context: ..
       dockerfile: services/elitea-worker-rust/Containerfile

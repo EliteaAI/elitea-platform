@@ -20,7 +20,7 @@
 #     embeddings. Nothing leaves the machine; a run is reproducible.
 #
 #   STANDALONE_OVERLAY=deploy/docker-compose.deepwiki-real-engine.yml \
-#     DEEPWIKI_ENGINE_IMAGE=ghcr.io/eliteaai/elitea-deepwiki:local-engine \
+#     DEEPWIKI_ENGINE_IMAGE=ghcr.io/elitea-ng/elitea-deepwiki:local-engine \
 #     deploy/scripts/standalone-stack.sh up
 #
 # apps/elitea-web/scripts/deepwiki-real-engine.sh drives the whole thing and
@@ -30,7 +30,7 @@ services:
     # Image only, no `build:` — the base file's build section is reset so a
     # `compose build` does not rebuild the 2 GB engine image on every run; the
     # runner script builds it once when the tag is absent.
-    image: ${DEEPWIKI_ENGINE_IMAGE:-ghcr.io/eliteaai/elitea-deepwiki:local-engine}
+    image: ${DEEPWIKI_ENGINE_IMAGE:-ghcr.io/elitea-ng/elitea-deepwiki:local-engine}
     build: !reset null
     environment:
       ELITEA_DEEPWIKI_RUNNER: "legacy"

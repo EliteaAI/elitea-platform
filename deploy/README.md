@@ -61,7 +61,7 @@ Three charts, and that is all of them: `helm lint`, the template matrix and
 `publish.yml` each read `deploy/helm/*/Chart.yaml`, so a fourth chart fails CI
 until somebody templates and publishes it.
 
-Two images have no chart. `ghcr.io/eliteaai/elitea-ui` is the old UI: it runs
+Two images have no chart. `ghcr.io/elitea-ng/elitea-ui` is the old UI: it runs
 in compose, and the Kubernetes path is the `web` component. `pylon-indexer` is
 not deployed at all — the Go runtime plane serves index ingest through the
 agent worker, on the same command stream.
@@ -154,13 +154,13 @@ Every chart in the table above is packaged and pushed on each release by the
 `chart` job in `.github/workflows/publish.yml`, next to the images:
 
 ```
-oci://ghcr.io/eliteaai/charts/<chart>
+oci://ghcr.io/elitea-ng/charts/<chart>
 ```
 
 Install without cloning this repository:
 
 ```bash
-helm install elitea oci://ghcr.io/eliteaai/charts/elitea --version 1.2.3
+helm install elitea oci://ghcr.io/elitea-ng/charts/elitea --version 1.2.3
 ```
 
 Four properties of the published artifact that the in-repo chart does not have:
@@ -182,8 +182,8 @@ Four properties of the published artifact that the in-repo chart does not have:
 - **Charts are cosign-signed**, keyless, exactly as the images are:
 
   ```bash
-  cosign verify ghcr.io/eliteaai/charts/elitea:1.2.3 \
-    --certificate-identity-regexp '^https://github.com/eliteaai/elitea-platform/' \
+  cosign verify ghcr.io/elitea-ng/charts/elitea:1.2.3 \
+    --certificate-identity-regexp '^https://github.com/elitea-ng/elitea-platform/' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 

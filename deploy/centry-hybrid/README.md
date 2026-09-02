@@ -228,8 +228,8 @@ Useful checks:
 Override local image tags when needed:
 
 ```bash
-ELITEA_MAIN_IMAGE=eliteaai/elitea-main:my-tag \
-ELITEA_WORKER_IMAGE=eliteaai/elitea-worker-python:my-tag \
+ELITEA_MAIN_IMAGE=elitea-ng/elitea-main:my-tag \
+ELITEA_WORKER_IMAGE=elitea-ng/elitea-worker-python:my-tag \
 ./deploy/centry-hybrid/compose.sh up ../centry
 ```
 

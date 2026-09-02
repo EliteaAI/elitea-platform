@@ -196,14 +196,14 @@ host_image="$(printf '%s' "$manifest" \
   | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
       | .spec.template.spec.containers[0].image' -)"
 case "$host_image" in
-  ghcr.io/eliteaai/elitea-subapp-host:*) note "host image: $host_image" ;;
+  ghcr.io/elitea-ng/elitea-subapp-host:*) note "host image: $host_image" ;;
   *) fail "the host container runs '$host_image', not the sub-application host" ;;
 esac
 engine_image="$(printf '%s' "$manifest" \
   | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
       | .spec.template.spec.containers[1].image' -)"
 case "$engine_image" in
-  ghcr.io/eliteaai/elitea-deepwiki:*-engine) note "engine image: $engine_image" ;;
+  ghcr.io/elitea-ng/elitea-deepwiki:*-engine) note "engine image: $engine_image" ;;
   *) fail "the engine sidecar runs '$engine_image'; without the -engine closure every tool fails at invocation time" ;;
 esac
 engine_command="$(printf '%s' "$manifest" \
@@ -236,7 +236,7 @@ migrate_image="$(printf '%s' "$manifest" \
   | yq eval-all 'select(.kind == "Job" and .metadata.name == "elitea-deepwiki-migrate")
       | .spec.template.spec.containers[0].image' -)"
 case "$migrate_image" in
-  ghcr.io/eliteaai/elitea-deepwiki:*) note "migrate image: $migrate_image" ;;
+  ghcr.io/elitea-ng/elitea-deepwiki:*) note "migrate image: $migrate_image" ;;
   *) fail "the migrate Job runs '$migrate_image'; the migrations are the Python package's, and the host image has no python" ;;
 esac
 echo "== an unavailable runner renders no sidecar =="

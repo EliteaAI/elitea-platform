@@ -95,7 +95,7 @@ assert c["args"] == [
     "--toolkit-security-config", "/run/elitea/toolkit-security.json",
 ], f"rust argument list is {c['args']}"
 
-assert c["image"].startswith("ghcr.io/eliteaai/elitea-worker-rust:"), c["image"]
+assert c["image"].startswith("ghcr.io/elitea-ng/elitea-worker-rust:"), c["image"]
 
 # The flag is worthless if the file is not actually in the container.
 mounts = {m["mountPath"] for m in c["volumeMounts"]}
@@ -134,7 +134,7 @@ cm = next(d for d in docs
 c = next(x for x in dep["spec"]["template"]["spec"]["containers"] if x["name"] == "worker")
 
 assert c["args"] == ["serve", "--config", "/run/elitea/runtime.json"], c["args"]
-assert c["image"].startswith("ghcr.io/eliteaai/elitea-worker-python:"), c["image"]
+assert c["image"].startswith("ghcr.io/elitea-ng/elitea-worker-python:"), c["image"]
 
 env = {e["name"]: e.get("value") for e in c["env"]}
 assert env["ELITEA_SENSITIVE_TOOLS"] == '{"*":["delete_file"]}', env
