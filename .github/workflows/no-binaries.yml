@@ -90,7 +90,7 @@ jobs:
       # drops a router that names an unknown middleware and keeps serving, so
       # the fault reaches production as a silent fallback to pylon rather than
       # as an error (#338).
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: services/elitea-main/go.sum
