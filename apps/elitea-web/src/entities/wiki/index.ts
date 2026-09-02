@@ -10,6 +10,8 @@
  * every wiki feature needs them, and `no-sideways-features` forbids one feature
  * importing another.
  */
-export type { RepositoryIdentity, WikiManifest } from './model/types';
+export type { RepositoryIdentity, ToolkitSettings, WikiManifest } from './model/types';
 export { filterManifestsByRepo } from './lib/repoMatch';
+// Added in P5, when the settings feature became its first consumer.
+export { getConfiguredRepoIdentity } from './lib/toolkitSettings';
 export { fetchWikiManifest, listWikiObjects, manifestKeys } from './api/wikiArtifactsApi';
