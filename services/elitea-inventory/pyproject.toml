@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.27.0"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -39,7 +39,7 @@ dependencies = [
   #
   # To move them: re-run `uv pip compile` over this file's dependencies plus
   # the engine extra, and take what it lands on.
-  "fastapi==0.115.9",
+  "fastapi==0.141.1",
   "pydantic>=2.10,<3",
   # The artifact READ path (elitea_inventory.artifacts) speaks `requests`, and
   # it is in the shell, not the engine: a query tool with no engine still has
@@ -84,7 +84,7 @@ engine = [
   # legacy plugin's floor (>=0.6.33). Two services on one platform resolving
   # different SDK majors is how a toolkit that instantiates in the worker fails
   # to instantiate here, with a message about a settings key.
-  "elitea-sdk[runtime,tools]==0.9.8",
+  "elitea-sdk[runtime,tools]==0.9.40",
   # chromadb is TRANSITIVE — it arrives with the SDK's tools extra, nothing
   # here uses it, and nothing here bounded it. It is pinned anyway, for the
   # same measured reason the fastapi/uvicorn bounds above exist: the SDK
@@ -106,7 +106,7 @@ engine = [
   # chromadb and mcp are the only two transitive packages that bound uvicorn in
   # the resolution; pinning chromadb alone was not enough, and the build was
   # still walking backwards through uvicorn releases.
-  "mcp==1.29.1",
+  "mcp==2.1.1",
   # langsmith, bounded for the reason services/elitea-worker-python states at
   # length and this build then reproduced verbatim:
   #

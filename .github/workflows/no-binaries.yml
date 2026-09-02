@@ -101,7 +101,7 @@ jobs:
       # drops a router that names an unknown middleware and keeps serving, so
       # the fault reaches production as a silent fallback to pylon rather than
       # as an error (#338).
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: services/elitea-main/go.sum
@@ -156,7 +156,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # Every check reads only the standard library and the committed JSON, so
@@ -215,7 +215,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The check asks `origin` whether the branch it names still exists, so the
@@ -352,7 +352,7 @@ jobs:
           # The walk needs the trunk. The checker REFUSES a shallow clone
           # rather than reporting a short walk as a pass.
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The suite builds throwaway bare repositories with git plumbing. It
