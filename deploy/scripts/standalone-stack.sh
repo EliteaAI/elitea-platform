@@ -1866,11 +1866,44 @@ except Exception as error:
     # request journal, which no other check does. The probe above asserts a
     # vector WIDTH against one hardcoded model name; a width identifies no model
     # and a 200 identifies no project. Read that script's own assertion lines.
-    if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
-      ok "the embedding path check passed all of its own assertions"
-    else
-      fail "the embedding path check failed — read its assertion lines above"
-    fi
+    #
+    # It applies only when the MOCK serves the embeddings. Its facts 2 and 3 —
+    # "the provider was really called", "with which model name and which
+    # project's credential" — are read out of llm-mock's request journal,
+    # which is the only record of what went on the wire. A stack whose
+    # embedding credential points anywhere else (the `real-llm` profile's
+    # llm-real, an operator's own server) keeps no such journal, so the
+    # script reports four "no upstream call" failures that are statements
+    # about the harness, not the gateway. Measured on the first
+    # `chat-stream-real` run: every hop assertion above passed and this one
+    # failed on "Journal: COUNT 0".
+    #
+    # The gate is the seeded credential's api_base, read out of the database
+    # through the embedding row's own link — not LLM_PROVIDER, which a
+    # mislabelled invocation could set to anything. Same shape as the SDK
+    # client gate below (the running image, not $STANDALONE_WORKER). A stack
+    # that holds no embedding row at all still runs the script, which aborts
+    # with its own message naming the seed step.
+    EMB_CRED_API_BASE="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT c.data->>'api_base'
+           FROM p_${LLM_PROJECT:-1}.configuration e
+           JOIN p_${LLM_PROJECT:-1}.configuration c
+             ON c.section = 'ai_credentials'
+            AND c.elitea_title = e.data->'ai_credentials'->>'elitea_title'
+          WHERE e.section = 'embedding' AND e.elitea_title = 'standalone-embedding'" 2>/dev/null | tr -d '[:space:]')"
+    case "${EMB_CRED_API_BASE%/}" in
+      ""|http://llm-mock:8090)
+        if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
+          ok "the embedding path check passed all of its own assertions"
+        else
+          fail "the embedding path check failed — read its assertion lines above"
+        fi
+        ;;
+      *)
+        skip "the embedding path check does not apply: it reads llm-mock's request journal, and this stack's embedding credential points at ${EMB_CRED_API_BASE}, which keeps none. The hop itself was asserted above (vector width, model list)."
+        ;;
+    esac
 
     # ── The REAL elitea-sdk client ───────────────────────────────────────────
     # Every /llm assertion above this line — this script's own probes and the
