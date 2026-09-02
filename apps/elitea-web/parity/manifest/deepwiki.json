@@ -141,12 +141,12 @@
         "AND stopping generation ends the run and leaves the previous wiki readable"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-generation",
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
         "testId": "DWIKI-005"
       },
       "unit": "DW4",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
         "file": "src/features/wiki-generation/model/reducer.ts",
         "min": 95
@@ -170,14 +170,14 @@
         "AND a run that finished while the page was closed is not shown as running"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-generation",
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
         "testId": "DWIKI-006"
       },
       "unit": "DW4",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
-        "file": "src/features/wiki-generation/model/persistence.ts",
+        "file": "src/widgets/deepwiki/lib/generationStorage.ts",
         "min": 90
       },
       "waiver": null
@@ -200,12 +200,12 @@
         "AND accepting replaces only that block, leaving the rest of the page unchanged"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-editing",
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
         "testId": "DWIKI-007"
       },
       "unit": "DW6",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
         "file": "src/features/wiki-editing/lib/mermaidBlocks.ts",
         "min": 95
@@ -228,14 +228,14 @@
         "AND the diagram's original error is shown again"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-editing",
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
         "testId": "DWIKI-008"
       },
       "unit": "DW6",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
-        "file": "src/features/wiki-editing/model/useQuickFix.ts",
+        "file": "src/widgets/deepwiki/ui/WikiPageReader.tsx",
         "min": 90
       },
       "waiver": null
@@ -257,14 +257,14 @@
         "AND a failed save reports the failure rather than closing the editor as if it had worked"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-editing",
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
         "testId": "DWIKI-009"
       },
       "unit": "DW5",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
-        "file": "src/features/wiki-editing/api/saveMarkdown.ts",
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
         "min": 90
       },
       "waiver": null
@@ -286,14 +286,14 @@
         "AND an invalid value is refused with the reason shown against the field"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-settings",
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
         "testId": "DWIKI-010"
       },
       "unit": "DW5",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
-        "file": "src/features/wiki-settings/model/useSettingsForm.ts",
+        "file": "src/features/wiki-settings/lib/settingsForm.ts",
         "min": 90
       },
       "waiver": null
@@ -315,14 +315,14 @@
         "AND a partial failure reports which artifacts remain rather than claiming success"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-settings",
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
         "testId": "DWIKI-011"
       },
       "unit": "DW5",
-      "status": "todo",
+      "status": "verified",
       "coverage": {
-        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "file": "src/widgets/deepwiki/ui/DeleteWikiButton.tsx",
         "min": 90
       },
       "waiver": null
@@ -345,12 +345,12 @@
         "AND an interrupted stream leaves the partial answer visible rather than discarding it"
       ],
       "verify": {
-        "type": "vitest",
-        "command": "npm run test -- src/features/wiki-chat src/widgets/deepwiki",
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
         "testId": "DWIKI-012"
       },
       "unit": "DW7",
-      "status": "in-progress",
+      "status": "verified",
       "coverage": {
         "file": "src/features/wiki-chat/model/reducer.ts",
         "min": 90
