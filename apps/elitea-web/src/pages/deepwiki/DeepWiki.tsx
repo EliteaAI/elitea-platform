@@ -25,7 +25,7 @@ import Stack from '@mui/material/Stack';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useWikiList, WikiList, WikiPageView } from '@/features/wiki-browser';
-import type { RepositoryIdentity, ToolkitSettings, WikiManifest } from '@/entities/wiki';
+import { chatPinsFor, type RepositoryIdentity, type ToolkitSettings, type WikiManifest } from '@/entities/wiki';
 import {
   DeleteWikiButton,
   WikiChatDrawer,
@@ -107,11 +107,11 @@ export function DeepWiki({
     );
   }
 
-  const chatTarget = chatTargetFor(projectId, toolkitId, settings, identity);
   // The first wiki is opened by default. A list that needs a click before it
   // shows anything reads as an empty screen on a project with one wiki, which
   // is the common case.
   const open = selected ?? query.data.wikis[0];
+  const chatTarget = chatTargetFor(projectId, toolkitId, settings, open);
 
   return (
     <Box sx={pageSx}>
@@ -266,11 +266,16 @@ function ReaderArea({ projectId, wiki, onDeleted, onEdit }: ReaderAreaProps): Re
   );
 }
 
+/**
+ * The chat is pinned to the OPEN wiki's own identifiers (`chatPinsFor`), never
+ * to the toolkit's repository name: the override is a cache key, and a bare
+ * repository name is a key nothing was indexed under.
+ */
 function chatTargetFor(
   projectId: string,
   toolkitId: string | undefined,
   settings: ToolkitSettings | undefined,
-  identity: RepositoryIdentity | null,
+  open: WikiManifest | undefined,
 ): WikiChatTarget | null {
   if (toolkitId === undefined || settings === undefined) return null;
   return {
@@ -279,6 +284,6 @@ function chatTargetFor(
     toolkitName: WIKI_TOOLKIT_NAME,
     toolkitType: WIKI_TOOLKIT_NAME,
     settings,
-    repoIdentifierOverride: identity?.repository ?? undefined,
+    ...chatPinsFor(open),
   };
 }

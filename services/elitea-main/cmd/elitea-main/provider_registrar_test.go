@@ -19,14 +19,14 @@ import (
 // serving and nothing is registered. Nothing here panics on a nil pool.
 func TestProviderRegistrarSkipsWhatItCannotRegisterWith(t *testing.T) {
 	cfg := facade.Config{BaseURL: "https://elitea-deepwiki:8443"}
-	if startProviderRegistrar(context.Background(), nil, nil, 1, "deepwiki", cfg, "X") {
+	if startProviderRegistrar(context.Background(), nil, nil, 1, "deepwiki", cfg, "X") != nil {
 		t.Fatal("started with no database")
 	}
 	pool := registrarTestPool(t)
-	if startProviderRegistrar(context.Background(), nil, pool, 0, "deepwiki", cfg, "X") {
+	if startProviderRegistrar(context.Background(), nil, pool, 0, "deepwiki", cfg, "X") != nil {
 		t.Fatal("started with no public project")
 	}
-	if startProviderRegistrar(context.Background(), nil, pool, 1, "deepwiki", cfg, "X") {
+	if startProviderRegistrar(context.Background(), nil, pool, 1, "deepwiki", cfg, "X") != nil {
 		t.Fatal("started against a database without the admission plane")
 	}
 	sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", "shared", "0107_provider_admitted_revisions.sql"))
@@ -40,8 +40,20 @@ func TestProviderRegistrarSkipsWhatItCannotRegisterWith(t *testing.T) {
 	// only because the client certificate does not exist, which proves the
 	// plane check was passed rather than short-circuited.
 	if startProviderRegistrar(context.Background(), nil, pool, 1, "deepwiki",
-		facade.Config{BaseURL: "https://elitea-deepwiki:8443", ClientCertFile: "/nonexistent/tls.crt", ClientKeyFile: "/nonexistent/tls.key", CAFile: "/nonexistent/ca.crt"}, "X") {
+		facade.Config{BaseURL: "https://elitea-deepwiki:8443", ClientCertFile: "/nonexistent/tls.crt", ClientKeyFile: "/nonexistent/tls.key", CAFile: "/nonexistent/ca.crt"}, "X") != nil {
 		t.Fatal("started without a client certificate")
+	}
+}
+
+// The gate the facade carries follows the registrar: no registration, no
+// gate. THE E2E STACK IS THIS CASE — it composes no public project, so the
+// facade there must be handed a nil hook and forward exactly as it did
+// before admission existed. A gate that was built anyway and simply always
+// answered "allow" would be indistinguishable at runtime and would put a
+// database round trip on an invoke path that has no plane to read.
+func TestNoRegistrationMeansNoAdmissionGate(t *testing.T) {
+	if hook := providerAdmissionGate(nil, nil, 0, facade.AdmissionEnforce, nil); hook != nil {
+		t.Fatal("a facade with no registrar was given an admission hook")
 	}
 }
 

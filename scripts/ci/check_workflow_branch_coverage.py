@@ -61,6 +61,14 @@ EXEMPT_WORKFLOWS = {
         "the registry. A staging arm would publish release artifacts from a "
         "release candidate."
     ),
+    "deepwiki-real-engine.yml": (
+        "It has no push arm at all, and no pull_request arm either. It builds "
+        "the ~2 GB DeepWiki `-engine` image (torch, faiss, tree-sitter) and "
+        "runs a real analysis pass over the standalone stack; the per-change "
+        "gate for the same product surface is the `deepwiki-stack` job in "
+        "ci-web-e2e.yml, which uses the provider's fixture engine. Weekly "
+        "cadence plus manual dispatch, like ci-web-mutation.yml."
+    ),
     "ci-web-mutation.yml": (
         "It has no push arm at all. It is a weekly cadence job plus manual "
         "dispatch, not a per-merge gate."

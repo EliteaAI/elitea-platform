@@ -333,7 +333,7 @@ main:
   # fails `helm template` rather than the pod.
   replicaCount: 2
 
-  # Pull secrets for a registry that needs credentials. ghcr.io/eliteaai/elitea-main
+  # Pull secrets for a registry that needs credentials. ghcr.io/elitea-ng/elitea-main
   # is a PRIVATE package today — an anonymous pull is refused, unlike
   # elitea-web's — so a cluster without an entry here cannot start this service
   # at all: both the Deployment and the migration hook Job stop at
@@ -345,7 +345,7 @@ main:
   imagePullSecrets: []
 
   image:
-    repository: ghcr.io/eliteaai/elitea-main
+    repository: ghcr.io/elitea-ng/elitea-main
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -971,6 +971,52 @@ main:
     # disagree would mean an invocation that starts and then fails.
     ELITEA_DEEPWIKI_GIT_ALLOWLIST: ""
 
+    # --- The Inventory facade's source expansion (ADR-0023 H4c I2) ---
+    #
+    # ONE ALLOWLIST VARIABLE PER APP, not one shared with DeepWiki. The two
+    # facades clone from different things for different reasons — DeepWiki from
+    # the repository a wiki documents, Inventory from every repository a
+    # knowledge graph ingests — and a deployment that wants one and not the
+    # other has to be able to say so. Fail-closed in exactly the same way:
+    # unset refuses every source, and `*` disables the control explicitly.
+    ELITEA_INVENTORY_GIT_ALLOWLIST: ""
+    # The origin the Inventory provider calls back to for artifacts and models.
+    # EMPTY DISABLES SOURCE EXPANSION rather than failing the boot: the eight
+    # Inventory tools that only read an existing graph still work, and the
+    # three that name a source get the provider's own refusal. Set it to the
+    # platform's own external origin (the same value DeepWiki's takes).
+    ELITEA_INVENTORY_CALLBACK_BASE_URL: ""
+    # How long that bearer lives. Default 120 minutes; it must outlast the
+    # longest ingestion this deployment expects.
+    ELITEA_INVENTORY_CALLBACK_TOKEN_TTL_MINUTES: ""
+    # Which source toolkit types may be expanded. Empty means the default,
+    # "github,ado_repos". It can only SUBTRACT: a type with no field
+    # projection in internal/api/v2/inventory (gitlab, bitbucket today) cannot
+    # be admitted by configuration, because admitting it would mean sending
+    # fields nobody enumerated.
+    ELITEA_INVENTORY_SOURCE_TYPES: ""
+
+    # What this deployment does with a provider the admission plane records
+    # but has not put in force (migration 0107, internal/providerhost/admission).
+    #
+    #   record  — the DEFAULT. An `inactive` provider is invoked normally; a
+    #             REVOKED one is refused, in either posture, because a
+    #             revocation is a decision somebody made and the
+    #             administration surface's one action must not be advisory.
+    #   enforce — only an `active` provider may be invoked.
+    #
+    # RECORD HAS TO BE THE DEFAULT, and that is not timidity. Nothing in this
+    # deployment can reach `active`: activation requires a policy overlay no
+    # issuer exists for, and migration 0107 enforces that as a CHECK
+    # constraint (provider_admitted_revision_active_needs_overlay). Setting
+    # `enforce` today therefore refuses EVERY provider — a deliberate lockout,
+    # not a hardening step, until an overlay issuer ships.
+    #
+    # Empty is record. Anything else is a BOOT FAILURE rather than a quiet
+    # fall back, so `enfroce` cannot leave an operator believing they are
+    # enforcing while everything is admitted.
+    ELITEA_PROVIDER_ADMISSION: "record"
+
     # The primary pgxpool size, per elitea-main replica.
     #
     # The chart set NOTHING here, and cmd/elitea-main/database_pool.go returns
@@ -1360,7 +1406,7 @@ web:
     # is real. Pin `tag` to a release in production — `latest` plus
     # IfNotPresent means a node that already cached an older `latest` layer
     # keeps serving it.
-    repository: ghcr.io/eliteaai/elitea-web
+    repository: ghcr.io/elitea-ng/elitea-web
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -1492,7 +1538,7 @@ scheduler:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/eliteaai/elitea-scheduler
+    repository: ghcr.io/elitea-ng/elitea-scheduler
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -1680,7 +1726,7 @@ llmGateway:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/eliteaai/elitea-llm-gateway
+    repository: ghcr.io/elitea-ng/elitea-llm-gateway
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent
 
@@ -2215,14 +2261,14 @@ deepwiki:
   # share. `image` is the host; `engine.image` is the Python image, which
   # must be the `-engine` variant for the legacy runner to run anything.
   image:
-    repository: ghcr.io/eliteaai/elitea-subapp-host
+    repository: ghcr.io/elitea-ng/elitea-subapp-host
     # Empty means the chart-wide image.tag.
     tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   engine:
     image:
-      repository: ghcr.io/eliteaai/elitea-deepwiki
+      repository: ghcr.io/elitea-ng/elitea-deepwiki
       # Empty means the chart-wide image.tag with `-engine` appended — the
       # image that carries the engine's dependency closure. The guard in
       # _helpers.tpl refuses a runner=legacy install whose engine tag lacks
@@ -2413,7 +2459,7 @@ worker:
     # over `implementation`, and is how you pin an image by digest or run the
     # worker from a mirror. To stay on the Python worker, either set
     # `implementation: python` or pin this to
-    # `ghcr.io/eliteaai/elitea-worker-python`.
+    # `ghcr.io/elitea-ng/elitea-worker-python`.
     repository: ""
     # tag comes from the single top-level image.tag
     pullPolicy: IfNotPresent

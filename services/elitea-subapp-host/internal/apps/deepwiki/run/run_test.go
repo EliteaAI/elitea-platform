@@ -311,6 +311,114 @@ func TestTheRunnerDispatchesAndComposes(t *testing.T) {
 	}
 }
 
+// A generate_wiki result whose manifest lists no pages: measured on PR #725,
+// where the engine's 404'd analysis call still produced "success" and an
+// empty manifest, and the host stored it as a finished wiki.
+func manifestResult(t *testing.T, manifestBody string) map[string]any {
+	t.Helper()
+	return map[string]any{
+		"success": true,
+		"result":  "Wiki generation completed successfully",
+		"wiki_id": "acme--notes-service--main",
+		"artifacts": []any{
+			map[string]any{"name": "acme--notes-service--main/wiki_manifest_20260902T000000Z-abcdef12.json",
+				"type": "application/json", "data": manifestBody},
+			map[string]any{"name": "acme--notes-service--main/wiki_pages/overview.md", "type": "text/markdown", "data": "# Overview"},
+		},
+	}
+}
+
+func TestAWikiWithNoPagesIsRefusedBeforeAnythingIsUploaded(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		manifest string
+		refused  bool
+	}{
+		{"an empty pages list", `{"wiki_version_id": "v1", "pages": []}`, true},
+		{"no pages key at all", `{"wiki_version_id": "v1", "wiki_title": "Notes"}`, true},
+		{"pages the worker filled in", `{"wiki_version_id": "v1", "pages": ["acme--notes-service--main/wiki_pages/overview.md"]}`, false},
+		{"a manifest body that is not JSON", "not json at all", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeArtifactClient{}
+			runner := &run.Runner{
+				Tools: map[string]run.Tool{"generate_wiki": func(context.Context, map[string]any, *spi.Context) (map[string]any, error) {
+					return manifestResult(t, tc.manifest), nil
+				}},
+				Egress:    spi.ParseEgressPolicy("github.com"),
+				Artifacts: func(map[string]any) (run.ArtifactClient, error) { return client, nil },
+			}
+			body, err := invoke(t, runner, "generate_wiki", githubRequest("Document the notes service",
+				map[string]any{"llm_settings": transport}))
+			if !tc.refused {
+				if err != nil || body["status"] != "Completed" {
+					t.Fatalf("a wiki that has pages was refused: %v / %v", err, body)
+				}
+				if names := client.names(); len(names) != 2 {
+					t.Fatalf("uploaded %v", names)
+				}
+				return
+			}
+			if err == nil || body["status"] != "Error" {
+				t.Fatalf("a wiki with no pages completed: %v", body)
+			}
+			if body["error_category"] != spi.CategoryInferenceFailed || body["error_type"] != string(spi.KindRuntime) {
+				t.Fatalf("category %v, type %v", body["error_category"], body["error_type"])
+			}
+			if !strings.Contains(str(body["result"]), "produced no pages") {
+				t.Fatalf("message %v", body["result"])
+			}
+			// Nothing may land: a manifest in the bucket is a wiki the
+			// browser cannot tell from a real one.
+			if names := client.names(); len(names) != 0 {
+				t.Fatalf("a refused run uploaded %v", names)
+			}
+		})
+	}
+}
+
+func TestTheNoPagesRefusalCarriesTheEnginesLastWorkerLog(t *testing.T) {
+	empty := `{"wiki_version_id": "v1", "pages": []}`
+	for _, tc := range []struct {
+		name   string
+		extra  map[string]any
+		expect string
+	}{
+		{"appended to an error the engine still carried",
+			map[string]any{"error": "analysis step failed\nLast worker log: [worker] LLM call returned HTTP 404"},
+			"Last worker log: [worker] LLM call returned HTTP 404"},
+		{"carried in the errors list",
+			map[string]any{"errors": []any{"page 1 skipped", "Last worker log: [worker] Done"}},
+			"Last worker log: [worker] Done"},
+		{"absent", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := manifestResult(t, empty)
+			for k, v := range tc.extra {
+				result[k] = v
+			}
+			objects := run.ComposeResultObjects("generate_wiki", result)
+			err := run.CheckWikiHasPages("generate_wiki", objects, result)
+			if err == nil {
+				t.Fatal("an empty manifest was accepted")
+			}
+			if tc.expect == "" {
+				if strings.Contains(err.Error(), "Last worker log:") {
+					t.Fatalf("a worker log was invented: %v", err)
+				}
+				return
+			}
+			if !strings.HasSuffix(err.Error(), "\n"+tc.expect) {
+				t.Fatalf("%q does not end in the worker log line %q", err, tc.expect)
+			}
+		})
+	}
+	// Only generate_wiki produces a wiki, so only it is guarded.
+	if err := run.CheckWikiHasPages("ask", run.ComposeResultObjects("generate_wiki", manifestResult(t, empty)), nil); err != nil {
+		t.Fatalf("ask was guarded: %v", err)
+	}
+}
+
 func TestAnUnsuccessfulEngineResultRaisesTheRightCategory(t *testing.T) {
 	for _, tc := range []struct {
 		result   map[string]any

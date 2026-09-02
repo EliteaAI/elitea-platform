@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/spi"
 )
 
 // DefaultBucket is the bucket every artifact object names at invoke time —
@@ -187,6 +189,64 @@ func ComposeResultObjects(tool string, result map[string]any) []Object {
 		}
 	}
 	return objects
+}
+
+// CheckWikiHasPages refuses a generate_wiki result whose manifest lists no
+// pages. Measured 2026-09-02 on PR #725: the engine's analysis call answered
+// 404 for an unconfigured model, and the worker still printed "[worker] Done"
+// and returned a manifest whose `pages` list was empty — so this host
+// uploaded that manifest and marked the invocation Completed, and the wiki
+// browser showed a finished generation with nothing in it. A run that
+// produced no pages is the engine's inference failing, and it has to be told
+// as one before anything reaches the bucket: an empty manifest that lands is
+// indistinguishable from a real wiki.
+func CheckWikiHasPages(tool string, objects []Object, result map[string]any) error {
+	if tool != "generate_wiki" {
+		return nil
+	}
+	for _, obj := range objects {
+		if !obj.IsArtifact() || obj.ObjectType != "wiki_manifest" {
+			continue
+		}
+		var manifest map[string]any
+		if json.Unmarshal([]byte(obj.Data), &manifest) != nil {
+			// A body this guard cannot read is not evidence of an empty
+			// wiki, so such a run keeps the behaviour it already had.
+			continue
+		}
+		if pages, _ := manifest["pages"].([]any); len(pages) > 0 {
+			continue
+		}
+		// The wording is load-bearing: spi.Classify sends a runtime failure
+		// whose text carries "generat" to inference_failed, which is what
+		// this is — the engine's, not this host's.
+		message := fmt.Sprintf("wiki generation produced no pages: the engine reported success, but the manifest %s lists none, so nothing was stored", obj.NameString())
+		if log := LastWorkerLog(result); log != "" {
+			message += "\n" + log
+		}
+		return spi.Failf(spi.KindRuntime, "%s", message)
+	}
+	return nil
+}
+
+// LastWorkerLog is the engine's own "Last worker log: …" line, which it
+// appends to the error of a failed result. A result that claims success
+// carries no error, so this reads `errors` as well; "" when there is none.
+func LastWorkerLog(result map[string]any) string {
+	candidates := []string{str(result["error"])}
+	if errorsList, _ := result["errors"].([]any); len(errorsList) > 0 {
+		for _, e := range errorsList {
+			candidates = append(candidates, fmt.Sprint(e))
+		}
+	}
+	for i := len(candidates) - 1; i >= 0; i-- {
+		for _, line := range strings.Split(candidates[i], "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "Last worker log:") {
+				return strings.TrimSpace(line)
+			}
+		}
+	}
+	return ""
 }
 
 // CompletedBody is the terminal invocation body: result is a JSON STRING

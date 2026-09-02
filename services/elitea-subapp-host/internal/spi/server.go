@@ -1,6 +1,7 @@
 package spi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -171,7 +172,23 @@ func IdentityFromContext(ctx context.Context) Identity {
 }
 
 func (s *Server) descriptor(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.app.Descriptor(s.settings.ServiceLocationURL))
+	// The descriptor is written WITHOUT Go's HTML escaping, unlike every
+	// other body: it is a document the application supplies verbatim, and
+	// the golden fixtures were recorded from Python's json.dumps, which
+	// leaves <, > and & alone. Escaping them is JSON-equivalent but not
+	// byte-equal, and the descriptor is pinned byte for byte — Inventory's
+	// recorded text says "Jira ticket -> GitHub PR". Only this route is
+	// affected; nothing else the host serves changes shape.
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(s.app.Descriptor(s.settings.ServiceLocationURL)); err != nil {
+		writeJSON(w, http.StatusOK, s.app.Descriptor(s.settings.ServiceLocationURL))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(bytes.TrimRight(buffer.Bytes(), "\n"))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

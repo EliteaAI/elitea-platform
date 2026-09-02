@@ -59,6 +59,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -737,6 +738,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
 	}
 	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
+	// The toolkit settings resolver the Inventory facade expands a source with.
+	// Nil where the Configurations runtime is not composed — a deployment with
+	// no vault — and the facade then mounts without source expansion rather
+	// than failing to boot.
+	var inventorySourceSettings *configurationapp.CurrentToolkitSettingsResolver
 	// The project vector-store collaborator the project-create route provisions
 	// with (#371). It is composed from the Configurations runtime, so it exists
 	// only where that runtime does; without it a created project cannot index.
@@ -801,6 +807,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// Assigned through the concrete value, never a typed nil: the handler's
 		// only fallback is a nil-interface check.
 		toolkitSettingsValidator = toolkitSettingsResolver
+		// The SAME graph the Inventory facade claims a source toolkit's
+		// credentials with. One composition, so what a source's own index runs
+		// read is what the provider receives; a second would be a second answer
+		// to "which credentials can this caller see".
+		inventorySourceSettings = toolkitSettingsResolver
 		currentAuth := apimw.AuthConfig{
 			Validator:                 formGraph,
 			PrincipalValidator:        principalValidator,
@@ -1073,24 +1084,79 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// The SECOND provider facade. Composed the same way as the first and in
 	// far fewer lines, because providerhost/{facade,proxy,spi} carry what the
 	// two have in common — which is what ADR-0012's budget measured.
+	// The admission posture, read BEFORE either facade and unconditionally.
+	// An unrecognised spelling is a boot failure whether or not a provider is
+	// enabled today: an operator who mistyped it must learn now, and not at
+	// the moment they turn a provider on.
+	admissionPosture, err := facade.AdmissionPostureFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("read provider admission posture: %w", err)
+	}
+
 	var inventoryRoute *v2inventory.Route
 	inventoryConfig, err := facade.ConfigFromEnv(v2inventory.EnvNames, os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("read Inventory facade configuration: %w", err)
 	}
 	if inventoryConfig.Enabled {
+		// The registrar starts FIRST: it is what learns the provider's own
+		// name, and the gate the route carries reads that name per request.
+		inventoryConfig.Admission = providerAdmissionGate(logger, pool,
+			currentConfigurationsConfig.PublicProjectID, admissionPosture,
+			startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
+				"inventory", inventoryConfig, v2inventory.EnvNames.BaseURL))
+		// The source expander (ADR-0023 H4c I2). Built only where BOTH halves
+		// exist: the Configurations graph that can claim a credential, and a
+		// callback origin the provider can reach back on. Where either is
+		// absent the facade mounts WITHOUT expansion — the eight tools that
+		// read the graph still work — rather than failing to boot, which is
+		// what a stack with no vault (the E2E one) needs. What is NOT
+		// tolerated is a half-wired expander: NewSources refuses that.
+		var inventorySources *v2inventory.Sources
+		inventorySourcesConfig, sourcesErr := v2inventory.SourcesFromEnv(os.LookupEnv)
+		if sourcesErr != nil {
+			return fmt.Errorf("read Inventory source configuration: %w", sourcesErr)
+		}
+		switch {
+		case inventorySourceSettings == nil || inventorySourcesConfig.CallbackBaseURL == "":
+			logger.Warn("Inventory mounts without source expansion",
+				"settings_resolver", inventorySourceSettings != nil,
+				"callback_base_url", v2inventory.CallbackBaseURLEnv)
+		default:
+			inventoryToolkits, toolkitsErr := dbrepos.NewCurrentToolkitsRepository(pool)
+			if toolkitsErr != nil {
+				return fmt.Errorf("compose Inventory toolkit reader: %w", toolkitsErr)
+			}
+			// The signer must be the one THIS deployment's validator reads
+			// back, and the rule for that is "the form graph when there is
+			// one" — the same rule the DeepWiki minter below applies.
+			var inventorySigner v2auth.TokenSigner
+			if formGraph != nil {
+				inventorySigner = formGraph
+			}
+			inventoryTokens, minterErr := v2auth.NewCallbackTokenMinter(
+				pool, inventorySigner, []byte(os.Getenv("APPLICATION_SECRET_KEY")))
+			if minterErr != nil {
+				return fmt.Errorf("compose Inventory callback token minter: %w", minterErr)
+			}
+			inventorySources, err = v2inventory.NewSources(
+				inventoryToolkits, inventorySourceSettings,
+				material.NewCallbackMinter(inventoryTokens), inventorySourcesConfig)
+			if err != nil {
+				return fmt.Errorf("compose Inventory source expander: %w", err)
+			}
+		}
 		inventoryRoute, err = v2inventory.NewRoute(
 			inventoryConfig,
 			// The API group's credential set, in either authentication mode.
 			apiGroupAuth,
 			legacyrbac.NewPostgresResolver(pool),
+			inventorySources,
 			logger,
 		)
 		if err != nil {
 			return fmt.Errorf("build the Inventory facade: %w", err)
 		}
-		startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
-			"inventory", inventoryConfig, v2inventory.EnvNames.BaseURL)
 	}
 
 	var deepwikiRoute *v2deepwiki.Route
@@ -1151,6 +1217,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose DeepWiki callback token minter: %w", minterErr)
 		}
 
+		// Registered before the route is built, for the reason the Inventory
+		// facade gives above: the gate needs the provider's own name, and
+		// only the registrar ever learns it.
+		deepwikiConfig.Admission = providerAdmissionGate(logger, pool,
+			currentConfigurationsConfig.PublicProjectID, admissionPosture,
+			startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
+				"deepwiki", facade.Config{
+					Enabled:        true,
+					BaseURL:        deepwikiConfig.BaseURL,
+					ClientCertFile: deepwikiConfig.ClientCertFile,
+					ClientKeyFile:  deepwikiConfig.ClientKeyFile,
+					CAFile:         deepwikiConfig.CAFile,
+					ServerName:     deepwikiConfig.ServerName,
+					IdentitySecret: deepwikiConfig.IdentitySecret,
+					Timeout:        deepwikiConfig.Timeout,
+				}, v2deepwiki.BaseURLEnv))
+
 		deepwikiRoute, err = v2deepwiki.NewRoute(
 			deepwikiConfig,
 			// The API group's credential set, in either authentication mode.
@@ -1163,17 +1246,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose DeepWiki facade: %w", err)
 		}
-		startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
-			"deepwiki", facade.Config{
-				Enabled:        true,
-				BaseURL:        deepwikiConfig.BaseURL,
-				ClientCertFile: deepwikiConfig.ClientCertFile,
-				ClientKeyFile:  deepwikiConfig.ClientKeyFile,
-				CAFile:         deepwikiConfig.CAFile,
-				ServerName:     deepwikiConfig.ServerName,
-				IdentitySecret: deepwikiConfig.IdentitySecret,
-				Timeout:        deepwikiConfig.Timeout,
-			}, v2deepwiki.BaseURLEnv)
 	}
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler

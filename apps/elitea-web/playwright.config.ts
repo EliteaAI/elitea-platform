@@ -136,6 +136,15 @@ const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat
  */
 const ADMISSION_JOURNEY = /journeys\/deepwiki\/deepwiki\.admission\.spec\.ts/;
 
+/*
+ * The real-engine journey (DWIKI-014) drives the copied analysis engine —
+ * clone, index, plan, write — behind the Go host, on the standalone stack
+ * with deploy/docker-compose.deepwiki-real-engine.yml applied
+ * (scripts/deepwiki-real-engine.sh). Minutes long and image-heavy, so it has
+ * its own project and no other project picks it up.
+ */
+const REAL_ENGINE_JOURNEY = /journeys\/deepwiki\/deepwiki\.real-engine\.spec\.ts/;
+
 const CHROMIUM_LAUNCH_OPTIONS = {
   args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
 };
@@ -172,7 +181,7 @@ export default defineConfig({
     // ── chromium ──────────────────────────────────────────────────────────
     {
       name: 'chromium',
-      testIgnore: ADMISSION_JOURNEY,
+      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY],
       use: {
         ...devices['Desktop Chrome'],
         storageState: STORAGE_STATE.member,
@@ -185,7 +194,7 @@ export default defineConfig({
     // ── webkit (spec §6.2: "chromium + webkit") ───────────────────────────
     {
       name: 'webkit',
-      testIgnore: ADMISSION_JOURNEY,
+      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY],
       use: {
         ...devices['Desktop Safari'],
         storageState: STORAGE_STATE.member,
@@ -253,6 +262,22 @@ export default defineConfig({
       dependencies: ['setup'],
       testMatch: PROVIDER_BACKED_JOURNEYS,
       fullyParallel: false,
+    },
+    {
+      /**
+       * DWIKI-014: the REAL engine, end to end (scripts/deepwiki-real-engine.sh).
+       * Serial and alone: one generation is minutes of clone/index/write.
+       */
+      name: 'deepwiki-real-engine',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.member,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: REAL_ENGINE_JOURNEY,
+      fullyParallel: false,
+      retries: 0,
     },
     {
       name: 'chat-stream',

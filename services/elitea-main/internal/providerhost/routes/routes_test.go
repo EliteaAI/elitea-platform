@@ -2,6 +2,7 @@ package routes_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/routes"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhub"
 )
 
 type forwarded struct{ path, project, user, method string }
@@ -105,6 +107,120 @@ func TestAnInvokeOverrideServesThePostBehindTheSameGuard(t *testing.T) {
 	}
 	if w := do(h, http.MethodPost, "/x/tools/1/Wikis/t/invoke", "reader"); w.Code != http.StatusForbidden {
 		t.Fatalf("the override bypassed the guard: %d", w.Code)
+	}
+}
+
+func TestAdmissionRefusesTheInvokeAndNothingElse(t *testing.T) {
+	for _, c := range []struct{ reason, wantMessage string }{
+		// The sentence for `inactive` is providerhub's constant, so the row an
+		// operator reads and the refusal a user reads say the same thing.
+		{"provider_admission_inactive", providerhub.InactiveReason},
+		{"provider_admission_revoked", "revoked"},
+	} {
+		var got []forwarded
+		asked := 0
+		x := table(&got, nil)
+		x.Admission = func(*http.Request) (bool, string) { asked++; return false, c.reason }
+		h, err := routes.Build(x)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		w := do(h, http.MethodPost, "/x/tools/1/Wikis/generate_wiki/invoke", "all")
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("a refused invoke answered %d, want 503", w.Code)
+		}
+		// NEVER REACHED THE FORWARDER. A 503 written after the hop would mean
+		// the provider had already started the work the refusal denies.
+		if len(got) != 0 {
+			t.Fatalf("a refused invoke still forwarded: %+v", got)
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("the refusal is %q, not JSON", ct)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("the refusal body is not JSON: %v (%s)", err, w.Body.String())
+		}
+		if body["reason"] != c.reason {
+			t.Fatalf("the refusal carries reason %q, want %q", body["reason"], c.reason)
+		}
+		if !strings.Contains(body["message"], c.wantMessage) {
+			t.Fatalf("the %s message is %q, want it to mention %q", c.reason, body["message"], c.wantMessage)
+		}
+
+		// SLOTS, POLLING AND CANCELLING ARE NOT GATED. A revocation stops new
+		// work; it must not blind or strand a run that was already accepted.
+		got = nil
+		for _, r := range []struct{ method, path string }{
+			{http.MethodGet, "/x/slots/1"},
+			{http.MethodGet, "/x/invocations/1/Wikis/generate_wiki/inv-1"},
+			{http.MethodDelete, "/x/invocations/1/Wikis/generate_wiki/inv-1"},
+		} {
+			if w := do(h, r.method, r.path, "all"); w.Code != http.StatusOK {
+				t.Fatalf("%s %s answered %d while the provider was refused", r.method, r.path, w.Code)
+			}
+		}
+		if len(got) != 3 {
+			t.Fatalf("%d of the three ungated routes reached the hop", len(got))
+		}
+		if asked != 1 {
+			t.Fatalf("the gate was asked %d times, want once — only the invoke may consult it", asked)
+		}
+	}
+}
+
+func TestAnAdmittedInvokeAndANilHookBothForward(t *testing.T) {
+	// Allowed: the invoke is served exactly as it is without a hook.
+	var got []forwarded
+	allowing := table(&got, nil)
+	allowing.Admission = func(*http.Request) (bool, string) { return true, "" }
+	h, err := routes.Build(allowing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := do(h, http.MethodPost, "/x/tools/1/Wikis/generate_wiki/invoke", "all"); w.Code != http.StatusOK {
+		t.Fatalf("an admitted invoke answered %d", w.Code)
+	}
+	if len(got) != 1 || got[0].path != "/tools/Wikis/generate_wiki/invoke" {
+		t.Fatalf("an admitted invoke forwarded %+v", got)
+	}
+
+	// A facade's own invoke override is gated too — DeepWiki's rewrite is the
+	// invoke, and a gate that only covered the plain forward would leave the
+	// one provider this exists for ungated.
+	overridden := 0
+	refusing := table(&got, func(w http.ResponseWriter, r *http.Request) { overridden++; w.WriteHeader(http.StatusAccepted) })
+	refusing.Admission = func(*http.Request) (bool, string) { return false, "provider_admission_revoked" }
+	h, err = routes.Build(refusing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := do(h, http.MethodPost, "/x/tools/1/Wikis/generate_wiki/invoke", "all"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the override bypassed admission: %d", w.Code)
+	}
+	if overridden != 0 {
+		t.Fatal("the override ran behind a refusal")
+	}
+
+	// Refused BEHIND the guard, not in front of it: a caller with no
+	// credential still learns nothing about which providers this deployment
+	// admits.
+	asked := 0
+	counting := table(&got, nil)
+	counting.Admission = func(*http.Request) (bool, string) { asked++; return false, "provider_admission_revoked" }
+	h, err = routes.Build(counting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := do(h, http.MethodPost, "/x/tools/1/Wikis/generate_wiki/invoke", ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthenticated invoke answered %d, want 401", w.Code)
+	}
+	if w := do(h, http.MethodPost, "/x/tools/1/Wikis/generate_wiki/invoke", "reader"); w.Code != http.StatusForbidden {
+		t.Fatalf("an unpermitted invoke answered %d, want 403", w.Code)
+	}
+	if asked != 0 {
+		t.Fatalf("the gate was consulted %d times for callers the guard turns away", asked)
 	}
 }
 

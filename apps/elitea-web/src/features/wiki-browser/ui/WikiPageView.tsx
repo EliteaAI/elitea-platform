@@ -20,7 +20,7 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
 import { useQuery } from '@tanstack/react-query';
 
-import { fetchWikiPage, type WikiManifest } from '@/entities/wiki';
+import { fetchWikiPage, wikiPageObjectKey, type WikiManifest } from '@/entities/wiki';
 import { t } from '@/shared/i18n';
 import { AnimatedLoadingText } from '@/shared/ui/AnimatedLoadingText';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
@@ -113,7 +113,7 @@ export function WikiPageView({
                 : { kind: 'text', text: query.data.text }
         }
         render={(text) =>
-          renderContent === undefined ? <Markdown>{text}</Markdown> : renderContent(text, `${wikiId}/${active ?? ''}`)
+          renderContent === undefined ? <Markdown>{text}</Markdown> : renderContent(text, wikiPageObjectKey(wikiId, active ?? ''))
         }
       />
     </Box>

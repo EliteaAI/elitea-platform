@@ -1,0 +1,44 @@
+{
+  "configuration": {
+    "application_id": 7,
+    "parameters": {
+      "bucket": "kg",
+      "embedding_model": "text-embedding-3-small",
+      "llm_model": "gpt-4o",
+      "llm_settings": {
+        "api_base": "https://elitea.example/llm/v1",
+        "api_key": "bearer-for-token-a",
+        "max_tokens": 32000,
+        "model_name": "gpt-4o",
+        "organization": "42"
+      },
+      "source": {
+        "active_branch": "develop",
+        "base_branch": "main",
+        "branch": "develop",
+        "file_patterns": "**/*.go",
+        "github_configuration": {
+          "access_token": "ghp_decrypted_secret",
+          "base_url": "https://api.github.com"
+        },
+        "name": "acme-widgets",
+        "repository": "acme/widgets",
+        "toolkit_id": 101,
+        "type": "github"
+      },
+      "source_configs": {
+        "999": {
+          "branch": "attacker-chosen"
+        }
+      },
+      "sources": [
+        999
+      ]
+    },
+    "project_id": 42
+  },
+  "parameters": {
+    "full_rebuild": false,
+    "toolkit_id": 101
+  }
+}

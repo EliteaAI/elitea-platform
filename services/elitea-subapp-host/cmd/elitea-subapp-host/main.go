@@ -1,7 +1,8 @@
 // elitea-subapp-host serves the provider SPI for one sub-application.
 //
-//	ELITEA_SUBAPP=deepwiki|echo     which application (default: deepwiki)
-//	ELITEA_<APP>_RUNNER=unavailable|echo|fixture|legacy (fixture, legacy: DeepWiki only)
+//	ELITEA_SUBAPP=deepwiki|echo|inventory  which application (default: deepwiki)
+//	ELITEA_<APP>_RUNNER=unavailable|echo|…  the application's runner; fixture
+//	                                and legacy are DeepWiki's own
 //	ELITEA_<APP>_ENGINE_SOCKET      the engine sidecar's Unix socket (legacy)
 //	ELITEA_<APP>_DATABASE_URL       the durable invocation store (else in memory)
 //	ELITEA_<APP>_*                  the host settings under the app's prefix
@@ -31,9 +32,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/deepwiki"
-	deepwikirun "github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/deepwiki/run"
-	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/echo"
+	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps"
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/spi"
 )
 
@@ -170,81 +169,39 @@ func healthcheck(lookup spi.Lookup) error {
 	return conn.Close()
 }
 
-// compose picks the application and its runner from the environment.
+// compose picks the application and its runner from the environment. Both
+// come out of the registry (internal/apps): the application by its
+// ELITEA_SUBAPP key, the runner by name from the set that application
+// serves. Nothing here knows which applications exist.
 func compose(lookup spi.Lookup) (spi.App, spi.Settings, error) {
-	name, _ := lookup("ELITEA_SUBAPP")
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		name = "deepwiki"
-	}
-	var prefix string
-	switch name {
-	case "deepwiki":
-		prefix = deepwiki.EnvPrefix
-	case "echo":
-		prefix = echo.EnvPrefix
-	default:
-		return spi.App{}, spi.Settings{}, fmt.Errorf("%w: ELITEA_SUBAPP=%q is not a known sub-application (deepwiki, echo)", spi.ErrConfig, name)
-	}
-	settings, err := spi.SettingsFromEnv(prefix, lookup)
+	key, _ := lookup("ELITEA_SUBAPP")
+	entry, err := apps.Lookup(key)
 	if err != nil {
 		return spi.App{}, spi.Settings{}, err
 	}
-	runnerName, _ := lookup(prefix + "RUNNER")
+	settings, err := spi.SettingsFromEnv(entry.EnvPrefix, lookup)
+	if err != nil {
+		return spi.App{}, spi.Settings{}, err
+	}
+	runnerName, _ := lookup(entry.EnvPrefix + "RUNNER")
 	runnerName = strings.TrimSpace(runnerName)
 	if runnerName == "" {
 		runnerName = "unavailable"
 	}
-	stepRaw, _ := lookup(prefix + "FIXTURE_STEP_SECONDS")
+	stepRaw, _ := lookup(entry.EnvPrefix + "FIXTURE_STEP_SECONDS")
 	step := time.Second
 	if stepRaw != "" {
 		parsed, err := time.ParseDuration(strings.TrimSpace(stepRaw) + "s")
 		if err != nil || parsed < 0 {
-			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sFIXTURE_STEP_SECONDS must be a number of seconds, got %q", spi.ErrConfig, prefix, stepRaw)
+			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sFIXTURE_STEP_SECONDS must be a number of seconds, got %q", spi.ErrConfig, entry.EnvPrefix, stepRaw)
 		}
 		step = parsed
 	}
-	var runner spi.Runner
-	switch runnerName {
-	case "unavailable":
-		runner = spi.UnavailableRunner{}
-	case "echo":
-		runner = spi.EchoRunner{Step: step}
-	case "fixture":
-		// The DeepWiki composition-and-upload path over canned engine results
-		// (the Python shell's fixture runner, ported): what the browser
-		// journeys run against.
-		if name != "deepwiki" {
-			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=fixture is DeepWiki's runner, not %s's", spi.ErrConfig, prefix, name)
-		}
-		runner = deepwikirun.NewFixtureRunner(settings, step)
-	case "legacy":
-		// The analysis engine, reached as a sidecar over a local socket
-		// (ADR-0023 H2): the engine's dependency closure stays in Python;
-		// composition, upload and the SPI are this host's. A host asked for
-		// the engine with no socket to reach it must not come up looking
-		// healthy.
-		if name != "deepwiki" {
-			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=legacy is DeepWiki's runner, not %s's", spi.ErrConfig, prefix, name)
-		}
-		if settings.EngineSocket == "" {
-			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=legacy needs %sENGINE_SOCKET, the engine sidecar's Unix socket", spi.ErrConfig, prefix, prefix)
-		}
-		runner = deepwikirun.NewEngineRunner(settings)
-	default:
-		return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=%q is not served by this host (unavailable, echo, fixture, legacy)", spi.ErrConfig, prefix, runnerName)
+	runner, err := entry.Runner(runnerName, settings, step)
+	if err != nil {
+		return spi.App{}, spi.Settings{}, err
 	}
-	switch name {
-	case "deepwiki":
-		return deepwiki.App(runner), settings, nil
-	default:
-		app := echo.App(step)
-		app.Runner = runner
-		if runnerName == "unavailable" {
-			app.Runner = spi.UnavailableRunner{}
-		}
-		return app, settings, nil
-	}
+	return entry.Compose(runner), settings, nil
 }
 
 // listenerTLS builds the listener's TLS: the server certificate, and — with

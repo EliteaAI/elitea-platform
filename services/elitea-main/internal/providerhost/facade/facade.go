@@ -50,6 +50,16 @@ type Config struct {
 	ServerName     string
 	IdentitySecret string
 	Timeout        time.Duration
+
+	// Admission is the deployment's answer to "may this provider still be
+	// invoked" (internal/providerhost/admission), asked on the invoke route.
+	//
+	// SUPPLIED BY THE COMPOSITION ROOT, never by ConfigFromEnv — which is why
+	// it sits below the transport fields and why the env reader leaves it nil.
+	// The gate needs a database pool and the public project id, neither of
+	// which a facade has or should have. Nil is a deployment with no admission
+	// plane, and forwards unchanged.
+	Admission AdmissionHook
 }
 
 // EnvNames is one provider's variable names.

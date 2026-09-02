@@ -176,6 +176,14 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
   - package-ecosystem: pip
+    directory: /services/elitea-inventory
+    schedule:
+      interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: pip
     directory: /services/pylon-indexer
     schedule:
       interval: weekly

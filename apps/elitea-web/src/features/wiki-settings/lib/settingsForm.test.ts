@@ -79,4 +79,73 @@ describe('parseSettingsDraft', () => {
     expect(parsed.problems).toHaveLength(1);
     expect(parsed.settings).not.toBeNull();
   });
+
+  describe('the model settings the engine substitutes defaults for', () => {
+    // Measured 2026-09-02 (PR #725): the engine asks the platform gateway for
+    // gpt-4o-mini / text-embedding-3-large when the toolkit names neither, the
+    // gateway resolves models PER PROJECT, and a project without those rows
+    // answers 404. The generation then "completes" with no pages and only the
+    // gateway log says why.
+    it('hints BOTH models for a document that names neither, and still saves', () => {
+      const parsed = parseSettingsDraft('{"repository":"acme/x"}');
+      expect(parsed.problems).toEqual([]);
+      // Not a problem: the document is legal and works wherever the project
+      // does resolve the fallbacks. Blocking Save would break those.
+      expect(canSaveSettings(parsed)).toBe(true);
+      expect(parsed.hints).toEqual([
+        { field: 'llm_model', fallback: 'gpt-4o-mini' },
+        { field: 'embedding_model', fallback: 'text-embedding-3-large' },
+      ]);
+    });
+
+    it('names the model the engine would ASK FOR, not just the missing key', () => {
+      // The fallback name is the whole point: it is the string an operator has
+      // to go and configure, or match. A hint that only said "missing" would
+      // leave them where the gateway log left them.
+      const hints = parseSettingsDraft('{"repository":"acme/x","llm_model":"gpt-5"}').hints;
+      expect(hints).toHaveLength(1);
+      expect(hints[0]?.field).toBe('embedding_model');
+      expect(hints[0]?.fallback).toBe('text-embedding-3-large');
+    });
+
+    it('hints nothing when both models are named', () => {
+      const parsed = parseSettingsDraft(
+        '{"repository":"acme/x","llm_model":"gpt-5","embedding_model":"text-embedding-3-small"}',
+      );
+      expect(parsed.hints).toEqual([]);
+    });
+
+    it.each([
+      ['toolkit_configuration_llm_model', 'toolkit_configuration_embedding_model'],
+      ['llm_model', 'embedding_model'],
+    ])('accepts %s / %s as naming the models', (llmKey, embeddingKey) => {
+      // The toolkit_configuration_ twin is how a settings screen may have
+      // stored it (entities/wiki's alias rule). Reading only the bare name
+      // would hint at a toolkit that is in fact configured.
+      const draft = JSON.stringify({ repository: 'acme/x', [llmKey]: 'gpt-5', [embeddingKey]: 'e5' });
+      expect(parseSettingsDraft(draft).hints).toEqual([]);
+    });
+
+    it.each([['""'], ['"   "'], ['null'], ['42'], ['{"name":"gpt-5"}']])(
+      'treats %s as no model at all',
+      (value) => {
+        // A key stored blank is what a settings screen leaves behind when a
+        // field is cleared, and the engine falls back on it exactly as if the
+        // key were absent. A non-string is not a model name either.
+        const draft = `{"repository":"acme/x","llm_model":${value},"embedding_model":${value}}`;
+        expect(parseSettingsDraft(draft).hints.map((h) => h.field)).toEqual([
+          'llm_model',
+          'embedding_model',
+        ]);
+      },
+    );
+
+    it('hints nothing about a document that never parsed', () => {
+      // There is no configuration to hint about, and a hint beside "not valid
+      // JSON" would read as a second, unrelated defect.
+      for (const draft of ['   ', '{not json', '[1,2]']) {
+        expect(parseSettingsDraft(draft).hints).toEqual([]);
+      }
+    });
+  });
 });

@@ -311,7 +311,7 @@ services:
     restart: "no"
 
   elitea-migrate:
-    image: ghcr.io/eliteaai/elitea-main:standalone
+    image: ghcr.io/elitea-ng/elitea-main:standalone
     build:
       context: ..
       dockerfile: services/elitea-main/Containerfile
@@ -334,7 +334,7 @@ services:
     restart: "no"
 
   elitea-agentstate-migrate:
-    image: ghcr.io/eliteaai/elitea-main:standalone
+    image: ghcr.io/elitea-ng/elitea-main:standalone
     build:
       context: ..
       dockerfile: services/elitea-main/Containerfile
@@ -420,7 +420,7 @@ services:
   # GATEWAY_IDENTITY_SECRET is the one hard requirement: startupIdentityCheck
   # exits 1 when it is empty and the credential Account is wired.
   elitea-llm-gateway:
-    image: ghcr.io/eliteaai/elitea-llm-gateway:standalone
+    image: ghcr.io/elitea-ng/elitea-llm-gateway:standalone
     # Build context is the module directory only — it must not inherit the root
     # go.work, which pins Go 1.25.8 for elitea-main/elitea-scheduler.
     build:
@@ -646,7 +646,7 @@ services:
       - "${STANDALONE_OTEL_HTTP_PORT:-14318}:4318" # OTLP HTTP
 
   elitea-main:
-    image: ghcr.io/eliteaai/elitea-main:standalone
+    image: ghcr.io/elitea-ng/elitea-main:standalone
     # `build:` present so compose builds the tag from this commit instead of
     # reaching for a registry tag that was never published (cf. issue #154).
     # Context is `..` because build contexts resolve relative to THIS file's
@@ -951,7 +951,7 @@ services:
     # The Go sub-application host (ADR-0023 H1.1) serving DeepWiki's SPI in
     # the Python shell's place: same ELITEA_DEEPWIKI_* settings, same fixture
     # runner, one static binary. ELITEA_SUBAPP names the application.
-    image: ghcr.io/eliteaai/elitea-subapp-host:standalone
+    image: ghcr.io/elitea-ng/elitea-subapp-host:standalone
     build:
       context: ..
       dockerfile: services/elitea-subapp-host/Containerfile
@@ -1000,7 +1000,7 @@ services:
   # without the analysis engine. No SPI, no TLS, no identity: the socket is
   # reachable only through the shared volume.
   elitea-deepwiki-engine:
-    image: ghcr.io/eliteaai/elitea-deepwiki:standalone
+    image: ghcr.io/elitea-ng/elitea-deepwiki:standalone
     build:
       context: ..
       dockerfile: services/elitea-deepwiki/Containerfile
@@ -1024,7 +1024,7 @@ services:
     restart: unless-stopped
 
   elitea-web:
-    image: ghcr.io/eliteaai/elitea-web:standalone
+    image: ghcr.io/elitea-ng/elitea-web:standalone
     build:
       context: ..
       dockerfile: apps/elitea-web/Containerfile
@@ -1083,7 +1083,7 @@ services:
   # agent-token producer of its own, so without this service an admitted run
   # streams nothing and ends in a terminal failure.
   elitea-worker:
-    image: ghcr.io/eliteaai/elitea-worker-python:standalone
+    image: ghcr.io/elitea-ng/elitea-worker-python:standalone
     build:
       # Repo root, not services/elitea-worker-python: the Containerfile copies
       # libs/proto (:17) and testdata/proto/runtime/v1 (:79). It also git-clones
