@@ -126,6 +126,7 @@
 #   15433 postgres                  STANDALONE_PG_PORT
 #   16380 redis                     STANDALONE_REDIS_PORT
 #   8090  llm-mock journal          STANDALONE_MOCK_PORT — see the llm-mock comment
+#   (llm-real, the `real-llm` profile, publishes nothing — see its comment)
 #   9400  oidc-provider-mock        FIXED — see the oidc-mock comment
 #
 #   The runtime plane is NOT published to the host. runtime-redis:6380 and
@@ -461,7 +462,14 @@ services:
       # `:-` form treats empty and unset alike, so an operator disarming the
       # allowlist would have silently got the mock allowlisted back, and a
       # negative test written against it would pass while proving nothing.
-      GATEWAY_EGRESS_ALLOWLIST: "${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090}"
+      #
+      # `llm-real:8090` is the real-model lane (the `real-llm` profile below).
+      # Named by default even though the service is off by default: an
+      # allowlist entry for a host that is not running permits nothing, and it
+      # spares the operator who enables the profile a second, easily-forgotten
+      # variable — the failure that variable prevents is a 502 that reads as
+      # "the model is down".
+      GATEWAY_EGRESS_ALLOWLIST: "${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090,llm-real:8090}"
 
       # Issue #458 — the platform's SHARED ("public") project.
       #
@@ -571,6 +579,57 @@ services:
       timeout: 3s
       retries: 10
       start_period: 3s
+    restart: unless-stopped
+
+  # ── Real model upstream — the `real-llm` profile ─────────────────────────
+  # A tiny REAL model next to the mock, never instead of it: llama.cpp in
+  # router mode serving Qwen3-0.6B (chat, SSE, OpenAI tool calls; thinking off,
+  # 256-token cap) and nomic-embed-text-v1.5 (768-dim embeddings), both baked
+  # into the image. Built and smoke-tested in github.com/elitea-ng/elitea-e2e-llm
+  # and consumed here BY DIGEST — nothing about it is rebuilt per pull request.
+  #
+  # Off by default (a compose profile), because it is ~800 MB the default stack
+  # never needs. Enable with COMPOSE_PROFILES=real-llm on every stack command,
+  # then seed the gateway at it through the existing self-hosted path:
+  #
+  #   COMPOSE_PROFILES=real-llm LLM_PROVIDER=vllm LLM_API_BASE=http://llm-real:8090 \
+  #     LLM_MODEL=qwen3-0.6b LLM_EMBEDDING_MODEL=vllm/nomic-embed-text-v1.5 \
+  #     deploy/scripts/standalone-stack.sh seed-llm
+  #
+  # `vllm` for the same load-bearing reason as the mock (see above). The ids on
+  # the wire are the bare names: the gateway splits `vllm/qwen3-0.6b` into a
+  # provider and a model (modelmap.go, ParseModelString) and dispatches the
+  # model half, which is the router's preset section name. LLM_EMBEDDING_MODEL
+  # is passed WITH the prefix because resolve_embedding_model adds it for the
+  # mock provider only.
+  #
+  # What this lane can and cannot assert. The model's text is not
+  # deterministic: no echo, no `[[mock:…]]` markers, no sentinels, and no
+  # request journal. The specs that depend on those stay on the mock (the
+  # `chat-stream` Playwright project); the `chat-stream-real` project runs the
+  # structural ones. Two facts only this lane can prove: the gateway's SSE
+  # relay against a vendor's real chunks, and a tool call the model chose.
+  #
+  # The mock stays up alongside it: `check` writes its API-created credential
+  # at llm-mock:8090 whatever provider was seeded, and that assertion must
+  # keep running here.
+  llm-real:
+    image: ghcr.io/elitea-ng/elitea-e2e-llm:v0.1.0@sha256:1b11aa30481ffee8c8e823aeae712b7926a3422f689e1c49f45f5c208329b843
+    profiles: ["real-llm"]
+    # Not published to the host: there is no journal to read, and the gateway
+    # reaches it at `llm-real:8090` on the compose network.
+    healthcheck:
+      # Ready means BOTH models report loaded, not that the router answers
+      # /health — the router is up seconds before its children are. The image
+      # ships curl and grep; it has no python.
+      test: ["CMD-SHELL",
+             "test \"$$(curl -fsS http://127.0.0.1:8090/v1/models | grep -o '\"loaded\"' | wc -l)\" -ge 2"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      # Model load is a few seconds; the generous window covers a runner
+      # that is also building eight images.
+      start_period: 90s
     restart: unless-stopped
 
   # ── Application services ────────────────────────────────────────────────────

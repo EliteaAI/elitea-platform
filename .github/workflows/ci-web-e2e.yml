@@ -520,6 +520,108 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  chat-stream-real:
+    name: Chat journeys against a real model
+    # The structural chat journeys against a REAL model — Qwen3-0.6B under
+    # llama.cpp, baked into an image built and smoke-tested in
+    # github.com/elitea-ng/elitea-e2e-llm and pinned by digest in the compose
+    # file (the `llm-real` service, `real-llm` profile). Next to the mock
+    # lanes, never instead of them: the mock is what makes `chat.stop`,
+    # `chat.hitl`, the toolkit sentinels and the journal-reading specs
+    # assertable at all, and none of those run here.
+    #
+    # What this job alone can catch: the gateway's SSE relay against a
+    # vendor's real chunk shapes (a `reasoning_content` field, a trailing
+    # usage chunk, real finish reasons) and a tool call the model chose from
+    # the schema the runtime presented — as opposed to one a prompt marker
+    # forced. Every assertion in the `chat-stream-real` Playwright project is
+    # semantic or structural for that reason; an exact-text assertion here
+    # would be a flake by construction.
+    #
+    # On the NATIVE runtime (STANDALONE_WORKER=rust): three of the seven
+    # specs in the project are the pipeline journeys, which author the Rust
+    # runtime's graph shapes and skip themselves on the python leg. The
+    # python leg would run four specs for the same stack cost.
+    #
+    # A separate job for the same reason `chat-stream-rust` is: the stacks
+    # share the fixed oidc-mock port and cannot coexist on one host, and one
+    # job name per lane keeps the failing lane legible.
+    #
+    # Measured in the image's own CI on this runner class: 25–43 tok/s
+    # generation, so a capped 256-token turn is ~10 s; the Rust lane it
+    # mirrors takes ~15 min. The timeout below is the thing that turns a
+    # wedged model into minutes rather than the six-hour default; no other
+    # job in this workflow has one, and this is the one whose upstream can
+    # hang.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The web, main and worker images all build from repo-root context.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Pre-pull the pinned Playwright container and the model image
+        # Both bounded and NON-FATAL, for the reasons the `chat-stream` job's
+        # copy of this step spells out: compose pulls the model image itself
+        # at `up` if this fails, so a stalled pull costs the overlap, never
+        # the run. The model image is ~800 MB and network-bound, so it hides
+        # behind `npm ci` above and the image builds inside the script below.
+        #
+        # Pulled THROUGH the compose file rather than by a reference written
+        # here, so the digest lives in exactly one place.
+        working-directory: ${{ github.workspace }}
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+          timeout 900 docker compose -f deploy/docker-compose.standalone-full.yml --profile real-llm pull -q llm-real \
+            || echo "::warning::pull of the real-model image failed or timed out; compose will pull it inline at up"
+      - name: Run the journeys against a fresh real-model stack
+        # The same script and lifecycle as `chat-stream`. What differs is the
+        # environment: the profile that starts `llm-real`, the LLM_* variables
+        # `seed-llm` reads to point the gateway at it (LLM_EMBEDDING_MODEL
+        # carries the `vllm/` prefix itself — see resolve_embedding_model),
+        # the Playwright project that holds only the structural specs, and
+        # E2E_CHAT_MODEL so those specs expect the seeded row's name.
+        #
+        # No MOCK_LLM_CHUNK_DELAY_MS: the mock is up for `check` but answers
+        # no journey here, and a real model paces itself.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          STANDALONE_WORKER: rust
+          COMPOSE_PROFILES: real-llm
+          LLM_PROVIDER: vllm
+          LLM_API_BASE: http://llm-real:8090
+          LLM_MODEL: qwen3-0.6b
+          LLM_EMBEDDING_MODEL: vllm/nomic-embed-text-v1.5
+          PLAYWRIGHT_PROJECT: chat-stream-real
+          E2E_CHAT_MODEL: vllm/qwen3-0.6b
+          CHAT_STREAM_PROJECT: elitea-chatstream-real-ci
+          # Not 8085 (the gateway's debug port) and not 8086 (the Rust lane's),
+          # so the three lanes can never collide even on one host.
+          CHAT_STREAM_PORT: "8087"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+        run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Give the report back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-chat-stream-real
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   deepwiki-stack:
     name: DeepWiki journeys through the facade and the provider
     # The provider-backed DeepWiki journeys (DWIKI-005/006/010/011/012):

@@ -6,6 +6,19 @@
 #   apps/elitea-web/scripts/chat-stream-e2e.sh --keep     # leave the stack up
 #   CHAT_STREAM_REPEAT=3 …/chat-stream-e2e.sh            # flake check
 #   STANDALONE_WORKER=rust …/chat-stream-e2e.sh          # native Rust runtime
+#   COMPOSE_PROFILES=real-llm LLM_PROVIDER=vllm LLM_API_BASE=http://llm-real:8090 \
+#     LLM_MODEL=qwen3-0.6b LLM_EMBEDDING_MODEL=vllm/nomic-embed-text-v1.5 \
+#     PLAYWRIGHT_PROJECT=chat-stream-real E2E_CHAT_MODEL=vllm/qwen3-0.6b \
+#     …/chat-stream-e2e.sh                               # real-model lane
+#
+# The real-model lane changes nothing in this script's lifecycle: the LLM_*
+# variables reach `seed-llm` through the environment every `run_stack` call
+# inherits, COMPOSE_PROFILES reaches compose the same way, and the mock stays
+# up beside the real model because `check` still asserts against it. What the
+# lane DOES change is which Playwright project runs and which model name the
+# specs expect (E2E_CHAT_MODEL), both forwarded below. See the `llm-real`
+# service in deploy/docker-compose.standalone-full.yml for what this lane can
+# and cannot assert.
 #
 # STANDALONE_WORKER is read by deploy/scripts/standalone-stack.sh, not by this
 # script, and reaches it through the environment every `run_stack` call
@@ -62,7 +75,7 @@ run_stack() {
 echo "→ Runtime PKI + secrets (idempotent)…"
 run_stack certs
 
-echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python}, mock chunk delay ${DELAY_MS}ms)…"
+echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python}, profiles=${COMPOSE_PROFILES:-none}, mock chunk delay ${DELAY_MS}ms)…"
 # `up` reuses an image that already exists, so a source change lands only if
 # the build is asked for explicitly. That is not a nicety here: the whole
 # incremental-render assertion depends on the mock's per-chunk delay actually
@@ -233,6 +246,12 @@ E2E_WORKER="${STANDALONE_WORKER:-python}"
 # above it — the same stack, seeds and assertions — for the provider-backed
 # DeepWiki journeys.
 PLAYWRIGHT_PROJECT="${PLAYWRIGHT_PROJECT:-chat-stream}"
+# E2E_CHAT_MODEL names the model the specs expect the picker to offer. Unset,
+# the specs default to the mock's name; the real-model lane sets it to the
+# seeded `vllm/<model>` row. Forwarded explicitly because the container run
+# below starts from an EMPTY environment — a variable exported on the host and
+# not listed here reaches the host path and silently not the container path.
+E2E_CHAT_MODEL="${E2E_CHAT_MODEL:-}"
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
@@ -240,6 +259,7 @@ if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
     -e CI="${CI:-}" \
     -e E2E_REUSE_STACK=1 \
     -e E2E_WORKER="$E2E_WORKER" \
+    -e E2E_CHAT_MODEL="$E2E_CHAT_MODEL" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
@@ -247,5 +267,6 @@ else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
   E2E_WORKER="$E2E_WORKER" \
+  E2E_CHAT_MODEL="$E2E_CHAT_MODEL" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 fi
