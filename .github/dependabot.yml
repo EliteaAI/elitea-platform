@@ -80,6 +80,14 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
   - package-ecosystem: gomod
+    directory: /services/elitea-subapp-host
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
     directory: /libs/go/authlib
     schedule:
       interval: weekly
