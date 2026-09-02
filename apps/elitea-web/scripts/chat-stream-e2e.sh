@@ -82,7 +82,20 @@ echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python
 # running, and a stale mock streams the reply in one burst — which reads as
 # "the UI does not stream" rather than "the harness did not slow anything
 # down". Measured: chunk frames 33ms apart with the delay set to 600.
-run_stack build
+#
+# STANDALONE_SKIP_BUILD=1 is set by the continuous-integration jobs, which
+# have already built and loaded every image through
+# .github/actions/build-stack-images (buildx bake, one shared layer cache per
+# image, the cache mounts carried across runs) and asserted each one is in the
+# local store. Running `compose build` again here would rebuild them from
+# scratch on the daemon's own builder, cache-less — the 5-to-10-minute cost
+# that action exists to remove. Locally the variable is unset and the build
+# runs, for the reason above.
+if [ "${STANDALONE_SKIP_BUILD:-0}" = "1" ]; then
+  echo "→ STANDALONE_SKIP_BUILD=1: images were built and asserted by the caller; not rebuilding"
+else
+  run_stack build
+fi
 # `up` exits non-zero when a service declares no healthcheck even though the
 # stack is fine, so readiness is asserted below rather than taken from it.
 run_stack up || true

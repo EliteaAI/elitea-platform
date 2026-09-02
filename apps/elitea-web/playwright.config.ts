@@ -389,6 +389,38 @@ export default defineConfig({
     },
 
     /*
+     * ── chat-stream-real-nightly — the real-model lane's exploratory superset ─
+     *
+     * Everything in `chat-stream-real` plus the two specs it deliberately
+     * leaves out, `nested-agent` and `agent-tools`: the ones whose prompts
+     * OFFER a tool call that the mock never takes and a real model will. On a
+     * pull request that is a flake by construction at 0.6B; on a schedule it
+     * is the measurement that decides when they can join the PR lane. Run by
+     * .github/workflows/nightly-real-llm.yml on both runtimes.
+     */
+    {
+      name: 'chat-stream-real-nightly',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: [
+        /streaming\/chat\.admin-providers\.spec\.ts/,
+        /streaming\/chat\.agent\.spec\.ts/,
+        /streaming\/chat\.agent-tools\.spec\.ts/,
+        /streaming\/chat\.mcp\.spec\.ts/,
+        /streaming\/chat\.nested-agent\.spec\.ts/,
+        /streaming\/chat\.pipeline\.spec\.ts/,
+        /streaming\/chat\.pipeline-authored\.spec\.ts/,
+        /streaming\/chat\.pipeline-multinode\.spec\.ts/,
+        /streaming\/chat\.regenerate\.spec\.ts/,
+      ],
+      fullyParallel: false,
+    },
+
+    /*
      * ── index-stream (#93 Surface A) — the index definition-of-done journey ──
      *
      * Its own project for the same reason `chat-stream` is: it needs the FULL

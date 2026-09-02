@@ -25,6 +25,16 @@
 # entry groups its non-major updates into one pull request; a major version is
 # left on its own because it is a real review.
 #
+# WHEN THEY RUN, AND WHY IT IS PINNED. Every schedule below names
+# `day: saturday`, `time: "03:00"`, `timezone: "Europe/Warsaw"`. A dependabot
+# update runs as an Actions job and spends a slot out of the 20 this account
+# gets on the free plan — 58 of them landed in three days, unpinned, in the
+# middle of the working day, queued alongside the CI of the pull requests they
+# were interrupting. `interval: weekly` with no time is scheduled by GitHub at
+# an arbitrary hour, and 20 entries all firing at once is the shape that hurt.
+# The window is off-peak for this team; the interval and the groups are
+# unchanged, so nothing about WHAT is scanned moves.
+#
 # WHAT DEPENDABOT CANNOT DO HERE, stated so the next reader does not assume
 # coverage that is absent:
 #
@@ -46,6 +56,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       actions:
         patterns: ["*"]
@@ -59,6 +72,9 @@ updates:
     directory: /services/elitea-llm-gateway
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -67,6 +83,9 @@ updates:
     directory: /services/elitea-main
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -75,6 +94,9 @@ updates:
     directory: /services/elitea-scheduler
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -83,6 +105,9 @@ updates:
     directory: /services/elitea-subapp-host
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -91,6 +116,9 @@ updates:
     directory: /libs/go/authlib
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -99,6 +127,9 @@ updates:
     directory: /libs/go/eventslib
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -107,6 +138,9 @@ updates:
     directory: /libs/go/observability
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -115,6 +149,9 @@ updates:
     directory: /libs/go/rpclib
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -123,6 +160,9 @@ updates:
     directory: /gen/go
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -131,6 +171,9 @@ updates:
     directory: /libs/proto/gen/go
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -139,6 +182,9 @@ updates:
     directory: /tools/uictl
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       go-minor-patch:
         patterns: ["*"]
@@ -149,6 +195,9 @@ updates:
     directory: /services/elitea-worker-rust
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       cargo-minor-patch:
         patterns: ["*"]
@@ -163,6 +212,9 @@ updates:
     directory: /services/elitea-worker-python
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       pip-minor-patch:
         patterns: ["*"]
@@ -171,6 +223,9 @@ updates:
     directory: /services/elitea-deepwiki
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       pip-minor-patch:
         patterns: ["*"]
@@ -179,6 +234,9 @@ updates:
     directory: /services/elitea-inventory
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       pip-minor-patch:
         patterns: ["*"]
@@ -187,6 +245,9 @@ updates:
     directory: /services/pylon-indexer
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       pip-minor-patch:
         patterns: ["*"]
@@ -195,6 +256,9 @@ updates:
     directory: /libs/proto
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       pip-minor-patch:
         patterns: ["*"]
@@ -205,6 +269,9 @@ updates:
     directory: /apps/elitea-web
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       npm-minor-patch:
         patterns: ["*"]
@@ -213,6 +280,9 @@ updates:
     directory: /tools/parity-extract
     schedule:
       interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
     groups:
       npm-minor-patch:
         patterns: ["*"]

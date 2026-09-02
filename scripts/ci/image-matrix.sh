@@ -2,10 +2,16 @@
 #
 # The published image list has ONE source, and every copy of it agrees.
 #
-# WHAT THIS CLOSES. The nine published images are written out in six places:
-# four matrices in publish.yml (build, scan, manifest, sign), the IMAGES bash
-# array in publish.yml's cleanup step, and the scan matrix in
-# ci-image-scan.yml. Nothing compared them.
+# WHAT THIS CLOSES. The published images are written out in four places: two
+# matrices in publish.yml (`build`, `publish-image`), the IMAGES bash array in
+# publish.yml's cleanup step, and the scan matrix in ci-image-scan.yml. Nothing
+# compared them.
+#
+# It used to be six places: publish.yml carried FOUR matrices, because scan,
+# manifest and sign were three jobs of ten. They are one `publish-image` job
+# now, so there are two matrices to hold — the walk floor below moved with
+# them, and it still names the jobs it expects rather than counting anonymous
+# matrices.
 #
 # publish.yml's IMAGES array carries a comment saying it is "held by the same
 # gate in helm-lint.yml". IT IS NOT. That gate cross-checks the CHART matrix and
@@ -27,7 +33,7 @@
 # sample. Inventing the oracle is the failure this repository keeps finding.
 #
 # Generating the matrices needs a real `--print` capture to build against. This
-# script makes the six lists unable to disagree, which is the value that was
+# script makes those lists unable to disagree, which is the value that was
 # actually available.
 set -euo pipefail
 
@@ -93,13 +99,14 @@ compare() {
   fi
 }
 
-# ── the four publish.yml matrices ───────────────────────────────────────────
+# ── the publish.yml matrices ────────────────────────────────────────────────
 #
-# Each is a `- name: <image>` list under a `matrix.image`. Counted rather than
-# merged, because four matrices that each hold the right nine names is the
+# Each is a `- name: <image>` list under a `matrix.image`. Compared one by one
+# rather than merged, because EACH matrix holding the right names is the
 # invariant — a single merged set would pass with one matrix empty and another
-# holding eighteen.
-matrix_count=0
+# holding twice the images.
+EXPECTED_JOBS="build publish-image"
+seen_jobs=""
 while IFS= read -r job; do
   names="$(python3 - "$PUBLISH" "$job" <<'PY'
 import sys
@@ -110,7 +117,7 @@ print(" ".join(i["name"] for i in matrix.get("image", []) if isinstance(i, dict)
 PY
 )"
   compare "publish.yml job '$job'" "$names"
-  matrix_count=$((matrix_count + 1))
+  seen_jobs="$seen_jobs $job"
 done < <(python3 - "$PUBLISH" <<'PY'
 import sys
 import yaml
@@ -124,9 +131,16 @@ PY
 
 # A floor on the WALK, not only on each list. A publish.yml whose matrices
 # stopped parsing would otherwise satisfy every comparison above by making none.
-if [ "$matrix_count" -lt 4 ]; then
-  die "found $matrix_count image matrix/matrices in $PUBLISH, expected at least 4 (build, scan, manifest, sign) — this check measured less than it claims"
-fi
+#
+# The floor names the jobs instead of counting them: a rename that drops one of
+# them (the `scan` -> `publish-image` fold is exactly that shape) must fail here
+# rather than silently reduce what this check covers.
+for job in $EXPECTED_JOBS; do
+  case " $(printf '%s' "$seen_jobs" | tr -s ' ') " in
+    *" $job "*) ;;
+    *) die "found no image matrix for job '$job' in $PUBLISH (walked:$seen_jobs) — this check measured less than it claims" ;;
+  esac
+done
 
 # ── the IMAGES bash array ───────────────────────────────────────────────────
 #
@@ -166,5 +180,5 @@ done < <(grep -vE '^\s*(#|$)' "$EXEMPT" | tr -d ' \t')
 if [ "$status" -ne 0 ]; then
   exit 1
 fi
-printf 'OK: %d published images, and all 6 copies of the list agree.\n' \
+printf 'OK: %d published images, and all 4 copies of the list agree.\n' \
   "$(printf '%s' "$expected" | wc -w | tr -d ' ')"

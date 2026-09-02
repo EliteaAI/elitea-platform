@@ -158,8 +158,9 @@ jobs:
   #      every pull request, on every push to main that touches an image input,
   #      and daily at 05:17 UTC. That gate guards the merge.
   #
-  #   2. The `scan` job below scans the image THIS RELEASE PUSHED, before the
-  #      `manifest` job creates the `latest` tag. That gate guards the release.
+  #   2. The `publish-image` job below scans the image THIS RELEASE PUSHED,
+  #      before the manifest step in that same job creates the `latest` tag.
+  #      That gate guards the release.
   #
   #   WHY BOTH. A release is cut from main, so gate 1 measured the release code
   #   at most 24 hours earlier. A CVE published inside that window used to ship,
@@ -174,8 +175,9 @@ jobs:
   #   The image list below is not free-form. ci-image-scan.yml reads it and
   #   fails when it ships an image that no scan covers, so a new entry
   #   cannot arrive unscanned in silence. It also compares its own scan matrix
-  #   with the `scan` matrix below, entry by entry, so the release gate cannot
-  #   quietly exempt an image or expect a target type the merge gate does not.
+  #   with the `publish-image` matrix below, entry by entry, so the release
+  #   gate cannot quietly exempt an image or expect a target type the merge gate
+  #   does not.
   #
   # elitea-worker-python was excluded here until this change, on the grounds
   # that "the worker plane it belongs to (worker_core / worker_client /
@@ -330,17 +332,44 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.suffix }}
 
-  # ── Job 3: Scan the images this release pushed ───────────────────────────────
+  # ── Job 3: Scan, manifest and sign each image this release pushed ────────────
   #
-  # ISSUE #501. This workflow pushed six images that no job in it scanned. The
-  # merge gate had scanned main at most 24 hours earlier, so a CVE published
-  # inside that window shipped and the daily run reported it after the fact.
+  # ONE JOB, THREE STAGES, IN THE ORIGINAL ORDER (scan → manifest → sign).
   #
-  # WHERE IT SITS, AND WHY THERE. `manifest` needs this job, so a red scan stops
-  # BEFORE any `latest` or `<major>.<minor>` tag exists. `rollback` needs it too,
-  # so the platform tags the build job already pushed are deleted along with the
-  # release and the git tag. The images a consumer can resolve by a moving tag
-  # are therefore never images this gate refused.
+  # WHY IT IS ONE JOB. This was three matrix jobs of ten — thirty runner slots
+  # for three commands that each take about twenty seconds, and thirty runner
+  # setups (checkout, buildx, GHCR login) to pay for them. The org is on the
+  # GitHub free plan: 20 concurrent jobs for the whole account. Those thirty
+  # slots queued behind this workflow's own 20 platform builds and behind every
+  # other workflow on the same push, so the release finished later than the work
+  # in it takes.
+  #
+  # NOTHING IS LOST BY FOLDING THEM. The three jobs were strictly sequential
+  # already — `manifest` needed `scan`, `sign` needed `manifest` — so there was
+  # no parallelism between them to give up. Only the per-job overhead goes.
+  #
+  # THE GATE IS STRICTLY STRONGER, NOT WEAKER. `needs: scan` used to be what
+  # stopped a refused image getting a `latest` tag. Now the scan is the step
+  # BEFORE the manifest step in the same job, and a failed step aborts the job:
+  # the manifest is not created, and `latest` / `<major>.<minor>` never exist for
+  # an image this gate refused. Same guarantee, expressed by ordering instead of
+  # by a dependency edge.
+  #
+  # THE STEP NAMES CARRY THE OLD JOB NAMES ("Scan …", "Manifest …", "Sign …") so
+  # the evidence in a release log stays findable by the words a reader knows.
+  #
+  # FAIL-FAST. The three jobs disagreed: `scan` was fail-fast: false ("one red
+  # image must not hide the state of the other nine"), `manifest` was true,
+  # `sign` was false. The merged job takes FALSE, which is the scan's rule,
+  # because the scan is the stage whose verdict a reader needs for every image
+  # and it now runs first in every leg. `rollback` runs on failure() however the
+  # matrix ends, so a complete report still costs nothing.
+  #
+  # ── the scan stage (issue #501) ─────────────────────────────────────────────
+  #
+  # This workflow pushed images that no job in it scanned. The merge gate had
+  # scanned main at most 24 hours earlier, so a CVE published inside that window
+  # shipped and the daily run reported it after the fact.
   #
   # IT READS THE PUSHED IMAGE, NOT A REBUILD. The tag below is the one the build
   # job pushed minutes ago, pulled back from the registry. The step prints the
@@ -361,20 +390,24 @@ jobs:
   # THE MATRIX IS NOT FREE-FORM. ci-image-scan.yml compares it with its own,
   # entry by entry, and fails when they differ. So the release gate cannot
   # exempt an image the merge gate blocks, and cannot expect a target type the
-  # merge gate does not.
-  scan:
-    name: Scan ${{ matrix.image.name }} (${{ matrix.image.blocking && 'blocking' || 'exempt, reports only' }})
+  # merge gate does not. scripts/ci/image-matrix.sh --verify holds the NAMES in
+  # this matrix, the build matrix, the IMAGES cleanup array, ci-image-scan.yml's
+  # matrix and docker-bake.hcl together.
+  publish-image:
+    name: Publish ${{ matrix.image.name }} (${{ matrix.image.blocking && 'blocking' || 'exempt, reports only' }})
     needs: [release, build]
     if: needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
-    # Narrower than the workflow default: this job reads the tree and pulls
-    # images. It pushes nothing.
+    # Narrower than the workflow default (contents/packages/issues/pull-requests
+    # write). This job reads the tree, pulls the platform images, pushes the
+    # multi-arch manifest, and signs it keylessly — hence packages: write and
+    # id-token: write, and nothing else.
     permissions:
       contents: read
-      packages: read
+      packages: write
+      id-token: write
     strategy:
-      # One red image must not hide the state of the other six. rollback runs on
-      # failure() however this matrix ends, so a complete report costs nothing.
+      # See FAIL-FAST above.
       fail-fast: false
       matrix:
         image:
@@ -444,6 +477,9 @@ jobs:
           ref: ${{ needs.release.outputs.new_release_git_tag }}
           persist-credentials: false
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -451,9 +487,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Scan <image> (was job `scan`) ─────────────────────────────────────────
+      #
       # A pull that fails FAILS the job. "The image was not there" must never
       # reach the gate as an empty report, which would read as a clean scan.
-      - name: Pull the image this release pushed
+      - name: Scan ${{ matrix.image.name }} — pull the image this release pushed
         id: pull
         run: |
           set -euo pipefail
@@ -470,7 +508,7 @@ jobs:
 
       # exit-code 0 on purpose: this step collects the report, and the step
       # below is the gate. Splitting them lets the gate print every finding.
-      - name: Scan the pushed image
+      - name: Scan ${{ matrix.image.name }} — trivy the pushed image
         uses: aquasecurity/trivy-action@v0.36.0
         env:
           # Used only if trivy resolves the reference from the registry instead
@@ -485,7 +523,13 @@ jobs:
           output: trivy-report.json
           exit-code: "0"
 
-      - name: Gate on HIGH and CRITICAL findings
+      # THIS STEP IS THE RELEASE GATE. It runs BEFORE the manifest step below,
+      # so a red scan stops before any `latest` or `<major>.<minor>` tag exists.
+      # `rollback` needs this job, so the platform tags the build job already
+      # pushed are deleted along with the release and the git tag. The images a
+      # consumer can resolve by a moving tag are therefore never images this
+      # gate refused.
+      - name: Scan ${{ matrix.image.name }} — gate on HIGH and CRITICAL findings
         run: |
           bash scripts/ci/image-scan-gate.sh \
             trivy-report.json \
@@ -493,41 +537,11 @@ jobs:
             "${{ matrix.image.expect_type }}" \
             "${{ matrix.image.blocking }}"
 
-  # ── Job 4: Merge platform digests into a single multi-arch manifest ──────────
-  #
-  # `needs: scan` is what makes the gate above a RELEASE gate. Without it a
-  # refused image still gets a `latest` tag, and the scan becomes a report.
-  manifest:
-    name: Manifest ${{ matrix.image.name }}
-    needs: [release, build, scan]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        image:
-          - name: elitea-main
-          - name: elitea-scheduler
-          - name: elitea-subapp-host
-          - name: elitea-ui
-          - name: elitea-web
-          - name: pylon-indexer
-          - name: elitea-llm-gateway
-          - name: elitea-worker-python
-          - name: elitea-worker-rust
-          - name: elitea-deepwiki
-
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push multi-arch manifest
+      # ── Manifest <image> (was job `manifest`) ────────────────────────────────
+      #
+      # Merge the two platform digests into a single multi-arch manifest. Only
+      # reachable when the gate step above passed.
+      - name: Manifest ${{ matrix.image.name }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
           IMAGE="${{ env.REGISTRY }}/${{ matrix.image.name }}"
@@ -542,41 +556,15 @@ jobs:
             "${IMAGE}:${VERSION}-linux-amd64" \
             "${IMAGE}:${VERSION}-linux-arm64"
 
-  # ── Job 5: Keyless cosign signing ───────────────────────────────────────────
-  sign:
-    name: Sign ${{ matrix.image.name }}
-    needs: [release, manifest]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - name: elitea-main
-          - name: elitea-scheduler
-          - name: elitea-subapp-host
-          - name: elitea-ui
-          - name: elitea-web
-          - name: pylon-indexer
-          - name: elitea-llm-gateway
-          - name: elitea-worker-python
-          - name: elitea-worker-rust
-          - name: elitea-deepwiki
-
-    steps:
+      # ── Sign <image> (was job `sign`) ────────────────────────────────────────
+      #
+      # Installed here rather than with the other setup actions at the top: an
+      # image the scan refuses never reaches this line, so it never pays for the
+      # download.
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Sign multi-arch manifest
+      - name: Sign ${{ matrix.image.name }} — keyless cosign on the multi-arch manifest
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
@@ -588,16 +576,17 @@ jobs:
 
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
-  # ── Job 6: Package and push the Helm charts to the GHCR OCI registry ────────
+  # ── Job 4: Package and push the Helm charts to the GHCR OCI registry ────────
   # The images are only half of a release. Until this job existed, a consumer
   # could `docker pull ghcr.io/eliteaai/elitea-main:1.2.3` but had no way to
   # obtain the chart that deploys it other than cloning this repository at the
   # matching tag — which is not a distribution channel, it is a workaround.
   #
-  # `needs: sign` on purpose, not `needs: release`. A chart whose values point
-  # at an image tag that does not exist yet is a chart that cannot install, so
-  # the charts go out strictly after the manifests they reference are pushed
-  # and signed.
+  # `needs: publish-image` on purpose, not `needs: release`. A chart whose values
+  # point at an image tag that does not exist yet is a chart that cannot install,
+  # so the charts go out strictly after the manifests they reference are pushed
+  # and signed. `publish-image` is the job that now creates AND signs those
+  # manifests (it was `sign`), so this edge means exactly what it did before.
   #
   # No `latest` chart tag, unlike the image manifests above: an OCI chart
   # reference resolves by SemVer version, `helm pull --version latest` is not
@@ -605,7 +594,7 @@ jobs:
   # every tool that enumerates it. Consumers pin `--version`.
   chart:
     name: Chart ${{ matrix.chart }}
-    needs: [release, sign]
+    needs: [release, publish-image]
     if: needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -825,15 +814,16 @@ jobs:
           VERSION="${{ needs.release.outputs.new_release_version }}"
           helm show chart "oci://${REGISTRY}/charts/${{ matrix.chart }}" --version "$VERSION"
 
-  # ── Job 7: Rollback — delete release, tag, and images on failure ────────────
+  # ── Job 5: Rollback — delete release, tag, and images on failure ────────────
   rollback:
     name: Rollback
-    # `scan` is on this list so a refused image is rolled back, not left in the
-    # registry. The build job pushed `<version>-linux-amd64` and
-    # `<version>-linux-arm64` before the scan ran, and the step below deletes
-    # both. Without this line the release would keep the platform tags of an
-    # image the release gate refused (#501).
-    needs: [release, build, scan, manifest, sign, chart]
+    # `publish-image` is on this list so a refused image is rolled back, not left
+    # in the registry. That job carries the release scan (it was the `scan` job,
+    # folded together with `manifest` and `sign`). The build job pushed
+    # `<version>-linux-amd64` and `<version>-linux-arm64` before the scan ran,
+    # and the step below deletes both. Without this line the release would keep
+    # the platform tags of an image the release gate refused (#501).
+    needs: [release, build, publish-image, chart]
     if: failure() && needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     steps:

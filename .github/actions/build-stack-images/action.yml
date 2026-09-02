@@ -1,0 +1,135 @@
+name: Build stack images
+description: >-
+  Builds every `build:` service of the given compose files with buildx bake,
+  loads the results into the runner's image store, carries the BuildKit cache
+  mounts (cargo, Go, pip) across runs, and asserts every image is present so
+  compose can never fall through to a registry pull.
+#
+# ── Why this exists (measured 2026-09-02) ───────────────────────────────────
+#
+# Eight runners per pull request built the same images from source with no
+# cache of any kind: 10.6 of the 15.2 minutes of a Rust-runtime lane was
+# `compose build`, and 9.6 of those were one sequential cargo chain. Every
+# Containerfile mounts a dependency cache (`--mount=type=cache`), and every one
+# of those mounts died with the runner. A push to main then built the same
+# images twice more, under two unrelated GHA cache scopes.
+#
+# This action makes the three consumers share ONE content-addressed layer
+# cache per image (scope `<image>-linux-amd64`, the name publish.yml's amd64
+# build already uses) and persists the cache mounts through actions/cache.
+#
+# ── What it does NOT change ─────────────────────────────────────────────────
+#
+# The image the stack runs is still built from THIS commit's source. A layer
+# is reused only when every input to it is byte-identical — that is what a
+# content-addressed cache means — so a cached layer cannot carry a fix it
+# does not contain. The failure the previous "no cache" rule was written
+# against (#154) was buildx leaving the result in the builder and compose
+# then pulling from the registry and getting `denied`. That is a loading
+# problem, not a caching problem, and the last step here is the guard for it:
+# every image a compose file would build must exist in the local store, or
+# the job fails HERE, with the image named, before compose runs.
+inputs:
+  compose-files:
+    description: Newline-separated compose files, repo-root relative, in the order compose would take them.
+    required: true
+  cache-hcl:
+    description: Newline-separated bake HCL files carrying the per-target cache scopes and the `standalone` / `e2e` groups.
+    required: true
+  targets:
+    description: The bake group or targets to build (a group name from the cache HCL).
+    required: true
+  mount-cache-suffix:
+    description: Extra suffix for the cache-mount key, so lanes with different mount contents (python vs rust worker) keep separate entries.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v4
+      id: buildx
+
+    # The BuildKit cache MOUNTS (not layers): cargo registry + git + target,
+    # Go module + build cache, pip. Keyed on the lockfiles so a dependency bump
+    # writes a new entry, with a prefix fallback so a miss still restores the
+    # closest older entry and the build is incremental rather than cold.
+    - name: Restore BuildKit cache mounts
+      id: mounts
+      uses: actions/cache@v4
+      with:
+        path: .buildkit-mounts
+        key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
+        restore-keys: |
+          buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-
+
+    # Injects the restored directories into the builder's cache mounts before
+    # the build, and extracts them back after it (a post step) so the cache
+    # step above can save them. Mount ids default to their target path, which
+    # is how every Containerfile in this repository declares them.
+    - name: Inject cache mounts into the builder
+      uses: reproducible-containers/buildkit-cache-dance@v3
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        skip-extraction: ${{ steps.mounts.outputs.cache-hit }}
+        cache-map: |
+          {
+            ".buildkit-mounts/cargo-registry": "/usr/local/cargo/registry",
+            ".buildkit-mounts/cargo-git": "/usr/local/cargo/git",
+            ".buildkit-mounts/cargo-target": "/cargo-target",
+            ".buildkit-mounts/go-mod": "/go/pkg/mod",
+            ".buildkit-mounts/go-build": "/root/.cache/go-build",
+            ".buildkit-mounts/pip": "/root/.cache/pip"
+          }
+
+    # bake reads the compose files as its definition, merges the HCL's
+    # per-target cache scopes onto the same-named services, and `load: true`
+    # writes every result into the runner's image store (the #154 guard).
+    # `source: .` builds from the checked-out tree, not from a fresh git
+    # context, so the compose files' `context: ..` resolves as it does locally.
+    - name: Bake the stack images
+      uses: docker/bake-action@v6
+      with:
+        source: .
+        builder: ${{ steps.buildx.outputs.name }}
+        files: |
+          ${{ inputs.compose-files }}
+          ${{ inputs.cache-hcl }}
+        targets: ${{ inputs.targets }}
+        load: true
+        provenance: false
+        set: |
+          *.platform=linux/amd64
+
+    # The guard. Reads the image tags compose would build from the SAME files
+    # and requires each to exist locally. A tag that is missing here would
+    # otherwise surface as a registry `denied` from compose, minutes later,
+    # with the wrong name on it.
+    - name: Every image compose would build is in the local store
+      shell: bash
+      # Explicit: a calling workflow's `defaults.run.working-directory` must
+      # not move this off the repository root the compose paths are relative to.
+      working-directory: ${{ github.workspace }}
+      env:
+        COMPOSE_FILES: ${{ inputs.compose-files }}
+      run: |
+        set -euo pipefail
+        args=()
+        while IFS= read -r f; do
+          [ -n "$f" ] && args+=(-f "$f")
+        done <<< "$COMPOSE_FILES"
+        images="$(docker compose "${args[@]}" config --format json 2>/dev/null \
+          | jq -r '.services[] | select(.build != null) | .image' | sort -u)"
+        if [ -z "$images" ]; then
+          echo "::error::the compose files declare no build: services — the assertion would be vacuous"
+          exit 1
+        fi
+        missing=0
+        while IFS= read -r img; do
+          if id="$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null)"; then
+            echo "  ✓ $img $id"
+          else
+            echo "::error::$img was not loaded into the local image store; compose would now try to PULL it (issue #154)"
+            missing=1
+          fi
+        done <<< "$images"
+        exit "$missing"

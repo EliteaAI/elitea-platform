@@ -69,6 +69,13 @@ EXEMPT_WORKFLOWS = {
         "ci-web-e2e.yml, which uses the provider's fixture engine. Weekly "
         "cadence plus manual dispatch, like ci-web-mutation.yml."
     ),
+    "nightly-real-llm.yml": (
+        "No push arm and no pull_request arm: it is the real-model chat lane's "
+        "exploratory superset (the two tool-call-offering specs the PR lane "
+        "leaves out, on both runtimes) on a nightly cadence plus manual "
+        "dispatch. The per-change gate for the same surface is the "
+        "`chat-stream-real` job in ci-web-e2e.yml."
+    ),
     "ci-web-mutation.yml": (
         "It has no push arm at all. It is a weekly cadence job plus manual "
         "dispatch, not a per-merge gate."
