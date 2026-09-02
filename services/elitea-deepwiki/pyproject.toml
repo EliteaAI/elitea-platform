@@ -49,7 +49,7 @@ storage-legacy = [
 # closure behind an extra means the SPI shell, the storage backends and every
 # test above can be built and run without it.
 engine = [
-  "langchain-core==1.2.16",
+  "langchain-core==1.3.3",
   "langchain==1.2.10",
   "langchain-classic==1.0.1",
   "langchain-community==0.4.1",
