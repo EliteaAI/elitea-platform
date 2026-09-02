@@ -34,12 +34,16 @@ func TestComposeSelectsTheApplicationAndRefusesWhatItCannotServe(t *testing.T) {
 	if err != nil || app.Name != "elitea-echo" || app.Runner.Name() != "echo" {
 		t.Fatalf("echo: %v %+v", err, app)
 	}
+	app, _, err = compose(lookup(map[string]string{"ELITEA_DEEPWIKI_RUNNER": "fixture", "ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS": "0"}))
+	if err != nil || app.Name != "elitea-deepwiki" || app.Runner.Name() != "fixture" {
+		t.Fatalf("fixture: %v %+v", err, app)
+	}
 	for name, pairs := range map[string]map[string]string{
-		"an unknown application":   {"ELITEA_SUBAPP": "inventory"},
-		"the legacy Python runner": {"ELITEA_DEEPWIKI_RUNNER": "legacy"},
-		"the fixture runner":       {"ELITEA_DEEPWIKI_RUNNER": "fixture"},
-		"a non-numeric step":       {"ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS": "soon"},
-		"a bad setting":            {"ELITEA_DEEPWIKI_MAX_PARALLEL_WORKERS": "0"},
+		"an unknown application":       {"ELITEA_SUBAPP": "inventory"},
+		"the legacy Python runner":     {"ELITEA_DEEPWIKI_RUNNER": "legacy"},
+		"the fixture runner elsewhere": {"ELITEA_SUBAPP": "echo", "ELITEA_ECHO_RUNNER": "fixture"},
+		"a non-numeric step":           {"ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS": "soon"},
+		"a bad setting":                {"ELITEA_DEEPWIKI_MAX_PARALLEL_WORKERS": "0"},
 	} {
 		if _, _, err := compose(lookup(pairs)); !errors.Is(err, spi.ErrConfig) {
 			t.Errorf("%s was accepted: %v", name, err)

@@ -1,7 +1,7 @@
 // elitea-subapp-host serves the provider SPI for one sub-application.
 //
 //	ELITEA_SUBAPP=deepwiki|echo     which application (default: deepwiki)
-//	ELITEA_<APP>_RUNNER=unavailable|echo
+//	ELITEA_<APP>_RUNNER=unavailable|echo|fixture (fixture: DeepWiki only)
 //	ELITEA_<APP>_*                  the host settings under the app's prefix
 //
 // One binary, one application per process; the prefix keeps each
@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/deepwiki"
+	deepwikirun "github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/deepwiki/run"
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/apps/echo"
 	"github.com/EliteaAI/elitea-platform/services/elitea-subapp-host/internal/spi"
 )
@@ -134,12 +135,20 @@ func compose(lookup spi.Lookup) (spi.App, spi.Settings, error) {
 		runner = spi.UnavailableRunner{}
 	case "echo":
 		runner = spi.EchoRunner{Step: step}
+	case "fixture":
+		// The DeepWiki composition-and-upload path over canned engine results
+		// (the Python shell's fixture runner, ported): what the browser
+		// journeys run against.
+		if name != "deepwiki" {
+			return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=fixture is DeepWiki's runner, not %s's", spi.ErrConfig, prefix, name)
+		}
+		runner = deepwikirun.NewFixtureRunner(settings, step)
 	default:
-		// "legacy" and "fixture" are the Python shell's runners; reaching that
-		// engine from this host is ADR-0023 H2 and is refused, loudly, until
-		// it lands — a host that asked for an engine and did not get it must
-		// not come up looking healthy.
-		return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=%q is not served by this host (unavailable, echo)", spi.ErrConfig, prefix, runnerName)
+		// "legacy" is the Python shell's engine runner; reaching that engine
+		// from this host is ADR-0023 H2 and is refused, loudly, until it
+		// lands — a host that asked for an engine and did not get it must not
+		// come up looking healthy.
+		return spi.App{}, spi.Settings{}, fmt.Errorf("%w: %sRUNNER=%q is not served by this host (unavailable, echo, fixture)", spi.ErrConfig, prefix, runnerName)
 	}
 	switch name {
 	case "deepwiki":
