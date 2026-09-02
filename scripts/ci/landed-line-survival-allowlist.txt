@@ -8,3 +8,4 @@
 682 apps/elitea-web/package.json  # #765 reverted the @babel/plugin-transform-runtime 8.0.1 bump on purpose: it requires Babel 8 and npm ci stopped resolving
 682 apps/elitea-web/package-lock.json  # same revert (#765): the lock entries the bump added go with it
 661 services/elitea-worker-rust/Cargo.toml  # #778 reverts the sqlx 0.9.0 bump on purpose: sql/client.rs no longer compiles against 0.9
+667 libs/proto/pyproject.toml  # #778 reverts the protobuf 7.36.0 pin: the worker requires protobuf <7 and pip could not resolve the two together
