@@ -252,3 +252,25 @@ async def _wait_terminal(
             return body
         await asyncio.sleep(0.01)
     raise AssertionError(f"invocation {invocation_id} never reached a terminal state")
+
+
+def test_the_upload_transport_is_a_base_dependency():
+    """The base image (SPI shell, every runner) uploads what a generation
+    produced through engine/artifacts_platform_client, which imports
+    `requests` lazily. Declared only under the `engine` extra, that import
+    failed in the base image AFTER a successful generation — six pages
+    generated, none landed, reported in band. The declaration is pinned here
+    because a fake client in every unit test cannot see a missing module.
+    """
+    import re
+    from pathlib import Path
+
+    # The [project] table's own `dependencies` array — the first one in the
+    # file; the extras' arrays come later. Read as text so the test does not
+    # depend on tomllib (3.11+) where the suite may run on an older Python.
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+    match = re.search(r"^dependencies = \[(.*?)^\]", text, re.S | re.M)
+    assert match is not None, "no [project] dependencies array"
+    base = [line.strip().strip(",").strip('"') for line in match.group(1).splitlines()]
+    names = [d.split(">")[0].split("=")[0].split("[")[0].strip() for d in base if d and not d.startswith("#")]
+    assert "requests" in names, names

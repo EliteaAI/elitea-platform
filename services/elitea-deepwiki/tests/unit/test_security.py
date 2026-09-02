@@ -153,6 +153,55 @@ async def test_with_mtls_required_an_unauthenticated_hop_is_refused():
     assert response.json()["errorCode"] == "496"
 
 
+async def test_the_mtls_terminus_trusts_its_own_handshake():
+    """The defect the standalone stack found: a client that completed the
+    mutual-TLS handshake — uvicorn configured with CERT_REQUIRED verified its
+    certificate — was still refused with 496, because the middleware wanted
+    an ASGI ``tls`` extension that uvicorn never populates. When this process
+    is the terminus, an https request that reached the app is the proof.
+    """
+    from elitea_deepwiki.config import terminates_mtls
+
+    settings = Settings(
+        tls_certfile="/etc/deepwiki/server.pem",
+        tls_keyfile="/etc/deepwiki/server.key",
+        tls_ca_file="/etc/deepwiki/ca.pem",
+    )
+    assert terminates_mtls(settings)
+    async with client_for(settings) as http:
+        assert (await http.get("/descriptor")).status_code == 200
+    # A CA alone is not a terminus: TLS ends elsewhere, and the extension is
+    # the only evidence — still refused.
+    assert not terminates_mtls(Settings(tls_ca_file="/etc/deepwiki/ca.pem"))
+
+
+async def test_the_terminus_still_refuses_a_cleartext_hop():
+    settings = Settings(
+        tls_certfile="/etc/deepwiki/server.pem",
+        tls_keyfile="/etc/deepwiki/server.key",
+        tls_ca_file="/etc/deepwiki/ca.pem",
+    )
+    from httpx import ASGITransport, AsyncClient
+
+    from elitea_deepwiki.app import create_app
+
+    async with AsyncClient(transport=ASGITransport(app=create_app(settings=settings)), base_url="http://deepwiki.test") as http:
+        assert (await http.get("/descriptor")).status_code == 421
+
+
+def test_the_entrypoint_requires_a_client_certificate_exactly_when_it_is_the_terminus():
+    """The middleware's trust and uvicorn's CERT_REQUIRED come from ONE predicate."""
+    import ssl
+
+    from elitea_deepwiki.__main__ import uvicorn_ssl_options
+
+    terminus = Settings(tls_certfile="/s.pem", tls_keyfile="/s.key", tls_ca_file="/ca.pem")
+    assert uvicorn_ssl_options(terminus)["ssl_cert_reqs"] == ssl.CERT_REQUIRED
+    server_only = Settings(tls_certfile="/s.pem", tls_keyfile="/s.key")
+    assert "ssl_cert_reqs" not in uvicorn_ssl_options(server_only)
+    assert uvicorn_ssl_options(Settings()) == {}
+
+
 async def test_health_is_reachable_without_a_client_certificate():
     """A readiness probe has no project and no certificate."""
     settings = Settings(tls_ca_file="/etc/deepwiki/ca.pem")

@@ -321,6 +321,13 @@ async def test_the_runner_dispatches_and_composes():
     runner = LegacyToolRunner(
         settings=Settings(git_allowlist="github.com"),
         tools={"generate_wiki": generate_wiki},
+        # This test pins COMPOSITION against the recorded objects. The recorded
+        # request carries a transport (api_base + a redacted key), and the
+        # runner now uploads every artifact object through it after composing;
+        # here that would mean a real connection attempt and an in-band upload
+        # failure appended to the frozen list. The upload half is pinned by
+        # tests/unit/test_fixture_runner.py with a fake client.
+        artifact_client_factory=lambda _settings: None,
     )
     manager = InvocationManager()
     invocation = await manager.submit("Wikis", "generate_wiki", lambda _c: None)

@@ -67,6 +67,38 @@ def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     return value
 
 
+def terminates_mtls(settings) -> bool:
+    """Whether THIS process is the mutual-TLS terminus.
+
+    True exactly when the entrypoint configures uvicorn with a server
+    certificate AND a client CA — the condition under which it also sets
+    ``ssl_cert_reqs=CERT_REQUIRED``, so every request that reaches the ASGI
+    app has already presented a certificate the CA verified. The middleware
+    reads this instead of an ASGI ``tls`` extension, because uvicorn (0.52 as
+    of this writing) never populates one: with the extension as the only
+    proof, a fully authenticated hop was refused with 496, which the P0
+    fixtures could not see (they drive the app in-process).
+    """
+    return bool(
+        getattr(settings, "tls_certfile", None)
+        and getattr(settings, "tls_keyfile", None)
+        and getattr(settings, "tls_ca_file", None)
+    )
+
+
+def _seconds(name: str, default: float) -> float:
+    raw = _raw(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{ENV_PREFIX}{name} must be a number of seconds, got {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{ENV_PREFIX}{name} must not be negative, got {raw!r}")
+    return value
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = _raw(name)
     if raw is None or raw == "":
@@ -109,6 +141,10 @@ class Settings:
     #: a several-GB dependency closure is an explicit deployment decision, and
     #: an image built without it must not silently look like it has an engine.
     runner: str = "unavailable"
+    #: How long the ``fixture`` runner pauses between its progress steps. Long
+    #: enough for a browser test to see a run in flight and stop it; zero for
+    #: unit tests.
+    fixture_step_seconds: float = 1.0
 
     #: mTLS terminus (ADR-0022 decision 5). With a CA file the server demands
     #: and verifies a client certificate, and the middleware refuses any hop
@@ -153,7 +189,8 @@ class Settings:
             invocation_retention_seconds=_int(
                 "INVOCATION_RETENTION_SECONDS", 3600, minimum=1
             ),
-            runner=_choice("RUNNER", "unavailable", ("unavailable", "legacy")),
+            runner=_choice("RUNNER", "unavailable", ("unavailable", "legacy", "fixture")),
+            fixture_step_seconds=_seconds("FIXTURE_STEP_SECONDS", 1.0),
             database_url=_raw("DATABASE_URL") or None,
             tls_certfile=_raw("TLS_CERTFILE") or None,
             tls_keyfile=_raw("TLS_KEYFILE") or None,

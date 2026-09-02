@@ -82,11 +82,30 @@ export function WikiPageReader({ projectId, pageKey, markdown }: WikiPageReaderP
   // are accepted or undone; every move is also SAVED, so the two never differ
   // for longer than one request.
   const [content, setContent] = useState(markdown);
+  // The prop is the page as last READ; `content` is what this reader has
+  // saved since. When the read changes underneath — the editor saved and the
+  // page query refetched — the reader must follow it, or the screen keeps the
+  // text from before the save (DWIKI-009 on the E2E stack: the bucket had the
+  // edit, the reader did not). Adjusting state during render is React's own
+  // recipe for "reset on prop change", and costs no effect.
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [pending, setPending] = useState<PendingFix | null>(null);
   const [applied, setApplied] = useState<AppliedFix | null>(null);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [seenMarkdown, setSeenMarkdown] = useState(markdown);
+  if (seenMarkdown !== markdown) {
+    setSeenMarkdown(markdown);
+    // A re-read that carries what this reader itself saved is the echo of
+    // that save (accept → save → invalidate → refetch), not a change from
+    // outside: the undo it offers must survive it. Only a different text
+    // replaces the content and drops the pending fix and the undo.
+    if (markdown !== content) {
+      setContent(markdown);
+      setPending(null);
+      setApplied(null);
+    }
+  }
 
   const quickFix = useMermaidQuickFix({ projectId });
   const parts = useMemo(() => segments(content), [content]);

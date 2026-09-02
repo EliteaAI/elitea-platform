@@ -26,6 +26,8 @@ import { CodeMirrorEditor, type CodeMirrorEditorHandle } from '@/shared/ui/CodeM
 
 /** Room for a typical toolkit document without scrolling; the editor grows with the draft. */
 const SETTINGS_EDITOR_MIN_HEIGHT = '12.5rem';
+/** Bounded: left to grow, the editor took the whole viewport and pushed the wiki below the fold (the settings shot). */
+const SETTINGS_EDITOR_HEIGHT = '16rem';
 
 interface WikiSettingsPanelProps {
   readonly projectId: string | number;
@@ -50,7 +52,7 @@ export function WikiSettingsPanel({ projectId, toolkitId, toolkit, settings }: W
   return (
     <Stack sx={{ gap: 1 }} data-testid="wiki-settings-panel">
       <Typography variant="headingSmall">{t('deepwiki.settings.title', 'Toolkit settings')}</Typography>
-      <CodeMirrorEditor ref={editorRef} value={draft} onChange={(next) => { setDraft(next); setSaved(false); }} extensions={extensions} minHeight={SETTINGS_EDITOR_MIN_HEIGHT} />
+      <CodeMirrorEditor ref={editorRef} value={draft} onChange={(next) => { setDraft(next); setSaved(false); }} extensions={extensions} minHeight={SETTINGS_EDITOR_MIN_HEIGHT} height={SETTINGS_EDITOR_HEIGHT} />
 
       {parsed.problems.map((problem) => (
         <Alert key={`${problem.field ?? 'document'}:${problem.message}`} severity="warning" data-testid="wiki-settings-problem" data-field={problem.field ?? ''}>

@@ -15,6 +15,12 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1",
   "pydantic>=2.10,<3",
+  # The artifact upload after composition (legacy_runner._upload) goes through
+  # engine/artifacts_platform_client, which speaks `requests`. That used to be
+  # an engine-extra dependency, so the base image — the SPI shell every runner
+  # shares — completed a generation and then failed to land a single page
+  # (ModuleNotFoundError, in band, on the standalone stack).
+  "requests>=2.32,<3",
   "uvicorn[standard]>=0.34,<1",
 ]
 

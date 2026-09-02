@@ -1695,10 +1695,79 @@ VALUES (
     90200,
     1,
     '{"repository": "acme/e2e-service", "branch": "main",
-      "llm_model": "gpt-4o-mini"}'::jsonb
+      "llm_model": "gpt-4o-mini", "code_toolkit": 9010}'::jsonb
 )
 ON CONFLICT (id) DO UPDATE
     SET type = EXCLUDED.type, name = EXCLUDED.name, settings = EXCLUDED.settings;
+
+-- A SECOND wiki toolkit, for the journeys that MUTATE: generate, settings,
+-- delete. Its repository is different, so the wiki the fixture runner
+-- generates for it (acme--e2e-generated--main) never touches the seeded
+-- read-only wiki above that DWIKI-001–003 and the quick-fix/edit journeys
+-- read — spec files run in any order and in parallel.
+INSERT INTO p_90200.elitea_tools (id, name, type, description, owner_id, author_id, settings)
+VALUES (
+    9002,
+    'E2E Generated Wiki',
+    'wikis',
+    'Seeded by scripts/e2e-stack.sh for the DeepWiki generation journeys',
+    90200,
+    1,
+    '{"repository": "acme/e2e-generated", "branch": "main",
+      "llm_model": "gpt-4o-mini", "code_toolkit": 9010}'::jsonb
+)
+ON CONFLICT (id) DO UPDATE
+    SET type = EXCLUDED.type, name = EXCLUDED.name, settings = EXCLUDED.settings;
+
+-- The DeepWiki permissions, on THIS project's roles. Migration 0106 grants
+-- them centrally and to every project that had role overrides at migration
+-- time; 90200 is created afterwards and copies project 1's overrides, which
+-- predate 0106 too — so without these rows every facade call answers 403
+-- (the standalone run of DWIKI-005 saw exactly that, on a member who is an
+-- editor here). Project 1 gets them for the same reason.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT r.project_id, r.id, grant_row.permission
+FROM auth_core__project_role r
+JOIN (VALUES
+    ('admin',  'models.applications.deepwiki.read'),
+    ('editor', 'models.applications.deepwiki.read'),
+    ('viewer', 'models.applications.deepwiki.read'),
+    ('admin',  'models.applications.deepwiki.generate'),
+    ('editor', 'models.applications.deepwiki.generate')
+) AS grant_row(role_name, permission) ON grant_row.role_name = r.name
+WHERE r.project_id IN (1, 90200)
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
+-- The repository toolkit `code_toolkit` names. THE FACADE REQUIRES IT: every
+-- generate/ask resolves `configuration.parameters.code_toolkit` — an integer
+-- naming a p_<project>.configuration row of a repository type — through the
+-- project's vault before the request reaches the provider (credentials.go,
+-- ADR-0022 decision 6). A toolkit without one cannot generate at all.
+--
+-- The token is a literal, not a {{secret.NAME}} reference: the unsecreter
+-- leaves plain values as they are, and the fixture runner never clones, so
+-- nothing ever presents it to GitHub.
+INSERT INTO p_90200.configuration
+    (id, project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (9010, 90200, 'e2e-github', 'github', 'toolkits',
+     '{"base_url":"https://api.github.com","access_token":"e2e-not-a-real-token"}',
+     '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (id) DO UPDATE
+    SET type = EXCLUDED.type, section = EXCLUDED.section, data = EXCLUDED.data, updated_at = NOW();
+
+-- The project vault the resolver opens to read that row. COPIED from
+-- project-1 for the reason the personal-project clone above gives: the
+-- blobs are Fernet, psql cannot mint them, and project-1's pair is a valid,
+-- consistent, empty vault. A project with NO vault rows fails the whole
+-- resolve ("vault that will not open" → ErrCredentialsUnavailable → 503),
+-- which on screen is a Generate button that always fails.
+INSERT INTO centry.secrets_key (id, data)
+SELECT 'project-90200', data FROM centry.secrets_key WHERE id = 'project-1'
+ON CONFLICT (id) DO NOTHING;
+INSERT INTO centry.secrets_data (id, data)
+SELECT 'project-90200', data FROM centry.secrets_data WHERE id = 'project-1'
+ON CONFLICT (id) DO NOTHING;
 
 -- The bucket the wiki objects live in. The artifacts surface refuses every
 -- object route for a bucket with no row (requireBucket), so the objects below
@@ -1731,9 +1800,25 @@ DEEPWIKI_SQL
   "repository": "acme/e2e-service",
   "branch": "main",
   "provider_type": "github",
-  "pages": ["wiki_pages/architecture/router.md"]
+  "pages": ["wiki_pages/architecture/router.md", "wiki_pages/architecture/request-flow.md"]
 }
 WIKI_MANIFEST
+    # A page whose diagram does not parse: what the mermaid quick-fix journey
+    # (DWIKI-007/008) repairs, saves over, and undoes — against a wiki that
+    # exists before any generation has run on this stack.
+    cat > "${WIKI_TMP}/${WIKI_ID}/wiki_pages/architecture/request-flow.md" <<'WIKI_PAGE'
+# Request flow
+
+The diagram below is deliberately broken. It exists so the quick fix has
+something to repair.
+
+```mermaid
+graph TD
+  A[Client] -->
+```
+
+After the diagram.
+WIKI_PAGE
     cat > "${WIKI_TMP}/${WIKI_ID}/wiki_pages/architecture/router.md" <<'WIKI_PAGE'
 # Router
 
