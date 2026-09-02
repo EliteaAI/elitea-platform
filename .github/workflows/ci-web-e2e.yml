@@ -189,7 +189,7 @@ jobs:
           # stalled pull from hanging this step and getting mis-blamed on the
           # build, which is what the naive `docker pull &` would have done.
           (
-            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
               || echo "::warning::background pull of the pinned Playwright image failed or timed out; the test step will pull it inline"
           ) &
           pw_pull=$!
@@ -254,7 +254,7 @@ jobs:
         # ~/.cache/ms-playwright, the usual advice, would have recovered the 14s
         # and left the 67s untouched.
         #
-        # `mcr.microsoft.com/playwright:v1.62.0-noble` ships both browsers AND
+        # `mcr.microsoft.com/playwright:v1.62.1-noble` ships both browsers AND
         # those system libraries pre-installed, so the whole install disappears;
         # what remains is the image pull, already paid for in the background of
         # the build step above. This is the same mechanism the `visual` job below
@@ -295,7 +295,7 @@ jobs:
             -e E2E_PORT=8080 \
             -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
             -e E2E_TZ="${E2E_TZ:-UTC}" \
-            mcr.microsoft.com/playwright:v1.62.0-noble \
+            mcr.microsoft.com/playwright:v1.62.1-noble \
             npx playwright test --project=${{ matrix.engine }}
       - name: Collect the stack's own logs
         # ONLY ON FAILURE, and BEFORE the teardown below removes the stack.
@@ -400,7 +400,7 @@ jobs:
         # image itself if this fails, so a stalled pull costs the overlap,
         # never the run.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
             || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
       - name: Run the journey against a fresh standalone stack
         # The script owns the whole lifecycle: runtime PKI, compose up, the
@@ -432,7 +432,7 @@ jobs:
           CHAT_STREAM_PROJECT: elitea-chatstream-ci
           CHAT_STREAM_PORT: "8084"
           MOCK_LLM_CHUNK_DELAY_MS: "120"
-          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
         run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
       - name: Give the report back to the runner user
         # The container runs as root, so playwright-report/ comes back
@@ -483,7 +483,7 @@ jobs:
         # Bounded and NON-FATAL, for the reasons the `chat-stream` job's copy of
         # this step spells out.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
             || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
       - name: Run the journeys against a fresh Rust-runtime stack
         # The Rust worker is compiled from source by the stack's own `build`
@@ -506,7 +506,7 @@ jobs:
           # the same host port raced the gateway's and lost.
           CHAT_STREAM_PORT: "8086"
           MOCK_LLM_CHUNK_DELAY_MS: "120"
-          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
         run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
       - name: Give the report back to the runner user
         if: always()
@@ -543,7 +543,7 @@ jobs:
         run: npm ci
       - name: Pre-pull the pinned Playwright container
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
             || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
       - name: Run the DeepWiki journeys against a fresh standalone stack
         working-directory: ${{ github.workspace }}
@@ -552,7 +552,7 @@ jobs:
           CI: "true"
           DEEPWIKI_STREAM_PROJECT: elitea-deepwiki-ci
           DEEPWIKI_STREAM_PORT: "8087"
-          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
         run: bash apps/elitea-web/scripts/deepwiki-e2e.sh
       - name: Give the report back to the runner user
         if: always()
@@ -598,7 +598,7 @@ jobs:
         # `chat-stream` job's copy of this step for the reasoning. Bounded and
         # non-fatal: the script's `docker run` pulls inline if this fails.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
             || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
       - name: Run the journey against a fresh standalone stack
         # The script owns the whole lifecycle: runtime PKI, build, compose up,
@@ -615,7 +615,7 @@ jobs:
           INDEX_STREAM_PROJECT: elitea-indexstream-ci
           INDEX_STREAM_PORT: "8087"
           INDEX_STREAM_MOCK_PORT: "8091"
-          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
         run: bash apps/elitea-web/scripts/index-stream-e2e.sh
       - name: Give the report back to the runner user
         # Same root-owned-report trap and fix as the `e2e` and `chat-stream`
@@ -682,7 +682,7 @@ jobs:
           # the snapshot step's `docker run` pulls the image itself if this
           # fails, so the optimisation can never cost the run.
           (
-            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
               || echo "::warning::background pull of the pinned Playwright image failed or timed out; the snapshot step will pull it inline"
           ) &
           pw_pull=$!
@@ -767,7 +767,7 @@ jobs:
             -v "$PWD":/work -w /work \
             -e CI=1 -e E2E_REUSE_STACK=1 \
             -e E2E_TZ="${E2E_TZ:-UTC}" \
-            mcr.microsoft.com/playwright:v1.62.0-noble \
+            mcr.microsoft.com/playwright:v1.62.1-noble \
             npx playwright test --grep @visual $update_arg
 
       # What actually moved, by PIXELS. A regeneration re-encodes every PNG, so
