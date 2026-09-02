@@ -5,6 +5,7 @@ on:
     paths:
       - "services/elitea-main/**"
       - "services/elitea-scheduler/**"
+      - "services/elitea-subapp-host/**"
       - "services/elitea-worker-python/**"
       - "libs/go/**"
       - "libs/proto/**"
@@ -30,6 +31,7 @@ on:
     paths:
       - "services/elitea-main/**"
       - "services/elitea-scheduler/**"
+      - "services/elitea-subapp-host/**"
       - "services/elitea-worker-python/**"
       - "libs/go/**"
       - "libs/proto/**"
@@ -121,6 +123,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
+            services/elitea-subapp-host/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
             gen/go/go.sum
@@ -201,6 +204,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
+            services/elitea-subapp-host/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
 
@@ -263,6 +267,10 @@ jobs:
           AZURE_STORAGE_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
           GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
           ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+          # The sub-application host's durable invocation store (ADR-0023
+          # H2b): its tests apply the Python package's migration into a
+          # throwaway schema of this database and skip loudly without it.
+          ELITEA_SUBAPP_HOST_TEST_DSN: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
           ELITEA_AGENTSTATE_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
 
           # ---- #423: the variables no workflow used to set -----------------
@@ -424,6 +432,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
+            services/elitea-subapp-host/go.sum
             libs/proto/gen/go/go.sum
 
       - name: Build elitea-main
@@ -449,3 +458,8 @@ jobs:
         run: |
           cd services/elitea-scheduler
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-scheduler ./cmd/elitea-scheduler
+
+      - name: Build elitea-subapp-host
+        run: |
+          cd services/elitea-subapp-host
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-subapp-host ./cmd/elitea-subapp-host

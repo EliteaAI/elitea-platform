@@ -85,7 +85,7 @@ jobs:
         run: bash scripts/provider/verify-legacy-bundle.sh
 
   service:
-    name: Service conformance
+    name: Engine package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -103,12 +103,14 @@ jobs:
         # one job that runs driver-adjacent code without a database.
         run: python -m pip install --disable-pip-version-check -e ".[test,storage-postgres]"
 
-      - name: Replay the SPI fixtures against the service
+      - name: Test the engine package and its sidecar
         working-directory: services/elitea-deepwiki
-        # Scoped deliberately. tests/storage needs a database and would SKIP
-        # here, which would let this job's green tick look like it covered
-        # storage parity. That gate is the storage-parity job below.
-        run: python -m pytest tests/unit tests/conformance tests/engine -q
+        # The SPI conformance suite is the Go host's now (ci-go.yml runs
+        # services/elitea-subapp-host against the same fixtures). Scoped
+        # deliberately: tests/storage needs a database and would SKIP here,
+        # which would let this job's green tick look like it covered storage
+        # parity. That gate is the storage-parity job below.
+        run: python -m pytest tests/unit tests/engine -q
 
       - name: Verify the engine copy is verbatim
         working-directory: services/elitea-deepwiki
@@ -172,5 +174,5 @@ jobs:
       # closure will make it torch-sized and it stays out of the default bake
       # group). Building it here keeps the Containerfile honest in the
       # meantime: a broken build is caught on the change that broke it.
-      - name: Build the SPI shell image
+      - name: Build the engine sidecar image
         run: docker build -f services/elitea-deepwiki/Containerfile -t elitea-deepwiki:ci .

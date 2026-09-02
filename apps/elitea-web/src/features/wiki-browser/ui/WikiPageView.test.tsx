@@ -63,6 +63,25 @@ describe('WikiPageView', () => {
     expect(content.querySelector('strong')?.textContent).toBe('router.go');
   });
 
+  it('asks for an ABSOLUTE manifest entry as it is — the engine form — without doubling the wiki id', async () => {
+    // The engine lists `{wiki_id}/wiki_pages/...`; the fixture runner lists
+    // `wiki_pages/...`. Joining the id onto the first form asked the bucket
+    // for a key nobody wrote, and the page read as "could not be loaded"
+    // while the API read of the same key succeeded (DWIKI-014).
+    let asked: string | null = null;
+    server.use(
+      http.get(OBJECT_ROUTE, ({ params }) => {
+        asked = String(params['0']);
+        return HttpResponse.text('# README');
+      }),
+    );
+    show({ ...WIKI, pages: ['acme--service--main/wiki_pages/README.md'] });
+    await waitFor(() => {
+      expect(asked).toBe('acme--service--main/wiki_pages/README.md');
+    });
+    await screen.findByTestId('wiki-page-content');
+  });
+
   it('switches page when another is chosen', async () => {
     const user = userEvent.setup();
     server.use(

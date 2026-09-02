@@ -176,6 +176,9 @@ class Settings:
     #: correct for a single-pod dev stack, and the thing decision 3 exists to
     #: remove in production.
     database_url: str | None = None
+    #: The Unix socket the engine sidecar listens on (ADR-0023 H2): where
+    #: ``python -m elitea_deepwiki.sidecar`` serves the Go host.
+    engine_socket: str = "/run/deepwiki/engine.sock"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -192,6 +195,7 @@ class Settings:
             runner=_choice("RUNNER", "unavailable", ("unavailable", "legacy", "fixture")),
             fixture_step_seconds=_seconds("FIXTURE_STEP_SECONDS", 1.0),
             database_url=_raw("DATABASE_URL") or None,
+            engine_socket=_raw("ENGINE_SOCKET", "/run/deepwiki/engine.sock"),
             tls_certfile=_raw("TLS_CERTFILE") or None,
             tls_keyfile=_raw("TLS_KEYFILE") or None,
             tls_ca_file=_raw("TLS_CA_FILE") or None,

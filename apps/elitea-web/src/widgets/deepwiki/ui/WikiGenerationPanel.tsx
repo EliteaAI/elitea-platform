@@ -26,6 +26,7 @@ import Typography from '@mui/material/Typography';
 import { useQueryClient } from '@tanstack/react-query';
 
 import type { ToolkitSettings } from '@/entities/wiki';
+import { invocationIdFrom } from '@/entities/provider-run';
 import { useWikiGeneration, type GenerationState } from '@/features/wiki-generation';
 import {
   cancelDeepWikiInvocation,
@@ -157,11 +158,10 @@ export function WikiGenerationPanel({ projectId, toolkitId, settings, hasWiki }:
           exclude_tests: planner === 'cluster' ? excludeTests : null,
         },
       });
-      const body = unwrapBody(response) as { invocation_id?: unknown } | undefined;
-      const id = body?.invocation_id;
-      if (typeof id !== 'string' || id === '') {
-        throw new Error(t('deepwiki.generate.noInvocation', 'The provider accepted the request but returned no invocation to follow.'));
-      }
+      const id = invocationIdFrom(
+        unwrapBody(response),
+        t('deepwiki.generate.noInvocation', 'The provider accepted the request but returned no invocation to follow.'),
+      );
       storage.save({ invocationId: id, startedAt: Date.now() });
       setInvocationId(id);
     } catch (cause) {

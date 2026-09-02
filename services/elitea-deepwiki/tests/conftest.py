@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from elitea_deepwiki.app import create_app
 from elitea_deepwiki.config import Settings
 
 #: The phase-P0 golden fixtures. These tests are the reason they exist: they
@@ -42,21 +39,4 @@ def settings() -> Settings:
         jobs_enabled=False,
         max_parallel_workers=3,
         max_concurrent_jobs=3,
-    )
-
-
-@pytest_asyncio.fixture
-async def client(settings: Settings) -> AsyncIterator[AsyncClient]:
-    """An HTTP client bound to the real ASGI app, lifespan included."""
-    app = create_app(settings=settings)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://deepwiki.test"
-    ) as http:
-        async with app.router.lifespan_context(app):
-            yield http
-
-
-def make_client(app) -> AsyncClient:
-    return AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://deepwiki.test"
     )

@@ -1,0 +1,42 @@
+# The cluster-shared internal CA the chart references by name and does NOT
+# create (templates/deepwiki/certificates.yaml: issuerRef elitea-internal-ca,
+# kind ClusterIssuer). Both DeepWiki certificates — the provider's server cert
+# and elitea-main's facade client cert — are issued from it, so each side
+# verifies the other against one trust root.
+#
+# A ClusterIssuer's `ca.secretName` is resolved in the cert-manager
+# controller's own namespace, which is why the CA Certificate below is issued
+# into cert-manager and not into elitea.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: elitea-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: elitea-internal-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: elitea-internal-ca
+  secretName: elitea-internal-ca-tls
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: elitea-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: elitea-internal-ca
+spec:
+  ca:
+    secretName: elitea-internal-ca-tls

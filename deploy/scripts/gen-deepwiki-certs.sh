@@ -8,7 +8,7 @@
 #   * the facade (internal/api/v2/deepwiki/proxy.go) refuses a base URL that is
 #     not https and always builds an mTLS transport, so an enabled facade with
 #     no client certificate is a fatal boot error;
-#   * the provider (security/middleware.py) refuses any hop that is not
+#   * the provider (the Go sub-application host, ADR-0023) refuses any hop that is not
 #     mutually authenticated once a CA file is configured, with 421 for a
 #     cleartext scheme and 496 for a missing client certificate.
 #

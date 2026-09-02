@@ -50,6 +50,16 @@ type Config struct {
 	ServerName     string
 	IdentitySecret string
 	Timeout        time.Duration
+
+	// Admission is the deployment's answer to "may this provider still be
+	// invoked" (internal/providerhost/admission), asked on the invoke route.
+	//
+	// SUPPLIED BY THE COMPOSITION ROOT, never by ConfigFromEnv — which is why
+	// it sits below the transport fields and why the env reader leaves it nil.
+	// The gate needs a database pool and the public project id, neither of
+	// which a facade has or should have. Nil is a deployment with no admission
+	// plane, and forwards unchanged.
+	Admission AdmissionHook
 }
 
 // EnvNames is one provider's variable names.
@@ -193,8 +203,13 @@ func Guard(
 // serves perfectly well without a validator, it simply does not authenticate,
 // and that is invisible at runtime.
 func Composable(authConfig apimw.AuthConfig, permissions auth.PermissionResolver) bool {
+	// A forwarded-identity verifier (production Form authentication) OR a
+	// token validator (OIDC-only, where APPLICATION_SECRET_KEY-signed tokens
+	// are read back by a LocalValidator): either authenticates a caller. The
+	// principal validator is required in both — it is the check that turns a
+	// deactivated user away, and a nil one serves without saying so.
 	return authConfig.PrincipalValidator != nil &&
-		authConfig.ForwardedIdentityVerifier != nil &&
+		(authConfig.ForwardedIdentityVerifier != nil || authConfig.Validator != nil) &&
 		permissions != nil
 }
 

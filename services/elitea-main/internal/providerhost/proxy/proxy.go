@@ -4,14 +4,16 @@
 // facade. It is the ReverseProxy ASSEMBLY that ADR-0012 named — the transport
 // and the signer already live in llmproxy and are already shared three ways.
 //
-// WHAT A CALLER STILL OWNS. Which headers to strip beyond the signed set,
-// what to do with the body, and what its own routes are. DeepWiki deletes
-// X-Secret because a header its peer once honoured is its problem; Inventory
-// has no such header. Pulling that in would make the shared hop carry one
-// provider's history.
+// WHAT A CALLER STILL OWNS: what to do with the body, and what its own
+// routes are. Two things DeepWiki once forked this whole file for now live
+// here (ADR-0023 H0): the provider's status travels back to the caller
+// through an Outcome on the request context, and the legacy X-Secret header
+// is stripped on every hop — a header no provider on this platform may
+// honour is not one provider's history.
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -28,6 +30,31 @@ type Proxy struct {
 	reverse        *httputil.ReverseProxy
 	identitySecret []byte
 	logger         *slog.Logger
+}
+
+// Outcome carries the provider's status back to the caller of Forward. The
+// reverse proxy reports it through ModifyResponse, after Forward has already
+// handed the request over, so it travels on the request context: a caller
+// that needs it attaches one with WithOutcome and reads it after Forward
+// returns. Status stays 0 when the provider was never reached.
+//
+// This is what the DeepWiki facade forked the whole proxy for (ADR-0023
+// context): its invoke path revokes the callback grant it minted when the
+// provider refuses the invocation, and needed the upstream status to know.
+type Outcome struct {
+	Status int
+}
+
+type outcomeKey struct{}
+
+// WithOutcome attaches an Outcome for Forward to fill in.
+func WithOutcome(ctx context.Context, outcome *Outcome) context.Context {
+	return context.WithValue(ctx, outcomeKey{}, outcome)
+}
+
+func outcomeFrom(ctx context.Context) *Outcome {
+	outcome, _ := ctx.Value(outcomeKey{}).(*Outcome)
+	return outcome
 }
 
 // New builds the hop. envName names the setting that carries the base URL, so
@@ -65,6 +92,12 @@ func New(cfg facade.Config, envName string, logger *slog.Logger) (*Proxy, error)
 			// here for exactly that reason.
 			pr.SetXForwarded()
 		},
+		ModifyResponse: func(response *http.Response) error {
+			if outcome := outcomeFrom(response.Request.Context()); outcome != nil {
+				outcome.Status = response.StatusCode
+			}
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error("provider proxy failed", "path", r.URL.Path, "error", err)
 			http.Error(w, "The provider service is unreachable.", http.StatusServiceUnavailable)
@@ -91,6 +124,11 @@ func (p *Proxy) Forward(
 
 	// The tenant is part of the canonical string both sides sign, so it must
 	// travel even though this facade never reads it.
+	// X-Secret is the legacy pylon shared-secret header. The signed identity
+	// headers replace it on every provider hop (ADR-0022 decision 6); a copy a
+	// caller sends must not travel on to a provider that once honoured it.
+	// DeepWiki forked this proxy to do exactly this — folded back (ADR-0023).
+	outbound.Header.Del("X-Secret")
 	tenantID, _ := tenant.TenantFromContext(r.Context())
 	llmproxy.SignIdentityHeaders(outbound.Header, p.identitySecret, projectID, userID, tenantID, "")
 

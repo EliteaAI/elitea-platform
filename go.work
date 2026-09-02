@@ -9,5 +9,6 @@ use (
 	./libs/proto/gen/go
 	./services/elitea-main
 	./services/elitea-scheduler
+	./services/elitea-subapp-host
 	./tools/uictl
 )

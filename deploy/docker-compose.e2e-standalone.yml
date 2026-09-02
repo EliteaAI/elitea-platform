@@ -185,6 +185,23 @@ services:
       S3_SECRET_KEY: "elitea-dev-secret"
       S3_REGION: "us-east-1"
       S3_FORCE_PATH_STYLE: "true"
+      # ── The DeepWiki facade, on the OIDC-only stack (ADR-0023 H0) ────────
+      # The facade takes the API group's credential set, and under OIDC-only
+      # auth that carries the LocalValidator for APPLICATION_SECRET_KEY-signed
+      # tokens — which is how the provider's callback bearer is read back on
+      # its upload. Everything on this side is the production path; the
+      # provider below runs its fixture engine.
+      ELITEA_DEEPWIKI_ENABLED: "true"
+      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8080"
+      ELITEA_DEEPWIKI_SERVER_NAME: "elitea-deepwiki"
+      ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /certs/client.crt
+      ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /certs/client.key
+      ELITEA_DEEPWIKI_CA_FILE: /certs/ca.crt
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "e2e-deepwiki-identity"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_CALLBACK_BASE_URL: "http://elitea-main:8080"
+    volumes:
+      - ./certs:/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,12 +211,46 @@ services:
         condition: service_healthy
       rustfs-bucket-init:
         condition: service_completed_successfully
+      elitea-deepwiki:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/elitea-main", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 15s
+
+  # ── The DeepWiki provider, SPI shell over the FIXTURE runner ─────────────
+  # The same service the standalone stack runs (see its comment there):
+  # the real runner with canned tool results, mTLS from
+  # deploy/scripts/gen-deepwiki-certs.sh, invocations in memory.
+  elitea-deepwiki:
+    # The Go sub-application host (ADR-0023 H1.1) serving DeepWiki's SPI in
+    # the Python shell's place: same ELITEA_DEEPWIKI_* settings, same fixture
+    # runner, one static binary. ELITEA_SUBAPP names the application.
+    image: ghcr.io/eliteaai/elitea-subapp-host:${E2E_IMAGE_TAG:-e2e}
+    build:
+      context: ..
+      dockerfile: services/elitea-subapp-host/Containerfile
+    environment:
+      ELITEA_SUBAPP: deepwiki
+      ELITEA_DEEPWIKI_RUNNER: "fixture"
+      ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "1"
+      ELITEA_DEEPWIKI_TLS_CERTFILE: /certs/deepwiki-server.crt
+      ELITEA_DEEPWIKI_TLS_KEYFILE: /certs/deepwiki-server.key
+      ELITEA_DEEPWIKI_TLS_CA_FILE: /certs/ca.crt
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "e2e-deepwiki-identity"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
+      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
+    volumes:
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "/elitea-subapp-host", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
   elitea-web:
     image: ghcr.io/eliteaai/elitea-web:${E2E_IMAGE_TAG:-e2e}

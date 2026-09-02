@@ -41,6 +41,8 @@ export interface WikiManifest {
   wiki_version_id?: string;
   created_at?: string;
   canonical_repo_identifier?: string;
+  /** `{canonical_repo_identifier}@{wiki_version_id}` — the engine's key for this version's repository analysis. */
+  analysis_key?: string;
   repository?: string;
   branch?: string;
   pages?: string[];
