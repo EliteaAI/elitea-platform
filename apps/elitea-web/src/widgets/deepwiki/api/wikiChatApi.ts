@@ -18,6 +18,7 @@ import {
   invokeDeepWikiTool,
 } from '@/shared/api/generated/deepwiki/deepwiki';
 import { unwrapBody } from '@/shared/api/unwrap';
+import { invocationIdFrom } from '@/entities/provider-run';
 import type { ChatInvocationPoll, ChatInvokeInput } from '@/features/wiki-chat';
 
 /** What the drawer knows about the toolkit it is asking. */
@@ -94,12 +95,10 @@ export async function startWikiChat(
     input.toolName,
     buildInvokeRequest(target, input),
   );
-  const body = unwrapBody(response) as { invocation_id?: unknown } | undefined;
-  const id = body?.invocation_id;
-  if (typeof id !== 'string' || id === '') {
-    throw new Error('The provider accepted the question but returned no invocation to follow.');
-  }
-  return id;
+  return invocationIdFrom(
+    unwrapBody(response),
+    'The provider accepted the question but returned no invocation to follow.',
+  );
 }
 
 /** Poll one invocation. */

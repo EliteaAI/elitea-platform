@@ -25,13 +25,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/proxy"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/spi"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/routes"
 )
 
 // Mode is the permission mode these routes resolve in. Inventory's legacy
@@ -89,35 +87,21 @@ func NewRoute(
 	if err != nil {
 		return nil, err
 	}
-	guard := func(permission string) func(http.Handler) http.Handler {
-		return facade.Guard(authConfig, permissions, Mode, permission)
+	handler, err := routes.Build(routes.Table{
+		SlotsPath:        SlotsPath,
+		InvokePath:       InvokePath,
+		InvocationPath:   InvocationPath,
+		Mode:             Mode,
+		ReadPermission:   ReadPermission,
+		InvokePermission: InvokePermission,
+		Auth:             authConfig,
+		Permissions:      permissions,
+		Forward:          hop.Forward,
+	})
+	if err != nil {
+		return nil, ErrInvalidRoute
 	}
-	forward := func(providerPath func(*http.Request) string) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			hop.Forward(w, r, providerPath(r), chi.URLParam(r, "project_id"), facade.UserID(r))
-		}
-	}
-
-	router := chi.NewRouter()
-	router.Method(http.MethodGet, SlotsPath,
-		guard(ReadPermission)(forward(func(*http.Request) string { return spi.SlotsPath })))
-	router.Method(http.MethodPost, InvokePath,
-		guard(InvokePermission)(forward(func(r *http.Request) string {
-			return spi.InvokePath(chi.URLParam(r, "toolkit_name"), chi.URLParam(r, "tool_name"))
-		})))
-	router.Method(http.MethodGet, InvocationPath,
-		guard(ReadPermission)(forward(invocationPath)))
-	router.Method(http.MethodDelete, InvocationPath,
-		guard(InvokePermission)(forward(invocationPath)))
-
-	return &Route{handler: router}, nil
-}
-
-func invocationPath(r *http.Request) string {
-	return spi.InvocationPath(
-		chi.URLParam(r, "toolkit_name"),
-		chi.URLParam(r, "tool_name"),
-		chi.URLParam(r, "invocation_id"))
+	return &Route{handler: handler}, nil
 }
 
 // ServeHTTP answers even for a zero Route, so a mount that half-happened

@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1.7
+#
+# The sub-application host (ADR-0023 H1): one static binary serving the
+# provider SPI for whichever application ELITEA_SUBAPP names. The repo-root
+# context matches the other Go services so bake, publish.yml and Taskfile
+# build identically. Modules first, so a source change does not re-download
+# the driver; the retry loop is the scheduler's (a broken proxy stream is
+# not retried by Go itself).
+FROM golang:1.25-alpine AS builder
+WORKDIR /src/services/elitea-subapp-host
+COPY services/elitea-subapp-host/go.mod services/elitea-subapp-host/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    for attempt in 1 2 3 4 5; do \
+        go mod download && exit 0; \
+        echo "go mod download failed (attempt ${attempt}/5)" >&2; \
+        sleep $((attempt * 5)); \
+    done; \
+    echo "go mod download failed after 5 attempts" >&2; \
+    exit 1
+COPY services/elitea-subapp-host/ ./
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-subapp-host ./cmd/elitea-subapp-host
+
+FROM gcr.io/distroless/static-debian12:nonroot AS final
+COPY --from=builder /out/elitea-subapp-host /elitea-subapp-host
+# distroless has no shell: probe GET /health (or /ready) over HTTP from the
+# orchestrator. The probes bypass mutual TLS and identity, by design.
+ENV ELITEA_SUBAPP=deepwiki
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/elitea-subapp-host"]

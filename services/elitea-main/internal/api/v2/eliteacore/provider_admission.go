@@ -33,8 +33,6 @@ package eliteacore
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +43,7 @@ import (
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhub"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -170,76 +169,31 @@ type registerDescriptorResponse struct {
 // One string, because an operator reading the row and an operator reading the
 // API answer must not be told two different things — the same rule
 // ServiceDescriptorsUnavailableReason follows.
-const admissionInactiveReason = "recorded, not in force: activating a provider requires a policy " +
-	"overlay, and this deployment cannot issue one yet (ADR-0012 phase P3). The descriptor is stored " +
-	"and visible, and no agent can call this provider's toolkits."
-
-// registerDescriptor records an origin and publishes a manifest.
-//
-// Both halves in ONE transaction. A published manifest with no origin is a blob
-// nothing references; an origin with no manifest is a provider nobody can
-// describe. Committing them separately would let a failure between the two
-// leave either.
+// registerDescriptor is the administration surface's write: the same
+// origin + manifest + inactive revision the facades' registrar files at
+// boot (internal/providerhost/registrar), through the one implementation in
+// internal/providerhub.
 func (h *Handler) registerDescriptor(
 	ctx context.Context, projectID int64, actor string, req registerDescriptorRequest,
 ) (registerDescriptorResponse, error) {
-	digestBytes := sha256.Sum256(req.Descriptor)
-	digest := hex.EncodeToString(digestBytes[:])
-	revisionID := fmt.Sprintf("%d:%s:%s", projectID, req.ProviderName, digest[:16])
-
-	tx, err := h.pool.Begin(ctx)
+	admitted, err := providerhub.Register(ctx, h.pool, providerhub.Registration{
+		ProjectID:  projectID,
+		ProviderID: req.ProviderName,
+		Origin:     req.ServiceLocationURL,
+		Manifest:   []byte(req.Descriptor),
+		Actor:      actor,
+	})
 	if err != nil {
-		return registerDescriptorResponse{}, fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-
-	if _, err := tx.Exec(ctx, `
-INSERT INTO provider_hub.provider_origin_registration
-  (project_id, provider_id, origin, registered_by)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (project_id, provider_id) DO UPDATE
-   SET origin = EXCLUDED.origin,
-       registered_at = clock_timestamp(),
-       registered_by = EXCLUDED.registered_by`,
-		projectID, req.ProviderName, req.ServiceLocationURL, actor); err != nil {
-		return registerDescriptorResponse{}, fmt.Errorf("register origin: %w", err)
-	}
-
-	// Content-addressed: the same bytes published twice are one row, so this is
-	// idempotent rather than an error. DO NOTHING and not DO UPDATE — the
-	// bytes behind a digest must never change.
-	if _, err := tx.Exec(ctx, `
-INSERT INTO provider_hub.provider_published_manifest (digest, manifest_bytes)
-VALUES ($1, $2)
-ON CONFLICT (digest) DO NOTHING`, digest, []byte(req.Descriptor)); err != nil {
-		return registerDescriptorResponse{}, fmt.Errorf("publish manifest: %w", err)
-	}
-
-	// status is INACTIVE and overlay_revision is absent. The database refuses
-	// anything else, which is the point: this cannot be turned into an
-	// activation by editing this function.
-	if _, err := tx.Exec(ctx, `
-INSERT INTO provider_hub.provider_admitted_revision
-  (revision_id, project_id, provider_id, manifest_digest, status, reason, admitted_by)
-VALUES ($1, $2, $3, $4, 'inactive', $5, $6)
-ON CONFLICT (revision_id) DO UPDATE
-   SET reason = EXCLUDED.reason, admitted_at = clock_timestamp()`,
-		revisionID, projectID, req.ProviderName, digest, admissionInactiveReason, actor); err != nil {
-		return registerDescriptorResponse{}, fmt.Errorf("admit revision: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return registerDescriptorResponse{}, fmt.Errorf("commit: %w", err)
+		return registerDescriptorResponse{}, err
 	}
 	return registerDescriptorResponse{
-		AdmittedProviderRevision: revisionID,
-		PublishedManifestDigest:  digest,
-		Status:                   "inactive",
-		Reason:                   admissionInactiveReason,
+		AdmittedProviderRevision: admitted.RevisionID,
+		PublishedManifestDigest:  admitted.ManifestDigest,
+		Status:                   admitted.Status,
+		Reason:                   admitted.Reason,
 	}, nil
 }
 
-// revokeDescriptor marks every live revision revoked. It deletes nothing.
 func (h *Handler) revokeDescriptor(
 	ctx context.Context, projectID int64, providerName, actor, reason string,
 ) error {

@@ -50,7 +50,8 @@ spec:
       {{- include "elitea.imagePullSecrets" (dict "local" .Values.deepwiki.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
       containers:
         - name: migrate
-          image: "{{ .Values.deepwiki.image.repository }}:{{ .Values.deepwiki.image.tag | default .Values.image.tag }}"
+          # The migrations are the Python package's; the host image has none.
+          image: "{{ .Values.deepwiki.engine.image.repository }}:{{ include "elitea-deepwiki.engineTag" . }}"
           imagePullPolicy: {{ .Values.deepwiki.image.pullPolicy }}
           {{- with .Values.deepwiki.securityContext }}
           securityContext:

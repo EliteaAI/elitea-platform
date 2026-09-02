@@ -1,9 +1,11 @@
 # End-to-end run
 
-What this proves: the ported service **executes**. A real `generate_wiki`
-invocation goes through the frozen SPI, into the copied tool layer, out to a
-subprocess worker, and back with the frozen artifact set — clone, index,
-repository analysis, structure planning, page generation, composition.
+What this proves: the engine **executes**. A real `generate_wiki` call goes
+over the sidecar protocol the Go sub-application host speaks (ADR-0023), into
+the copied tool layer, out to a subprocess worker, and back with the engine's
+result — clone, index, repository analysis, structure planning, page
+generation. Composition into the frozen artifact set and the upload are the
+host's; run the host in front of this sidecar to see them.
 
 What it does **not** prove: content quality. `llm_stub.py` is a local,
 deterministic, prompt-aware OpenAI-compatible stub. It returns a well-formed
@@ -45,17 +47,15 @@ global git configuration is touched.
 
 ## What a good run looks like
 
-Seven result objects, matching the frozen set in
-`conformance/fixtures/generation/composed_result.json` by object type and
-envelope (target, extension, encoding, bucket):
+An engine result with `success: true`, a `wiki_id`, a `repository_context`,
+and the artifacts the host composes into the frozen set in
+`conformance/fixtures/generation/composed_result.json`:
 
 ```
-message
-wiki_structure       {wiki_id}/analysis/wiki_structure_{ts}.json
-wiki_page            {wiki_id}/wiki_pages/README.md
-wiki_page            {wiki_id}/wiki_pages/{section}/{page}.md
-wiki_manifest        {wiki_id}/wiki_manifest_{version}.json
-repository_context   {wiki_id}/repository_context.txt
+application/json     {wiki_id}/analysis/wiki_structure_{ts}.json
+text/markdown        {wiki_id}/wiki_pages/README.md
+text/markdown        {wiki_id}/wiki_pages/{section}/{page}.md
+application/json     {wiki_id}/wiki_manifest_{version}.json
 ```
 
 ## The finding this run exists to record

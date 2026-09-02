@@ -225,11 +225,15 @@ services:
   # the real runner with canned tool results, mTLS from
   # deploy/scripts/gen-deepwiki-certs.sh, invocations in memory.
   elitea-deepwiki:
-    image: ghcr.io/eliteaai/elitea-deepwiki:${E2E_IMAGE_TAG:-e2e}
+    # The Go sub-application host (ADR-0023 H1.1) serving DeepWiki's SPI in
+    # the Python shell's place: same ELITEA_DEEPWIKI_* settings, same fixture
+    # runner, one static binary. ELITEA_SUBAPP names the application.
+    image: ghcr.io/eliteaai/elitea-subapp-host:${E2E_IMAGE_TAG:-e2e}
     build:
       context: ..
-      dockerfile: services/elitea-deepwiki/Containerfile
+      dockerfile: services/elitea-subapp-host/Containerfile
     environment:
+      ELITEA_SUBAPP: deepwiki
       ELITEA_DEEPWIKI_RUNNER: "fixture"
       ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "1"
       ELITEA_DEEPWIKI_TLS_CERTFILE: /certs/deepwiki-server.crt
@@ -242,7 +246,7 @@ services:
     volumes:
       - ./certs:/certs:ro
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"]
+      test: ["CMD", "/elitea-subapp-host", "healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 12

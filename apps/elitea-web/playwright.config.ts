@@ -125,7 +125,16 @@ export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
  * project against the full standalone stack, which proves the same path
  * under production Form authentication.
  */
-const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat)\.spec\.ts/;
+const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat|admission)\.spec\.ts/;
+
+/*
+ * The admission journey (DWIKI-013) needs a stack that composes a PUBLIC
+ * project (ELITEA_AI_PROJECT_ID): the facade registers its provider under it
+ * at boot. The E2E stack composes none, by design, so the registrar logs a
+ * skip there and the journey would have nothing to look at — it runs in the
+ * `deepwiki-stack` project only, against the standalone stack.
+ */
+const ADMISSION_JOURNEY = /journeys\/deepwiki\/deepwiki\.admission\.spec\.ts/;
 
 const CHROMIUM_LAUNCH_OPTIONS = {
   args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
@@ -163,6 +172,7 @@ export default defineConfig({
     // ── chromium ──────────────────────────────────────────────────────────
     {
       name: 'chromium',
+      testIgnore: ADMISSION_JOURNEY,
       use: {
         ...devices['Desktop Chrome'],
         storageState: STORAGE_STATE.member,
@@ -175,6 +185,7 @@ export default defineConfig({
     // ── webkit (spec §6.2: "chromium + webkit") ───────────────────────────
     {
       name: 'webkit',
+      testIgnore: ADMISSION_JOURNEY,
       use: {
         ...devices['Desktop Safari'],
         storageState: STORAGE_STATE.member,

@@ -66,14 +66,26 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       "elitea-deepwiki${EXTRAS}" \
     && rm -rf /wheels
 
+# The engine sidecar's socket directory (ADR-0023 H2). Created here, owned
+# by the service user and world-writable, because a compose named volume
+# and a fresh bind mount take the IMAGE path's ownership on first mount —
+# without this the directory arrives root-owned, uvicorn cannot bind the
+# socket as uid 10001, and the container is "unhealthy" with nothing in its
+# log but the bind error. The Go host in the same pod connects as another
+# uid, which needs traverse on the directory and write on the socket file
+# (the sidecar creates it with umask 0).
+RUN mkdir -p /run/deepwiki && chown deepwiki:deepwiki /run/deepwiki && chmod 0777 /run/deepwiki
+
 USER deepwiki
 WORKDIR /home/deepwiki
 
 ENV ELITEA_DEEPWIKI_SCRATCH_PATH=/var/scratch/deepwiki \
     PYTHONUNBUFFERED=1
 
-EXPOSE 8080
-
+# No port: the entrypoint is the engine SIDECAR (ADR-0023), which listens on
+# the Unix socket ELITEA_DEEPWIKI_ENGINE_SOCKET for the Go sub-application
+# host in the same pod. The provider SPI is that host's.
+#
 # The settings object is strict-parsed at startup, so a malformed environment
 # fails the container rather than degrading a request later.
 ENTRYPOINT ["python", "-m", "elitea_deepwiki"]

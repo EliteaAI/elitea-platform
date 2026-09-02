@@ -6,11 +6,11 @@ this service's composition and artifact upload, the bucket, the wiki browser —
 without the analysis engine's dependency closure, a git host or a model.
 The browser journeys run against it.
 
-It is :class:`LegacyToolRunner` with its tools injected, exactly as the P0
-composition tests inject them, plus paced progress events so a client sees a
-run in flight and can stop it. Everything downstream of the tool call is the
-real code: the parameter merge, the egress check, composition, publishing,
-upload. What is canned is only what the engine would have computed.
+It is :class:`LegacyToolRunner` with its tools injected, plus paced progress
+events so a client sees a run in flight and can stop it. Everything
+downstream of the tool call is the real code — the Go host's merge, egress
+check, composition and upload, this package's publish. What is canned is
+only what the engine would have computed.
 
 The canned wiki is deterministic and derived from the request, so a test can
 predict the keys that land: ``{owner}--{repo}--{branch}/…``. One page carries
@@ -23,7 +23,6 @@ import asyncio
 import json
 from typing import Any
 
-from .invocations import InvocationContext
 from .legacy_runner import LegacyToolRunner
 
 #: Progress the fixture emits before each tool answers, in order. The legacy
@@ -168,17 +167,11 @@ class FixtureToolRunner(LegacyToolRunner):
 
     name = "fixture"
 
-    def __init__(self, settings=None, artifact_client_factory=None) -> None:
-        super().__init__(
-            settings=settings,
-            tools=dict(FIXTURE_TOOLS),
-            artifact_client_factory=artifact_client_factory,
-        )
+    def __init__(self, settings=None) -> None:
+        super().__init__(settings=settings, tools=dict(FIXTURE_TOOLS))
         self._step_seconds = float(getattr(settings, "fixture_step_seconds", 0.0) or 0.0)
 
-    async def _call(
-        self, tool_name: str, params: dict[str, Any], context: InvocationContext
-    ) -> Any:
+    async def _paced(self, tool_name: str, context: Any) -> None:
         for step in STEPS.get(tool_name, ()):
             # The checkpoint is what makes Stop work mid-run: a cancelled
             # invocation raises here instead of finishing and uploading.
@@ -186,4 +179,3 @@ class FixtureToolRunner(LegacyToolRunner):
             await context.thinking(step)
             if self._step_seconds > 0:
                 await asyncio.sleep(self._step_seconds)
-        return await super()._call(tool_name, params, context)

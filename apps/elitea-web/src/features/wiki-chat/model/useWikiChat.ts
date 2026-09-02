@@ -18,20 +18,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { framesFromChatPoll, isTerminalChatPoll, type ChatInvocationPoll } from '../lib/framesFromChatPoll';
+import { useInvocationPoll } from '@/entities/provider-run';
+import { framesFromChatPoll, type ChatInvocationPoll } from '../lib/framesFromChatPoll';
 import { reduceChatFrames } from './reducer';
 import { capabilityOnOpen, chatHistory, failTurn, openTurn, rewindToLastQuestion, toolNameFor } from './turn';
 import { initialChatState, type ChatCapability, type ChatMessage, type ChatState } from './types';
 
-/**
- * How often a running invocation is polled, in milliseconds.
- *
- * Not exported: nothing outside this slice names it. A caller that needs a
- * different cadence passes `intervalMs`, which is what the tests do — an
- * exported constant with no importer is the dead-code shape this repository has
- * removed six times (#126/#129/#134/#136/#138/#149).
- */
-const CHAT_POLL_INTERVAL_MS = 2000;
 
 /** What the caller must supply to start one request. */
 export interface ChatInvokeInput {
@@ -168,46 +160,26 @@ export function useWikiChat(options: WikiChatOptions): WikiChatController {
     if (next) setState((previous) => (previous.mode === next ? previous : { ...previous, mode: next }));
   }, []);
 
-  useEffect(() => {
-    if (!invocationId) return undefined;
-
-    let cancelled = false;
-    let inFlight = false;
-    let settled = false;
-
-    const tick = async (): Promise<void> => {
-      // One request at a time. A poll slower than the interval would otherwise
-      // overlap the next and the two would race for the same read-once events.
-      if (inFlight || cancelled || settled) return;
-      inFlight = true;
-      try {
-        const poll = await optionsRef.current.poll(invocationId);
-        if (cancelled) return;
-        const frames = framesFromChatPoll(poll, { streamId: stateRef.current.streamId ?? invocationId });
-        if (frames.length > 0) {
-          setState((previous) => {
-            const { state: next, effects } = reduceChatFrames(previous, frames);
-            for (const effect of effects) {
-              if (effect.kind === 'persistCapability') {
-                optionsRef.current.storage.saveCapability(effect.capability);
-              }
-            }
-            return next;
-          });
+  // The loop is the run entity's: one request at a time, stopped by the
+  // first terminal poll. What this hook keeps is how a poll becomes chat
+  // frames, and what the reducer's effects do.
+  useInvocationPoll(invocationId, {
+    poll: (id) => optionsRef.current.poll(id),
+    onPoll: (poll, id) => {
+      const frames = framesFromChatPoll(poll, { streamId: stateRef.current.streamId ?? id });
+      if (frames.length === 0) return;
+      setState((previous) => {
+        const { state: next, effects } = reduceChatFrames(previous, frames);
+        for (const effect of effects) {
+          if (effect.kind === 'persistCapability') {
+            optionsRef.current.storage.saveCapability(effect.capability);
+          }
         }
-        if (isTerminalChatPoll(poll)) settled = true;
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    void tick();
-    const timer = setInterval(() => void tick(), optionsRef.current.intervalMs ?? CHAT_POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [invocationId]);
+        return next;
+      });
+    },
+    intervalMs: options.intervalMs,
+  });
 
   return { state, send, regenerate, clear, setMode, restoreCapability };
 }

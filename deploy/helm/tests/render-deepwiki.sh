@@ -147,7 +147,7 @@ refuses "facade with no client certificate"     --set main.env.ELITEA_DEEPWIKI_C
 refuses "facade with a path outside the mount"  --set main.env.ELITEA_DEEPWIKI_CA_FILE=/elsewhere/ca.crt
 refuses "facade with no material mounted"       --set main.fileConfig.deepwikiClientMaterial.enabled=false
 refuses "an unrecognised ENABLED spelling"      --set main.env.ELITEA_DEEPWIKI_ENABLED=ture
-refuses "legacy runner on a non-engine image"   --set deepwiki.env.ELITEA_DEEPWIKI_RUNNER=legacy
+refuses "legacy runner on a non-engine image"   --set deepwiki.engine.image.tag=1.2.3
 
 # The reverse direction: material configured with the facade off is a mounted
 # Secret nothing reads, which looks configured and does nothing.
@@ -177,10 +177,77 @@ fi
 echo "== the legacy runner renders on an engine image =="
 if render $COMPLETE \
      --set deepwiki.env.ELITEA_DEEPWIKI_RUNNER=legacy \
-     --set deepwiki.image.tag=1.2.3-engine >/dev/null 2>&1; then
+     --set deepwiki.engine.image.tag=1.2.3-engine >/dev/null 2>&1; then
   note "runner=legacy with an -engine tag renders"
 else
   fail "the guard refuses the CORRECT combination too, so it is not a guard"
+fi
+
+echo "== the provider pod is the Go host plus the engine sidecar over one socket (ADR-0023 H2) =="
+containers="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[].name' - | tr '\n' ' ')"
+if [ "$containers" != "elitea-deepwiki engine " ]; then
+  fail "the provider pod's containers are '$containers'; expected the host and the engine sidecar"
+else
+  note "containers: $containers"
+fi
+host_image="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[0].image' -)"
+case "$host_image" in
+  ghcr.io/eliteaai/elitea-subapp-host:*) note "host image: $host_image" ;;
+  *) fail "the host container runs '$host_image', not the sub-application host" ;;
+esac
+engine_image="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[1].image' -)"
+case "$engine_image" in
+  ghcr.io/eliteaai/elitea-deepwiki:*-engine) note "engine image: $engine_image" ;;
+  *) fail "the engine sidecar runs '$engine_image'; without the -engine closure every tool fails at invocation time" ;;
+esac
+engine_command="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[1].command | join(" ")' -)"
+if [ "$engine_command" != "python -m elitea_deepwiki.sidecar" ]; then
+  fail "the engine sidecar runs '$engine_command'; the image ENTRYPOINT is the SPI shell, which would listen on a port nothing calls"
+else
+  note "engine command: $engine_command"
+fi
+for container in 0 1; do
+  socket_mount="$(printf '%s' "$manifest" \
+    | yq eval-all "select(.kind == \"Deployment\" and .metadata.name == \"elitea-deepwiki\")
+        | .spec.template.spec.containers[$container].volumeMounts[] | select(.name == \"engine-socket\") | .mountPath" -)"
+  if [ "$socket_mount" != "/run/deepwiki" ]; then
+    fail "container $container does not mount the engine socket at /run/deepwiki (got '$socket_mount')"
+  else
+    note "container $container mounts the socket at $socket_mount"
+  fi
+done
+host_socket="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[0].env[] | select(.name == "ELITEA_DEEPWIKI_ENGINE_SOCKET") | .value' -)"
+if [ "$host_socket" != "/run/deepwiki/engine.sock" ]; then
+  fail "the host's ELITEA_DEEPWIKI_ENGINE_SOCKET is '$host_socket', which is not inside the shared mount"
+else
+  note "host socket: $host_socket"
+fi
+migrate_image="$(printf '%s' "$manifest" \
+  | yq eval-all 'select(.kind == "Job" and .metadata.name == "elitea-deepwiki-migrate")
+      | .spec.template.spec.containers[0].image' -)"
+case "$migrate_image" in
+  ghcr.io/eliteaai/elitea-deepwiki:*) note "migrate image: $migrate_image" ;;
+  *) fail "the migrate Job runs '$migrate_image'; the migrations are the Python package's, and the host image has no python" ;;
+esac
+echo "== an unavailable runner renders no sidecar =="
+solo="$(render $COMPLETE --set deepwiki.env.ELITEA_DEEPWIKI_RUNNER=unavailable)" || fail "runner=unavailable does not render"
+solo_containers="$(printf '%s' "$solo" \
+  | yq eval-all 'select(.kind == "Deployment" and .metadata.name == "elitea-deepwiki")
+      | .spec.template.spec.containers[].name' - | tr '\n' ' ')"
+if [ "$solo_containers" != "elitea-deepwiki " ]; then
+  fail "runner=unavailable still renders '$solo_containers'"
+else
+  note "containers: $solo_containers"
 fi
 
 if [ "$failures" -ne 0 ]; then

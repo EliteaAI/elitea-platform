@@ -1,10 +1,9 @@
-"""ELITEA DeepWiki provider service.
+"""ELITEA DeepWiki engine package.
 
 The standalone successor to the legacy ``deepwiki_plugin`` Pylon module
-(ADR-0022). This package currently carries the frozen provider SPI; the
-analysis engine arrives behind :mod:`elitea_deepwiki.engine`'s seam.
+(ADR-0022), reduced by ADR-0023 to what needs the engine's dependency
+closure: the copied analysis engine behind :mod:`elitea_deepwiki.engine`,
+the sidecar that serves it to the Go sub-application host over a Unix
+socket (:mod:`elitea_deepwiki.sidecar`), and the index storage with its
+migrations. The provider SPI is served by ``services/elitea-subapp-host``.
 """
-
-from .app import create_app
-
-__all__ = ["create_app"]

@@ -70,6 +70,7 @@ on:
       - "tools/uictl/**"
       - "services/elitea-main/**"
       - "services/elitea-deepwiki/**"
+      - "services/elitea-subapp-host/**"
       # The `chat-stream-rust` job runs the journeys against the native Rust
       # runtime, so a change to it can break a browser journey while touching
       # nothing under apps/elitea-web. Without this path the job that exists to
@@ -86,6 +87,7 @@ on:
       - "tools/uictl/**"
       - "services/elitea-main/**"
       - "services/elitea-deepwiki/**"
+      - "services/elitea-subapp-host/**"
       # The `chat-stream-rust` job runs the journeys against the native Rust
       # runtime, so a change to it can break a browser journey while touching
       # nothing under apps/elitea-web. Without this path the job that exists to
@@ -202,11 +204,12 @@ jobs:
             --tag ghcr.io/eliteaai/elitea-web:e2e \
             --platform linux/amd64 \
             .
-          # The DeepWiki provider, SPI shell only: the E2E compose runs it
-          # with ELITEA_DEEPWIKI_RUNNER=fixture behind the facade.
+          # The DeepWiki provider: the Go sub-application host (ADR-0023
+          # H1.1), which the E2E compose runs with
+          # ELITEA_DEEPWIKI_RUNNER=fixture behind the facade.
           docker build \
-            --file services/elitea-deepwiki/Containerfile \
-            --tag ghcr.io/eliteaai/elitea-deepwiki:e2e \
+            --file services/elitea-subapp-host/Containerfile \
+            --tag ghcr.io/eliteaai/elitea-subapp-host:e2e \
             --platform linux/amd64 \
             .
           # The subshell above swallows its own failure, so this only joins the
@@ -218,7 +221,7 @@ jobs:
         # state instead of trusting the build step's exit code, and print the
         # digests so a run's provenance is legible from its log.
         run: |
-          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e ghcr.io/eliteaai/elitea-deepwiki:e2e; do
+          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e ghcr.io/eliteaai/elitea-subapp-host:e2e; do
             id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
             if [ -z "$id" ]; then
               echo "::error::$img was not loaded into the local image store."

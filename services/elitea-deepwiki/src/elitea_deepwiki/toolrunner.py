@@ -1,62 +1,40 @@
-"""The seam between the frozen SPI and the analysis engine.
+"""The seam between the engine sidecar and the analysis engine.
 
-Everything above this line is the SPI: routes, the invocation registry, the
-error contract. Everything below it is :mod:`elitea_deepwiki.engine`, the
-verbatim copy of the legacy analysis engine. Naming the boundary first is what
-made the engine copy a wiring change rather than another rewrite of the routes.
+The SPI — routes, the invocation registry, the error contract, composition
+and upload — is the Go sub-application host's (ADR-0023). What this package
+still serves, over the sidecar's Unix socket, is the engine: one tool call
+with an already-derived keyword set, progress events and a stop checkpoint
+through the context the sidecar hands in, and the index publish for a
+completed generation.
 
 Three implementations:
 
-* :class:`ToolRunner` — the Protocol the SPI depends on;
+* :class:`ToolRunner` — the Protocol the sidecar depends on;
 * :class:`UnavailableToolRunner` — the default. It **refuses** every tool with
   a ``resource_not_found`` error rather than returning an empty success. A
   runner that is not wired must look broken, not idle;
 * :class:`elitea_deepwiki.legacy_runner.LegacyToolRunner` — the real one,
   which dispatches into the engine;
-* :class:`elitea_deepwiki.fixture_runner.FixtureToolRunner` — the legacy
-  runner's composition and upload over canned tool results, for stacks that
-  must exercise the whole generate → land → read path without the engine.
-
-The module is called ``toolrunner`` rather than ``engine`` because ``engine``
-is the copied package itself.
+* :class:`elitea_deepwiki.fixture_runner.FixtureToolRunner` — canned results
+  with paced progress, for a stack that proves the hop without the engine.
 """
 
 from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .invocations import InvocationContext
-from .toolkits import ToolkitFamily
-
 
 class ToolRunner(Protocol):
-    """What the SPI needs from a tool implementation.
+    """What the sidecar needs from a tool implementation."""
 
-    One method. The legacy handler's per-tool branching, parameter merge and
-    result composition live in :mod:`elitea_deepwiki.legacy_runner`, which
-    implements this — they are engine-facing behaviour, pinned by the P0
-    ``composed_result.json`` fixture, and they do not belong in the routes.
-    """
+    async def run_engine_tool(
+        self, tool_name: str, arguments: dict[str, Any], context: Any
+    ) -> Any:
+        """Run one tool with the legacy keyword set; answer the engine's result dict."""
+        ...
 
-    async def invoke(
-        self,
-        *,
-        family: ToolkitFamily,
-        toolkit_name: str,
-        tool_name: str,
-        request_data: dict[str, Any],
-        context: InvocationContext,
-    ) -> dict[str, Any]:
-        """Run one tool and return its terminal body.
-
-        The returned mapping is what a poll hands back verbatim: at minimum
-        ``invocation_id``, ``status`` (``Completed`` or ``Error``), ``result``
-        (a JSON *string* holding the result-object list) and ``result_type``.
-
-        Raising is also allowed and is the normal path for a failure — the
-        invocation manager converts the exception through the legacy category
-        classifier.
-        """
+    async def publish(self, result: dict[str, Any], context: Any) -> None:
+        """Publish a completed generation's index (a no-op without a database)."""
         ...
 
 
@@ -64,28 +42,25 @@ class UnavailableToolRunner:
     """The default runner: refuses everything, loudly.
 
     ``ELITEA_DEEPWIKI_RUNNER=legacy`` selects the real one. Until then the
-    service serves the whole SPI — descriptor, health, slots, accept, poll,
-    cancel — and every actual tool invocation terminates with an error a caller
-    can read. That is deliberate: a shell that answered ``Completed`` with an
-    empty artifact set would let the facade and the UI be built against a lie.
+    sidecar serves its protocol — invoke, stop, health — and every actual
+    tool invocation terminates with an error a caller can read. A runner
+    that answered ``success`` with an empty artifact set would let the host
+    and the UI be built against a lie.
     """
 
     name = "unavailable"
 
-    async def invoke(
-        self,
-        *,
-        family: ToolkitFamily,
-        toolkit_name: str,
-        tool_name: str,
-        request_data: dict[str, Any],
-        context: InvocationContext,
-    ) -> dict[str, Any]:
+    async def run_engine_tool(
+        self, tool_name: str, arguments: dict[str, Any], context: Any
+    ) -> Any:
         raise FileNotFoundError(
             f"No DeepWiki tool runner is configured, so '{tool_name}' cannot "
             f"run. Set ELITEA_DEEPWIKI_RUNNER=legacy and install the 'engine' "
             f"extra to enable the analysis engine."
         )
+
+    async def publish(self, result: dict[str, Any], context: Any) -> None:
+        return None
 
 
 def build_runner(settings) -> ToolRunner:
@@ -95,7 +70,7 @@ def build_runner(settings) -> ToolRunner:
     into the copied analysis engine and needs the ``engine`` extra installed;
     if that import fails, this raises at startup rather than degrading to a
     runner that refuses — a deployment that asked for the engine and did not
-    get it must not come up looking healthy.
+    get it must not come up looking healthy. ``fixture`` is the canned engine.
     """
     name = getattr(settings, "runner", "unavailable")
 
