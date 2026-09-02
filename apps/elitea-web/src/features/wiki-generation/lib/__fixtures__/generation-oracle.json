@@ -196,6 +196,47 @@
       }
     }
   },
+  "thinking-step-from-poll-adapter": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {},
+        "content": "Cloning the repository"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Processing..."
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Processing...",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {}
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
   "thinking-step-update": {
     "frames": [
       {

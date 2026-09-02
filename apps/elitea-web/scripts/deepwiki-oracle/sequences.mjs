@@ -39,6 +39,14 @@ export const SEQUENCES = {
     frame(T.AgentThinkingStep, { content: { message: 'Indexing files' } }),
   ],
   'thinking-step-with-no-message': [frame(T.AgentThinkingStep, {})],
+
+  // EXACTLY what messagesFromPoll builds for a progress event since the
+  // socket.io removal: the text goes into `content` as a STRING. The legacy
+  // reducer reads `content?.message`, which a string does not have, so it
+  // falls through to 'Processing...' and the real text is discarded.
+  'thinking-step-from-poll-adapter': [
+    frame(T.AgentThinkingStep, { response_metadata: {}, content: 'Cloning the repository' }),
+  ],
   'thinking-step-update': [
     frame(T.AgentThinkingStepUpdate, { response_metadata: { message: 'Still indexing' } }),
   ],
