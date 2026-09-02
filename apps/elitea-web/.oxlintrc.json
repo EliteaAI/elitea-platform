@@ -63,6 +63,26 @@
     // ── hooks + a11y (D2: oxlint native react / jsx-a11y sets, R-C1) ──────
     "react/rules-of-hooks": "error",
     "react/exhaustive-deps": "error",
+    // ── oxlint 1.80 (#680) turned these on by default; MEASURED on main the day
+    // of the bump: set-state-in-effect 111, refs 90,
+    // immutability 17, globals 15, preserve-manual-memoization 13,
+    // incompatible-library 3, purity 2, static-components 1,
+    // no-irregular-whitespace 3 — 255 sites, and the
+    // rule-layer self-test's HOOKS-DEPS green fixture among them. They are React
+    // Compiler lints and a deprecation sweep, not the D2 contract this file
+    // pins, so they are OFF here until adopted deliberately, one rule at a time,
+    // with the sites fixed in the same change (tracked in the issue named in
+    // the commit). Turning a rule on here without fixing its sites makes lint
+    // red for every PR at once.
+    "react/set-state-in-effect": "off",
+    "react/refs": "off",
+    "react/immutability": "off",
+    "react/globals": "off",
+    "react/preserve-manual-memoization": "off",
+    "react/incompatible-library": "off",
+    "react/purity": "off",
+    "react/static-components": "off",
+    "eslint/no-irregular-whitespace": "off",
     "jsx-a11y/alt-text": "error",
     "jsx-a11y/anchor-has-content": "error",
     "jsx-a11y/anchor-is-valid": "error",

@@ -51,7 +51,7 @@ import { useSetRefetchDetails } from './useRefetchAgentDetails.hooks';
  *  2. `useUpdateApplicationRelationMutation` (`@/api/applications`) -> the
  *     real generated `useUpdateApplicationRelation`, same tag, real
  *     endpoint, no deviation beyond the RTK-Query-to-TanStack-Query call
- *     shape (`queryClient.fetchQuery(getUpdateApplicationRelationQueryOptions(...))`,
+ *     shape (`queryClient.query(getUpdateApplicationRelationQueryOptions(...))`,
  *     the established imperative-trigger convention for this generated
  *     client's `useQuery`-shaped write endpoints — see
  *     `entities/application-form/model/mutations.ts`'s own doc comment for
@@ -308,7 +308,7 @@ export function useDisassociateToolkit(params: UseDisassociateToolkitParams): Us
           Number(tool.settings.application_version_id),
           { application_id: applicationId, version_id: versionId, has_relation: false },
         );
-        await queryClient.fetchQuery(options);
+        await queryClient.query(options);
         // `commitRemoval` (below) already calls `onToolRemovedFromFlow?.(tool)` — an extra call
         // here double-fired it for every application-type tool disassociation (confirmed live,
         // `mock.calls.length === 2`). Removed; `commitRemoval` is the single source of this call.

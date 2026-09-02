@@ -180,7 +180,7 @@ export function useManualValidateApplicationVersion(
   const validateOne = useCallback(
     async (pid: string, appId: number, verId: number): Promise<void> => {
       try {
-        await queryClient.fetchQuery(getValidateApplicationVersionQueryOptions(pid, appId, verId));
+        await queryClient.query(getValidateApplicationVersionQueryOptions(pid, appId, verId));
         recordValidation(pid, appId, verId, []);
       } catch {
         // The real endpoint's only failure mode is network/auth (see the
@@ -211,7 +211,7 @@ export function useManualValidateApplicationVersion(
     }
 
     const versionOptions = getGetApplicationVersionDetailQueryOptions(projectId, applicationId, versionId);
-    const response = await queryClient.fetchQuery(versionOptions);
+    const response = await queryClient.query(versionOptions);
     const detail = (response as { data: ApplicationVersionDetailWire }).data;
     const detailTools = (detail.tools ?? []) as readonly AgentToolAssociation[];
 

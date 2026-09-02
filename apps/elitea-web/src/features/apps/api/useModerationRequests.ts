@@ -80,7 +80,7 @@ interface SubmitModerationRequestVariables {
  * `useTogglePinConversation`) — wrapped in a locally-owned `useMutation`.
  *
  * `submitRequest` previously ran this POST through
- * `queryClient.fetchQuery(getCreateModerationRequestQueryOptions(...))`.
+ * `queryClient.query(getCreateModerationRequestQueryOptions(...))`.
  * That reuses the query machinery's defaults — `retry: 1` and dedup of any
  * in-flight/cached entry sharing the options' `queryKey` within its
  * `staleTime` — against what is a non-idempotent create call: a
