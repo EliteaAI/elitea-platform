@@ -3,12 +3,13 @@ import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/rea
 import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 
 import { routeTree } from '../../routeTree.gen';
 import { stubAuthContext } from '@/app/router-context';
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 
 /**
  * Shared QueryClient so tests don't re-create it each run.
@@ -20,7 +21,17 @@ const queryClient = new QueryClient({
 /** Shared Elitea theme — provides palette.border, palette.background, etc. for sx functions. */
 const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
+// The shell this layout mounts under renders widgets that fetch through the
+// generated client (the support assistant, for one). Unconfigured, that throws
+// inside the shell; @tanstack/react-router 1.170.32 (#680) lets that throw
+// reach the root boundary during the SettingsRedirect navigation, so the
+// redirected page never rendered its tabs. Configure it, as the sibling route
+// tests do; msw answers what the shell asks for.
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: 'http://elitea.test/api/v2' });
+});
 afterEach(() => {
+  resetGeneratedClient();
   queryClient.clear();
 });
 
