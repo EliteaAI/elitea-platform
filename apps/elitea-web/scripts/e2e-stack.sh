@@ -54,6 +54,11 @@ CMD="${1:-}"
 
 case "$CMD" in
   up)
+    # The facade → provider hop is mTLS with no plaintext fallback on either
+    # side; the script is idempotent and keeps fresh material.
+    echo "→ Generating the DeepWiki mTLS material…"
+    DEEPWIKI_CERT_SANS="DNS:elitea-deepwiki,DNS:localhost,IP:127.0.0.1" \
+      bash "${REPO_ROOT}/deploy/scripts/gen-deepwiki-certs.sh"
     echo "→ Bringing up E2E stack (${COMPOSE_BIN})…"
     # --wait: wait for every healthcheck to report healthy before returning.
     # elitea-main runs migrations on startup; postgres is its dependency.
@@ -1179,6 +1184,47 @@ JOIN auth_core__project_role r ON r.project_id = 90001 AND r.name = 'admin'
 WHERE u.email IN ('e2e-project-admin@autotest.local', 'e2e-admin@autotest.local')
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 
+-- ITS OWN PROJECT, and that is not tidiness (issue #519's lesson, and #290's).
+--
+-- The first version put this toolkit in project 1, the shared one every
+-- persona lands in. J17.1 ("an empty toolkit list redirects to the create
+-- page") polls until project 1's toolkit list reports `total: 0`, because
+-- sibling journeys create and delete toolkits there. A PERMANENT toolkit makes
+-- that condition unreachable, so J17.1 could only ever time out — a journey
+-- broken by a fixture it never mentions.
+--
+-- The chat work hit the same wall and answered it the same way: a dedicated
+-- persona and project (#290). Here only the project is dedicated; the member
+-- persona is granted editor on it and the journey selects it.
+INSERT INTO centry.project (id, name, owner_id, keycloak_groups, create_success, suspended)
+VALUES (90200, 'e2e-deepwiki', 1, '{}', true, false)
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, suspended = EXCLUDED.suspended;
+
+INSERT INTO auth_core__project_role (project_id, name) VALUES
+    (90200, 'admin'), (90200, 'editor'), (90200, 'viewer')
+ON CONFLICT (project_id, name) DO NOTHING;
+
+-- The permissions this project's journey needs, copied from what project 1's
+-- editor role holds. Copied rather than restated: a hand-written subset drifts
+-- from the real role the moment a permission is added, and the journey would
+-- fail on a permission nobody thought about.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT 90200, target.id, source.permission
+FROM auth_core__project_role_permission source
+JOIN auth_core__project_role origin
+  ON origin.id = source.role_id AND origin.project_id = 1
+JOIN auth_core__project_role target
+  ON target.project_id = 90200 AND target.name = origin.name
+WHERE source.project_id = 1
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT 90200, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90200 AND r.name = 'editor'
+WHERE u.email = 'e2e-member@autotest.local'
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
 -- Tenant schemas for every project this seed created.
 --
 -- POSITION IS LOAD-BEARING: this must run after EVERY `centry.project` insert,
@@ -1609,11 +1655,266 @@ ENDFIXTURE
     printf '%s\n' "$AUDIT_FIXTURE" > "$AUDIT_FIXTURE_FILE"
     echo "  ✓ audit trail fixture verified and published: ${AUDIT_FIXTURE}"
 
+    # ── DeepWiki: one wiki toolkit and one generated wiki (DWIKI-001..003) ───
+    #
+    # WHY THIS IS SEEDED AND NOT PRODUCED. Nothing in this service creates a
+    # wiki toolkit row: `toolkitTypeSchemas` (internal/api/v2/toolkits) is a
+    # hand-written map plus the pinned SDK snapshot, and neither carries a
+    # provider-supplied type — that is the provider hub, ADR-0012 phase P3. And
+    # nothing here can GENERATE a wiki either: this stack runs no DeepWiki
+    # provider service, so every invocation would fail at the facade's mTLS hop.
+    #
+    # So the journey covers what this stack can actually serve — listing and
+    # reading a wiki that already exists — and the wiki is put there the way
+    # the provider would: objects in the artifact store, under the key layout
+    # the provider writes and the browser reads.
+    echo "  → Seeding a DeepWiki toolkit and one wiki…"
+
+    # The toolkit. `type = 'wikis'` is the provider's own toolkit name
+    # lowercased — the descriptor names it `Wikis` and the SPI addresses it as
+    # `wikis` in /tools/{toolkit_name}/{tool_name}/invoke. entities/wiki's
+    # WIKI_TOOLKIT_TYPE is the reader that has to agree with this line.
+    #
+    # `code_toolkit` is deliberately ABSENT. Following that reference needs a
+    # github toolkit with a resolvable credential, and this stack has none; the
+    # repository is set directly instead, which is the other branch of the same
+    # resolver and the one a project without a code toolkit uses.
+    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -v ON_ERROR_STOP=1 >/dev/null <<'DEEPWIKI_SQL'
+-- `owner_id` AND `author_id`, both NOT NULL. Measured against a running stack:
+-- omitting owner_id fails with a null-constraint violation naming a column the
+-- INSERT never mentioned, because the positional row it prints is the table's
+-- order and not the statement's.
+--
+-- `max_tokens` is NOT seeded, and its absence is deliberate. The read endpoint
+-- strips it: `isSensitiveSettingKey` matches the substring "token", so both
+-- `max_tokens` and `toolkit_configuration_max_tokens` are redacted out of every
+-- response (issue #705). Seeding it would put a value in the database that no
+-- client can read back, and a fixture nothing can observe is a fixture that
+-- teaches the next reader something false.
+INSERT INTO p_90200.elitea_tools (id, name, type, description, owner_id, author_id, settings)
+VALUES (
+    9001,
+    'E2E Wiki',
+    'wikis',
+    'Seeded by scripts/e2e-stack.sh for the DeepWiki journeys',
+    90200,
+    1,
+    '{"repository": "acme/e2e-service", "branch": "main",
+      "llm_model": "gpt-4o-mini", "code_toolkit": 9010}'::jsonb
+)
+ON CONFLICT (id) DO UPDATE
+    SET type = EXCLUDED.type, name = EXCLUDED.name, settings = EXCLUDED.settings;
+
+-- A SECOND wiki toolkit, for the journeys that MUTATE: generate, settings,
+-- delete. Its repository is different, so the wiki the fixture runner
+-- generates for it (acme--e2e-generated--main) never touches the seeded
+-- read-only wiki above that DWIKI-001–003 and the quick-fix/edit journeys
+-- read — spec files run in any order and in parallel.
+INSERT INTO p_90200.elitea_tools (id, name, type, description, owner_id, author_id, settings)
+VALUES (
+    9002,
+    'E2E Generated Wiki',
+    'wikis',
+    'Seeded by scripts/e2e-stack.sh for the DeepWiki generation journeys',
+    90200,
+    1,
+    '{"repository": "acme/e2e-generated", "branch": "main",
+      "llm_model": "gpt-4o-mini", "code_toolkit": 9010}'::jsonb
+)
+ON CONFLICT (id) DO UPDATE
+    SET type = EXCLUDED.type, name = EXCLUDED.name, settings = EXCLUDED.settings;
+
+-- The DeepWiki permissions, on THIS project's roles. Migration 0106 grants
+-- them centrally and to every project that had role overrides at migration
+-- time; 90200 is created afterwards and copies project 1's overrides, which
+-- predate 0106 too — so without these rows every facade call answers 403
+-- (the standalone run of DWIKI-005 saw exactly that, on a member who is an
+-- editor here). Project 1 gets them for the same reason.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT r.project_id, r.id, grant_row.permission
+FROM auth_core__project_role r
+JOIN (VALUES
+    ('admin',  'models.applications.deepwiki.read'),
+    ('editor', 'models.applications.deepwiki.read'),
+    ('viewer', 'models.applications.deepwiki.read'),
+    ('admin',  'models.applications.deepwiki.generate'),
+    ('editor', 'models.applications.deepwiki.generate')
+) AS grant_row(role_name, permission) ON grant_row.role_name = r.name
+WHERE r.project_id IN (1, 90200)
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
+-- The repository toolkit `code_toolkit` names. THE FACADE REQUIRES IT: every
+-- generate/ask resolves `configuration.parameters.code_toolkit` — an integer
+-- naming a p_<project>.configuration row of a repository type — through the
+-- project's vault before the request reaches the provider (credentials.go,
+-- ADR-0022 decision 6). A toolkit without one cannot generate at all.
+--
+-- The token is a literal, not a {{secret.NAME}} reference: the unsecreter
+-- leaves plain values as they are, and the fixture runner never clones, so
+-- nothing ever presents it to GitHub.
+INSERT INTO p_90200.configuration
+    (id, project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (9010, 90200, 'e2e-github', 'github', 'toolkits',
+     '{"base_url":"https://api.github.com","access_token":"e2e-not-a-real-token"}',
+     '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (id) DO UPDATE
+    SET type = EXCLUDED.type, section = EXCLUDED.section, data = EXCLUDED.data, updated_at = NOW();
+
+-- The project vault the resolver opens to read that row. COPIED from
+-- project-1 for the reason the personal-project clone above gives: the
+-- blobs are Fernet, psql cannot mint them, and project-1's pair is a valid,
+-- consistent, empty vault. A project with NO vault rows fails the whole
+-- resolve ("vault that will not open" → ErrCredentialsUnavailable → 503),
+-- which on screen is a Generate button that always fails.
+INSERT INTO centry.secrets_key (id, data)
+SELECT 'project-90200', data FROM centry.secrets_key WHERE id = 'project-1'
+ON CONFLICT (id) DO NOTHING;
+INSERT INTO centry.secrets_data (id, data)
+SELECT 'project-90200', data FROM centry.secrets_data WHERE id = 'project-1'
+ON CONFLICT (id) DO NOTHING;
+
+-- The bucket the wiki objects live in. The artifacts surface refuses every
+-- object route for a bucket with no row (requireBucket), so the objects below
+-- would be invisible without it — a listing that answers 404 and reads on
+-- screen as "you have no wikis".
+INSERT INTO elitea_storage.buckets (project_id, name, display_name, bucket_type)
+VALUES (90200, 'wiki-artifacts', 'Wiki artifacts', 'local')
+ON CONFLICT (project_id, name) WHERE deleted_at IS NULL DO NOTHING;
+DEEPWIKI_SQL
+
+    # The wiki objects, written straight into the object store.
+    #
+    # The physical layout is elitea-main's, not an invention:
+    # `[prefix/]p/{project}/b/{bucket}/o/{key}` (internal/infra/storage/ref.go),
+    # and this stack sets no STORAGE_KEY_PREFIX. The LISTING reads the store
+    # directly (`h.store.List`) rather than elitea_storage.objects, so objects
+    # placed here are listed; the bucket row above is what admits the request.
+    WIKI_ID="acme--e2e-service--main"
+    WIKI_TMP="$(mktemp -d)"
+    mkdir -p "${WIKI_TMP}/${WIKI_ID}/wiki_pages/architecture"
+    cat > "${WIKI_TMP}/${WIKI_ID}/wiki_manifest_1.json" <<WIKI_MANIFEST
+{
+  "schema_version": 1,
+  "wiki_id": "${WIKI_ID}",
+  "wiki_title": "E2E Service Wiki",
+  "description": "A wiki seeded for the DeepWiki journeys.",
+  "wiki_version_id": "1",
+  "created_at": "2026-01-01T00:00:00Z",
+  "canonical_repo_identifier": "acme/e2e-service",
+  "repository": "acme/e2e-service",
+  "branch": "main",
+  "provider_type": "github",
+  "pages": ["wiki_pages/architecture/router.md", "wiki_pages/architecture/request-flow.md"]
+}
+WIKI_MANIFEST
+    # A page whose diagram does not parse: what the mermaid quick-fix journey
+    # (DWIKI-007/008) repairs, saves over, and undoes — against a wiki that
+    # exists before any generation has run on this stack.
+    cat > "${WIKI_TMP}/${WIKI_ID}/wiki_pages/architecture/request-flow.md" <<'WIKI_PAGE'
+# Request flow
+
+The diagram below is deliberately broken. It exists so the quick fix has
+something to repair.
+
+```mermaid
+graph TD
+  A[Client] -->
+```
+
+After the diagram.
+WIKI_PAGE
+    cat > "${WIKI_TMP}/${WIKI_ID}/wiki_pages/architecture/router.md" <<'WIKI_PAGE'
+# Router
+
+The HTTP router is assembled in `internal/api/router.go`.
+
+## Notes
+
+This page is a seeded fixture. It exists so the DeepWiki journey can read a
+wiki page that a provider would have written, on a stack that runs no provider.
+WIKI_PAGE
+
+    # `mc` is the tool the compose file already uses to create the S3 bucket
+    # (rustfs-bucket-init), so this adds no new dependency to the stack.
+    $EXEC_BIN run --rm --network "${E2E_PROJECT}_default" \
+      -v "${WIKI_TMP}:/wiki:ro" \
+      --entrypoint sh docker.io/minio/mc:latest -c "
+        mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret >/dev/null &&
+        mc cp --recursive /wiki/${WIKI_ID} rustfs/elitea-artifacts/p/90200/b/wiki-artifacts/o/ >/dev/null
+      " || {
+        echo "ERROR: could not write the seeded wiki objects into rustfs." >&2
+        echo "  The DeepWiki journey would then find an empty bucket, which is" >&2
+        echo "  indistinguishable on screen from a project with no wikis." >&2
+        rm -rf "$WIKI_TMP"
+        exit 1
+      }
+    rm -rf "$WIKI_TMP"
+
+    # ── postcondition: the objects are READABLE through the API's own layout ──
+    #
+    # Not "mc reported success": a copy into the wrong prefix succeeds and
+    # leaves the browser empty. This lists the exact prefix elitea-main derives
+    # for (project 1, bucket wiki-artifacts) and requires the manifest in it.
+    WIKI_OBJECTS=$($EXEC_BIN run --rm --network "${E2E_PROJECT}_default" \
+      --entrypoint sh docker.io/minio/mc:latest -c "
+        mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret >/dev/null &&
+        mc ls --recursive rustfs/elitea-artifacts/p/90200/b/wiki-artifacts/o/ 2>/dev/null
+      " || true)
+    case "$WIKI_OBJECTS" in
+      *wiki_manifest_1.json*) ;;
+      *)
+        echo "ERROR: the seeded wiki manifest is not under the prefix elitea-main reads." >&2
+        echo "  Expected p/90200/b/wiki-artifacts/o/${WIKI_ID}/wiki_manifest_1.json" >&2
+        echo "  mc listed: ${WIKI_OBJECTS:-<nothing>}" >&2
+        exit 1
+        ;;
+    esac
+    echo "  ✓ DeepWiki project 90200, toolkit 9001 and wiki ${WIKI_ID} seeded"
+
     echo "→ Seed complete."
     ;;
 
+  logs)
+    # Every service's log, for a failure that only the SERVER can explain.
+    #
+    # WHY THIS EXISTS. A journey failed with "Failed to load users." on the
+    # screen after a write, and the job captured a screenshot, a video and an
+    # accessibility tree — none of which can say whether the listing answered
+    # 500, timed out, or was refused. The stack was torn down in the next step
+    # and the answer went with it. A failure nobody can diagnose gets retried
+    # until it passes, which is how a real defect becomes "flaky".
+    #
+    # Written to a FILE rather than the job log: `docker compose logs` for a
+    # nine-service stack is tens of thousands of lines, and burying the
+    # Playwright output under it costs more than it gives. The file is uploaded
+    # beside the report.
+    #
+    # NEVER FATAL. This runs on the failure path, and a diagnostic that can fail
+    # the job it is diagnosing would replace one unexplained failure with
+    # another. Every branch ends in `|| true`.
+    # APP_ROOT is set inside the `seed` branch, so it is derived here rather
+    # than borrowed: a default that silently resolved to "." would write the
+    # file next to wherever the caller happened to stand.
+    LOGS_APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    OUT="${2:-${LOGS_APP_ROOT}/playwright-results/stack-logs.txt}"
+    mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
+    echo "→ Collecting stack logs into ${OUT}…"
+    {
+      echo "=== compose ps ==="
+      $COMPOSE_BIN $COMPOSE_F ps 2>&1 || true
+      echo
+      echo "=== compose logs (--no-color, timestamps) ==="
+      $COMPOSE_BIN $COMPOSE_F logs --no-color --timestamps 2>&1 || true
+    } > "$OUT" 2>&1 || true
+    # The count is printed so a caller can tell "collected nothing" from
+    # "collected and there was nothing wrong" — an empty file that nobody
+    # noticed is the same dead end this command exists to remove.
+    echo "  ✓ $(wc -l < "$OUT" 2>/dev/null || echo 0) line(s) collected"
+    ;;
+
   *)
-    echo "Usage: $0 {up|down|seed}" >&2
+    echo "Usage: $0 {up|down|seed|logs [outfile]}" >&2
     exit 1
     ;;
 esac

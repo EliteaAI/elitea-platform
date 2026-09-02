@@ -164,4 +164,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("127.0.0.1", 18901), Handler).serve_forever()
+    import os
+
+    # Loopback by default (the manual harness); a compose service binds all
+    # interfaces and takes the mock's port so the gateway's egress allowlist
+    # (`llm-mock:8090`) needs no change.
+    ThreadingHTTPServer(
+        (os.environ.get("LLM_STUB_HOST", "127.0.0.1"), int(os.environ.get("LLM_STUB_PORT", "18901"))),
+        Handler,
+    ).serve_forever()

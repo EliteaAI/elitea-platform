@@ -28,6 +28,7 @@
 /** One optional backend surface. */
 export type BackendCapability =
   | 'aiGeneration'
+  | 'deepwiki'
   | 'llmPredictBlocking'
   | 'llmPredictStreaming'
   | 'pipelineTriggers';
@@ -60,9 +61,26 @@ export type BackendCapability =
  * `pipelineTriggers` covers the webhook and scheduled trigger types, and the
  * trigger read the application-information panel makes. The Chat Message
  * trigger type calls no endpoint and stays available.
+ *
+ * `deepwiki` gated the native wiki feature while it was being built, and is
+ * now ON. It was off for a reason this module had not had before: the routes it
+ * needs were served and the feature still could not work end to end, because
+ * the PROVIDER wrote wiki content through a path family elitea-main serves no
+ * route in (parity/notes/deepwiki-artifact-store.md, issue #665). Turning it on
+ * then would have produced a wiki browser that listed nothing — exactly the
+ * affordance-the-user-cannot-repair this module exists to prevent. #665 fixed
+ * the provider's client to write where this feature reads, and the flag
+ * followed it.
+ *
+ * WHAT THIS FLAG DOES NOT GATE. Generating a wiki and asking questions about
+ * one need the provider SERVICE to be reachable over the facade's mTLS hop. A
+ * deployment without one browses and reads wikis and cannot generate, and the
+ * generation surface reports that. It is a deployment fact, not a capability —
+ * the same distinction as `llmPredictBlocking` above.
  */
 const SERVED: Readonly<Record<BackendCapability, boolean>> = {
   aiGeneration: false,
+  deepwiki: true,
   llmPredictBlocking: true,
   llmPredictStreaming: false,
   pipelineTriggers: false,

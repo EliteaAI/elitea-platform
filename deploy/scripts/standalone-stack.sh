@@ -97,6 +97,14 @@ standalone_psql_read() {
 }
 
 PORT="${STANDALONE_PORT:-8084}"
+# SEED_EXTRA_PROJECTS: comma-separated project ids that `seed-llm` and
+# `seed-index` write model rows into IN ADDITION to project 1 and every
+# personal project. The gateway resolves a model per project (a row in
+# p_<id>.configuration, or a shared row in the public project), so a journey
+# that runs a model call under some OTHER seeded project — the DeepWiki
+# real-engine run bills project 90200, the E2E seed's — gets nothing but
+# `model is not configured for this project` without its own rows.
+SEED_EXTRA_PROJECTS="${SEED_EXTRA_PROJECTS:-}"
 
 # How long `check` waits for the agent worker to join its Redis consumer group.
 # The worker has no healthcheck, so `compose up -d --wait` returns before it has
@@ -444,7 +452,8 @@ seed_llm_main() {
          JOIN public.auth_core__token t
            ON t.user_id = pur.user_id AND t.uuid IS NOT NULL
           AND (t.expires IS NULL OR t.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
-        WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+        WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%'
+               OR p.id = ANY(string_to_array(NULLIF('${SEED_EXTRA_PROJECTS:-}', ''), ',')::int[]))
           AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
                        WHERE nspname = 'p_' || p.id::text)
         ORDER BY p.id, pur.user_id, t.id" | tr -d '\r')"
@@ -607,6 +616,11 @@ case "${1:-}" in
     # identities authorized to call into elitea-main. Merging them would let an
     # egress client cert authenticate as a workload.
     "${REPO_ROOT}/deploy/scripts/gen-gateway-certs.sh"
+    # After the gateway's: the DeepWiki script REUSES a fresh deploy/certs CA
+    # and client certificate, and only issues the provider's server cert —
+    # one trust root for both mTLS hops out of elitea-main.
+    DEEPWIKI_CERT_SANS="DNS:elitea-deepwiki,DNS:localhost,IP:127.0.0.1" \
+      "${REPO_ROOT}/deploy/scripts/gen-deepwiki-certs.sh"
     exec "${REPO_ROOT}/deploy/scripts/gen-runtime-certs.sh"
     ;;
 
@@ -621,6 +635,10 @@ case "${1:-}" in
     # dependent service is stuck in `created` with no obvious cause.
     if [ ! -f "${REPO_ROOT}/deploy/certs/runtime/runtime-ca.crt" ]; then
       echo "ERROR: runtime-plane material missing. Run: $0 certs" >&2
+      exit 1
+    fi
+    if [ ! -f "${REPO_ROOT}/deploy/certs/deepwiki-server.crt" ]; then
+      echo "ERROR: DeepWiki provider material missing. Run: $0 certs" >&2
       exit 1
     fi
     # oidc-mock's published port must equal its container port (the issuer is
@@ -840,7 +858,8 @@ SQL
     INDEX_TARGETS="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT p.id FROM centry.project p
-          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%'
+                 OR p.id = ANY(string_to_array(NULLIF('${SEED_EXTRA_PROJECTS:-}', ''), ',')::int[]))
             AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
                          WHERE nspname = 'p_' || p.id::text)
           ORDER BY p.id" 2>/dev/null | tr -d '\r')"

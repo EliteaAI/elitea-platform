@@ -45,17 +45,40 @@ const DESCRIPTORS_URL = `/elitea_core/admin/${ADMIN_MODE}`;
 /**
  * One row of pylon's `GET /elitea_core/admin/administration`.
  *
- * Declared even though this deployment never returns one: it is the shape the
- * page would render, and writing it down is what makes the difference between
- * "unavailable" and "unimplemented" reviewable. Note that `healthy` is not a
- * stored fact anywhere — in pylon it records which of two in-process dicts the
- * descriptor landed in after a health probe at plugin load.
+ * `healthy` IS THREE-STATE, and the `| null` is the whole point of it.
+ *
+ * pylon had two in-process dicts and a descriptor landed in one of them at
+ * plugin load, so "nobody has probed this" and "this is down" were the same
+ * value — a provider nobody had asked about read as unhealthy. The Go
+ * admission plane stores health as a separate PROJECTION with a timestamp
+ * (`provider_health_projection`) and answers `null` when no projection is
+ * younger than its freshness window.
+ *
+ * Typing this `boolean` would force the server to pick one of the two lies it
+ * was built to stop telling, so the type is what holds the contract: see
+ * `services/elitea-main/internal/api/v2/eliteacore/provider_admission.go`.
  */
 export interface AdminServiceDescriptor {
   readonly project_id: number;
   readonly provider_name: string;
   readonly service_location_url: string;
-  readonly healthy: boolean;
+  readonly healthy: boolean | null;
+  /**
+   * The latest admission's state: `active`, `inactive`, `revoked`, or
+   * `unregistered` when no revision has ever been recorded.
+   *
+   * IT IS NOT OPTIONAL DECORATION. The listing is driven by
+   * `provider_origin_registration` — every origin ever registered — so a
+   * REVOKED provider stays in it. That is deliberate: an admission that was
+   * once in force is a fact about what this deployment ran, and DELETE never
+   * removes the row. But it means a listing that does not render this column
+   * shows a revoked provider identically to a live one, and an operator who
+   * revokes one, reloads, and sees no change concludes the revoke did not work.
+   */
+  readonly status?: string;
+  /** Why the latest admission is in that state; empty when it says nothing. */
+  readonly reason?: string;
+  readonly published_manifest_digest?: string | null;
 }
 
 /** The listing body pylon returns. `rows` is what the reference client reads. */

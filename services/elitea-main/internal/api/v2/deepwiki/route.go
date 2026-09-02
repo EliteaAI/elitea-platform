@@ -3,13 +3,14 @@ package deepwiki
 import (
 	"errors"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
-	"strings"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/routes"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -63,9 +64,7 @@ func NewRoute(
 	minter CallbackMinter,
 	logger *slog.Logger,
 ) (*Route, error) {
-	if authConfig.PrincipalValidator == nil ||
-		authConfig.ForwardedIdentityVerifier == nil ||
-		permissions == nil {
+	if !facade.Composable(authConfig, permissions) {
 		return nil, ErrInvalidRoute
 	}
 
@@ -88,59 +87,41 @@ func NewRoute(
 		logger = slog.Default()
 	}
 
-	projectFromPath := func(request *http.Request) (string, bool) {
-		projectID := chi.URLParam(request, "project_id")
-		return projectID, validProjectID(projectID)
+	// guard, the project accessor and the id rule all come from
+	// providerhost/facade now: DeepWiki and Inventory are two callers of the
+	// same three, which is the bar ADR-0012 set for extracting them.
+	handler, err := routes.Build(routes.Table{
+		SlotsPath:        SlotsPath,
+		InvokePath:       InvokePath,
+		InvocationPath:   InvocationPath,
+		Mode:             Mode,
+		ReadPermission:   ReadPermission,
+		InvokePermission: GeneratePermission,
+		Auth:             authConfig,
+		Permissions:      permissions,
+		Forward:          proxy.Forward,
+		UserID:           userIDFrom,
+		Admission:        cfg.Admission,
+		// The one route this facade serves itself: the body is rewritten
+		// (credentials expanded, a callback grant minted) before the hop.
+		// The handler is the shared one; only the rewrite is DeepWiki's.
+		Invoke: material.Invocation{
+			Provider: "DeepWiki",
+			Rewrite:  rewriter.Rewrite,
+			Forward:  proxy.Forward,
+			Path: func(r *http.Request) string {
+				return providerInvokePath(
+					chi.URLParam(r, "toolkit_name"), chi.URLParam(r, "tool_name"))
+			},
+			Minter: minter,
+			Status: invokeError,
+			Logger: logger,
+		}.Serve,
+	})
+	if err != nil {
+		return nil, ErrInvalidRoute
 	}
-
-	guard := func(permission string) func(http.Handler) http.Handler {
-		return func(next http.Handler) http.Handler {
-			endpoint := apimw.RequireResolvedPermissionsForProject(
-				permissions, Mode, projectFromPath, permission,
-			)(next)
-			return apimw.Auth(authConfig)(endpoint)
-		}
-	}
-
-	router := chi.NewRouter()
-
-	router.Method(http.MethodGet, SlotsPath, guard(ReadPermission)(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.Forward(w, r, providerSlotsPath,
-				chi.URLParam(r, "project_id"), userIDFrom(r))
-		})))
-
-	router.Method(http.MethodPost, InvokePath, guard(GeneratePermission)(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			toolkit := chi.URLParam(r, "toolkit_name")
-			tool := chi.URLParam(r, "tool_name")
-			invoke(w, r, proxy, rewriter, logger,
-				providerInvokePath(toolkit, tool))
-		})))
-
-	router.Method(http.MethodGet, InvocationPath, guard(ReadPermission)(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.Forward(w, r, invocationPathFrom(r),
-				chi.URLParam(r, "project_id"), userIDFrom(r))
-		})))
-
-	// Cancelling is a write. Polling is not, and they share a path — so the
-	// two methods carry different permissions on the same route.
-	router.Method(http.MethodDelete, InvocationPath, guard(GeneratePermission)(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.Forward(w, r, invocationPathFrom(r),
-				chi.URLParam(r, "project_id"), userIDFrom(r))
-		})))
-
-	return &Route{handler: router}, nil
-}
-
-func invocationPathFrom(r *http.Request) string {
-	return providerInvocationPath(
-		chi.URLParam(r, "toolkit_name"),
-		chi.URLParam(r, "tool_name"),
-		chi.URLParam(r, "invocation_id"),
-	)
+	return &Route{handler: handler}, nil
 }
 
 // ServeHTTP answers even when the route was never built, so a deployment with
@@ -152,32 +133,6 @@ func (route *Route) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route.handler.ServeHTTP(w, r)
-}
-
-// validProjectID accepts only a positive decimal id that fits an int32.
-//
-// The value reaches the permission resolver and the provider, so a
-// non-numeric one must be rejected before either sees it rather than being
-// passed along to fail somewhere less obvious.
-//
-// THE UPPER BOUND IS NOT COSMETIC, and it is the same aliasing bug
-// agentexecution/route.go documents at length. The id is narrowed to int32 to
-// read a configuration (the underlying columns are Postgres `integer`), and in
-// Go that narrowing is a silent truncation: without this bound `4294967301`
-// truncates to `5`, so a caller could name an out-of-range project and have
-// the facade resolve project 5's stored credentials — and push them to the
-// provider. CodeQL found the conversion (go/incorrect-integer-conversion);
-// the bound belongs here, at the only parse in this request path, rather than
-// at each narrowing downstream.
-//
-// Rejecting rather than clamping: an id above MaxInt32 cannot correspond to
-// any row in an `integer` column, so "no such project" is the honest answer.
-func validProjectID(raw string) bool {
-	if raw == "" || strings.HasPrefix(raw, "0") && raw != "0" {
-		return false
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	return err == nil && value > 0 && value <= math.MaxInt32
 }
 
 // userIDFrom reads the authenticated user for the signed identity.

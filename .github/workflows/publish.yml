@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: ghcr.io/eliteaai
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
   # Read by the chart job. Pinned, not "latest" — an unpinned third-party
   # download is a hard dependency of every release.
   YQ_VERSION: v4.44.6
@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -90,7 +90,7 @@ jobs:
           submodules: recursive # apps/elitea-ui is the pinned parity baseline
           persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           # uictl has no external dependencies and no go.sum, so the cache
@@ -219,6 +219,9 @@ jobs:
             # from there.
             context: .
             dockerfile: ./services/elitea-scheduler/Containerfile
+          - name: elitea-subapp-host
+            context: .
+            dockerfile: ./services/elitea-subapp-host/Containerfile
           - name: elitea-ui
             context: .
             dockerfile: ./deploy/docker/Containerfile.elitea-ui
@@ -390,6 +393,9 @@ jobs:
           - name: elitea-scheduler
             expect_type: gobinary
             blocking: true
+          - name: elitea-subapp-host
+            expect_type: gobinary
+            blocking: true
           - name: elitea-ui
             expect_type: alpine
             blocking: true
@@ -501,6 +507,7 @@ jobs:
         image:
           - name: elitea-main
           - name: elitea-scheduler
+          - name: elitea-subapp-host
           - name: elitea-ui
           - name: elitea-web
           - name: pylon-indexer
@@ -546,6 +553,7 @@ jobs:
         image:
           - name: elitea-main
           - name: elitea-scheduler
+          - name: elitea-subapp-host
           - name: elitea-ui
           - name: elitea-web
           - name: pylon-indexer
@@ -860,12 +868,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          # Must list exactly the images the `build` matrix pushes — the same
-          # rule as the chart array below, and held by the same gate in
-          # helm-lint.yml.
-          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust" "elitea-deepwiki")
+          # Must list exactly the images the `build` matrix pushes.
+          #
+          # This comment used to say the rule was "held by the same gate in
+          # helm-lint.yml". It was not: that gate cross-checks the CHART matrix
+          # and the CHARTS rollback array and says nothing about images, so this
+          # array could drift from the build matrix with nothing to catch it —
+          # and a reader who added an image had been told otherwise.
+          #
+          # scripts/ci/image-matrix.sh --verify is the real gate, and it holds
+          # all six copies of the image list against docker-bake.hcl.
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-subapp-host" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python" "elitea-worker-rust" "elitea-deepwiki")
           SUFFIXES=("linux-amd64" "linux-arm64")
-          ORG="eliteaai"
+          ORG="${{ github.repository_owner }}"
 
           for img in "${IMAGES[@]}"; do
             # Delete platform-specific tags
@@ -907,7 +922,7 @@ jobs:
           # exist and left the one chart this release actually published in
           # place — pointing at images the step above had just deleted.
           CHARTS=("elitea" "nats" "nats-bootstrap")
-          ORG="eliteaai"
+          ORG="${{ github.repository_owner }}"
 
           # Report what could not be deleted. Every call here used to end in
           # `2>/dev/null || true`, so a refused delete looked exactly like a

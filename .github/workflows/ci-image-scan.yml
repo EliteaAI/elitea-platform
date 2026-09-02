@@ -95,6 +95,7 @@ on:
       - "services/elitea-worker-python/**"
       - "services/elitea-worker-rust/**"
       - "services/elitea-scheduler/**"
+      - "services/elitea-subapp-host/**"
       - "services/elitea-llm-gateway/**"
       - "services/pylon-indexer/**"
       - "apps/elitea-web/**"
@@ -127,6 +128,7 @@ on:
       - "services/elitea-worker-python/**"
       - "services/elitea-worker-rust/**"
       - "services/elitea-scheduler/**"
+      - "services/elitea-subapp-host/**"
       - "services/elitea-llm-gateway/**"
       - "services/pylon-indexer/**"
       - "apps/elitea-web/**"
@@ -339,6 +341,12 @@ jobs:
           - name: elitea-scheduler
             context: .
             dockerfile: ./services/elitea-scheduler/Containerfile
+            target: ""
+            expect_type: gobinary
+            blocking: true
+          - name: elitea-subapp-host
+            context: .
+            dockerfile: ./services/elitea-subapp-host/Containerfile
             target: ""
             expect_type: gobinary
             blocking: true

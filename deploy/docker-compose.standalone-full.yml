@@ -310,7 +310,7 @@ services:
     restart: "no"
 
   elitea-migrate:
-    image: ghcr.io/eliteaai/elitea-main:standalone
+    image: ghcr.io/elitea-ng/elitea-main:standalone
     build:
       context: ..
       dockerfile: services/elitea-main/Containerfile
@@ -333,7 +333,7 @@ services:
     restart: "no"
 
   elitea-agentstate-migrate:
-    image: ghcr.io/eliteaai/elitea-main:standalone
+    image: ghcr.io/elitea-ng/elitea-main:standalone
     build:
       context: ..
       dockerfile: services/elitea-main/Containerfile
@@ -419,7 +419,7 @@ services:
   # GATEWAY_IDENTITY_SECRET is the one hard requirement: startupIdentityCheck
   # exits 1 when it is empty and the credential Account is wired.
   elitea-llm-gateway:
-    image: ghcr.io/eliteaai/elitea-llm-gateway:standalone
+    image: ghcr.io/elitea-ng/elitea-llm-gateway:standalone
     # Build context is the module directory only — it must not inherit the root
     # go.work, which pins Go 1.25.8 for elitea-main/elitea-scheduler.
     build:
@@ -587,7 +587,7 @@ services:
       - "${STANDALONE_OTEL_HTTP_PORT:-14318}:4318" # OTLP HTTP
 
   elitea-main:
-    image: ghcr.io/eliteaai/elitea-main:standalone
+    image: ghcr.io/elitea-ng/elitea-main:standalone
     # `build:` present so compose builds the tag from this commit instead of
     # reaching for a registry tag that was never published (cf. issue #154).
     # Context is `..` because build contexts resolve relative to THIS file's
@@ -664,6 +664,31 @@ services:
       # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition. The
       # compatibility route this stack serves already writes status_ok itself.
       ELITEA_CONFIGURATIONS_ENABLED: "true"
+      # ── The DeepWiki facade (ADR-0022 P2) ──────────────────────────────
+      # This stack is where the facade can run at all: it needs production
+      # Form authentication (the E2E stack is OIDC-only and has no token
+      # validator, so neither the facade nor the provider's callback bearer
+      # could authenticate there). Everything on this side is the production
+      # path — the mTLS hop, the identity signature, the vault credential
+      # resolution, the callback bearer; what is canned is the provider's
+      # ENGINE (ELITEA_DEEPWIKI_RUNNER=fixture on the service below).
+      ELITEA_DEEPWIKI_ENABLED: "true"
+      # 8080 is the port the provider LISTENS on (uvicorn in __main__.py, the
+      # EXPOSE in its Containerfile, the Helm chart); docker-compose.yml said
+      # 8443 and the hop was refused on connect.
+      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8080"
+      ELITEA_DEEPWIKI_SERVER_NAME: "elitea-deepwiki"
+      # The gateway's client material, issued by the same deploy/certs CA that
+      # gen-deepwiki-certs.sh reuses — one trust root for both hops.
+      ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /run/certs/client.crt
+      ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /run/certs/client.key
+      ELITEA_DEEPWIKI_CA_FILE: /run/certs/ca.crt
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "standalone-deepwiki-identity"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      # Where the provider calls BACK to upload the pages it generated: this
+      # service on the compose network, plain HTTP — the minted bearer is the
+      # credential; mTLS is on the hop the other way.
+      ELITEA_DEEPWIKI_CALLBACK_BASE_URL: "http://elitea-main:8080"
       # The project whose configurations are treated as PUBLIC and merged into
       # every other project's option lookups.
       #
@@ -825,6 +850,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      elitea-deepwiki:
+        condition: service_healthy
       redis:
         condition: service_healthy
       elitea-migrate:
@@ -848,8 +875,97 @@ services:
       retries: 6
       start_period: 15s
 
+  # ── The DeepWiki provider, SPI shell over the FIXTURE runner ─────────────
+  # ELITEA_DEEPWIKI_RUNNER=fixture is the real LegacyToolRunner with its tools
+  # injected (the P0 composition tests' own mechanism): parameter merge,
+  # egress check, composition and the artifact upload are the production
+  # code; only what the engine would have computed is canned. The journeys
+  # in apps/elitea-web/e2e/journeys/deepwiki (Playwright project
+  # `deepwiki-stack`, scripts/deepwiki-e2e.sh) drive generate → land → read
+  # against it.
+  #
+  # No ELITEA_DEEPWIKI_DATABASE_URL: invocations stay in memory and index
+  # publishing is skipped, which is fine for a stack that never asks a second
+  # replica. The mTLS material comes from gen-deepwiki-certs.sh, which
+  # `standalone-stack.sh certs` runs after the gateway's, sharing its CA.
+  elitea-deepwiki:
+    # The Go sub-application host (ADR-0023 H1.1) serving DeepWiki's SPI in
+    # the Python shell's place: same ELITEA_DEEPWIKI_* settings, same fixture
+    # runner, one static binary. ELITEA_SUBAPP names the application.
+    image: ghcr.io/elitea-ng/elitea-subapp-host:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-subapp-host/Containerfile
+    environment:
+      ELITEA_SUBAPP: deepwiki
+      # The Go host reaches the engine over the sidecar's Unix socket
+      # (ADR-0023 H2); the engine service below runs the fixture engine, so
+      # this stack proves the hop without the analysis engine's image.
+      ELITEA_DEEPWIKI_RUNNER: "legacy"
+      ELITEA_DEEPWIKI_ENGINE_SOCKET: /run/deepwiki/engine.sock
+      # One second between progress steps: long enough for a browser to see
+      # the run in flight and stop it, short enough for a CI job.
+      ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "${DEEPWIKI_FIXTURE_STEP_SECONDS:-1}"
+      ELITEA_DEEPWIKI_TLS_CERTFILE: /certs/deepwiki-server.crt
+      ELITEA_DEEPWIKI_TLS_KEYFILE: /certs/deepwiki-server.key
+      # Setting the CA turns mutual authentication ON (496 without a client cert).
+      ELITEA_DEEPWIKI_TLS_CA_FILE: /certs/ca.crt
+      # Must equal elitea-main's ELITEA_DEEPWIKI_IDENTITY_SECRET.
+      ELITEA_DEEPWIKI_IDENTITY_SECRET: "standalone-deepwiki-identity"
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
+      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
+    volumes:
+      - deepwiki-engine-sock:/run/deepwiki
+      - ./certs/deepwiki-server.crt:/certs/deepwiki-server.crt:ro
+      - ./certs/deepwiki-server.key:/certs/deepwiki-server.key:ro
+      - ./certs/ca.crt:/certs/ca.crt:ro
+    depends_on:
+      elitea-deepwiki-engine:
+        condition: service_healthy
+    healthcheck:
+      # The image has python and nothing else; a TCP accept is the liveness
+      # signal (the listener is TLS, so a plain HTTP GET would not be one).
+      test: ["CMD", "/elitea-subapp-host", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── The DeepWiki ENGINE sidecar (ADR-0023 H2) ──────────────────────────────
+  # The Python engine process the Go host calls over a Unix socket: the
+  # copied tool layer and, in production, its dependency closure (the
+  # `-engine` image). Here it serves the FIXTURE engine — canned results,
+  # paced progress, a stop that lands — so the hop is exercised end to end
+  # without the analysis engine. No SPI, no TLS, no identity: the socket is
+  # reachable only through the shared volume.
+  elitea-deepwiki-engine:
+    image: ghcr.io/elitea-ng/elitea-deepwiki:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-deepwiki/Containerfile
+    # The image's ENTRYPOINT is the SPI shell; the sidecar is a different
+    # module, so the entrypoint is replaced rather than appended to.
+    entrypoint: ["python", "-m", "elitea_deepwiki.sidecar"]
+    environment:
+      ELITEA_DEEPWIKI_RUNNER: "fixture"
+      ELITEA_DEEPWIKI_FIXTURE_STEP_SECONDS: "${DEEPWIKI_FIXTURE_STEP_SECONDS:-1}"
+      ELITEA_DEEPWIKI_ENGINE_SOCKET: /run/deepwiki/engine.sock
+      ELITEA_DEEPWIKI_GIT_ALLOWLIST: "github.com,*.github.com"
+      ELITEA_DEEPWIKI_SCRATCH_PATH: /tmp/deepwiki
+    volumes:
+      - deepwiki-engine-sock:/run/deepwiki
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/deepwiki/engine.sock'); s.close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   elitea-web:
-    image: ghcr.io/eliteaai/elitea-web:standalone
+    image: ghcr.io/elitea-ng/elitea-web:standalone
     build:
       context: ..
       dockerfile: apps/elitea-web/Containerfile
@@ -908,7 +1024,7 @@ services:
   # agent-token producer of its own, so without this service an admitted run
   # streams nothing and ends in a terminal failure.
   elitea-worker:
-    image: ghcr.io/eliteaai/elitea-worker-python:standalone
+    image: ghcr.io/elitea-ng/elitea-worker-python:standalone
     build:
       # Repo root, not services/elitea-worker-python: the Containerfile copies
       # libs/proto (:17) and testdata/proto/runtime/v1 (:79). It also git-clones
@@ -1050,6 +1166,9 @@ services:
         condition: service_healthy
 
 volumes:
+  # The engine sidecar's Unix socket, shared between the Go host and the
+  # Python engine (ADR-0023 H2). Nothing else mounts it.
+  deepwiki-engine-sock:
   standalone_pg_data:
   standalone_rustfs_data:
   # Runtime material, split per consumer so no service holds a key it does not

@@ -1,0 +1,361 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "deepwiki",
+  "items": [
+    {
+      "id": "DWIKI-001",
+      "domain": "deepwiki",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/deepwiki/:projectId` renders the wiki browser",
+      "source": [
+        "apps/deepwiki-ui/src/main.jsx:3-7",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:2454-2600"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user who may read the project's wikis",
+        "WHEN the browser navigates to the DeepWiki route for that project",
+        "THEN the wiki browser is displayed at that URL",
+        "AND a user without the read permission is refused rather than shown an empty page"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
+        "testId": "DWIKI-001"
+      },
+      "unit": "DW2",
+      "status": "verified",
+      "coverage": {
+        "file": "src/pages/deepwiki/ui/DeepWikiPage.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-002",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "The wiki list is loaded from the project's artifact bucket",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1229-1381"
+      ],
+      "acceptance": [
+        "GIVEN a project with at least one generated wiki",
+        "WHEN the wiki browser opens",
+        "THEN every generated wiki for that project is listed",
+        "AND a project with no wikis shows an empty state rather than an error"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test -- src/entities/wiki",
+        "testId": "DWIKI-002"
+      },
+      "unit": "DW1",
+      "status": "verified",
+      "coverage": {
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-003",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "A wiki page's markdown is fetched and rendered",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1410-1534",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1535-1579"
+      ],
+      "acceptance": [
+        "GIVEN a wiki with at least one page",
+        "WHEN a page is selected in the navigation",
+        "THEN that page's markdown is fetched and rendered",
+        "AND a page whose content cannot be fetched reports that instead of rendering blank"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test -- src/features/wiki-browser",
+        "testId": "DWIKI-003"
+      },
+      "unit": "DW2",
+      "status": "verified",
+      "coverage": {
+        "file": "src/features/wiki-browser/model/usePage.ts",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-004",
+      "domain": "deepwiki",
+      "kind": "integration",
+      "priority": "waived",
+      "title": "Wiki artifacts are read over the legacy pylon artifact routes",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1115",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1232",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1417"
+      ],
+      "acceptance": [
+        "GIVEN a wiki whose pages are stored as artifacts",
+        "WHEN the browser requests a page",
+        "THEN the request goes to /api/v2/artifacts/artifact/default/{projectId}/{bucket}/{name}",
+        "AND the artifact body is returned"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "cat apps/elitea-web/parity/notes/deepwiki-artifact-store.md",
+        "testId": "DWIKI-004"
+      },
+      "unit": "DW0",
+      "status": "waived",
+      "coverage": {
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "min": 0
+      },
+      "waiver": {
+        "reason": "elitea-main serves no such route. The path family /api/v2/artifacts/artifact(s)/default/... exists only in pylon, so on the standalone Go stack these fifteen call sites answer 404. Reproducing them natively would port a defect. See parity/notes/deepwiki-artifact-store.md for the proof.",
+        "decidedBy": "P2.P0 artifact-store proof",
+        "date": "2026-09-01",
+        "replacesBehaviour": "The native feature reads and writes through /api/v2/artifacts/objects/{projectID}/{bucket}[/{key}], which elitea-main does serve and which v2.yaml already declares."
+      }
+    },
+    {
+      "id": "DWIKI-005",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Wiki generation streams progress and can be stopped",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:2241-2453",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1627-1679",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:1680-1954"
+      ],
+      "acceptance": [
+        "GIVEN a project with a configured repository",
+        "WHEN generation is started",
+        "THEN progress is shown as the provider reports it",
+        "AND stopping generation ends the run and leaves the previous wiki readable"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
+        "testId": "DWIKI-005"
+      },
+      "unit": "DW4",
+      "status": "verified",
+      "coverage": {
+        "file": "src/features/wiki-generation/model/reducer.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-006",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Generation state survives a page reload",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:519-541",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:542-600"
+      ],
+      "acceptance": [
+        "GIVEN a generation run in progress",
+        "WHEN the page is reloaded",
+        "THEN the run is still shown as in progress",
+        "AND a run that finished while the page was closed is not shown as running"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
+        "testId": "DWIKI-006"
+      },
+      "unit": "DW4",
+      "status": "verified",
+      "coverage": {
+        "file": "src/widgets/deepwiki/lib/generationStorage.ts",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-007",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "A mermaid diagram that fails to render offers a quick fix",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:2695-2747",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3205-3280",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3306-3341"
+      ],
+      "acceptance": [
+        "GIVEN a wiki page containing a mermaid block that fails to render",
+        "WHEN the quick fix is requested",
+        "THEN a corrected block is proposed and can be accepted or rejected",
+        "AND accepting replaces only that block, leaving the rest of the page unchanged"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
+        "testId": "DWIKI-007"
+      },
+      "unit": "DW6",
+      "status": "verified",
+      "coverage": {
+        "file": "src/features/wiki-editing/lib/mermaidBlocks.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-008",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "An accepted quick fix can be undone",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3352-3405"
+      ],
+      "acceptance": [
+        "GIVEN a quick fix that has been accepted",
+        "WHEN undo is requested",
+        "THEN the page returns to its content before the fix",
+        "AND the diagram's original error is shown again"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
+        "testId": "DWIKI-008"
+      },
+      "unit": "DW6",
+      "status": "verified",
+      "coverage": {
+        "file": "src/widgets/deepwiki/ui/WikiPageReader.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-009",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Edited page markdown is saved back to the wiki",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:2675-2694",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3177-3204"
+      ],
+      "acceptance": [
+        "GIVEN a wiki page open in the editor",
+        "WHEN the edited markdown is saved",
+        "THEN the stored page reflects the edit on the next read",
+        "AND a failed save reports the failure rather than closing the editor as if it had worked"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npm run test:e2e -- deepwiki",
+        "testId": "DWIKI-009"
+      },
+      "unit": "DW5",
+      "status": "verified",
+      "coverage": {
+        "file": "src/entities/wiki/api/wikiArtifactsApi.ts",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-010",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Toolkit settings are edited and saved",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3406-3435",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3436-3545"
+      ],
+      "acceptance": [
+        "GIVEN a project whose DeepWiki toolkit is configured",
+        "WHEN a setting is changed and saved",
+        "THEN the new value is used by the next generation run",
+        "AND an invalid value is refused with the reason shown against the field"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
+        "testId": "DWIKI-010"
+      },
+      "unit": "DW5",
+      "status": "verified",
+      "coverage": {
+        "file": "src/features/wiki-settings/lib/settingsForm.ts",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-011",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "A wiki and its artifacts can be deleted",
+      "source": [
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3546-3635",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3636-3707"
+      ],
+      "acceptance": [
+        "GIVEN a generated wiki",
+        "WHEN deletion is confirmed",
+        "THEN the wiki stops being listed and its stored pages are removed",
+        "AND a partial failure reports which artifacts remain rather than claiming success"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
+        "testId": "DWIKI-011"
+      },
+      "unit": "DW5",
+      "status": "verified",
+      "coverage": {
+        "file": "src/widgets/deepwiki/ui/DeleteWikiButton.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "DWIKI-012",
+      "domain": "deepwiki",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "The wiki chat answers questions about the generated wiki",
+      "source": [
+        "apps/deepwiki-ui/src/components/ChatDrawer.jsx:1229-1565",
+        "apps/deepwiki-ui/src/components/ChatDrawer.jsx:1643-1761",
+        "apps/deepwiki-ui/src/DeepWikiApp.jsx:3097-3176"
+      ],
+      "acceptance": [
+        "GIVEN a generated wiki",
+        "WHEN a question is asked in the wiki chat",
+        "THEN the answer streams into the conversation",
+        "AND an interrupted stream leaves the partial answer visible rather than discarding it"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "bash scripts/deepwiki-e2e.sh",
+        "testId": "DWIKI-012"
+      },
+      "unit": "DW7",
+      "status": "verified",
+      "coverage": {
+        "file": "src/features/wiki-chat/model/reducer.ts",
+        "min": 90
+      },
+      "waiver": null
+    }
+  ]
+}

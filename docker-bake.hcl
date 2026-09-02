@@ -11,7 +11,7 @@ group "default" {
 }
 
 group "go" {
-  targets = ["elitea-main", "elitea-scheduler", "elitea-llm-gateway"]
+  targets = ["elitea-main", "elitea-scheduler", "elitea-subapp-host", "elitea-llm-gateway"]
 }
 
 group "scheduler" {
@@ -100,6 +100,18 @@ target "elitea-scheduler" {
   tags       = ["${REGISTRY}/elitea-scheduler:${TAG}"]
   cache-from = ["type=gha,scope=elitea-scheduler"]
   cache-to   = ["type=gha,mode=max,scope=elitea-scheduler"]
+  platforms  = ["linux/amd64", "linux/arm64"]
+}
+
+# The sub-application host (ADR-0023 H1): the provider SPI once, in Go, for
+# DeepWiki and every sub-application after it. Repo-root context like the
+# other Go services; the module is standard-library only.
+target "elitea-subapp-host" {
+  context    = "."
+  dockerfile = "services/elitea-subapp-host/Containerfile"
+  tags       = ["${REGISTRY}/elitea-subapp-host:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-subapp-host"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-subapp-host"]
   platforms  = ["linux/amd64", "linux/arm64"]
 }
 

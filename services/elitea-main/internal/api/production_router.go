@@ -11,9 +11,9 @@ import (
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	deepwikiapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwiki"
-	deepwikiuiapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/deepwikiui"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	inventoryapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/inventory"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
@@ -159,17 +159,20 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	// The DeepWiki facade. Each method is registered separately because the
 	// two that share the invocation path do NOT share a permission: polling is
 	// a read and cancelling is not.
-	// The vendored SPA. Mounted rather than Method-registered: it owns a
-	// prefix with its own asset routes and client-side deep links, so the
-	// paths under it are its business and not this router's.
-	if cfg.DeepWikiUI != nil {
-		r.Mount(deepwikiuiapi.BasePath, cfg.DeepWikiUI)
-	}
 	if cfg.DeepWiki != nil {
 		r.Method(http.MethodGet, deepwikiapi.SlotsPath, cfg.DeepWiki)
 		r.Method(http.MethodPost, deepwikiapi.InvokePath, cfg.DeepWiki)
 		r.Method(http.MethodGet, deepwikiapi.InvocationPath, cfg.DeepWiki)
 		r.Method(http.MethodDelete, deepwikiapi.InvocationPath, cfg.DeepWiki)
+	}
+	// The SECOND provider facade, mounted the same way as the first. Four
+	// lines, because providerhost/{facade,proxy,spi} carry everything the two
+	// have in common — which is what ADR-0012's budget was measuring.
+	if cfg.Inventory != nil {
+		r.Method(http.MethodGet, inventoryapi.SlotsPath, cfg.Inventory)
+		r.Method(http.MethodPost, inventoryapi.InvokePath, cfg.Inventory)
+		r.Method(http.MethodGet, inventoryapi.InvocationPath, cfg.Inventory)
+		r.Method(http.MethodDelete, inventoryapi.InvocationPath, cfg.Inventory)
 	}
 	if cfg.CurrentAgentStart != nil {
 		r.Method(http.MethodPost, agentexecutionapi.CurrentApplicationStartPath, cfg.CurrentAgentStart)

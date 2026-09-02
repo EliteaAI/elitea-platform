@@ -7,12 +7,6 @@ import asyncio
 import pytest
 
 from elitea_deepwiki.config import ConfigError, Settings
-from elitea_deepwiki.invocations import (
-    InMemoryInvocationStore,
-    InvocationCancelled,
-    InvocationContext,
-    InvocationManager,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -82,173 +76,23 @@ def test_a_bad_value_fails_at_startup(
 # ---------------------------------------------------------------------------
 
 
-async def test_submit_runs_and_stores_a_terminal_result():
-    manager = InvocationManager()
-    await manager.start()
-    try:
-
-        async def call(context: InvocationContext):
-            return {
-                "invocation_id": context.invocation_id,
-                "status": "Completed",
-                "result": "[]",
-                "result_type": "String",
-            }
-
-        invocation = await manager.submit("Wikis", "generate_wiki", call)
-        body = await _wait_terminal(manager, invocation.invocation_id)
-        assert body["status"] == "Completed"
-    finally:
-        await manager.stop()
-
-
-async def test_poll_of_an_unknown_key_returns_none():
-    manager = InvocationManager()
-    assert await manager.poll("Wikis", "generate_wiki", "nope") is None
-    assert await manager.cancel("Wikis", "generate_wiki", "nope") is False
-
-
-async def test_checkpoint_raises_after_cancel():
-    manager = InvocationManager()
-    await manager.start()
-    reached = asyncio.Event()
-    try:
-
-        async def call(context: InvocationContext):
-            reached.set()
-            while True:
-                await context.checkpoint()
-                await asyncio.sleep(0.01)
-
-        invocation = await manager.submit("Wikis", "generate_wiki", call)
-        await asyncio.wait_for(reached.wait(), timeout=5)
-        assert await manager.cancel("Wikis", "generate_wiki", invocation.invocation_id)
-
-        body = await _wait_terminal(manager, invocation.invocation_id)
-        assert body["status"] == "Error"
-    finally:
-        await manager.stop()
-
-
-async def test_a_cancelled_invocation_is_not_reported_as_completed():
-    """InvocationCancelled must not be swallowed into a success."""
-    manager = InvocationManager()
-    await manager.start()
-    try:
-
-        async def call(context: InvocationContext):
-            raise InvocationCancelled(context.invocation_id)
-
-        invocation = await manager.submit("Wikis", "ask", call)
-        body = await _wait_terminal(manager, invocation.invocation_id, tool="ask")
-        assert body["status"] == "Error"
-    finally:
-        await manager.stop()
-
-
-async def test_shutdown_records_a_terminal_result_for_in_flight_work():
-    """A poll that outlives the process must not be told the id never existed.
-
-    This is the weakest form of the spec's durable-operation-state rule that
-    an in-memory store can satisfy: within the process's own lifetime, a
-    cancelled-by-shutdown invocation ends as an error rather than vanishing.
-    Surviving an actual restart needs the PostgreSQL store.
+def test_the_upload_transport_is_a_base_dependency():
+    """The base image (SPI shell, every runner) uploads what a generation
+    produced through engine/artifacts_platform_client, which imports
+    `requests` lazily. Declared only under the `engine` extra, that import
+    failed in the base image AFTER a successful generation — six pages
+    generated, none landed, reported in band. The declaration is pinned here
+    because a fake client in every unit test cannot see a missing module.
     """
-    store = InMemoryInvocationStore()
-    manager = InvocationManager(store=store)
-    await manager.start()
-    running = asyncio.Event()
+    import re
+    from pathlib import Path
 
-    async def call(_context: InvocationContext):
-        running.set()
-        await asyncio.sleep(3600)
-
-    invocation = await manager.submit("Wikis", "generate_wiki", call)
-    await asyncio.wait_for(running.wait(), timeout=5)
-    await manager.stop()
-
-    body = await manager.poll("Wikis", "generate_wiki", invocation.invocation_id)
-    assert body is not None
-    assert body["status"] == "Error"
-
-
-async def test_terminal_invocations_are_pruned_after_retention():
-    manager = InvocationManager(retention_seconds=0, housekeeping_interval=0.01)
-    await manager.start()
-    try:
-
-        async def call(context: InvocationContext):
-            return {
-                "invocation_id": context.invocation_id,
-                "status": "Completed",
-                "result": "[]",
-                "result_type": "String",
-            }
-
-        invocation = await manager.submit("Wikis", "generate_wiki", call)
-        await _wait_terminal(manager, invocation.invocation_id)
-
-        # Pruned entries 404 on the next poll, exactly like the legacy
-        # 'pruned' task status.
-        for _ in range(200):
-            if await manager.poll(
-                "Wikis", "generate_wiki", invocation.invocation_id
-            ) is None:
-                break
-            await asyncio.sleep(0.01)
-        else:  # pragma: no cover
-            raise AssertionError("terminal invocation was never pruned")
-    finally:
-        await manager.stop()
-
-
-async def test_events_drain_once():
-    manager = InvocationManager()
-    await manager.start()
-    emitted = asyncio.Event()
-    release = asyncio.Event()
-    try:
-
-        async def call(context: InvocationContext):
-            await context.thinking("one")
-            await context.thinking("two")
-            emitted.set()
-            await release.wait()
-            return {
-                "invocation_id": context.invocation_id,
-                "status": "Completed",
-                "result": "[]",
-                "result_type": "String",
-            }
-
-        invocation = await manager.submit("Wikis", "generate_wiki", call)
-        await asyncio.wait_for(emitted.wait(), timeout=5)
-
-        first = await manager.poll("Wikis", "generate_wiki", invocation.invocation_id)
-        second = await manager.poll("Wikis", "generate_wiki", invocation.invocation_id)
-        release.set()
-
-        assert [event["data"]["message"] for event in first["custom_events"]] == [
-            "one",
-            "two",
-        ]
-        assert "custom_events" not in second
-    finally:
-        await manager.stop()
-
-
-async def _wait_terminal(
-    manager: InvocationManager,
-    invocation_id: str,
-    *,
-    toolkit: str = "Wikis",
-    tool: str = "generate_wiki",
-    timeout: float = 5.0,
-) -> dict:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        body = await manager.poll(toolkit, tool, invocation_id)
-        if body is not None and body.get("status") not in ("Started", "InProgress"):
-            return body
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"invocation {invocation_id} never reached a terminal state")
+    # The [project] table's own `dependencies` array — the first one in the
+    # file; the extras' arrays come later. Read as text so the test does not
+    # depend on tomllib (3.11+) where the suite may run on an older Python.
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+    match = re.search(r"^dependencies = \[(.*?)^\]", text, re.S | re.M)
+    assert match is not None, "no [project] dependencies array"
+    base = [line.strip().strip(",").strip('"') for line in match.group(1).splitlines()]
+    names = [d.split(">")[0].split("=")[0].split("[")[0].strip() for d in base if d and not d.startswith("#")]
+    assert "requests" in names, names

@@ -22,10 +22,14 @@ import pytest
 
 from elitea_deepwiki.storage.base import Node
 
+# parents[4] is the repository root: storage -> tests -> elitea-deepwiki ->
+# services -> root. The fixtures moved out of this service in P1.0.
 FIXTURES = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[4]
     / "conformance"
+    / "provider"
     / "fixtures"
+    / "deepwiki"
     / "retrieval"
     / "sample-repo"
 )

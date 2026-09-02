@@ -184,6 +184,16 @@ jobs:
       - name: The worker's autoscaling refuses when it cannot work
         run: bash deploy/helm/tests/render-worker-autoscaling.sh
 
+      # The shared provider shape (templates/_provider.tpl). Every invariant
+      # here is one several templates have to agree on, and every disagreement
+      # is silent: a migration Job pointed at a different database migrates it
+      # successfully and leaves the real schema untouched; an mTLS volume with
+      # no mount serves plain HTTP while believing it requires a client
+      # certificate; a Job with only Helm's ordering annotation is unordered
+      # under Argo.
+      - name: The shared provider shape holds together
+        run: bash deploy/helm/tests/render-provider-shape.sh
+
       - name: The DeepWiki component renders, and its guards refuse
         run: bash deploy/helm/tests/render-deepwiki.sh
 

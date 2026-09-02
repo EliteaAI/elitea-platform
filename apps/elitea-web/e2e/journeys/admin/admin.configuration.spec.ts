@@ -198,12 +198,20 @@ adminTest('J34b: the sections with no backend say so instead of showing a form',
   // Each name carries its OWN expected phrase. One shared regex was wrong here:
   // `/gateway|page of their own/` matched LLM Governance (whose reason names
   // /admin/gateway/governance) and silently could not match Service
-  // Descriptors, whose reason is about the pylon provider hub and its ADR-0012
-  // successor. A single alternation over two genuinely different reasons is an
-  // assertion that passes for the wrong section.
+  // Descriptors. A single alternation over two genuinely different reasons is
+  // an assertion that passes for the wrong section.
+  //
+  // Service Descriptors' phrase CHANGED with migration 0107. It used to be
+  // `/provider hub|ADR-0012|no descriptor store/` — the endpoints' own refusal,
+  // which the section borrowed while the page refused too. The page now lists
+  // registrations, so that sentence would claim this deployment has no
+  // descriptor store while the page it points at shows one. What is asserted
+  // instead is the PATH, which is the part an operator has to be able to
+  // follow; matching on prose would have to be rewritten again the next time
+  // the wording moves.
   const sections = page.getByRole('navigation', { name: 'Configuration sections' });
   const stillUnavailable: ReadonlyArray<readonly [string, RegExp]> = [
-    ['Service Descriptors', /provider hub|ADR-0012|no descriptor store/],
+    ['Service Descriptors', /\/admin\/app\/service-descriptors/],
     ['LLM Governance', /gateway/],
   ];
   for (const [section, reason] of stillUnavailable) {

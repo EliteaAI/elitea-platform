@@ -1,0 +1,1110 @@
+{
+  "start-task-with-id": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "start_task",
+        "content": {
+          "task_id": "task-7"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Wiki generation started..."
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [
+        [
+          "1",
+          "42",
+          {
+            "taskId": "task-7"
+          }
+        ]
+      ],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": "task-7",
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "start-task-without-id": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "start_task",
+        "content": {}
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Wiki generation started..."
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "thinking-step-from-metadata": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "Reading the repository"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Reading the repository"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Reading the repository",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {
+            "message": "Reading the repository"
+          }
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "thinking-step-from-content": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "content": {
+          "message": "Indexing files"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Indexing files"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Indexing files",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step"
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "thinking-step-with-no-message": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Processing..."
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Processing...",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step"
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "thinking-step-from-poll-adapter": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {},
+        "content": "Cloning the repository"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Processing..."
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Processing...",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {}
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "thinking-step-update": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step_update",
+        "response_metadata": {
+          "message": "Still indexing"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Still indexing"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Still indexing",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step_update",
+          "metadata": {
+            "message": "Still indexing"
+          }
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "tool-start-named": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_start",
+        "response_metadata": {
+          "tool_name": "generate_wiki"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Running generate_wiki..."
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "tool-start-unnamed": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_start"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Running tool..."
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "tool-end-plain": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_end",
+        "content": "done"
+      }
+    ],
+    "observed": {
+      "generationStatus": [],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "tool-end-service-busy": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_end",
+        "content": "{\"status\":\"Error\",\"error_category\":\"service_busy\",\"active_workers\":3,\"max_workers\":3,\"message\":\"All workers are busy\"}"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "Max parallel wiki generations reached: 3/3 slots taken. Please wait for a running generation to finish and try again."
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Max parallel wiki generations reached: 3/3 slots taken. Please wait for a running generation to finish and try again.",
+          "timestamp": 1767225600000,
+          "type": "error"
+        }
+      ],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": true,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "tool-end-inference-failed": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_end",
+        "content": "{\"error_category\":\"inference_failed\"}"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "{\"error_category\":\"inference_failed\"}"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "{\"error_category\":\"inference_failed\"}",
+          "timestamp": 1767225600000,
+          "type": "error"
+        }
+      ],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": true,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "agent-response-string": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_response",
+        "content": "The wiki is ready."
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "completed",
+          "message": "Wiki generated successfully!"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 1,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "agent-response-object": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_response",
+        "content": {
+          "message": "Generated 5 pages"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "completed",
+          "message": "Wiki generated successfully!"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 1,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "agent-response-error-envelope": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_response",
+        "content": "{\"status\":\"Error\",\"message\":\"generation failed\"}"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "generation failed"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "generation failed",
+          "timestamp": 1767225600000,
+          "type": "error"
+        }
+      ],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": true,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "agent-response-array-envelope": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_response",
+        "content": "[{\"object_type\":\"message\",\"data\":\"Wiki generated\"}]"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "completed",
+          "message": "Wiki generated successfully!"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 1,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "error-frame": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "error",
+        "content": "boom"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "boom"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "llm-error-frame": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "llm_error",
+        "content": "model unavailable"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "model unavailable"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "agent-exception-frame": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_exception",
+        "content": "traceback"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "traceback"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "tool-error-frame": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_error",
+        "content": "tool blew up"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "error",
+          "message": "tool blew up"
+        }
+      ],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "chunk-frame": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "chunk",
+        "content": "partial "
+      }
+    ],
+    "observed": {
+      "generationStatus": [],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "ai-message-chunk": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "AIMessageChunk",
+        "content": "more text"
+      }
+    ],
+    "observed": {
+      "generationStatus": [],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "agent-llm-chunk": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_llm_chunk",
+        "content": "llm text"
+      }
+    ],
+    "observed": {
+      "generationStatus": [],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "unhandled-type": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "references",
+        "content": {}
+      }
+    ],
+    "observed": {
+      "generationStatus": [],
+      "thinkingSteps": [],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 0
+      }
+    }
+  },
+  "happy-path": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "start_task",
+        "content": {
+          "task_id": "task-1"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "Cloning"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_start",
+        "response_metadata": {
+          "tool_name": "generate_wiki"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "Writing pages"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_tool_end",
+        "content": "ok"
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_response",
+        "content": "Wiki generated"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Wiki generation started..."
+        },
+        {
+          "status": "running",
+          "message": "Cloning"
+        },
+        {
+          "status": "running",
+          "message": "Running generate_wiki..."
+        },
+        {
+          "status": "running",
+          "message": "Writing pages"
+        },
+        {
+          "status": "completed",
+          "message": "Wiki generated successfully!"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "Cloning",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {
+            "message": "Cloning"
+          }
+        },
+        {
+          "id": "step-2",
+          "message": "Writing pages",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {
+            "message": "Writing pages"
+          }
+        }
+      ],
+      "cleanupGenerationCalls": 1,
+      "loadArtifactsListCalls": 1,
+      "updateGenerationState": [
+        [
+          "1",
+          "42",
+          {
+            "taskId": "task-1"
+          }
+        ]
+      ],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": "task-1",
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 2
+      }
+    }
+  },
+  "error-then-late-frames": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "start_task",
+        "content": {
+          "task_id": "task-2"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "error",
+        "content": "fatal"
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "still going?"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_response",
+        "content": "done anyway"
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "Wiki generation started..."
+        },
+        {
+          "status": "error",
+          "message": "fatal"
+        },
+        {
+          "status": "running",
+          "message": "still going?"
+        },
+        {
+          "status": "completed",
+          "message": "Wiki generated successfully!"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "still going?",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {
+            "message": "still going?"
+          }
+        }
+      ],
+      "cleanupGenerationCalls": 2,
+      "loadArtifactsListCalls": 1,
+      "updateGenerationState": [
+        [
+          "1",
+          "42",
+          {
+            "taskId": "task-2"
+          }
+        ]
+      ],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": "task-2",
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 1
+      }
+    }
+  },
+  "two-thinking-steps-increment-ids": {
+    "frames": [
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "one"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step",
+        "response_metadata": {
+          "message": "two"
+        }
+      },
+      {
+        "message_id": "m1",
+        "stream_id": "s1",
+        "type": "agent_thinking_step_update",
+        "response_metadata": {
+          "message": "three"
+        }
+      }
+    ],
+    "observed": {
+      "generationStatus": [
+        {
+          "status": "running",
+          "message": "one"
+        },
+        {
+          "status": "running",
+          "message": "two"
+        },
+        {
+          "status": "running",
+          "message": "three"
+        }
+      ],
+      "thinkingSteps": [
+        {
+          "id": "step-1",
+          "message": "one",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {
+            "message": "one"
+          }
+        },
+        {
+          "id": "step-2",
+          "message": "two",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step",
+          "metadata": {
+            "message": "two"
+          }
+        },
+        {
+          "id": "step-3",
+          "message": "three",
+          "timestamp": 1767225600000,
+          "type": "agent_thinking_step_update",
+          "metadata": {
+            "message": "three"
+          }
+        }
+      ],
+      "cleanupGenerationCalls": 0,
+      "loadArtifactsListCalls": 0,
+      "updateGenerationState": [],
+      "refs": {
+        "currentStreamIdRef": null,
+        "currentTaskIdRef": null,
+        "generationErroredRef": null,
+        "isReconnectingRef": null,
+        "lastSocketEventTimeRef": 1767225600000,
+        "reconnectTimeoutRef": null,
+        "socketUnsubscribeRef": null,
+        "stepIdCounterRef": 3
+      }
+    }
+  }
+}

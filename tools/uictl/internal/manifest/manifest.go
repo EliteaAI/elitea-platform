@@ -154,13 +154,29 @@ func decodeShard(path string) (*shardFile, error) {
 }
 
 // UnverifiedMust returns the ids of every priority:must item whose status is
-// not "verified" — the CI release gate (`--require-must`).
-func UnverifiedMust(m *Manifest) []string {
+// not "verified" — the CI release gate (`--require-must`). A non-empty
+// domain narrows it to that domain: a `cutover/<domain>` branch is audited
+// on the domain it cuts over, not on the whole backlog.
+func UnverifiedMust(m *Manifest, domain string) []string {
 	var out []string
 	for _, it := range m.Items {
+		if domain != "" && it.Domain != domain {
+			continue
+		}
 		if it.Priority == "must" && it.Status != "verified" {
 			out = append(out, it.ID)
 		}
 	}
 	return out
+}
+
+// HasDomain reports whether any item carries the domain — what makes a
+// `--domain` filter that matches nothing a refusal rather than a green audit.
+func HasDomain(m *Manifest, domain string) bool {
+	for _, it := range m.Items {
+		if it.Domain == domain {
+			return true
+		}
+	}
+	return false
 }

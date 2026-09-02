@@ -34,7 +34,7 @@ CONFIG=.github/dependabot.yml
 EXEMPT=$(cat <<'EXEMPTIONS'
 apps/elitea-web/tools/lint-rules/fixtures/knip/bad/package.json  knip lint-rule fixture: its dependencies are deliberately wrong, and bumping them breaks the rule it exercises
 apps/elitea-web/tools/lint-rules/fixtures/knip/good/package.json knip lint-rule fixture, same reason
-services/elitea-deepwiki/conformance/pyproject.toml              test harness: a pytest runner and an HTTP client, shipping in no image, run in CI against a container someone else built
+conformance/provider/pyproject.toml              test harness: a pytest runner and an HTTP client, shipping in no image, run in CI against a container someone else built
 EXEMPTIONS
 )
 

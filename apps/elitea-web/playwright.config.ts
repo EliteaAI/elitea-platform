@@ -3,8 +3,13 @@
  *
  * Projects:
  *   setup         — global setup: OIDC login per persona → saves storageState
- *   chromium      — 30 journeys against the real stack, chromium
- *   webkit        — same 30 journeys, webkit (spec §6.2)
+ *   chromium      — every journey under e2e/journeys against the real
+ *                   stack, chromium
+ *   webkit        — the same journeys, webkit (spec §6.2)
+ *
+ * The count is deliberately NOT written here. It was "30" and had drifted:
+ * journeys are discovered by the testMatch glob below, so a number in this
+ * comment is a second source for one fact and the glob always wins.
  *   chat-stream   — the #284 chat journey, against the FULL standalone stack
  *                   (runtime plane + worker + mock LLM); see that project's
  *                   own note and `scripts/chat-stream-e2e.sh`
@@ -113,6 +118,33 @@ export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
  * the whole webkit project passed locally while being unrunnable on Linux.
  * They are Chromium flags and have never meant anything to WebKit.
  */
+/**
+ * DeepWiki journeys that need the provider behind the facade. They run in
+ * the ordinary chromium/webkit projects — the E2E stack composes the facade
+ * under OIDC-only auth since ADR-0023 H0 — AND in the `deepwiki-stack`
+ * project against the full standalone stack, which proves the same path
+ * under production Form authentication.
+ */
+const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat|admission)\.spec\.ts/;
+
+/*
+ * The admission journey (DWIKI-013) needs a stack that composes a PUBLIC
+ * project (ELITEA_AI_PROJECT_ID): the facade registers its provider under it
+ * at boot. The E2E stack composes none, by design, so the registrar logs a
+ * skip there and the journey would have nothing to look at — it runs in the
+ * `deepwiki-stack` project only, against the standalone stack.
+ */
+const ADMISSION_JOURNEY = /journeys\/deepwiki\/deepwiki\.admission\.spec\.ts/;
+
+/*
+ * The real-engine journey (DWIKI-014) drives the copied analysis engine —
+ * clone, index, plan, write — behind the Go host, on the standalone stack
+ * with deploy/docker-compose.deepwiki-real-engine.yml applied
+ * (scripts/deepwiki-real-engine.sh). Minutes long and image-heavy, so it has
+ * its own project and no other project picks it up.
+ */
+const REAL_ENGINE_JOURNEY = /journeys\/deepwiki\/deepwiki\.real-engine\.spec\.ts/;
+
 const CHROMIUM_LAUNCH_OPTIONS = {
   args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
 };
@@ -149,6 +181,7 @@ export default defineConfig({
     // ── chromium ──────────────────────────────────────────────────────────
     {
       name: 'chromium',
+      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY],
       use: {
         ...devices['Desktop Chrome'],
         storageState: STORAGE_STATE.member,
@@ -161,6 +194,7 @@ export default defineConfig({
     // ── webkit (spec §6.2: "chromium + webkit") ───────────────────────────
     {
       name: 'webkit',
+      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY],
       use: {
         ...devices['Desktop Safari'],
         storageState: STORAGE_STATE.member,
@@ -211,6 +245,40 @@ export default defineConfig({
      * Chromium only: this asserts a transport and a render, not a rasteriser,
      * and a second engine would double the stack time for no new signal.
      */
+    {
+      /**
+       * The DeepWiki journeys that need the PROVIDER: generation, chat,
+       * delete-after-generation. They run against the FULL standalone stack
+       * (scripts/deepwiki-e2e.sh), the only stack where the facade can be
+       * composed — it needs production Form authentication, which the E2E
+       * stack's OIDC-only mode does not have. Serial: they share toolkit 9002.
+       */
+      name: 'deepwiki-stack',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.member,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: PROVIDER_BACKED_JOURNEYS,
+      fullyParallel: false,
+    },
+    {
+      /**
+       * DWIKI-014: the REAL engine, end to end (scripts/deepwiki-real-engine.sh).
+       * Serial and alone: one generation is minutes of clone/index/write.
+       */
+      name: 'deepwiki-real-engine',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.member,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: REAL_ENGINE_JOURNEY,
+      fullyParallel: false,
+      retries: 0,
+    },
     {
       name: 'chat-stream',
       use: {

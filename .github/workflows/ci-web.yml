@@ -823,7 +823,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Bake elitea-web (build only, push happens in publish.yml)
         working-directory: .
         run: docker buildx bake --set '*.platform=linux/amd64' elitea-web
@@ -835,7 +835,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive # apps/elitea-ui is the pinned parity baseline
-      - uses: actions/setup-go@v6
+          # The DeepWiki census anchors resolve through parity/deepwiki-ui.pin —
+          # a commit `git show` must be able to reach. A shallow checkout has
+          # only the head, and the audit reported every anchor missing.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           # uictl has no external deps (no go.sum); key on the workspace sum.
@@ -868,4 +872,7 @@ jobs:
         # that really does fire, and is where the audit is meant to bite.
         if: startsWith(github.ref, 'refs/heads/cutover/')
         working-directory: .
-        run: go run ./tools/uictl parity-manifest --require-must
+        # Scoped to the domain the branch names (cutover/<domain>): the audit
+        # is meant to bite on the domain being cut over; the rest of the
+        # backlog is tracked, not blocked on, here.
+        run: go run ./tools/uictl parity-manifest --require-must --domain "${GITHUB_REF_NAME#cutover/}"

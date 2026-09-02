@@ -293,7 +293,36 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// follow a running generation, and may not start one or cancel someone
 	// else's. Like 0102, 0104 and 0105 it grants centrally AND delivers to the
 	// projects carrying their own permission rows.
-	require.EqualValues(t, 106, Head(shared))
+	//
+	// 107: shared/0107_provider_admitted_revisions.sql, the provider ADMISSION
+	// plane (ADR-0012 phase P3). It is the storage the three service-descriptor
+	// routes had been refusing for want of, and it is the first file here that
+	// creates a whole schema rather than granting into an existing one.
+	//
+	// Two of its constraints are the architecture rather than hygiene:
+	// UNIQUE (project_id, provider_id) WHERE status = 'active' makes "which
+	// manifest is this deployment running" answerable, and
+	// CHECK (status <> 'active' OR overlay_revision IS NOT NULL) is ADR-0012's
+	// "a missing overlay policy fails admission" written where Go cannot
+	// bypass it — this deployment can record and show a provider and
+	// physically cannot activate one.
+	//
+	// It claims no pylon-owned table. Every name is new, in a new schema, so
+	// it cannot collide with a seeded fixture at 42P07 the way three earlier
+	// migrations did.
+	//
+	// 108: shared/0108_inventory_permissions.sql, the two default-mode grants
+	// behind the Inventory facade — the SECOND provider, and ADR-0012's
+	// falsification test for the runner generalisation. It is the third file
+	// here whose strings are chosen rather than recovered, for 0106's reason:
+	// the legacy inventory_plugin has no api/ package and no check_api call,
+	// so the pylon catalogue has nothing to transcribe.
+	//
+	// Its grant blocks are 0106's with two strings substituted, copied rather
+	// than factored out: each migration names the permissions it grants
+	// inline, and a shared procedure would put them somewhere a reader of that
+	// migration cannot see.
+	require.EqualValues(t, 108, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

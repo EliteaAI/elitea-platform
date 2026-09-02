@@ -112,11 +112,25 @@ const SWITCH_TARGET_ID = '9901';
 const SWITCH_TARGET_NAME = 'autotest_switch-shell';
 
 test('J7: project switch from the sidebar', async ({ page }) => {
+  // HOW MANY PROJECTS THE SERVER RETURNS IS NOT THIS TEST'S TO ASSUME.
+  //
+  // The subject is the switcher: it lists what the server sent plus the one
+  // this test injects, and switching to that one persists. The count was
+  // hardcoded to 2, which silently encoded "the member persona is in exactly
+  // one project" — a property of the seed that this test never states and does
+  // not own. Adding a seeded project for the DeepWiki journeys made it 3 and
+  // this test reported a broken switcher.
+  //
+  // The count is now DERIVED from the response the switcher was given, so the
+  // assertion still fails if the popper drops or duplicates an option, and no
+  // longer fails because a sibling fixture exists.
+  let serverProjectCount = -1;
   await page.route('**/api/v2/projects/project/default/**', async (route) => {
     const response = await route.fetch();
     const body = (await response.json()) as Array<Record<string, unknown>>;
     expect(Array.isArray(body), 'project list must be a bare array').toBe(true);
     expect(body.length, 'the seed must still contain Default Project').toBeGreaterThan(0);
+    serverProjectCount = body.length;
     await route.fulfill({
       response,
       json: [...body, { ...body[0], id: Number(SWITCH_TARGET_ID), name: SWITCH_TARGET_NAME }],
@@ -142,7 +156,10 @@ test('J7: project switch from the sidebar', async ({ page }) => {
   // projects in it, not merely "some listbox/dialog/menu appeared".
   const listbox = page.getByRole('listbox');
   await expect(listbox).toBeVisible({ timeout: 10_000 });
-  await expect(listbox.getByRole('option')).toHaveCount(2);
+  // The interception really happened. Without this the expected count below
+  // would be computed from -1 and the assertion would be meaningless.
+  expect(serverProjectCount, 'the project list request was never intercepted').toBeGreaterThan(0);
+  await expect(listbox.getByRole('option')).toHaveCount(serverProjectCount + 1);
 
   const target = listbox.getByRole('option', { name: SWITCH_TARGET_NAME });
   await expect(target).toHaveAttribute('aria-selected', 'false');

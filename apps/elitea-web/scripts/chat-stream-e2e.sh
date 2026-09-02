@@ -140,34 +140,44 @@ CHECK_LOG="$(mktemp "${TMPDIR:-/tmp}/chat-stream-check.XXXXXX")"
 # guard inside `check` stands for eleven assertions and raises a single skip, so
 # without the count this caller would accept eleven unmeasured assertions as
 # one stated skip.
-if ! run_stack check --allow-skips 2>&1 | tee "$CHECK_LOG"; then
-  echo "ERROR: the standalone stack failed its own check; see the output above" >&2
-  exit 1
-fi
-
-# A passing `check` is NOT proof that the header-strip case ran. Every one of
-# its three assertions sits behind `if [ -z "$spoof_uuid" ] … SKIPPED`, and a
-# seeding change that leaves no personal access token turns all three into
-# printed skips while `check` still exits 0. That is this repository's recurring
-# defect: a gate that stops gating and reports success. Require the three
-# success lines by name.
-for marker in \
-  "forged X-Auth-ID alone is rejected" \
-  "a real PAT still authenticates through the middleware" \
-  "a forged X-Auth-ID cannot override a genuine bearer"
-do
-  # Reads a FILE and not a pipe, so grep -q cannot make the producer die of
-  # SIGPIPE under `set -o pipefail` — the inversion documented in
-  # standalone-stack.sh.
-  if ! grep -qF "$marker" "$CHECK_LOG"; then
-    echo "ERROR: the #326 edge header-strip assertion did not run." >&2
-    echo "       Expected this line in the check output: ${marker}" >&2
-    echo "       A skipped assertion proves nothing. Fix the seeding, or fix" >&2
-    echo "       the check — do not delete this guard." >&2
+# CHAT_STREAM_SKIP_CHECK: a caller that REPLACES the LLM mock (the DeepWiki
+# real-engine runner puts a deterministic engine stub at llm-mock:8090) cannot
+# run `check` — its completion, journal and SDK assertions are written against
+# the mock's own protocol and fail against any other upstream. That caller
+# says so by name, here, and gets the journey alone; every other caller keeps
+# the full assertion set.
+if [ -n "${CHAT_STREAM_SKIP_CHECK:-}" ]; then
+  echo "→ Skipping the stack check (CHAT_STREAM_SKIP_CHECK=${CHAT_STREAM_SKIP_CHECK}: the LLM mock is replaced on this stack)."
+else
+  if ! run_stack check --allow-skips 2>&1 | tee "$CHECK_LOG"; then
+    echo "ERROR: the standalone stack failed its own check; see the output above" >&2
     exit 1
   fi
-done
-echo "→ The #326 edge header-strip assertions all ran and passed."
+
+  # A passing `check` is NOT proof that the header-strip case ran. Every one of
+  # its three assertions sits behind `if [ -z "$spoof_uuid" ] … SKIPPED`, and a
+  # seeding change that leaves no personal access token turns all three into
+  # printed skips while `check` still exits 0. That is this repository's recurring
+  # defect: a gate that stops gating and reports success. Require the three
+  # success lines by name.
+  for marker in \
+    "forged X-Auth-ID alone is rejected" \
+    "a real PAT still authenticates through the middleware" \
+    "a forged X-Auth-ID cannot override a genuine bearer"
+  do
+    # Reads a FILE and not a pipe, so grep -q cannot make the producer die of
+    # SIGPIPE under `set -o pipefail` — the inversion documented in
+    # standalone-stack.sh.
+    if ! grep -qF "$marker" "$CHECK_LOG"; then
+      echo "ERROR: the #326 edge header-strip assertion did not run." >&2
+      echo "       Expected this line in the check output: ${marker}" >&2
+      echo "       A skipped assertion proves nothing. Fix the seeding, or fix" >&2
+      echo "       the check — do not delete this guard." >&2
+      exit 1
+    fi
+  done
+  echo "→ The #326 edge header-strip assertions all ran and passed."
+fi
 
 echo "→ Running the chat-stream journey…"
 cd "$WEB_DIR"
@@ -228,6 +238,11 @@ REPEAT_ARGS=""
 # intact). The projection now carries the version's real list, so that spec
 # runs one assertion on BOTH legs.
 E2E_WORKER="${STANDALONE_WORKER:-python}"
+# Which Playwright project to run against the stack. `chat-stream` is the
+# original; `deepwiki-stack` (scripts/deepwiki-e2e.sh) reuses everything
+# above it — the same stack, seeds and assertions — for the provider-backed
+# DeepWiki journeys.
+PLAYWRIGHT_PROJECT="${PLAYWRIGHT_PROJECT:-chat-stream}"
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
@@ -237,10 +252,10 @@ if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
     -e E2E_WORKER="$E2E_WORKER" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
-    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
+    npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
   E2E_WORKER="$E2E_WORKER" \
-    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
+    npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 fi

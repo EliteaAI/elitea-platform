@@ -3,14 +3,14 @@ package llmproxy
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"time"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/hop"
 )
 
 // Config configures the edge → gateway streaming reverse proxy.
@@ -47,12 +47,15 @@ type Proxy struct {
 // New builds a streaming reverse proxy from cfg. It returns an error if the
 // target URL is invalid or the mTLS transport cannot be constructed.
 func New(cfg Config) (*Proxy, error) {
-	target, err := url.Parse(cfg.TargetURL)
+	// NOT RequireTLS: the gateway is reachable over plain HTTP in a development
+	// stack, and refusing that would break a supported configuration. The
+	// DeepWiki hop does require it, because its peer refuses non-mTLS traffic.
+	// The difference is a property of the two peers, not an inconsistency.
+	target, err := hop.ParseTarget(cfg.TargetURL, hop.TargetOptions{
+		EnvName: "LLM_GATEWAY_URL",
+	})
 	if err != nil {
-		return nil, fmt.Errorf("llmproxy: parse target url: %w", err)
-	}
-	if target.Scheme == "" || target.Host == "" {
-		return nil, fmt.Errorf("llmproxy: target url %q missing scheme or host", cfg.TargetURL)
+		return nil, fmt.Errorf("llmproxy: %w", err)
 	}
 
 	logger := cfg.Logger
@@ -113,12 +116,7 @@ func New(cfg Config) (*Proxy, error) {
 // not hard-kill a long-lived SSE response on the /llm path (design §9.5). This
 // is the edge-side equivalent of the gateway's WriteTimeout: 0.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rc := http.NewResponseController(w)
-	// A zero time disables the deadline. Not all ResponseWriters support it
-	// (httptest.ResponseRecorder does not); ignore ErrNotSupported.
-	if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		p.logger.Warn("llmproxy: clear write deadline", "err", err)
-	}
+	hop.ClearWriteDeadline(w, p.logger)
 	p.rp.ServeHTTP(w, r)
 }
 

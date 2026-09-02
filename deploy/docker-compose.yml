@@ -144,7 +144,7 @@ services:
       context: ..
       dockerfile: services/elitea-main/Containerfile
       target: final
-    image: ghcr.io/eliteaai/elitea-main:dev
+    image: ghcr.io/elitea-ng/elitea-main:dev
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
       REDIS_URL: "redis:6379"
@@ -187,7 +187,11 @@ services:
       #     bash deploy/scripts/gen-deepwiki-certs.sh
       #     ELITEA_DEEPWIKI_ENABLED=true podman compose --profile deepwiki up -d
       ELITEA_DEEPWIKI_ENABLED: "${ELITEA_DEEPWIKI_ENABLED:-false}"
-      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8443"
+      # 8080: the port the provider listens on (uvicorn in __main__.py, EXPOSE in
+      # its Containerfile, the Helm chart). This said 8443 and nothing checked
+      # it — the hop was refused on connect, before any of the mTLS refusals
+      # this file documents could happen.
+      ELITEA_DEEPWIKI_BASE_URL: "https://elitea-deepwiki:8080"
       ELITEA_DEEPWIKI_CLIENT_CERT_FILE: /certs/client.crt
       ELITEA_DEEPWIKI_CLIENT_KEY_FILE: /certs/client.key
       ELITEA_DEEPWIKI_CA_FILE: /certs/ca.crt
@@ -243,7 +247,7 @@ services:
       dockerfile: services/elitea-deepwiki/Containerfile
       args:
         EXTRAS: "[storage-postgres]"
-    image: ghcr.io/eliteaai/elitea-deepwiki:dev
+    image: ghcr.io/elitea-ng/elitea-deepwiki:dev
     environment:
       # The service's OWN storage (decision 3): its wiki index and its
       # invocation rows. The same database as the platform here, because a
@@ -265,7 +269,7 @@ services:
       ELITEA_DEEPWIKI_MODEL_ALLOWLIST: "huggingface.co,*.huggingface.co"
       ELITEA_DEEPWIKI_RUNNER: "unavailable"
       ELITEA_DEEPWIKI_SCRATCH_PATH: /var/scratch/deepwiki
-      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8443"
+      ELITEA_DEEPWIKI_SERVICE_LOCATION_URL: "https://elitea-deepwiki:8080"
     volumes:
       - ./certs:/certs:ro
     depends_on:
@@ -284,7 +288,7 @@ services:
       dockerfile: services/elitea-deepwiki/Containerfile
       args:
         EXTRAS: "[storage-postgres]"
-    image: ghcr.io/eliteaai/elitea-deepwiki:dev
+    image: ghcr.io/elitea-ng/elitea-deepwiki:dev
     entrypoint: ["python", "-m", "elitea_deepwiki.storage"]
     environment:
       ELITEA_DEEPWIKI_DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
@@ -297,7 +301,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/Containerfile.elitea-ui
-    image: ghcr.io/eliteaai/elitea-ui:dev
+    image: ghcr.io/elitea-ng/elitea-ui:dev
     environment:
       VITE_SERVER_URL: "/api/v2"
       VITE_BASE_URI: "/app/"
@@ -314,7 +318,7 @@ services:
       dockerfile: Containerfile
       args:
         PYLON_VERSION: "1.2.25"
-    image: ghcr.io/eliteaai/pylon-indexer:dev
+    image: ghcr.io/elitea-ng/pylon-indexer:dev
     environment:
       NAME: pylon-indexer
       NAME_PREFIX: elitea
@@ -349,7 +353,7 @@ services:
       # libs/go/observability (issue #250's local replace target) from there.
       context: ..
       dockerfile: services/elitea-scheduler/Containerfile
-    image: ghcr.io/eliteaai/elitea-scheduler:dev
+    image: ghcr.io/elitea-ng/elitea-scheduler:dev
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
       REDIS_URL: "redis:6379"

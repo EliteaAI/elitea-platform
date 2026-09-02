@@ -1,10 +1,13 @@
-"""End-to-end: drive the ported SPI, engine wired, against a real repository.
+"""End-to-end: drive the engine SIDECAR, engine wired, against a real repository.
 
-Proves the port EXECUTES — clone, index, repository analysis, structure
-planning, page generation, artifact composition — and that the composed result
-carries the frozen object set. It is not a content test: the LLM is a local
-stub (``llm_stub.py``) whose answers are canned and deterministic. What is
-under test is the pipeline, not the prose.
+Proves the engine EXECUTES — clone, index, repository analysis, structure
+planning, page generation — over the protocol the Go sub-application host
+speaks to it (ADR-0023): one NDJSON stream of progress, then the engine's
+result. Composition into the frozen object set and the upload are the host's
+now, so what this prints is the ENGINE result (artifacts by name and size).
+It is not a content test: the LLM is a local stub (``llm_stub.py``) whose
+answers are canned and deterministic. What is under test is the pipeline,
+not the prose.
 
 Not wired into CI: it needs the ~1.1 GB engine extra and a local git daemon.
 See e2e/README.md for the setup.
@@ -33,8 +36,8 @@ os.environ["GIT_CONFIG_KEY_0"] = "url.git://127.0.0.1:19418/.insteadOf"
 os.environ["GIT_CONFIG_VALUE_0"] = "https://127.0.0.1:18900/"
 
 from httpx import ASGITransport, AsyncClient
-from elitea_deepwiki.app import create_app
 from elitea_deepwiki.config import Settings
+from elitea_deepwiki.sidecar import create_sidecar
 
 MOCK = "http://127.0.0.1:18901/v1"
 
@@ -68,41 +71,66 @@ REQUEST = {
 }
 
 
+def engine_arguments(request: dict) -> dict:
+    """The legacy keyword set the Go host derives (ArgumentsFor) for generate_wiki."""
+    params = dict(request["configuration"]["parameters"])
+    params.update(request["parameters"])
+    toolkit = params["code_toolkit"]
+    repo_config = {
+        "provider_type": "github",
+        "provider_config": toolkit["github_configuration"],
+        "repository": toolkit.get("repository"),
+        "branch": toolkit.get("active_branch", "main"),
+        "project": None,
+        "is_cloud": None,
+    }
+    return {
+        "llm_settings": params.get("llm_settings") or {},
+        "embedding_model": params.get("embedding_model"),
+        "query": params["query"],
+        "repo_config": repo_config,
+        "active_branch": toolkit.get("active_branch", "main"),
+        "force_rebuild_index": params.get("force_rebuild_index", True),
+        "indexing_method": params.get("indexing_method", "filesystem"),
+        "planner_mode": params.get("planner_mode") or params.get("planner_type"),
+        "exclude_tests": params.get("exclude_tests"),
+        "run_in_subprocess": params.get("run_in_subprocess", True),
+    }
+
+
 async def main():
     settings = Settings.from_env()
-    app = create_app(settings=settings)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://dw.test") as http:
-        async with app.router.lifespan_context(app):
-            health = (await http.get("/health")).json()
-            print("runner:", health["extra_info"]["runner"])
+    app = create_sidecar(settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://engine", timeout=None) as http:
+        health = (await http.get("/engine/health")).json()
+        print("runner:", health["runner"])
+        body = {"invocation_id": "invocation_e2e", "tool": "generate_wiki", "arguments": engine_arguments(REQUEST)}
+        # httpx's ASGI transport buffers the whole stream; the lines arrive
+        # together when the engine is done, which is fine for a harness.
+        response = await http.post("/engine/invoke", json=body)
+        lines = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+        for line in lines:
+            if "thinking" in line:
+                print("  event:", line["thinking"][:150])
+        last = lines[-1] if lines else {}
+        if "error" in last:
+            print("terminal status: Error")
+            print("category:", last["error"].get("error_category"))
+            print("\nERROR MESSAGE:\n", last["error"].get("message", "")[:3000])
+            return
+        result = last.get("result", {})
+        print("terminal status:", "Completed" if result.get("success") else "Error")
+        print("category:", result.get("error_category"))
+        artifacts = result.get("artifacts") or []
+        print(f"engine artifacts: {len(artifacts)}")
+        for a in artifacts:
+            print("  ", a.get("type"), "|", (a.get("name") or "")[:70], "|", len(a.get("data") or ""), "bytes")
+        out = pathlib.Path(os.environ.get("E2E_DUMP", "")) if os.environ.get("E2E_DUMP") else None
+        if out:
+            out.write_text(json.dumps(result, indent=1))
+            print("dumped the engine result to", out)
+        if not result.get("success"):
+            print("\nERROR MESSAGE:\n", str(result.get("error", ""))[:3000])
 
-            accepted = await http.post("/tools/Wikis/generate_wiki/invoke", json=REQUEST)
-            iid = accepted.json()["invocation_id"]
-            print("accepted:", iid)
-
-            url = f"/tools/Wikis/generate_wiki/invocations/{iid}"
-            deadline = asyncio.get_running_loop().time() + float(os.environ.get("E2E_TIMEOUT", "600"))
-            body = {}
-            while asyncio.get_running_loop().time() < deadline:
-                body = (await http.get(url)).json()
-                for ev in body.get("custom_events", []):
-                    print("  event:", ev["data"]["message"][:150])
-                if body.get("status") not in ("Started", "InProgress"):
-                    break
-                await asyncio.sleep(1.0)
-
-            print("terminal status:", body.get("status"))
-            print("category:", body.get("error_category"))
-            objects = json.loads(body.get("result", "[]"))
-            print(f"result objects: {len(objects)}")
-            for o in objects:
-                print("  ", o.get("object_type"), "|", (o.get("name") or "")[:70],
-                      "|", len(o.get("data") or ""), "bytes")
-            out = pathlib.Path(os.environ.get("E2E_DUMP", "")) if os.environ.get("E2E_DUMP") else None
-            if out:
-                out.write_text(json.dumps(objects, indent=1))
-                print("dumped result objects to", out)
-            if body.get("status") == "Error" and objects:
-                print("\nERROR MESSAGE:\n", objects[0]["data"][:3000])
 
 asyncio.run(main())

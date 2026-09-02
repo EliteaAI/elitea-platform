@@ -18,10 +18,9 @@ from pathlib import Path
 import pytest
 
 from elitea_deepwiki.config import Settings
-from elitea_deepwiki.invocations import InvocationContext, InvocationManager
 from elitea_deepwiki.legacy_runner import LegacyToolRunner
 from elitea_deepwiki.publishing import locate_index, registry_from_result
-from elitea_deepwiki.toolkits import ToolkitFamily
+from elitea_deepwiki.sidecar import SidecarContext
 
 from .conftest import load
 
@@ -82,22 +81,21 @@ def worker_result(key: str | None, wiki_id: str = WIKI_ID) -> dict:
 
 
 async def run_generate_wiki(settings: Settings, result: dict) -> dict:
-    """Drive the real runner with the engine's tool stubbed."""
+    """Drive the real runner the way the sidecar does, with the engine's tool stubbed.
+
+    The Go host merges, checks egress, composes and uploads; what this package
+    still does for a completed generation is run the tool and PUBLISH its
+    index. The result dict comes back as the sidecar streams it to the host.
+    """
+    import asyncio  # noqa: PLC0415
+
     runner = LegacyToolRunner(
         settings=settings, tools={"generate_wiki": lambda **_kw: result}
     )
-    manager = InvocationManager()
-    invocation = await manager.submit("Wikis", "generate_wiki", lambda _c: None)
-    try:
-        return await runner.invoke(
-            family=ToolkitFamily.MAIN,
-            toolkit_name="Wikis",
-            tool_name="generate_wiki",
-            request_data={"parameters": {"query": "document it"}},
-            context=InvocationContext(invocation, manager),
-        )
-    finally:
-        await manager.stop()
+    context = SidecarContext("invocation_test", "generate_wiki", asyncio.Queue())
+    engine_result = await runner.run_engine_tool("generate_wiki", {}, context)
+    await runner.publish(engine_result, context)
+    return engine_result
 
 
 @pytest.fixture
@@ -178,13 +176,11 @@ async def test_a_completed_generation_is_queryable_from_a_fresh_reader(
         Path(settings.scratch_path) / "cache", corpus, embeddings, "auto1111"
     )
 
-    body = await run_generate_wiki(settings, worker_result("auto1111"))
-    assert body["status"] == "Completed"
-
-    objects = json.loads(body["result"])
-    messages = [o["data"] for o in objects if o["object_type"] == "message"]
-    assert not any("could not be published" in m for m in messages), messages
-
+    result = await run_generate_wiki(settings, worker_result("auto1111"))
+    assert result["success"] is True
+    # A publish failure is reported in band as an `errors` entry the host's
+    # composer renders as "⚠️ Partial issues detected"; none here.
+    assert not any("could not be published" in e for e in result.get("errors", [])), result
     from elitea_deepwiki.storage.unified_db_adapter import PostgresUnifiedDB
 
     reader = PostgresUnifiedDB(postgres_backend._conn, WIKI_ID)
@@ -197,31 +193,26 @@ async def test_a_completed_generation_is_queryable_from_a_fresh_reader(
     assert reader.get_meta("commit_hash").startswith("bee856bf")
 
 
-async def test_the_composed_result_is_unchanged_by_publishing(
+async def test_the_engine_result_is_unchanged_by_publishing(
     postgres_backend, settings: Settings, corpus, embeddings
 ):
-    """Publishing must not alter the frozen artifact set.
+    """Publishing must not alter what the host composes from.
 
-    It runs before composition, so a mistake there could add or reorder
-    objects. ADR-0022 decision 2 freezes that set; this pins it.
+    The host composes the frozen artifact set (ADR-0022 decision 2) from the
+    engine result the sidecar streams back AFTER publishing; a mistake in
+    publishing could add or reorder artifacts. This pins the result as
+    published against the same result unpublished: only an in-band `errors`
+    entry may ever differ, and only on failure.
     """
     build_scratch_index(
         Path(settings.scratch_path) / "cache", corpus, embeddings, "unchanged"
     )
-
-    published = json.loads(
-        (await run_generate_wiki(settings, worker_result("unchanged")))["result"]
-    )
-    not_published = json.loads(
-        (
-            await run_generate_wiki(
-                replace(settings, database_url=None), worker_result("unchanged")
-            )
-        )["result"]
-    )
-    assert published == not_published
-
-
+    published = await run_generate_wiki(settings, worker_result("unchanged"))
+    not_published = worker_result("unchanged")
+    assert {k: v for k, v in published.items() if k != "errors"} == {
+        k: v for k, v in not_published.items() if k != "errors"
+    }
+    assert not published.get("errors")
 async def test_no_database_configured_publishes_nothing_and_still_succeeds(
     settings: Settings, corpus, embeddings
 ):
@@ -229,10 +220,11 @@ async def test_no_database_configured_publishes_nothing_and_still_succeeds(
     build_scratch_index(
         Path(settings.scratch_path) / "cache", corpus, embeddings, "nodb"
     )
-    body = await run_generate_wiki(
+    result = await run_generate_wiki(
         replace(settings, database_url=None), worker_result("nodb")
     )
-    assert body["status"] == "Completed"
+    assert result["success"] is True
+    assert not result.get("errors")
 
 
 async def test_a_publish_failure_is_reported_in_band_not_swallowed(
@@ -242,59 +234,58 @@ async def test_a_publish_failure_is_reported_in_band_not_swallowed(
 
     The artifacts are genuine and still land, so the invocation completes —
     but silence here would claim a queryable wiki that no other replica can
-    answer about. The message rides the legacy composer's own partial-failure
-    path.
+    answer about. The message rides the result's `errors` list, which the
+    host's composer renders as "⚠️ Partial issues detected".
     """
     # No index on disk at all: nothing to publish.
-    body = await run_generate_wiki(settings, worker_result(None))
-
-    assert body["status"] == "Completed"
-    objects = json.loads(body["result"])
-    messages = [o["data"] for o in objects if o["object_type"] == "message"]
-
-    assert any("Partial issues detected" in m for m in messages), messages
-    assert any("could not be published" in m for m in messages), messages
-
+    result = await run_generate_wiki(settings, worker_result(None))
+    assert result["success"] is True
+    assert any("could not be published" in e for e in result.get("errors", [])), result
     # The artifacts themselves are unaffected.
-    assert [o["object_type"] for o in objects if o["result_target"] == "artifact"] == [
-        "repository_context"
-    ]
+    assert result["artifacts"] == worker_result(None)["artifacts"]
 
 
 async def test_a_publish_failure_does_not_fail_the_invocation(
     postgres_backend, settings: Settings
 ):
     """Discarding good artifacts over an unpublished index would be worse."""
-    body = await run_generate_wiki(
+    result = await run_generate_wiki(
         replace(settings, database_url="postgresql://nobody@127.0.0.1:1/nope"),
         worker_result(None),
     )
-    assert body["status"] == "Completed"
-    assert "error_category" not in body
+    assert result["success"] is True
+    assert "error_category" not in result
 
 
 async def test_ask_does_not_publish(postgres_backend, settings: Settings):
-    """Only generate_wiki produces an index; ask must not try to publish one."""
-    runner = LegacyToolRunner(
+    """Only generate_wiki produces an index; ask must not try to publish one.
+
+    The guard is the sidecar's: it publishes after a successful generate_wiki
+    and nothing else. A runner whose publish would blow up proves the guard
+    was honoured.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
+
+    from elitea_deepwiki.sidecar import create_sidecar  # noqa: PLC0415
+
+    class Runner(LegacyToolRunner):
+        async def publish(self, result, context):  # noqa: ARG002
+            raise AssertionError("ask must not publish")
+
+    runner = Runner(
         settings=settings,
         tools={"ask": lambda **_kw: {"success": True, "answer": "yes"}},
     )
-    manager = InvocationManager()
-    invocation = await manager.submit("Wikis", "ask", lambda _c: None)
-    try:
-        body = await runner.invoke(
-            family=ToolkitFamily.MAIN,
-            toolkit_name="Wikis",
-            tool_name="ask",
-            request_data={"parameters": {"question": "?"}},
-            context=InvocationContext(invocation, manager),
+    app = create_sidecar(settings, runner)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://engine") as client:
+        response = await client.post(
+            "/engine/invoke",
+            json={"invocation_id": "invocation_ask", "tool": "ask", "arguments": {"question": "?"}},
         )
-    finally:
-        await manager.stop()
-
-    objects = json.loads(body["result"])
-    assert [o["object_type"] for o in objects] == ["message"]
-    assert objects[0]["data"] == "yes"
+    lines = [_json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert lines[-1] == {"result": {"success": True, "answer": "yes"}}
 
 
 async def test_publishing_registers_the_path_for_this_process(

@@ -13,24 +13,26 @@ like a trust problem, nowhere near the rename.
 {{- default "elitea-deepwiki" .Values.deepwiki.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/*
+These three are the SHARED provider shape (templates/_provider.tpl). They stay
+as named aliases rather than being replaced at every call site, so that
+"elitea-deepwiki.labels" keeps meaning what it meant and a provider that ever
+needs to diverge does it in one place — here — instead of in six files.
+
+The name and fullname helpers above deliberately do NOT delegate: they are
+certificate material, and a provider must be able to state its own naming rule
+without editing a shared file.
+*/}}
 {{- define "elitea-deepwiki.labels" -}}
-helm.sh/chart: {{ include "elitea-deepwiki.name" . }}-{{ .Chart.Version }}
-{{ include "elitea-deepwiki.selectorLabels" . }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- include "elitea.provider.labels" (dict "ctx" . "provider" "deepwiki") -}}
 {{- end }}
 
 {{- define "elitea-deepwiki.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "elitea-deepwiki.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+{{- include "elitea.provider.selectorLabels" (dict "ctx" . "provider" "deepwiki") -}}
 {{- end }}
 
 {{- define "elitea-deepwiki.serviceAccountName" -}}
-{{- if .Values.deepwiki.serviceAccount.create }}
-{{- default (include "elitea-deepwiki.fullname" .) .Values.deepwiki.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.deepwiki.serviceAccount.name }}
-{{- end }}
+{{- include "elitea.provider.serviceAccountName" (dict "ctx" . "provider" "deepwiki") -}}
 {{- end }}
 
 {{/*
@@ -69,7 +71,21 @@ go read logs for, and this is a message in the terminal that ran the command.
   would tell them.
 */}}
 {{- $runner := get $env "ELITEA_DEEPWIKI_RUNNER" | toString -}}
-{{- if and (eq $runner "legacy") (not (contains "-engine" (.Values.deepwiki.image.tag | default .Values.image.tag | toString))) -}}
-{{- fail "deepwiki.env.ELITEA_DEEPWIKI_RUNNER is \"legacy\" but the image tag does not end in \"-engine\". The published default image carries the engine SOURCE and not its ~92-package closure (torch, transformers, faiss-cpu, tree-sitter), so the legacy runner cannot import it and every tool fails at invocation time rather than at start. Set deepwiki.image.tag to the -engine variant, or leave the runner at its refusing default." -}}
+{{- $engineTag := include "elitea-deepwiki.engineTag" . -}}
+{{- if and (eq $runner "legacy") (not (contains "-engine" $engineTag)) -}}
+{{- fail (printf "deepwiki.env.ELITEA_DEEPWIKI_RUNNER is \"legacy\" but the engine sidecar's image tag (%s) does not end in \"-engine\". The plain elitea-deepwiki image carries the engine SOURCE and not its ~92-package closure (torch, transformers, faiss-cpu, tree-sitter), so the sidecar cannot import it and every tool fails at invocation time rather than at start. Set deepwiki.engine.image.tag to the -engine variant (the default derives it from the chart-wide tag), or set the runner to unavailable." $engineTag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+elitea-deepwiki.engineTag — the engine sidecar's image tag: the value set,
+else the chart-wide tag with "-engine" appended, which is how the
+`-engine` variant is published.
+*/}}
+{{- define "elitea-deepwiki.engineTag" -}}
+{{- if .Values.deepwiki.engine.image.tag -}}
+{{- .Values.deepwiki.engine.image.tag -}}
+{{- else -}}
+{{- printf "%s-engine" (.Values.image.tag | toString) -}}
 {{- end -}}
 {{- end }}
