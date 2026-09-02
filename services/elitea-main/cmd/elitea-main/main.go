@@ -59,6 +59,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -737,6 +738,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
 	}
 	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
+	// The toolkit settings resolver the Inventory facade expands a source with.
+	// Nil where the Configurations runtime is not composed — a deployment with
+	// no vault — and the facade then mounts without source expansion rather
+	// than failing to boot.
+	var inventorySourceSettings *configurationapp.CurrentToolkitSettingsResolver
 	// The project vector-store collaborator the project-create route provisions
 	// with (#371). It is composed from the Configurations runtime, so it exists
 	// only where that runtime does; without it a created project cannot index.
@@ -801,6 +807,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// Assigned through the concrete value, never a typed nil: the handler's
 		// only fallback is a nil-interface check.
 		toolkitSettingsValidator = toolkitSettingsResolver
+		// The SAME graph the Inventory facade claims a source toolkit's
+		// credentials with. One composition, so what a source's own index runs
+		// read is what the provider receives; a second would be a second answer
+		// to "which credentials can this caller see".
+		inventorySourceSettings = toolkitSettingsResolver
 		currentAuth := apimw.AuthConfig{
 			Validator:                 formGraph,
 			PrincipalValidator:        principalValidator,
@@ -1094,11 +1105,53 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			currentConfigurationsConfig.PublicProjectID, admissionPosture,
 			startProviderRegistrar(ctx, logger, pool, currentConfigurationsConfig.PublicProjectID,
 				"inventory", inventoryConfig, v2inventory.EnvNames.BaseURL))
+		// The source expander (ADR-0023 H4c I2). Built only where BOTH halves
+		// exist: the Configurations graph that can claim a credential, and a
+		// callback origin the provider can reach back on. Where either is
+		// absent the facade mounts WITHOUT expansion — the eight tools that
+		// read the graph still work — rather than failing to boot, which is
+		// what a stack with no vault (the E2E one) needs. What is NOT
+		// tolerated is a half-wired expander: NewSources refuses that.
+		var inventorySources *v2inventory.Sources
+		inventorySourcesConfig, sourcesErr := v2inventory.SourcesFromEnv(os.LookupEnv)
+		if sourcesErr != nil {
+			return fmt.Errorf("read Inventory source configuration: %w", sourcesErr)
+		}
+		switch {
+		case inventorySourceSettings == nil || inventorySourcesConfig.CallbackBaseURL == "":
+			logger.Warn("Inventory mounts without source expansion",
+				"settings_resolver", inventorySourceSettings != nil,
+				"callback_base_url", v2inventory.CallbackBaseURLEnv)
+		default:
+			inventoryToolkits, toolkitsErr := dbrepos.NewCurrentToolkitsRepository(pool)
+			if toolkitsErr != nil {
+				return fmt.Errorf("compose Inventory toolkit reader: %w", toolkitsErr)
+			}
+			// The signer must be the one THIS deployment's validator reads
+			// back, and the rule for that is "the form graph when there is
+			// one" — the same rule the DeepWiki minter below applies.
+			var inventorySigner v2auth.TokenSigner
+			if formGraph != nil {
+				inventorySigner = formGraph
+			}
+			inventoryTokens, minterErr := v2auth.NewCallbackTokenMinter(
+				pool, inventorySigner, []byte(os.Getenv("APPLICATION_SECRET_KEY")))
+			if minterErr != nil {
+				return fmt.Errorf("compose Inventory callback token minter: %w", minterErr)
+			}
+			inventorySources, err = v2inventory.NewSources(
+				inventoryToolkits, inventorySourceSettings,
+				material.NewCallbackMinter(inventoryTokens), inventorySourcesConfig)
+			if err != nil {
+				return fmt.Errorf("compose Inventory source expander: %w", err)
+			}
+		}
 		inventoryRoute, err = v2inventory.NewRoute(
 			inventoryConfig,
 			// The API group's credential set, in either authentication mode.
 			apiGroupAuth,
 			legacyrbac.NewPostgresResolver(pool),
+			inventorySources,
 			logger,
 		)
 		if err != nil {

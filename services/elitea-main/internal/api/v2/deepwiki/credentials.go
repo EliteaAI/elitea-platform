@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
 )
 
 // Errors a caller of the facade can be told apart by.
@@ -38,8 +39,9 @@ var (
 	ErrToolkitNotResolvable = errors.New("DeepWiki code toolkit is not resolvable")
 
 	// ErrEgressRefused reports a repository host outside the allowlist. It is
-	// returned BEFORE the vault is touched.
-	ErrEgressRefused = errors.New("DeepWiki repository host is not allowed")
+	// returned BEFORE the vault is touched. The shared sentinel, so a caller
+	// matching on it matches every facade's refusal.
+	ErrEgressRefused = material.ErrEgressRefused
 
 	// ErrCredentialsUnavailable reports a resolution that failed for a reason
 	// the caller cannot fix — a vault that will not open, a database error.

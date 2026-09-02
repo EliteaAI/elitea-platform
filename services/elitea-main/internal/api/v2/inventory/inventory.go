@@ -5,19 +5,24 @@
 // ADR-0012 set the measure before the work: this facade must fit in ≤8 files
 // and ≤250 net non-test lines outside values.yaml. Over budget means the
 // generalisation did not land, and the fix belongs in the shared packages
-// rather than here. The number is at the bottom of this comment because it is
-// the point of the file.
+// rather than here. That sentence sat here unenforced until H4c I2;
+// internal/api/v2/budget_test.go is the gate now, and it counts.
 //
 // WHAT INVENTORY NEEDS THAT DEEPWIKI DOES NOT: nothing. It speaks the same SPI
 // — its legacy plugin has the same methods/descriptor.py, the same five routes,
 // and its recorded descriptor has the same four top-level keys (captured at
 // conformance/provider/fixtures/inventory/).
 //
-// WHAT DEEPWIKI NEEDS THAT INVENTORY DOES NOT, and which is therefore correctly
-// absent here: repository credential resolution out of the project vault, the
-// git-host egress allowlist, and the minted callback token. Inventory clones
-// nothing and calls nothing back. A "generic" facade that carried those would
-// have made this file longer, not shorter.
+// A CORRECTION, kept rather than quietly deleted. This comment used to say
+// that repository credential resolution, the git-host egress allowlist and the
+// minted callback token were "correctly absent here" because Inventory clones
+// nothing and calls nothing back. That was wrong, and reading the legacy
+// plugin is what showed it: `run_ingestion` instantiates the SOURCE toolkit's
+// SDK client and clones with its credentials, and uploads the graph it builds
+// back to artifacts. Inventory needs all three — see sources.go. What the
+// mistake did buy is the right shape: the mechanics went to
+// internal/providerhost/material with two real callers in hand rather than
+// being generalised from DeepWiki alone.
 package inventory
 
 import (
@@ -74,10 +79,17 @@ const (
 type Route struct{ handler http.Handler }
 
 // NewRoute mounts the three SPI paths behind their permissions.
+//
+// sources may be nil, and that is a deployment with no source expansion — no
+// vault loader, or no callback origin — rather than a defect: the eight tools
+// that only read the graph still work, and the three that name a source get
+// the provider's own refusal instead of a facade that silently forwards an
+// unexpanded id. The composition root logs which of the two it built.
 func NewRoute(
 	cfg facade.Config,
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
+	sources *Sources,
 	logger *slog.Logger,
 ) (*Route, error) {
 	if !facade.Composable(authConfig, permissions) {
@@ -88,6 +100,7 @@ func NewRoute(
 		return nil, err
 	}
 	handler, err := routes.Build(routes.Table{
+		Invoke:           sources.invoke(hop.Forward, logger),
 		SlotsPath:        SlotsPath,
 		InvokePath:       InvokePath,
 		InvocationPath:   InvocationPath,

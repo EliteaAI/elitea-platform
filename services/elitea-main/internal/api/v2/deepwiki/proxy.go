@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/proxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/spi"
 )
@@ -95,35 +95,7 @@ var (
 
 const providerSlotsPath = spi.SlotsPath
 
+// writeError answers with the shared facade error shape.
 func writeError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"error":` + quoteJSON(message) + `}`))
-}
-
-func quoteJSON(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04x`, r)
-				continue
-			}
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	material.WriteError(w, status, message)
 }

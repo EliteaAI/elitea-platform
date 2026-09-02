@@ -9,6 +9,7 @@ import (
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/facade"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/material"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/providerhost/routes"
 	"github.com/go-chi/chi/v5"
 )
@@ -103,10 +104,19 @@ func NewRoute(
 		Admission:        cfg.Admission,
 		// The one route this facade serves itself: the body is rewritten
 		// (credentials expanded, a callback grant minted) before the hop.
-		Invoke: func(w http.ResponseWriter, r *http.Request) {
-			invoke(w, r, proxy, rewriter, logger,
-				providerInvokePath(chi.URLParam(r, "toolkit_name"), chi.URLParam(r, "tool_name")))
-		},
+		// The handler is the shared one; only the rewrite is DeepWiki's.
+		Invoke: material.Invocation{
+			Provider: "DeepWiki",
+			Rewrite:  rewriter.Rewrite,
+			Forward:  proxy.Forward,
+			Path: func(r *http.Request) string {
+				return providerInvokePath(
+					chi.URLParam(r, "toolkit_name"), chi.URLParam(r, "tool_name"))
+			},
+			Minter: minter,
+			Status: invokeError,
+			Logger: logger,
+		}.Serve,
 	})
 	if err != nil {
 		return nil, ErrInvalidRoute
@@ -124,29 +134,6 @@ func (route *Route) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	route.handler.ServeHTTP(w, r)
 }
-
-// validProjectID accepts only a positive decimal id that fits an int32.
-//
-// The value reaches the permission resolver and the provider, so a
-// non-numeric one must be rejected before either sees it rather than being
-// passed along to fail somewhere less obvious.
-//
-// THE UPPER BOUND IS NOT COSMETIC, and it is the same aliasing bug
-// agentexecution/route.go documents at length. The id is narrowed to int32 to
-// read a configuration (the underlying columns are Postgres `integer`), and in
-// Go that narrowing is a silent truncation: without this bound `4294967301`
-// truncates to `5`, so a caller could name an out-of-range project and have
-// the facade resolve project 5's stored credentials — and push them to the
-// provider. CodeQL found the conversion (go/incorrect-integer-conversion);
-// the bound belongs here, at the only parse in this request path, rather than
-// at each narrowing downstream.
-//
-// Rejecting rather than clamping: an id above MaxInt32 cannot correspond to
-// any row in an `integer` column, so "no such project" is the honest answer.
-// validProjectID delegates to the shared rule. Kept as a name in this package
-// because invoke.go calls it at the point it narrows the id, and moving the
-// call site away from the parse it guards is what CodeQL's dataflow lost.
-func validProjectID(raw string) bool { return facade.ValidProjectID(raw) }
 
 // userIDFrom reads the authenticated user for the signed identity.
 //
