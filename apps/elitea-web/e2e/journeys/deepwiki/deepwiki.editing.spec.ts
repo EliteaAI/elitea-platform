@@ -15,7 +15,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import { STORAGE_STATE } from '../../../playwright.config';
-import { SEEDED, openDeepWiki, readObject, replaceEditorText } from './helpers';
+import { SEEDED, objectUrl, openDeepWiki, readObject, replaceEditorText } from './helpers';
 
 const TOOLKIT_PATH = `/app/deepwiki/${SEEDED.readOnly.toolkitId}`;
 const BROKEN_KEY = `${SEEDED.readOnly.wikiId}/${SEEDED.readOnly.brokenPage}`;
@@ -36,6 +36,26 @@ async function stubQuickFixModel(page: Page): Promise<void> {
   );
 }
 
+/**
+ * The seeded page with the broken diagram, as the journey needs it. A run
+ * that failed between accept and undo leaves the REPAIRED text in the
+ * bucket, and every later run would fail its precondition on someone else's
+ * leftovers — so the broken block is put back first, through the same
+ * artifact route the reader saves with.
+ */
+async function ensureBrokenPage(page: Page): Promise<string> {
+  const current = await readObject(page, BROKEN_KEY);
+  expect(current.status).toBe(200);
+  if (current.text.includes('A[Client] -->\n')) return current.text;
+  const restored = current.text.replace(FIXED, 'graph TD\n  A[Client] -->');
+  expect(restored).not.toBe(current.text);
+  const response = await page.request.post(objectUrl('').replace(/\/$/, '') + '?overwrite=true', {
+    multipart: { file: { name: BROKEN_KEY, mimeType: 'text/markdown', buffer: Buffer.from(restored) } },
+  });
+  expect(response.ok(), `restoring the broken page: ${response.status()}`).toBe(true);
+  return restored;
+}
+
 async function openBrokenPage(page: Page): Promise<void> {
   await openDeepWiki(page, TOOLKIT_PATH);
   await page.getByText(SEEDED.readOnly.brokenPage).click();
@@ -53,9 +73,8 @@ test.describe('DeepWiki page editing', () => {
     page,
   }) => {
     await stubQuickFixModel(page);
-    const original = await readObject(page, BROKEN_KEY);
-    expect(original.status).toBe(200);
-    expect(original.text).toContain('A[Client] -->\n');
+    const original = await ensureBrokenPage(page);
+    expect(original).toContain('A[Client] -->\n');
 
     await openBrokenPage(page);
     // mermaid rejected the block in the browser, so the fix is on offer.
@@ -79,7 +98,7 @@ test.describe('DeepWiki page editing', () => {
     await page.getByTestId('wiki-fix-undo').click();
     await expect(page.getByTestId('wiki-page-feedback')).toContainText('undone', { timeout: 20_000 });
     const restored = await readObject(page, BROKEN_KEY);
-    expect(restored.text).toBe(original.text);
+    expect(restored.text).toBe(original);
   });
 
   test('DWIKI-009: edited page markdown is saved back to the wiki', async ({ page }) => {
