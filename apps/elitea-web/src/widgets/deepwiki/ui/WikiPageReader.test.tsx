@@ -82,11 +82,12 @@ async function appendedText(append: AppendSpy, call: number): Promise<string> {
 }
 
 /** Renders the page and waits for mermaid to reject the broken block, which is what surfaces the quick fix. */
-async function renderBrokenPage(): Promise<void> {
-  show(<WikiPageReader projectId={PROJECT} pageKey={KEY} markdown={PAGE} />);
+async function renderBrokenPage(): Promise<ReturnType<typeof show>> {
+  const view = show(<WikiPageReader projectId={PROJECT} pageKey={KEY} markdown={PAGE} />);
   await waitFor(() => expect(screen.getByTestId('canvas-mermaid-quick-fix')).toBeInTheDocument(), {
     timeout: MERMAID_TIMEOUT,
   });
+  return view;
 }
 
 describe('WikiPageReader', () => {
@@ -133,7 +134,7 @@ describe('WikiPageReader', () => {
     installQuickFix();
     const { urls, append } = installSave();
     const user = userEvent.setup();
-    await renderBrokenPage();
+    const view = await renderBrokenPage();
 
     await user.click(screen.getByTestId('canvas-mermaid-quick-fix'));
     await user.click(await screen.findByTestId('wiki-fix-accept'));
@@ -151,6 +152,11 @@ describe('WikiPageReader', () => {
     await waitFor(() => expect(screen.queryByTestId('canvas-mermaid-quick-fix')).toBeNull(), {
       timeout: MERMAID_TIMEOUT,
     });
+
+    // The parent refetches the page after the save and hands the reader the
+    // text it just wrote: the echo of its own save must not take the undo away.
+    view.rerender(<WikiPageReader projectId={PROJECT} pageKey={KEY} markdown={saved} />);
+    expect(screen.getByTestId('wiki-fix-undo')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('wiki-fix-undo'));
     await waitFor(() => expect(urls).toHaveLength(2));

@@ -96,9 +96,15 @@ export function WikiPageReader({ projectId, pageKey, markdown }: WikiPageReaderP
   const [seenMarkdown, setSeenMarkdown] = useState(markdown);
   if (seenMarkdown !== markdown) {
     setSeenMarkdown(markdown);
-    setContent(markdown);
-    setPending(null);
-    setApplied(null);
+    // A re-read that carries what this reader itself saved is the echo of
+    // that save (accept → save → invalidate → refetch), not a change from
+    // outside: the undo it offers must survive it. Only a different text
+    // replaces the content and drops the pending fix and the undo.
+    if (markdown !== content) {
+      setContent(markdown);
+      setPending(null);
+      setApplied(null);
+    }
   }
 
   const quickFix = useMermaidQuickFix({ projectId });

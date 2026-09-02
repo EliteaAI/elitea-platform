@@ -43,6 +43,10 @@ async function openBrokenPage(page: Page): Promise<void> {
 }
 
 test.describe('DeepWiki page editing', () => {
+  // mermaid renders twice in a real browser and each save round-trips the
+  // artifact API: longer than Playwright's 30s default.
+  test.setTimeout(120_000);
+
   test.use({ storageState: STORAGE_STATE.member });
 
   test('DWIKI-007 + 008: a diagram that fails to render offers a quick fix; the accepted fix is saved, and undone', async ({
