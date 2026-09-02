@@ -119,10 +119,11 @@ export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
  * They are Chromium flags and have never meant anything to WebKit.
  */
 /**
- * DeepWiki journeys that need the provider behind the facade. The E2E stack
- * (chromium/webkit projects) cannot compose the facade, so these run only in
- * the `deepwiki-stack` project; the read-only DeepWiki journeys (list, read,
- * edit, quick fix) stay in the ordinary projects.
+ * DeepWiki journeys that need the provider behind the facade. They run in
+ * the ordinary chromium/webkit projects — the E2E stack composes the facade
+ * under OIDC-only auth since ADR-0023 H0 — AND in the `deepwiki-stack`
+ * project against the full standalone stack, which proves the same path
+ * under production Form authentication.
  */
 const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat)\.spec\.ts/;
 
@@ -169,7 +170,6 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /journeys\/.+\.spec\.ts/,
-      testIgnore: PROVIDER_BACKED_JOURNEYS,
     },
 
     // ── webkit (spec §6.2: "chromium + webkit") ───────────────────────────
@@ -181,7 +181,6 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /journeys\/.+\.spec\.ts/,
-      testIgnore: PROVIDER_BACKED_JOURNEYS,
     },
 
     /*
