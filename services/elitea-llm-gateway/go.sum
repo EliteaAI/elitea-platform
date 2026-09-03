@@ -129,8 +129,8 @@ github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/
 github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
-github.com/maximhq/bifrost/core v1.8.4 h1:GWvGPxsC56xP8hCa5f/wKOZdilhd1eh91zxu5jYZ5xk=
-github.com/maximhq/bifrost/core v1.8.4/go.mod h1:mGZ8gaIiJsZkLkncbBjS2zImMN2tZRp2cq1MpiI5SLA=
+github.com/maximhq/bifrost/core v1.7.3 h1:a8RJ3NHOd1lk51ZJgZLCm2UaPlVcYq7LQFsIRsuu1yc=
+github.com/maximhq/bifrost/core v1.7.3/go.mod h1:jjdqJc0+fCNl3irgUGfSDzgZupMSRLNm4E/2Q7KZKks=
 github.com/nats-io/nats.go v1.53.1 h1:Otsq3uLc/kLdjmkNHkXH0jBqwUquwdKFoe3fq6/3/Xo=
 github.com/nats-io/nats.go v1.53.1/go.mod h1:26HypzazeOkyO3/mqd1zZd53STJN0EjCYF9Uy2ZOBno=
 github.com/nats-io/nkeys v0.4.15 h1:JACV5jRVO9V856KOapQ7x+EY8Jo3qw1vJt/9Jpwzkk4=

@@ -72,11 +72,11 @@ async function fetchApplicationOrPipeline(
 ): Promise<Record<string, unknown>> {
   if (projectId !== PUBLIC_PROJECT_ID) {
     const opts = getGetApplicationQueryOptions(projectId, Number(id), undefined, undefined, options);
-    const result = await queryClient.fetchQuery(opts);
+    const result = await queryClient.query(opts);
     return result?.data || {};
   }
   const opts = getGetPublicApplicationQueryOptions(String(id), undefined, undefined, options);
-  const result = await queryClient.fetchQuery(opts);
+  const result = await queryClient.query(opts);
   return result?.data || {};
 }
 
@@ -88,12 +88,12 @@ async function fetchVersionDetails(
   versionName: string,
 ): Promise<Record<string, unknown>> {
   if (projectId === PUBLIC_PROJECT_ID) {
-    const result = await queryClient.fetchQuery(
+    const result = await queryClient.query(
       getGetPublicApplicationQueryOptions(id, versionName, undefined, { staleTime: 0 }),
     );
     return ((result?.data as Record<string, unknown>)?.version_details as Record<string, unknown>) || {};
   }
-  const result = await queryClient.fetchQuery(
+  const result = await queryClient.query(
     getGetApplicationVersionDetailQueryOptions(
       projectId,
       Number(id),

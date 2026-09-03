@@ -49,7 +49,7 @@ import type { ApplicationVersionDraft } from './initialValues';
  * `applications.ts` directly (`useCreateApplication`/
  * `useUpdateApplicationVersion` both return `UseQueryResult`, gated by
  * `enabled`). The established imperative-trigger convention for this shape
- * is `queryClient.fetchQuery(getXQueryOptions(...))`, not calling the query
+ * is `queryClient.query(getXQueryOptions(...))`, not calling the query
  * hook itself — see `features/apps/api/useModerationRequests.ts`'s
  * `submitRequest`, the first Wave-2 unit to hit this pattern.
  */
@@ -135,7 +135,7 @@ export function useCreateApplicationDraft(projectId: string | undefined): UseCre
           ...(draft.version !== undefined ? { versions: [toVersionWriteRequest(draft.version)] } : {}),
         };
         const options = getCreateApplicationQueryOptions(projectId, body);
-        const response = await queryClient.fetchQuery(options);
+        const response = await queryClient.query(options);
         // `response.data`'s declared type includes the error-envelope
         // variants (400/401/403) — never actually reachable here since
         // `eliteaFetch` throws `EliteaApiError` instead of resolving with
@@ -203,7 +203,7 @@ export function useSaveApplicationVersion(
           versionId,
           toVersionWriteRequest(draft),
         );
-        const response = await queryClient.fetchQuery(options);
+        const response = await queryClient.query(options);
         // Invalidating any GET-side cache (application detail, version
         // detail) is deliberately left to the caller: this hook only knows
         // the PUT it just issued, not which read queries a given feature

@@ -105,14 +105,14 @@ export function useAgentDraftApproval({
     async (versionId: number, entityId: number, candidate: SuggestedResource): Promise<void> => {
       if (projectId === undefined) return;
       try {
-        const detailsResponse = await queryClient.fetchQuery(
+        const detailsResponse = await queryClient.query(
           getGetApplicationQueryOptions(projectId, Number(candidate.id)),
         );
         const details = (detailsResponse as { data: { version_details?: { id?: string | number } } }).data;
         const childVersionId = details.version_details?.id;
         if (childVersionId === undefined) return;
 
-        await queryClient.fetchQuery(
+        await queryClient.query(
           getUpdateApplicationRelationQueryOptions(projectId, Number(candidate.id), Number(childVersionId), {
             application_id: entityId,
             version_id: versionId,

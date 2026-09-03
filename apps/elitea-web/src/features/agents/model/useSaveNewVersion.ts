@@ -101,7 +101,7 @@ export function useSaveNewVersion(options: UseSaveNewVersionOptions = {}): UseSa
       try {
         const body: VersionWriteRequest = { ...input.version, name: input.name };
         const queryOptions = getSaveApplicationNewVersionQueryOptions(input.projectId, input.applicationId, body);
-        const response = await queryClient.fetchQuery(queryOptions);
+        const response = await queryClient.query(queryOptions);
         const created = (response as { data: ApplicationVersionDetail }).data;
 
         // Matches `useSaveNewVersion.js:144-147`: the version is already

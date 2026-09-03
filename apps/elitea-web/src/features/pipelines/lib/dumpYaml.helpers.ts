@@ -100,6 +100,12 @@ export function dumpYaml(data: unknown): string {
     const processedData = reorderNodeKeys(data);
     return dump(processedData, {
       lineWidth: -1,
+      // js-yaml 5.4 deprecates `sortKeys` for `transform` (an AST visit that
+      // sorts each mapping's items). The comparator above is keyed on the
+      // mapping's DEPTH and parent, which the visit API has to reconstruct
+      // from node positions — a rewrite with its own tests, not a rename.
+      // Kept on the deprecated option, which still works, until that lands.
+      // oxlint-disable-next-line typescript/no-deprecated
       sortKeys: sortYamlKeys,
     });
   } catch (caught) {

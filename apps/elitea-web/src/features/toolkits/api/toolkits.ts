@@ -242,7 +242,7 @@ export interface UseToolkitDeleteResult {
  * this as a `useQuery`-shaped hook, not `useMutation` (same finding
  * `entities/application-form/model/mutations.ts`'s own doc comment made for
  * the applications endpoints) — the established imperative-trigger
- * convention is `queryClient.fetchQuery(getXQueryOptions(...))`, used here
+ * convention is `queryClient.query(getXQueryOptions(...))`, used here
  * via the standalone `useDeleteToolkit` hook rather than the query-shaped
  * `useDeleteApplicationTool` directly, so callers get a plain
  * loading/imperative-call surface instead of having to gate a `useQuery` on
@@ -253,7 +253,7 @@ export function useToolkitDelete(): UseToolkitDeleteResult {
   const deleteToolkit = useCallback(
     async ({ projectId, toolkitId }: { readonly projectId: string; readonly toolkitId: string }): Promise<void> => {
       const options = getDeleteApplicationToolQueryOptions(projectId, Number(toolkitId));
-      await queryClient.fetchQuery(options);
+      await queryClient.query(options);
     },
     [queryClient],
   );

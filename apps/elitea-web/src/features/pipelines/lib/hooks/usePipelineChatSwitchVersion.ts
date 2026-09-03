@@ -88,7 +88,7 @@ export function usePipelineChatSwitchVersion(): UsePipelineChatSwitchVersionResu
           input.participantId,
           entitySettings as ParticipantSettingsRequestWire,
         );
-        await queryClient.fetchQuery(options);
+        await queryClient.query(options);
         return entitySettings;
       } catch (caught) {
         setError(caught);
