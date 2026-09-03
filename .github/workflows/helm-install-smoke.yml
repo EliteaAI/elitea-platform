@@ -33,7 +33,8 @@ on:
       - "services/elitea-main/internal/runtimecomposition/**"
       - ".github/workflows/helm-install-smoke.yml"
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - "deploy/helm/**"
       - "deploy/kind/**"
