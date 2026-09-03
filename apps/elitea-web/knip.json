@@ -3,6 +3,7 @@
   "entry": [
     "src/entries/admin/main.tsx",
     "src/entries/maintenance/main.tsx",
+    "src/entries/brand-preview/main.tsx",
     "scripts/*.mjs",
     // The DeepWiki oracle pipeline: operator-run, not imported. It regenerates
     // src/features/wiki-generation/lib/__fixtures__/generation-oracle.json

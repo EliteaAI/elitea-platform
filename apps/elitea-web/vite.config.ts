@@ -19,6 +19,8 @@ const resolvePath = (p: string): string => fileURLToPath(new URL(p, import.meta.
  *                                   working unchanged (contract C15), dist/admin
  *  - maintenance    self-contained  vite-plugin-singlefile inlines everything into
  *                                   one maintenance.html, dist/maintenance
+ *  - brand-preview  self-contained  the offline brand previewer (ADR-0024 WP9),
+ *                                   one index.html, dist/brand-preview
  *
  * Vite keeps NODE_ENV=production for `vite build` regardless of a custom --mode
  * (mode and NODE_ENV are distinct), so all three outputs are production builds.
@@ -83,6 +85,28 @@ export default defineConfig(({ mode }): UserConfig => {
         sourcemap: false,
         rollupOptions: {
           input: resolvePath('./src/entries/maintenance/maintenance.html'),
+        },
+      },
+    };
+  }
+
+  if (mode === 'brand-preview') {
+    // ADR-0024 WP9: the offline brand previewer a branding package ships as
+    // `preview/app.html`. Same shape as the maintenance entry — one HTML
+    // file with every script and style inlined — and, unlike it, with NO
+    // request of its own: a designer opens it from `file://` with no Elitea
+    // running, and the Go exporter fills the inline `#brand-pack` element.
+    return {
+      plugins: [...basePlugins, viteSingleFile()],
+      root: resolvePath('./src/entries/brand-preview'),
+      base: './',
+      publicDir: false,
+      build: {
+        outDir: resolvePath('./dist/brand-preview'),
+        emptyOutDir: true,
+        sourcemap: false,
+        rollupOptions: {
+          input: resolvePath('./src/entries/brand-preview/index.html'),
         },
       },
     };

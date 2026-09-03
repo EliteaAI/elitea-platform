@@ -1,0 +1,18 @@
+/*
+ * Root CSS reset for the brand-preview entry point. Standalone from the main
+ * SPA: this entry builds as one self-contained HTML file
+ * (vite-plugin-singlefile), so it carries its own reset.
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.MuiButtonBase-root {
+  -webkit-tap-highlight-color: transparent;
+}
