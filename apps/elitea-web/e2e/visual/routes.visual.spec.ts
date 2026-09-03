@@ -73,7 +73,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
-import { SNAPSHOT_TOLERANCE, settle, shellSettled, volatileRegions } from './lib/settle';
+import { SNAPSHOT_TOLERANCE, selectProject, settle, shellSettled, volatileRegions } from './lib/settle';
 
 /*
  * `shellSettled()` now lives in `./lib/settle.ts`, imported above.
@@ -118,54 +118,10 @@ interface VisualRoute {
   readonly prepare?: (page: Page) => Promise<void>;
 }
 
-/**
- * Select `route.project` THROUGH THE SWITCHER, the way a user does.
- *
- * The first version wrote `el.project.id` with `addInitScript` before the first
- * navigation. It works in a journey and it did NOT work here: the run came back
- * with the switcher still on Default Project and the landmark missing, so the
- * seeded wiki's project was never selected and the shot would have photographed
- * a project with no wiki. Whatever the interaction with the restored
- * `storageState` is, writing another test's storage internals is a mechanism
- * this suite has no way to notice breaking.
- *
- * Clicking is slower and it is the product's own path: the switcher is the only
- * supported way to change project, J7 covers it end to end, and the selection
- * persists to both storage areas by the app's own code rather than by ours.
- *
- * Returns the name the shell should then settle on, so the caller cannot wait
- * for one project while having selected another.
+/*
+ * `selectProject` lives in `lib/settle.ts` (ADR-0024 WP6 moved it: the
+ * second-pack shots in `brand.visual.spec.ts` photograph the same seeded wiki).
  */
-async function selectProject(page: Page, route: VisualRoute): Promise<string> {
-  const project = route.project;
-  // The early return is for the routes that want the persona's own project,
-  // which is nearly all of them. It is also how this helper silently did
-  // nothing for a whole run: the route entry lost its `project` field to a
-  // careless `git checkout`, every call took this branch, and the shot was
-  // photographed against the wrong project with no assertion able to say so.
-  // `shellSettled` is given the name this returns, so the two can no longer
-  // disagree — a route that fails to switch now fails on the switcher's own
-  // name rather than twenty seconds later on its landmark.
-  if (!project) return 'Default Project';
-
-  await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
-  await shellSettled(page);
-
-  const trigger = page.getByRole('button', { name: /Project:/ });
-  await expect(trigger).toBeVisible({ timeout: 20_000 });
-  await trigger.click();
-
-  const listbox = page.getByRole('listbox');
-  await expect(listbox).toBeVisible({ timeout: 10_000 });
-  await listbox.getByRole('option', { name: project.name }).click();
-
-  // The switch really landed before the route is opened. Without this the
-  // navigation below can race the selection and fetch for the old project.
-  await expect(trigger).toHaveAccessibleName(new RegExp(`Project:\\s*${project.name}`), {
-    timeout: 20_000,
-  });
-  return project.name;
-}
 
 /*
  * Each entry carries an `@covers <route>` annotation naming the
@@ -510,7 +466,7 @@ const ROUTES: readonly VisualRoute[] = [
 
 for (const route of ROUTES) {
   test(`@visual ${route.name}`, async ({ page }) => {
-    const projectName = await selectProject(page, route);
+    const projectName = await selectProject(page, route.project);
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page, projectName);
     if (route.prepare) await route.prepare(page);
@@ -572,7 +528,7 @@ async function useLightScheme(page: Page): Promise<void> {
 for (const route of ROUTES.filter((r) => r.light)) {
   test(`@visual ${route.name}-light`, async ({ page }) => {
     await useLightScheme(page);
-    const projectName = await selectProject(page, route);
+    const projectName = await selectProject(page, route.project);
 
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page, projectName);
