@@ -43,7 +43,7 @@ import { useToggleSet } from './useToggleSet';
  * `generatePromiseRef.current.abort()` cancels the underlying RTK Query
  * mutation-trigger promise itself. `../../api/generateAgentDraft.ts`'s
  * `useGenerateAgentDraftMutation` (outside this sub-unit's file scope) wraps
- * a bare `queryClient.fetchQuery` and exposes no abort/cancel handle, so a
+ * a bare `queryClient.query` and exposes no abort/cancel handle, so a
  * literal network-level abort is not reachable from this component today —
  * see that file for the real fix (thread an `AbortController`/expose a
  * cancel fn, or call `queryClient.cancelQueries` against the query key

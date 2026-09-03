@@ -64,5 +64,5 @@ export async function carryPipelineGraphToVersion(
     instructions: graph.instructions,
     pipeline_settings: { ...graph.pipelineSettings },
   });
-  await queryClient.fetchQuery({ ...options, staleTime: 0 });
+  await queryClient.query({ ...options, staleTime: 0 });
 }

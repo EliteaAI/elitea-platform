@@ -32,8 +32,8 @@ export interface DeleteApplicationButtonProps {
  *    convention every sibling `features/agents/ui/*` component follows).
  *  - `useDeleteApplicationMutation` (old app's RTK Query slice) is replaced
  *    by the real generated `getDeleteApplicationQueryOptions` +
- *    `queryClient.fetchQuery`, the same "every generated endpoint is
- *    `useQuery`-shaped, imperative trigger = `fetchQuery`" convention
+ *    `queryClient.query`, the same "every generated endpoint is
+ *    `useQuery`-shaped, imperative trigger = `query`" convention
  *    `entities/application-form/model/mutations.ts` already established
  *    (`DELETE /elitea_core/application/prompt_lib/{projectId}/
  *    {applicationId}`).
@@ -81,7 +81,7 @@ export function DeleteApplicationButton({
     setIsDeleting(true);
     try {
       const options = getDeleteApplicationQueryOptions(projectId, Number(applicationId));
-      await queryClient.fetchQuery(options);
+      await queryClient.query(options);
       setOpen(false);
       onDeleted?.();
     } catch (error) {

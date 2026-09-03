@@ -131,7 +131,7 @@ export function useDeleteVersion(input: UseDeleteVersionInput): UseDeleteVersion
     setError(undefined);
     try {
       const options = getCheckVersionInUseQueryOptions(input.projectId, input.applicationId, input.versionId);
-      const response = await queryClient.fetchQuery(options);
+      const response = await queryClient.query(options);
       const { items } = (response as { data: ApplicationRelationList }).data;
       return { items, isInUse: items.length > 0 };
     } catch (caught) {
@@ -154,10 +154,10 @@ export function useDeleteVersion(input: UseDeleteVersionInput): UseDeleteVersion
             replacementVersionId,
             { delete_old: true },
           );
-          const response = await queryClient.fetchQuery(options);
+          const response = await queryClient.query(options);
           return (response as { data: OkResponse }).data.ok;
         }
-        await queryClient.fetchQuery(
+        await queryClient.query(
           getDeleteApplicationVersionQueryOptions(input.projectId, input.applicationId, input.versionId),
         );
         return true;
