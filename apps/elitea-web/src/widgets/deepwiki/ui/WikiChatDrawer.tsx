@@ -89,9 +89,9 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
     [target.projectId, target.toolkitId],
   );
   // The handle this browser sends with every question so the server files the
-  // turn in the right conversation. It is read lazily and kept in a ref, not
-  // in state: reading it must not re-render, and a new one must not be minted
-  // on every render of a drawer that has never been opened.
+  // turn in the right conversation. It reads and writes `localStorage`
+  // lazily rather than living in state: minting must not re-render, and a
+  // drawer that is never opened must never mint at all.
   const conversationKey = useMemo(
     () => createWikiConversationKey(target.projectId, target.toolkitId, mintId),
     // mintId is stable for the life of the drawer — see the memo below it.
@@ -154,14 +154,35 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
    * already knows when it did, so a refetch on focus would replace the live
    * transcript with the server's slightly older one.
    */
+  const [historyEpoch, setHistoryEpoch] = useState(0);
   const history = useQuery({
-    queryKey: ['deepwiki', 'wiki-chat-history', target.projectId, target.toolkitId, conversationKey.read()],
+    queryKey: ['deepwiki', 'wiki-chat-history', target.projectId, target.toolkitId, historyEpoch],
     enabled: open,
     staleTime: Infinity,
     queryFn: async () => {
       const conversations = await listWikiConversations(target.projectId, target.toolkitId);
-      const key = conversationKey.read();
-      const current = conversations.find((conversation) => conversation.chatKey === key);
+      const { key, minted } = conversationKey.resolve();
+      let current = conversations.find((conversation) => conversation.chatKey === key);
+
+      /*
+       * A BROWSER THAT HAS NEVER BEEN HERE ADOPTS THE USER'S LATEST
+       * CONVERSATION, and that is the feature rather than a convenience: on a
+       * second device the drawer mints a key of its own, so without this it
+       * would find no match and open empty — history stored on the server that
+       * only the browser that wrote it can see is history nobody moved.
+       *
+       * Only when the key was MINTED by this very call. A browser that already
+       * had one has already answered the question, and adopting over it would
+       * resurrect the conversation the user just cleared.
+       */
+      if (!current && minted) {
+        const adopted = conversations.find((conversation) => conversation.chatKey !== undefined);
+        if (adopted?.chatKey !== undefined) {
+          conversationKey.adopt(adopted.chatKey);
+          current = adopted;
+        }
+      }
+
       return {
         // Whether this toolkit has ANY stored conversation, which is what
         // decides the fate of the local one below.
@@ -211,6 +232,10 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
     hydrated.current = null;
     forgetLocalWikiMessages(target.projectId, target.toolkitId);
     chat.clear();
+    // A new epoch, not a new key in the query key: the reload must re-ask the
+    // listing (the conversation just left behind is now one of its rows) and
+    // must do it exactly once.
+    setHistoryEpoch((epoch) => epoch + 1);
   };
 
   const canRegenerate = useMemo(

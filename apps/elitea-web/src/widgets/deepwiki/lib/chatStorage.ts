@@ -71,13 +71,24 @@ export function createWikiChatStorage(
 /**
  * This browser's handle on the toolkit's current conversation.
  *
- * `read` returns the standing one, minting a first if there is none; `renew`
- * is what "Clear" means now — not "erase the transcript", which is somebody's
- * history, but "start a new conversation", which leaves the old one listed
- * and readable.
+ * `read` returns the standing one, minting a first if there is none.
+ *
+ * `resolve` returns the same thing AND says whether this call is what created
+ * it. That distinction is what makes the feature work on a second device: a
+ * browser that has never held a key for this wiki has no conversation of its
+ * own to resume, so it ADOPTS the user's most recent stored one — which is
+ * the whole point of keeping history on the server. A browser that already
+ * had a key does not adopt, because the key it has is the answer, and
+ * adopting over it would resurrect the conversation the user just cleared.
+ *
+ * `renew` is what "Clear" means now — not "erase the transcript", which is
+ * somebody's history, but "start a new conversation", which leaves the old
+ * one listed and readable.
  */
 export interface WikiConversationKey {
   readonly read: () => string;
+  readonly resolve: () => { readonly key: string; readonly minted: boolean };
+  readonly adopt: (key: string) => void;
   readonly renew: () => string;
 }
 
@@ -92,8 +103,16 @@ export function createWikiConversationKey(
     store.set(key, minted);
     return minted;
   };
+  const resolve = (): { key: string; minted: boolean } => {
+    const stored = store.get(key);
+    return stored === null ? { key: mint(), minted: true } : { key: stored, minted: false };
+  };
   return {
-    read: () => store.get(key) ?? mint(),
+    read: () => resolve().key,
+    resolve,
+    adopt: (adopted: string) => {
+      store.set(key, adopted);
+    },
     renew: mint,
   };
 }

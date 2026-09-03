@@ -96,6 +96,30 @@ describe('createWikiConversationKey', () => {
     expect(key.renew()).toBe('key-2');
     expect(key.read()).toBe('key-2');
   });
+
+  // `resolve` says whether THIS call minted the key, and that is what the
+  // drawer keys adoption on: a browser that already had one has answered the
+  // question, and adopting over it would resurrect a cleared conversation.
+  it('reports the mint, and only the mint', () => {
+    const key = createWikiConversationKey(1, 2, () => 'key-1');
+    expect(key.resolve()).toEqual({ key: 'key-1', minted: true });
+    expect(key.resolve()).toEqual({ key: 'key-1', minted: false });
+  });
+
+  it('reports no mint after a renew, so a cleared conversation stays cleared', () => {
+    let minted = 0;
+    const key = createWikiConversationKey(1, 2, () => `key-${(minted += 1)}`);
+    key.resolve();
+    key.renew();
+    expect(key.resolve()).toEqual({ key: 'key-2', minted: false });
+  });
+
+  it('adopt takes over a key minted somewhere else', () => {
+    const key = createWikiConversationKey(1, 2, () => 'key-local');
+    key.adopt('key-from-the-laptop');
+    expect(key.read()).toBe('key-from-the-laptop');
+    expect(key.resolve()).toEqual({ key: 'key-from-the-laptop', minted: false });
+  });
 });
 
 describe('the local conversation left by the pre-server drawer', () => {

@@ -353,6 +353,32 @@ describe('the drawer restores a conversation from the server', () => {
     expect(await screen.findByText('In wiki_pages/.')).toBeVisible();
   });
 
+  /*
+   * THE ASSERTION THAT MAKES THIS A FEATURE AND NOT A CACHE.
+   *
+   * A browser that has never been here mints a key of its own, so it matches
+   * no stored conversation. Without adoption a second device would open empty
+   * and the history would be visible only to the browser that wrote it —
+   * which is exactly the state this change set out to end.
+   */
+  it('adopts the user’s latest stored conversation on a browser that has never been here', async () => {
+    serveHistory([{ id: '11', name: 'from another device', chatKey: 'minted-elsewhere' }], {
+      11: [group('asked on the laptop'), group('answered on the laptop', { reply: true })],
+    });
+
+    open();
+
+    expect(await screen.findByText('asked on the laptop')).toBeVisible();
+    expect(await screen.findByText('answered on the laptop')).toBeVisible();
+    // And it keeps the adopted key, so the next question CONTINUES that
+    // conversation rather than opening a third.
+    await waitFor(() =>
+      expect(window.localStorage.getItem('el.deepwiki.chat.conversation.7.42')).toBe(
+        'minted-elsewhere',
+      ),
+    );
+  });
+
   it('does not resume a conversation this browser does not hold the key to', async () => {
     window.localStorage.setItem('el.deepwiki.chat.conversation.7.42', 'chat-key-1');
     serveHistory([{ id: '11', name: 'somebody else’s chat', chatKey: 'chat-key-other' }], {

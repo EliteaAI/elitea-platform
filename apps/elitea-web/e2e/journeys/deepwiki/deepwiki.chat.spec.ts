@@ -195,13 +195,40 @@ test.describe('DeepWiki chat history', () => {
     /* ── the same browser, after a reload ── */
     await page.reload({ waitUntil: 'domcontentloaded' });
     let drawer = await openChatDrawer(page);
-    await expect(drawer.getByText(first)).toBeVisible({ timeout: 30_000 });
-    await expect(drawer.getByText(second)).toBeVisible();
+    // `exact`, because the fixture's answer QUOTES the question: a substring
+    // match resolves to the question bubble AND the answer bubble, and a
+    // locator that matches two things proves neither.
+    await expect(drawer.getByText(first, { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(drawer.getByText(second, { exact: true })).toBeVisible();
 
-    /* ── a fresh browser context: same user, nothing else carried over ── */
+    /*
+     * ── a fresh browser context: same user, ONE 36-character key carried ──
+     *
+     * The key is the browser's handle on WHICH conversation, and nothing else:
+     * not a message, not an answer, not a timestamp. Everything that appears
+     * below therefore came off the server. Carrying it is what makes the
+     * journey deterministic — the drawer will otherwise adopt the user's most
+     * recent wiki conversation, which on a parallel run is one of DWIKI-012's.
+     * That adoption is the right behaviour and is pinned in the drawer's unit
+     * tests; it is simply not a stable thing to assert alongside two other
+     * journeys writing to the same toolkit.
+     */
+    const conversationKey = await page.evaluate(
+      ([project, toolkit]) =>
+        localStorage.getItem(`el.deepwiki.chat.conversation.${project}.${toolkit}`),
+      [SEEDED.projectId, SEEDED.readOnly.toolkitId] as const,
+    );
+    expect(conversationKey, 'the drawer minted a conversation key').toBeTruthy();
+
     const fresh = await browser.newContext({ storageState: STORAGE_STATE.member });
     try {
       const other = await fresh.newPage();
+      await other.addInitScript(
+        ([project, toolkit, key]) => {
+          localStorage.setItem(`el.deepwiki.chat.conversation.${project}.${toolkit}`, key);
+        },
+        [SEEDED.projectId, SEEDED.readOnly.toolkitId, conversationKey ?? ''] as const,
+      );
       await openDeepWiki(other, `/app/deepwiki/${SEEDED.readOnly.toolkitId}`);
       await other.getByRole('button', { name: 'Ask about this repository' }).click();
       const otherDrawer = other.getByTestId('wiki-chat-drawer');
@@ -209,8 +236,8 @@ test.describe('DeepWiki chat history', () => {
 
       // The whole point: this profile has never held the conversation, so
       // anything on screen came off the server.
-      await expect(otherDrawer.getByText(first)).toBeVisible({ timeout: 30_000 });
-      await expect(otherDrawer.getByText(second)).toBeVisible();
+      await expect(otherDrawer.getByText(first, { exact: true })).toBeVisible({ timeout: 30_000 });
+      await expect(otherDrawer.getByText(second, { exact: true })).toBeVisible();
       await expect(otherDrawer.getByTestId('wiki-chat-answer').first()).toContainText(
         `Fixture answer to: ${first}`,
       );
@@ -221,7 +248,7 @@ test.describe('DeepWiki chat history', () => {
     /* ── "Clear" starts a NEW conversation; it does not erase the old one ── */
     drawer = page.getByTestId('wiki-chat-drawer');
     await drawer.getByRole('button', { name: 'Clear the conversation' }).click();
-    await expect(drawer.getByText(first)).toHaveCount(0);
+    await expect(drawer.getByText(first, { exact: true })).toHaveCount(0);
 
     // And the cleared conversation is STILL THERE. A "Clear" that deleted
     // tenant data would pass every assertion above and lose the history that
