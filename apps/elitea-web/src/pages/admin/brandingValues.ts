@@ -37,6 +37,7 @@ const BRANDING_TEXT_KEYS = [
   'logo_mark',
   'favicon',
   'login_art',
+  'logo_email',
 ] as const;
 
 const BRANDING_NUMBER_KEYS = [
@@ -76,7 +77,7 @@ export type BrandingValues = Readonly<Record<BrandingTextKey, string>> &
   };
 
 /** The asset-path fields, each fed by one upload kind. */
-const BRANDING_ASSET_KEYS = ['logo_full', 'logo_mark', 'favicon', 'login_art'] as const;
+const BRANDING_ASSET_KEYS = ['logo_full', 'logo_mark', 'favicon', 'login_art', 'logo_email'] as const;
 export type BrandingAssetKey = (typeof BRANDING_ASSET_KEYS)[number];
 
 /** Which layer a field's EFFECTIVE value comes from. */
@@ -175,6 +176,18 @@ export function effectiveFontFaces(effective: unknown): readonly BrandingFontFac
   const faces = (typography as Record<string, unknown>)['fontFaces'];
   if (!Array.isArray(faces)) return [];
   return faces.map(readFontFace).filter((face): face is BrandingFontFace => face !== undefined);
+}
+
+/**
+ * The e-mail logo the served pack carries (`assets.logoEmail`, ADR-0024 WP7).
+ * The UI's pack schema has no field for it — no rendered surface uses a raster
+ * mail logo — so, like the font faces, it is read off the raw document.
+ */
+export function effectiveLogoEmail(effective: unknown): string {
+  if (typeof effective !== 'object' || effective === null) return '';
+  const assets = (effective as Record<string, unknown>)['assets'];
+  if (typeof assets !== 'object' || assets === null) return '';
+  return readString((assets as Record<string, unknown>)['logoEmail']);
 }
 
 const text = (value: string): string | undefined => (value.trim() === '' ? undefined : value);

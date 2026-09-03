@@ -21,6 +21,7 @@ import { HttpResponse, http } from 'msw';
 
 import {
   getGetBrandingSettingsMockHandler,
+  getListBrandingPackageVersionsMockHandler,
   getSaveBrandingSettingsMockHandler,
   getUploadBrandingAssetMockHandler,
 } from '@/shared/api/generated/admin/admin.msw';
@@ -56,6 +57,10 @@ let uploads: Array<{ kind: string; contentType: string }> = [];
 function useBrandingHandlers(): void {
   server.use(
     getGetBrandingSettingsMockHandler(STORED),
+    // No kept packages: the versions panel's empty state, and nothing random
+    // from the faker default on screen (the package flows have their own
+    // suite, `BrandingPackageControls.test.tsx`).
+    getListBrandingPackageVersionsMockHandler({ versions: [] }),
     getSaveBrandingSettingsMockHandler(async ({ request }) => {
       const body = (await request.json()) as { values: Record<string, unknown> };
       savedBodies.push(body.values);
@@ -166,6 +171,27 @@ describe('AdminBranding', () => {
     await userEvent.click(screen.getByTestId('branding-save'));
     await waitFor(() => expect(savedBodies).toHaveLength(1));
     expect(savedBodies[0]?.['logo_full']).toBe(LOGO_PATH);
+  });
+
+  it('uploads an e-mail logo through the logo-email kind and writes logo_email (WP7 key, WP9 control)', async () => {
+    renderBranding();
+    await productName();
+    const control = screen.getByTestId('branding-asset-logo-email');
+    // Enabled now: WP4 withheld it until the `logo_email` key existed.
+    expect(within(control).getByTestId('branding-upload-logo-email')).toBeEnabled();
+    const input = within(control).getByTestId('branding-upload-input-logo-email');
+    expect(input).toHaveAttribute('accept', '.png,.webp,image/png,image/webp');
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'mail.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => {
+      expect(screen.getByTestId('branding-asset-path-logo-email')).toHaveTextContent(LOGO_PATH);
+    });
+    expect(uploads.map((upload) => upload.kind)).toEqual(['logo-email']);
+    // The layers panel reads the draft: the key is decided here before any save.
+    expect(within(screen.getByTestId('branding-layer-row-logo_email')).getByText('Set here')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+    expect(savedBodies[0]?.['logo_email']).toBe(LOGO_PATH);
   });
 
   it('saves the FULL values record and shows the success toast', async () => {

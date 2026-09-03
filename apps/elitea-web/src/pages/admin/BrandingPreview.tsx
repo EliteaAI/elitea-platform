@@ -32,6 +32,7 @@ import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 
 import {
+  PREVIEW_ROOT_CLASS,
   PREVIEW_SCHEME_ATTRIBUTE,
   PREVIEW_THEME_SCOPE,
   buildEliteaTheme,
@@ -211,8 +212,18 @@ export interface BrandingPreviewProps {
 
 export function BrandingPreview({ pack }: BrandingPreviewProps) {
   const theme = useMemo(() => buildEliteaTheme(pack, PREVIEW_THEME_SCOPE), [pack]);
+  // The class IS the scope's `rootSelector`: MUI emits the spacing unit and
+  // the `--elp-shape-*` radii under that selector only, so both surfaces need
+  // it on a common ancestor or every radius inside the preview resolves to
+  // nothing. See `PREVIEW_ROOT_CLASS` in `shared/brand/preview.ts`.
   return (
-    <Box component="section" aria-labelledby="branding-preview-heading" data-testid="branding-preview" sx={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <Box
+      component="section"
+      className={PREVIEW_ROOT_CLASS}
+      aria-labelledby="branding-preview-heading"
+      data-testid="branding-preview"
+      sx={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}
+    >
       <Typography id="branding-preview-heading" variant="h6" component="h2">
         {t('pages.admin.branding.preview.title', 'Preview')}
       </Typography>

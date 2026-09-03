@@ -94,7 +94,8 @@ export function buildMarkdownExportUrl(baseUrl: string, projectId: string, appli
   return `${base}/elitea_core/export_import/prompt_lib/${encodeURIComponent(projectId)}/${encodeURIComponent(applicationId)}?${query.toString()}`;
 }
 
-function toExportFailure(cause: unknown): ExportFailure {
+/** A fetch that never answered: aborted, or a network error. Shared by both orchestrators below. */
+function toExportFailure(cause: unknown): Extract<ExportFailure, { kind: 'network' | 'aborted' }> {
   if (typeof cause === 'object' && cause !== null && (cause as { name?: unknown }).name === 'AbortError') {
     return { kind: 'aborted' };
   }
@@ -126,6 +127,66 @@ export async function exportMarkdown(params: ExportMarkdownParams, fallbackName:
   }
   const blob = await response.blob();
   const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'), `${fallbackName}.md`);
+  triggerBlobDownload(blob, filename);
+  return { ok: true, filename };
+}
+
+/* ── row 4c: a generic API GET → blob → download (ADR-0024 WP9) ─────────── */
+
+export interface ApiDownloadParams {
+  /** The API base the caller's client is configured with, e.g. `/api/v2`. */
+  readonly baseUrl: string;
+  /** Server-relative path under `baseUrl`, the generated `get<Op>Url()` shape. */
+  readonly path: string;
+  /** Used when the server sends no `Content-Disposition` filename. */
+  readonly fallbackName: string;
+  readonly signal?: AbortSignal;
+}
+
+export type ApiDownloadFailure =
+  | { readonly kind: 'http'; readonly status: number; readonly reason: string | undefined }
+  | { readonly kind: 'network'; readonly message: string }
+  | { readonly kind: 'aborted' };
+
+export type ApiDownloadResult =
+  | { readonly ok: true; readonly filename: string }
+  | { readonly ok: false; readonly error: ApiDownloadFailure };
+
+/** The `{"error": "…"}` sentence every elitea-main refusal carries, when the body is one. */
+async function refusalReason(response: Response): Promise<string | undefined> {
+  if (!(response.headers.get('content-type') ?? '').includes('application/json')) return undefined;
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    return typeof body.error === 'string' && body.error !== '' ? body.error : undefined;
+  } catch {
+    // Handled (§3.6): a body that is not JSON after all is not a crash.
+    return undefined;
+  }
+}
+
+/**
+ * GET a binary route through the same fetch/credentials path as
+ * `exportMarkdown`, then save it under the server's filename. The typed
+ * client reads every body as text (`http.ts`'s `toResult`), so a zip fetched
+ * through it arrives corrupted; this file is the sanctioned place for the raw
+ * fetch (see the `.oxlintrc.json` override on this path).
+ */
+export async function downloadFromApi(params: ApiDownloadParams): Promise<ApiDownloadResult> {
+  const base = params.baseUrl.endsWith('/') ? params.baseUrl.slice(0, -1) : params.baseUrl;
+  const url = `${base}${params.path}`;
+  const credentials = resolveCredentialsMode(params.baseUrl, window.location.origin);
+
+  let response: Response;
+  try {
+    response = await fetch(url, { credentials, signal: params.signal ?? null });
+  } catch (cause) {
+    return { ok: false, error: toExportFailure(cause) };
+  }
+  if (!response.ok) {
+    return { ok: false, error: { kind: 'http', status: response.status, reason: await refusalReason(response) } };
+  }
+  const blob = await response.blob();
+  const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'), params.fallbackName);
   triggerBlobDownload(blob, filename);
   return { ok: true, filename };
 }

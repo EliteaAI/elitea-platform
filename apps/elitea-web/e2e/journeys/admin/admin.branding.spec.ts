@@ -173,6 +173,56 @@ adminTest('J38b: the server refusal lands beside the field it names', async ({ p
   });
 });
 
+/**
+ * J38d — the branding package round trip (ADR-0024 WP9).
+ *
+ * The page's two package buttons are on screen and pass axe; the proof of the
+ * feature is over `page.request`, because a download and a multipart import
+ * are what the routes ARE: the export answers a zip with a filename, and the
+ * same bytes posted back with `dry_run=true` are accepted with `ok: true` and
+ * change nothing. No platform lock: the dry run writes nothing, and the export
+ * of whatever brand is current is a valid package whichever journey is
+ * mid-flight.
+ */
+adminTest('J38d: the exported branding package imports back clean as a dry run', async ({ page }) => {
+  await openBranding(page);
+  await expect(page.getByTestId('branding-package-download')).toBeVisible();
+  await expect(page.getByTestId('branding-package-import')).toBeVisible();
+  await expect(page.getByTestId('branding-package-versions')).toBeVisible();
+  await checkA11y(page);
+
+  const exported = await page.request.get(`${API}/admin/branding/package/administration`);
+  expect(exported.status(), 'the export must be authorised for the admin persona').toBe(200);
+  expect(exported.headers()['content-type']).toContain('application/zip');
+  expect(exported.headers()['content-disposition']).toMatch(/attachment; filename=".+-branding\.zip"/);
+  const zip = await exported.body();
+  expect(zip.length).toBeGreaterThan(0);
+  // A zip starts with the local-file-header signature.
+  expect(zip.subarray(0, 2).toString('latin1')).toBe('PK');
+
+  const checked = await page.request.post(`${API}/admin/branding/package/administration?dry_run=true`, {
+    multipart: { file: { name: 'roundtrip-branding.zip', mimeType: 'application/zip', buffer: zip } },
+  });
+  expect(checked.status(), `the dry run answered ${checked.status()}`).toBe(200);
+  const report = (await checked.json()) as {
+    ok: boolean;
+    dry_run: boolean;
+    applied: boolean;
+    problems: unknown[];
+    manifest?: { product: string };
+  };
+  expect(report.ok).toBe(true);
+  expect(report.dry_run).toBe(true);
+  expect(report.applied).toBe(false);
+  expect(report.problems).toEqual([]);
+  expect(report.manifest?.product).toBeTruthy();
+
+  // Nothing changed: the dry run kept no version, so the list is unchanged in kind.
+  const versions = await page.request.get(`${API}/admin/branding/package/administration/versions`);
+  expect(versions.status()).toBe(200);
+  expect(Array.isArray(((await versions.json()) as { versions: unknown[] }).versions)).toBe(true);
+});
+
 adminTest('J38c: the Configuration page points at the Branding page instead of a plain form', async ({ page }) => {
   const response = await page.goto(BASE_URL + '/admin/app/configuration', { waitUntil: 'domcontentloaded' });
   expect(response?.status()).toBeLessThan(400);

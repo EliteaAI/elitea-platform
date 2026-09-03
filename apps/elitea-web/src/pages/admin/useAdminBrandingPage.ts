@@ -38,6 +38,7 @@ import {
   basePackFrom,
   brandingErrorField,
   effectiveFontFaces,
+  effectiveLogoEmail,
   emptyBrandingValues,
   parseBrandingValues,
   withDerivedSchemes,
@@ -50,7 +51,7 @@ import {
   type BrandingValues,
 } from './brandingValues';
 
-interface BrandingToast {
+export interface BrandingToast {
   readonly severity: 'success' | 'error';
   readonly message: string;
 }
@@ -80,6 +81,8 @@ export interface AdminBrandingPageState {
   readonly layers: BrandingLayers;
   readonly basePack: BrandPack;
   readonly effectiveFaces: readonly BrandingFontFace[];
+  /** The served pack's e-mail logo path, or empty (WP7's `assets.logoEmail`). */
+  readonly effectiveLogoEmail: string;
   readonly previewPack: BrandPack;
   readonly isDirty: boolean;
   readonly isSaving: boolean;
@@ -90,6 +93,8 @@ export interface AdminBrandingPageState {
   readonly onDiscard: () => void;
   readonly toast: BrandingToast | undefined;
   readonly onDismissToast: () => void;
+  /** Shows a toast from outside the hook — the package controls (WP9) report through the page's one Snackbar. */
+  readonly onNotify: (toast: BrandingToast) => void;
   readonly resetOpen: boolean;
   readonly onRequestReset: () => void;
   readonly onCancelReset: () => void;
@@ -137,6 +142,7 @@ export function useAdminBrandingPage(): AdminBrandingPageState {
   const layers = query.data?.layers ?? NO_LAYERS;
   const basePack = useMemo(() => basePackFrom(query.data?.effective), [query.data]);
   const effectiveFaces = useMemo(() => effectiveFontFaces(query.data?.effective), [query.data]);
+  const logoEmail = useMemo(() => effectiveLogoEmail(query.data?.effective), [query.data]);
   const previewPack = useMemo(
     () => withDerivedSchemes(applyDraftToPack(basePack, values), basePack.brand.hue),
     [basePack, values],
@@ -277,6 +283,7 @@ export function useAdminBrandingPage(): AdminBrandingPageState {
     layers,
     basePack,
     effectiveFaces,
+    effectiveLogoEmail: logoEmail,
     previewPack,
     isDirty,
     isSaving: save.isPending,
@@ -287,6 +294,7 @@ export function useAdminBrandingPage(): AdminBrandingPageState {
     onDiscard,
     toast,
     onDismissToast: useCallback(() => setToast(undefined), []),
+    onNotify: setToast,
     resetOpen,
     onRequestReset,
     onCancelReset,
