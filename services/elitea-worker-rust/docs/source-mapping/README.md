@@ -54,6 +54,7 @@ Detailed ledgers:
 - `../map-reduce-pipeline-node-design.md` defines the separate data-driven map
   node, LangGraph `Send` semantics, reducers, durability, and test gates.
 - `configuration-toolsets.md` maps saved configuration and toolkit families.
+- `prebuilt-mcp.md` maps fixed catalogue-backed HTTP MCP execution.
 - `indexing.md` maps indexing behavior and its later Rust capability.
 
 Maintained Rust runtime ownership registry:
@@ -196,7 +197,7 @@ Maintained Rust runtime ownership registry:
   invocation-local channel, strips provider request payloads, stamps the owning
   pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
-  fallback, normalized-label and common-Runner proof. Prebuilt/static MCP,
+  fallback, normalized-label and common-Runner proof. Parameterized prebuilt MCP,
   remote effects, child variables, nested static Printer
   interrupts, incremental pipeline tool-progress chunks, approved-effect
   receipts, arbitrary static interrupts and production activation remain

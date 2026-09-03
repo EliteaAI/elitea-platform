@@ -4,8 +4,8 @@
 //! authority, establishes one Streamable HTTP session without redirects or
 //! automatic request replay, asks ADK to discover the server catalog, and
 //! wraps the resulting ADK tools with Elitea policy, metadata and result
-//! bounds. Saved `mcp_config` definitions and arbitrary stdio processes have a
-//! different authority owner and fail closed here.
+//! bounds. Main may also claim-materialize one fixed prebuilt HTTP definition.
+//! Arbitrary stdio processes remain outside this worker.
 
 #![allow(dead_code)] // Production agent registration remains capability-gated.
 
@@ -54,6 +54,9 @@ const MAX_AUTH_CHALLENGE_BYTES: usize = 16 * 1_024;
 const AUTH_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_AUTH_METADATA_LIST_ITEMS: usize = 64;
 const MAX_AUTH_METADATA_STRING_BYTES: usize = 4 * 1_024;
+const MAX_STATIC_HEADERS: usize = 64;
+const MAX_HEADER_NAME_BYTES: usize = 256;
+const MAX_HEADER_VALUE_BYTES: usize = 16 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum McpMaterializationErrorCode {
@@ -118,12 +121,15 @@ impl std::error::Error for McpMaterializationError {}
 /// This value intentionally has no `Debug` implementation because endpoints
 /// may contain tenant-identifying paths. A continuation access token is accepted
 /// only from Main's claim-fetched token map and applied to the exact frozen URL;
-/// static headers and embedded OAuth credentials remain unsupported.
+/// static headers require a Main-materialized prebuilt toolkit type.
 pub(crate) struct RemoteMcpConfig {
     toolkit_name: String,
+    toolkit_type: String,
     endpoint: String,
     timeout: Duration,
     selected_tools: Vec<String>,
+    excluded_tools: Vec<String>,
+    static_headers: reqwest_mcp::header::HeaderMap,
     access_token: Option<Zeroizing<String>>,
 }
 
@@ -132,10 +138,11 @@ impl RemoteMcpConfig {
         reference: &FrozenToolReference<'_>,
         mcp_tokens: &Map<String, Value>,
     ) -> Result<Self, McpMaterializationError> {
-        if reference.kind() != FrozenToolKind::Mcp || reference.tool_type() != "mcp" {
+        if reference.kind() != FrozenToolKind::Mcp {
             return Err(unsupported_authority());
         }
         let settings = reference.settings().ok_or_else(invalid_configuration)?;
+        let prebuilt = parse_mcp_authority(reference.tool_type())?;
         reject_unowned_auth(settings)?;
         let endpoint = parse_endpoint(settings)?;
         let timeout = Duration::from_secs(parse_bounded_integer(
@@ -145,7 +152,27 @@ impl RemoteMcpConfig {
             MAX_TIMEOUT_SECONDS,
         )?);
         let selected_tools = parse_selected_tools(settings)?;
-        let access_token = resolve_access_token(mcp_tokens, &endpoint)?;
+        let excluded_tools = parse_excluded_tools(settings)?;
+        let static_headers = parse_static_headers(settings, prebuilt)?;
+        let server_name = if prebuilt {
+            Some(
+                settings
+                    .get("server_name")
+                    .and_then(Value::as_str)
+                    .filter(|value| valid_mcp_token_alias(value))
+                    .ok_or_else(invalid_configuration)?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let access_token = resolve_access_token(
+            mcp_tokens,
+            &endpoint,
+            reference.tool_type(),
+            server_name.as_deref(),
+            prebuilt,
+        )?;
         settings.get("enable_caching").map_or(Ok(true), |value| {
             value.as_bool().ok_or_else(invalid_configuration)
         })?;
@@ -158,9 +185,12 @@ impl RemoteMcpConfig {
         }
         Ok(Self {
             toolkit_name: reference.toolkit_name().to_owned(),
+            toolkit_type: reference.tool_type().to_owned(),
             endpoint,
             timeout,
             selected_tools,
+            excluded_tools,
+            static_headers,
             access_token,
         })
     }
@@ -168,6 +198,11 @@ impl RemoteMcpConfig {
     #[must_use]
     pub(crate) fn toolkit_name(&self) -> &str {
         &self.toolkit_name
+    }
+
+    #[must_use]
+    pub(crate) fn toolkit_type(&self) -> &str {
+        &self.toolkit_type
     }
 
     #[must_use]
@@ -185,6 +220,25 @@ impl RemoteMcpConfig {
         &self.selected_tools
     }
 
+    #[must_use]
+    pub(crate) fn excluded_tools(&self) -> &[String] {
+        &self.excluded_tools
+    }
+
+    fn request_headers(&self) -> Result<reqwest_mcp::header::HeaderMap, McpMaterializationError> {
+        let mut headers = self.static_headers.clone();
+        if let Some(token) = self.access_token() {
+            let mut bearer = Zeroizing::new(String::with_capacity("Bearer ".len() + token.len()));
+            bearer.push_str("Bearer ");
+            bearer.push_str(token);
+            let mut value = reqwest_mcp::header::HeaderValue::from_str(&bearer)
+                .map_err(|_| invalid_configuration())?;
+            value.set_sensitive(true);
+            headers.insert(reqwest_mcp::header::AUTHORIZATION, value);
+        }
+        Ok(headers)
+    }
+
     fn access_token(&self) -> Option<&str> {
         self.access_token.as_deref().map(String::as_str)
     }
@@ -192,6 +246,13 @@ impl RemoteMcpConfig {
     #[cfg(test)]
     pub(crate) fn access_token_for_test(&self) -> Option<&str> {
         self.access_token()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_headers_for_test(
+        &self,
+    ) -> Result<reqwest_mcp::header::HeaderMap, McpMaterializationError> {
+        self.request_headers()
     }
 }
 
@@ -229,15 +290,8 @@ impl McpConnector for AdkHttpMcpConnector {
             .retry(reqwest_mcp::retry::never())
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(config.timeout());
-        if let Some(token) = config.access_token() {
-            let mut bearer = Zeroizing::new(String::with_capacity("Bearer ".len() + token.len()));
-            bearer.push_str("Bearer ");
-            bearer.push_str(token);
-            let mut value = reqwest_mcp::header::HeaderValue::from_str(&bearer)
-                .map_err(|_| invalid_configuration())?;
-            value.set_sensitive(true);
-            let mut headers = reqwest_mcp::header::HeaderMap::new();
-            headers.insert(reqwest_mcp::header::AUTHORIZATION, value);
+        let headers = config.request_headers()?;
+        if !headers.is_empty() {
             client = client.default_headers(headers);
         }
         let client = client.build().map_err(|_| invalid_configuration())?;
@@ -314,18 +368,22 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens_and_authorization(
                     .authorization()
                     .cloned()
                     .ok_or_else(invalid_configuration)?;
-                if config.selected_tools().is_empty() {
+                let guarded_names = config
+                    .selected_tools()
+                    .iter()
+                    .filter(|name| !contains_tool_name(config.excluded_tools(), name))
+                    .collect::<Vec<_>>();
+                if guarded_names.is_empty() {
                     return Err(error);
                 }
-                let guarded = config
-                    .selected_tools()
+                let guarded = guarded_names
                     .iter()
                     .map(|name| {
                         Arc::new(McpAuthorizationRequiredTool::new(name, requirement.clone()))
                             as Arc<dyn Tool>
                     })
                     .collect::<Vec<_>>();
-                for name in config.selected_tools() {
+                for name in guarded_names {
                     if policy.tool_decision(reference.tool_type(), name)
                         == super::policy::ToolAdmissionDecision::Allowed
                     {
@@ -359,7 +417,7 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens_and_authorization(
             .await
             .map_err(|_| dependency_unavailable())?
             .map_err(|_| dependency_unavailable())?;
-        let tools = select_tools(tools, config.selected_tools())?;
+        let tools = select_tools(tools, config.selected_tools(), config.excluded_tools())?;
         let wrapped = tools
             .into_iter()
             .map(|tool| {
@@ -392,6 +450,7 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens_and_authorization(
 fn select_tools(
     tools: Vec<Arc<dyn Tool>>,
     selected: &[String],
+    excluded: &[String],
 ) -> Result<Vec<Arc<dyn Tool>>, McpMaterializationError> {
     if tools.len() > MAX_DISCOVERED_TOOLS {
         return Err(resource_exhausted());
@@ -404,7 +463,10 @@ fn select_tools(
         }
     }
     if selected.is_empty() {
-        return Ok(tools);
+        return Ok(tools
+            .into_iter()
+            .filter(|tool| !contains_tool_name(excluded, tool.name()))
+            .collect());
     }
     let selected = selected
         .iter()
@@ -415,8 +477,17 @@ fn select_tools(
     }
     Ok(tools
         .into_iter()
-        .filter(|tool| selected.contains(&tool.name().to_lowercase()))
+        .filter(|tool| {
+            selected.contains(&tool.name().to_lowercase())
+                && !contains_tool_name(excluded, tool.name())
+        })
         .collect())
+}
+
+fn contains_tool_name(names: &[String], candidate: &str) -> bool {
+    names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(candidate))
 }
 
 struct McpAuthorizationRequiredTool {
@@ -581,20 +652,80 @@ fn selection_description(
     Ok(description)
 }
 
+fn parse_mcp_authority(tool_type: &str) -> Result<bool, McpMaterializationError> {
+    match tool_type {
+        "mcp" => Ok(false),
+        "mcp_config" => Ok(true),
+        value if value.starts_with("mcp_") => Ok(true),
+        _ => Err(unsupported_authority()),
+    }
+}
+
 fn reject_unowned_auth(settings: &Map<String, Value>) -> Result<(), McpMaterializationError> {
     for key in ["client_id", "client_secret", "scopes"] {
         if settings.get(key).is_some_and(|value| !value.is_null()) {
             return Err(unsupported_authority());
         }
     }
-    if settings.get("headers").is_some_and(|value| match value {
-        Value::Null => false,
-        Value::Object(headers) => !headers.is_empty(),
-        _ => true,
-    }) {
+    Ok(())
+}
+
+fn parse_static_headers(
+    settings: &Map<String, Value>,
+    prebuilt: bool,
+) -> Result<reqwest_mcp::header::HeaderMap, McpMaterializationError> {
+    let Some(raw) = settings.get("headers") else {
+        return Ok(reqwest_mcp::header::HeaderMap::new());
+    };
+    if raw.is_null() {
+        return Ok(reqwest_mcp::header::HeaderMap::new());
+    }
+    let values = raw.as_object().ok_or_else(invalid_configuration)?;
+    if values.is_empty() {
+        return Ok(reqwest_mcp::header::HeaderMap::new());
+    }
+    if !prebuilt {
         return Err(unsupported_authority());
     }
-    Ok(())
+    if values.len() > MAX_STATIC_HEADERS {
+        return Err(resource_exhausted());
+    }
+
+    let mut headers = reqwest_mcp::header::HeaderMap::with_capacity(values.len());
+    for (name, raw_value) in values {
+        if name.is_empty() || name.len() > MAX_HEADER_NAME_BYTES {
+            return Err(invalid_configuration());
+        }
+        let name = reqwest_mcp::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| invalid_configuration())?;
+        if reserved_mcp_header(&name) {
+            return Err(unsupported_authority());
+        }
+        let raw_value = raw_value
+            .as_str()
+            .filter(|value| value.len() <= MAX_HEADER_VALUE_BYTES)
+            .ok_or_else(invalid_configuration)?;
+        let mut value = reqwest_mcp::header::HeaderValue::from_str(raw_value)
+            .map_err(|_| invalid_configuration())?;
+        value.set_sensitive(true);
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+fn reserved_mcp_header(name: &reqwest_mcp::header::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "accept"
+            | "connection"
+            | "content-length"
+            | "content-type"
+            | "host"
+            | "mcp-protocol-version"
+            | "mcp-session-id"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 fn parse_endpoint(settings: &Map<String, Value>) -> Result<String, McpMaterializationError> {
@@ -620,7 +751,20 @@ fn parse_endpoint(settings: &Map<String, Value>) -> Result<String, McpMaterializ
 fn parse_selected_tools(
     settings: &Map<String, Value>,
 ) -> Result<Vec<String>, McpMaterializationError> {
-    let Some(selected) = settings.get("selected_tools") else {
+    parse_tool_names(settings, "selected_tools")
+}
+
+fn parse_excluded_tools(
+    settings: &Map<String, Value>,
+) -> Result<Vec<String>, McpMaterializationError> {
+    parse_tool_names(settings, "excluded_tools")
+}
+
+fn parse_tool_names(
+    settings: &Map<String, Value>,
+    field: &str,
+) -> Result<Vec<String>, McpMaterializationError> {
+    let Some(selected) = settings.get(field) else {
         return Ok(Vec::new());
     };
     let selected = selected.as_array().ok_or_else(invalid_configuration)?;
@@ -644,6 +788,9 @@ fn parse_selected_tools(
 fn resolve_access_token(
     tokens: &Map<String, Value>,
     endpoint: &str,
+    tool_type: &str,
+    server_name: Option<&str>,
+    prebuilt: bool,
 ) -> Result<Option<Zeroizing<String>>, McpMaterializationError> {
     if tokens.len() > MAX_MCP_SERVERS {
         return Err(resource_exhausted());
@@ -651,32 +798,66 @@ fn resolve_access_token(
     let endpoint = reqwest_mcp::Url::parse(endpoint).map_err(|_| invalid_configuration())?;
     let mut matched = None;
     for (server, raw) in tokens {
-        if server.is_empty() || server.len() > MAX_ENDPOINT_BYTES {
+        if !valid_mcp_token_alias(server) {
             return Err(invalid_configuration());
         }
-        let candidate = reqwest_mcp::Url::parse(server).map_err(|_| invalid_configuration())?;
+        let Ok(candidate) = reqwest_mcp::Url::parse(server) else {
+            continue;
+        };
         if candidate != endpoint {
             continue;
         }
         if matched.is_some() {
             return Err(invalid_configuration());
         }
-        let token = match raw {
-            Value::String(token) => Some(token.as_str()),
-            Value::Object(value) => value.get("access_token").and_then(Value::as_str),
-            _ => None,
-        }
-        .filter(|token| {
-            !token.is_empty()
-                && token.len() <= MAX_ACCESS_TOKEN_BYTES
-                && !token
-                    .chars()
-                    .any(|character| matches!(character, '\0' | '\r' | '\n'))
-        })
-        .ok_or_else(invalid_configuration)?;
-        matched = Some(Zeroizing::new(token.to_owned()));
+        matched = Some(parse_access_token(raw)?);
     }
-    Ok(matched)
+    if matched.is_some() || !prebuilt {
+        return Ok(matched);
+    }
+
+    let mut aliases = Vec::with_capacity(3);
+    if tool_type != "mcp_config" {
+        aliases.push(tool_type.to_owned());
+    }
+    if let Some(server_name) = server_name {
+        aliases.push(server_name.to_owned());
+        let prefixed = format!("mcp_{server_name}");
+        if prefixed != tool_type {
+            aliases.push(prefixed);
+        }
+    }
+    for alias in aliases {
+        if let Some(raw) = tokens.get(&alias) {
+            return Ok(Some(parse_access_token(raw)?));
+        }
+    }
+    Ok(None)
+}
+
+fn valid_mcp_token_alias(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_ENDPOINT_BYTES
+        && !value
+            .chars()
+            .any(|character| matches!(character, '\0' | '\r' | '\n'))
+}
+
+fn parse_access_token(raw: &Value) -> Result<Zeroizing<String>, McpMaterializationError> {
+    let token = match raw {
+        Value::String(token) => Some(token.as_str()),
+        Value::Object(value) => value.get("access_token").and_then(Value::as_str),
+        _ => None,
+    }
+    .filter(|token| {
+        !token.is_empty()
+            && token.len() <= MAX_ACCESS_TOKEN_BYTES
+            && !token
+                .chars()
+                .any(|character| matches!(character, '\0' | '\r' | '\n'))
+    })
+    .ok_or_else(invalid_configuration)?;
+    Ok(Zeroizing::new(token.to_owned()))
 }
 
 fn authorization_required(
@@ -694,7 +875,7 @@ fn authorization_required(
         code: McpMaterializationErrorCode::AuthorizationRequired,
         authorization: DelegatedAuthorizationRequirement::new(
             config.toolkit_name().to_owned(),
-            "mcp".to_owned(),
+            config.toolkit_type().to_owned(),
             config.endpoint().to_owned(),
             resource_metadata_url,
             challenge.map(ToOwned::to_owned),

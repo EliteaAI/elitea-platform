@@ -8,6 +8,7 @@ import (
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -33,35 +34,12 @@ func newCurrentAgentVersionFreezer(
 		return nil, fmt.Errorf("construct current agent guardrail policy source: %w", err)
 	}
 	return agentexecutionapp.NewCurrentApplicationToolSnapshotService(
-		settings,
+		currentAgentToolkitSettingsResolver{inner: settings},
 		currentAgentToolkitNameAdapter{names: names},
 		configurations.models,
 		guardrailPolicies,
 		configurations.publicProjectID,
 	)
-}
-
-// absentCurrentAgentDynamicToolkitSchemas keeps an unsupported Provider Hub or
-// custom toolkit attached to the conversation without making every other
-// participant unusable. The agent freezer treats found=false as a runtime
-// capability gap and omits only that toolkit from the immutable execution
-// snapshot. Index admission keeps the fail-closed unavailable adapter because
-// an index cannot run correctly after silently losing its source toolkit.
-type absentCurrentAgentDynamicToolkitSchemas struct{}
-
-func (absentCurrentAgentDynamicToolkitSchemas) FindCurrentActorVisibleToolkitSchema(
-	ctx context.Context,
-	_ int32,
-	_ int32,
-	_ string,
-) (configurationapp.CurrentToolkitSchema, bool, error) {
-	if ctx == nil {
-		return configurationapp.CurrentToolkitSchema{}, false, ErrCurrentToolkitSchemaLookupInvalid
-	}
-	if err := ctx.Err(); err != nil {
-		return configurationapp.CurrentToolkitSchema{}, false, err
-	}
-	return configurationapp.CurrentToolkitSchema{}, false, nil
 }
 
 type currentAgentToolkitNameAdapter struct {
@@ -92,9 +70,9 @@ var _ agentexecutionapp.CurrentAgentToolkitNameResolver = currentAgentToolkitNam
 //
 // It was extracted from newCurrentAgentVersionFreezer above so the toolkit
 // WRITE path can run the identical graph rather than a second, separately
-// maintained copy of it (NewToolkitSettingsValidator below). Index admission
-// composes the same resolver with ONE dependency different — see
-// absentCurrentAgentDynamicToolkitSchemas for what that difference decides.
+// maintained copy of it (NewToolkitSettingsValidator below).
+// Index admission uses a different dynamic source. Agent execution admits
+// enabled prebuilt MCP types and omits other unavailable dynamic types.
 func newCurrentToolkitSettingsGraph(
 	pool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
@@ -103,10 +81,11 @@ func newCurrentToolkitSettingsGraph(
 	if err != nil {
 		return nil, nil, fmt.Errorf("load current agent toolkit schema snapshot: %w", err)
 	}
-	schemas, err := NewCurrentCompositeToolkitSchemaCatalog(
-		builtInSchemas,
-		absentCurrentAgentDynamicToolkitSchemas{},
-	)
+	prebuilt, err := newCurrentAgentPrebuiltMCP(mcpregistry.NewPrebuiltStore(pool))
+	if err != nil {
+		return nil, nil, err
+	}
+	schemas, err := NewCurrentCompositeToolkitSchemaCatalog(builtInSchemas, prebuilt)
 	if err != nil {
 		return nil, nil, err
 	}

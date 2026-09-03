@@ -24,6 +24,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/redisdispatch"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/runtimegrpc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/runtimegrpc/control"
@@ -496,8 +497,15 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct nested application version reader: %w", targetErr)
 		}
-		agentMaterializer, targetErr = storage.NewCurrentConfigurationsMaterializer(
+		agentPrebuiltMCP, prebuiltErr := newCurrentAgentPrebuiltMCP(
+			mcpregistry.NewPrebuiltStore(dependencies.AdmissionPool),
+		)
+		if prebuiltErr != nil {
+			return nil, fmt.Errorf("construct current agent prebuilt MCP resolver: %w", prebuiltErr)
+		}
+		agentMaterializer, targetErr = storage.NewCurrentAgentConfigurationsMaterializer(
 			dependencies.CurrentConfigurations.unsecreter,
+			agentPrebuiltMCP,
 		)
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct current agent configuration materializer: %w", targetErr)
