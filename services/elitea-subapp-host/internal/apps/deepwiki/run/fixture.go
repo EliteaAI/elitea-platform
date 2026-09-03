@@ -21,12 +21,46 @@ import (
 // block that does not parse, on purpose — it is what the quick-fix journey
 // repairs.
 
-// Steps is the progress each fixture tool emits before it answers, in
-// order; the UI's thinking log renders it verbatim.
+// Steps is what each fixture tool emits before it answers, in order, down
+// the one channel the SPI has (`thinking`). Most entries are progress text
+// and the UI's thinking log renders them verbatim; deep_research's second
+// entry is a STRUCTURED EVENT instead — see ResearchTodos.
 var Steps = map[string][]string{
 	"generate_wiki": {"Cloning the repository", "Indexing 12 files", "Planning the wiki structure", "Writing 3 pages", "Assembling the manifest"},
 	"ask":           {"Searching the wiki index", "Composing the answer"},
-	"deep_research": {"Planning the research", "Reading the relevant pages", "Writing the report"},
+	"deep_research": {"Planning the research", TodoUpdateEvent(ResearchTodos), "Reading the relevant pages", "Writing the report"},
+}
+
+// ResearchTodos is the plan a fixture deep_research run publishes.
+//
+// WHY THE FIXTURE HAS ONE AT ALL. The browser's research panel
+// (ResearchTodosPanel) renders whatever the run's `todo_update` events
+// carry, and it renders NOTHING when there are none — correct for `ask`, and
+// indistinguishable from a panel that is wired up wrong. Until this list
+// existed no end-to-end test could tell those two apart, so the panel
+// shipped with unit tests and no journey. DWIKI-012b is that journey, and
+// this is what it asserts against.
+//
+// THE SHAPE IS THE ENGINE'S, as the browser receives it. The real path is
+// TodoListMiddleware → the research engine's `todo_update` →
+// `[TODO_UPDATE] …` on the worker's stdout → tool_operations.py's
+// normalisation into `{id, title, description, status}`. Emitting the
+// pre-normalisation `content` key instead would render as "Untitled step"
+// and pin the wrong contract.
+var ResearchTodos = []map[string]any{
+	{"id": 1, "title": "Plan the research", "description": "", "status": "completed"},
+	{"id": 2, "title": "Read the relevant pages", "description": "", "status": "in_progress"},
+	{"id": 3, "title": "Write the report", "description": "", "status": "pending"},
+}
+
+// TodoUpdateEvent is a todo list wrapped in the thinking message the browser
+// reads it out of. The chat reducer looks for `{event, data}` JSON in the
+// event text and routes `todo_update` to the research panel; text it cannot
+// parse falls through to the thinking log as a log line, so a mis-shaped
+// envelope here degrades silently rather than failing.
+func TodoUpdateEvent(todos []map[string]any) string {
+	event, _ := json.Marshal(map[string]any{"event": "todo_update", "data": map[string]any{"items": todos}})
+	return string(event)
 }
 
 // BrokenMermaidPage is the page the quick-fix journey repairs.
