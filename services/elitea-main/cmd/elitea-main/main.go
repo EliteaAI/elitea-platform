@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
 	"log/slog"
 	"net/http"
 	"os"
@@ -288,6 +289,18 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return err
 	}
+	// The brand pack resolver is built ONCE, here, because two composition
+	// roots consume it: the login page inside the Form graph and the
+	// bootstrap/admin routes inside the router (ADR-0024).
+	brandPack, err := brandPackConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load brand pack settings: %w", err)
+	}
+	brandingResolver := v2branding.NewResolver(v2branding.ResolverConfig{
+		PackPath: brandPack.Path,
+		Pool:     pool,
+	})
+
 	if authEnabled {
 		if err := pool.Ping(ctx); err != nil {
 			return fmt.Errorf("verify authentication PostgreSQL dependency: %w", err)
@@ -304,6 +317,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		formGraph, err = authcomposition.NewFormGraph(ctx, authConfig, authcomposition.FormGraphDependencies{
 			PostgreSQL:           pool,
 			MainRoutePublicRules: api.CurrentMainRoutePublicRules(),
+			Brand:                brandingResolver,
 		})
 		if err != nil {
 			return fmt.Errorf("compose production Form authentication: %w", err)
@@ -627,11 +641,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose OIDC-only notification API route: %w", oidcNotificationsErr)
 		}
 		logger.Info("notification API route enabled (OIDC-only auth)")
-	}
-
-	brandPack, err := brandPackConfigFromEnv(os.LookupEnv)
-	if err != nil {
-		return fmt.Errorf("load brand pack settings: %w", err)
 	}
 
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
@@ -1701,7 +1710,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	r := api.NewRouter(api.RouterConfig{
 		AdminUI:                    adminUICfg,
 		Pool:                       pool,
-		BrandPackPath:              brandPack.Path,
+		Branding:                   brandingResolver,
 		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
 		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
 		ToolkitSettingsValidator:   toolkitSettingsValidator,

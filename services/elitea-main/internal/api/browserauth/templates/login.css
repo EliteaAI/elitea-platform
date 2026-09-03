@@ -37,6 +37,31 @@ body {
   padding: 24px 15px;
 }
 
+.brand-header {
+  margin: 0 0 16px;
+  text-align: center;
+}
+
+.brand-logo {
+  display: block;
+  max-width: 220px;
+  max-height: 64px;
+  margin: 0 auto 8px;
+}
+
+.brand-name {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.brand-tagline {
+  margin: 0;
+  color: #adb5bd;
+  font-size: 0.9rem;
+}
+
 h1 {
   margin: 0 0 20px;
   font-size: 1.5rem;

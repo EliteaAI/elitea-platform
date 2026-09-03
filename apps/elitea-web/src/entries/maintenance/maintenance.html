@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Elitea — Maintenance</title>
     <link rel="icon" type="image/svg+xml" href="./assets/maintenance-logo.svg" />
+    <!-- Brand pack, delivery channel C (ADR-0024 WP5): the same blocking tag
+         the app shell carries, so a rebranded deployment's splash carries the
+         brand too. When elitea-main itself is down the request fails and the
+         page renders the compiled default — a failed classic script does not
+         stop the document. -->
+    <script src="/api/v2/branding/bootstrap.js"></script>
   </head>
   <body>
     <div id="root"></div>

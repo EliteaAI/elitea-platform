@@ -83,6 +83,9 @@ type Config struct {
 	DefaultLoginTarget  string
 	DefaultLogoutTarget string
 	MaxFormBodyBytes    int64
+	// Brand supplies the resolved brand pack the login page renders
+	// (branding.go). Nil renders the default presentation.
+	Brand BrandSource
 }
 
 type Handler struct {
@@ -95,6 +98,7 @@ type Handler struct {
 	defaultLogoutTarget string
 	maxFormBodyBytes    int64
 	loginTemplate       *template.Template
+	brand               BrandSource
 }
 
 func NewHandler(
@@ -138,6 +142,7 @@ func NewHandler(
 		defaultLogoutTarget: config.DefaultLogoutTarget,
 		maxFormBodyBytes:    config.MaxFormBodyBytes,
 		loginTemplate:       loginTemplate,
+		brand:               config.Brand,
 	}, nil
 }
 
@@ -211,19 +216,25 @@ func (h *Handler) renderForm(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
+	brand := h.loginBrand(request.Context())
 	var body bytes.Buffer
 	if err := h.loginTemplate.Execute(&body, struct {
 		Target string
 		Error  bool
 		Style  template.CSS
+		Brand  loginBrand
 	}{
 		Target: target,
 		Error:  hasQueryKey(request.URL.Query(), "error"),
 		Style:  template.CSS(loginStyleSource), // The source is compiled into this binary.
+		Brand:  brand,
 	}); err != nil {
 		writeProblem(writer, http.StatusServiceUnavailable)
 		return
 	}
+	// The brand stylesheet's hash joins the static one; nothing else in the
+	// policy changes (branding.go).
+	writer.Header().Set("Content-Security-Policy", loginContentSecurityPolicy(brand.StyleSource))
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)
 	_, _ = writer.Write(body.Bytes())

@@ -34,6 +34,9 @@ var ErrInvalidGraph = errors.New("invalid authentication composition graph")
 type FormGraphDependencies struct {
 	PostgreSQL           *pgxpool.Pool
 	MainRoutePublicRules []forwardapp.PublicRule
+	// Brand is the resolved brand pack the login page renders (ADR-0024
+	// WP5); nil renders the default presentation.
+	Brand browserapi.BrandSource
 }
 
 // FormGraph owns the Form browser routes and the separate current-Main gateway
@@ -229,6 +232,7 @@ func newFormGraph(
 		browserapi.Config{
 			DefaultLoginTarget:  config.Redirects.DefaultLogin,
 			DefaultLogoutTarget: config.Redirects.DefaultLogout,
+			Brand:               dependencies.Brand,
 		},
 	)
 	if err != nil {
