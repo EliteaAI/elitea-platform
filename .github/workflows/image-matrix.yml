@@ -40,3 +40,10 @@ jobs:
       # directly. See the script's header for why `bake --print` is not used.
       - name: Cross-check the image lists
         run: bash scripts/ci/image-matrix.sh --verify
+      - name: docker-bake.hcl evaluates
+        # `--print` resolves every target (contexts, dockerfiles, args, tags)
+        # without building. It is the only PR-time evaluation of the bake file
+        # now that no PR job bakes elitea-web, elitea-ui, the workers or
+        # pylon-indexer; without it a broken target first fails in publish.yml
+        # at release time.
+        run: docker buildx bake --print > /dev/null

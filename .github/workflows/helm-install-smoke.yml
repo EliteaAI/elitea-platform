@@ -34,6 +34,9 @@ on:
       - "deploy/kind/**"
       - "deploy/scripts/gen-runtime-certs.sh"
       - "services/elitea-main/internal/runtimecomposition/**"
+      # The two images this job builds and whose containers `verify` asserts.
+      - "services/elitea-subapp-host/**"
+      - "services/elitea-deepwiki/**"
       # The bake step reads its targets, contexts and EXTRAS from here.
       - "docker-bake.hcl"
       - ".github/workflows/helm-install-smoke.yml"
@@ -47,6 +50,9 @@ on:
       - "deploy/kind/**"
       - "deploy/scripts/gen-runtime-certs.sh"
       - "services/elitea-main/internal/runtimecomposition/**"
+      # The two images this job builds and whose containers `verify` asserts.
+      - "services/elitea-subapp-host/**"
+      - "services/elitea-deepwiki/**"
       - "docker-bake.hcl"
       - ".github/workflows/helm-install-smoke.yml"
   schedule:
@@ -132,7 +138,10 @@ jobs:
         # exits with a pip hint when it is missing — after the cluster and
         # the images, which is the wrong moment to learn it. Probed, not
         # assumed: the runner image ships it today.
-        run: python3 -c "import cryptography" 2>/dev/null || python3 -m pip install --quiet cryptography
+        # `--break-system-packages`: the runner's interpreter is PEP 668
+        # externally-managed, and a bare pip would refuse on the one day the
+        # fallback is needed.
+        run: python3 -c "import cryptography" 2>/dev/null || python3 -m pip install --quiet --break-system-packages cryptography
 
       - name: Create the kind cluster
         # The cluster name is the script's default, so its `ensure_cluster`

@@ -105,7 +105,7 @@ compare() {
 # rather than merged, because EACH matrix holding the right names is the
 # invariant — a single merged set would pass with one matrix empty and another
 # holding twice the images.
-EXPECTED_JOBS="build publish-image"
+EXPECTED_JOBS="build scan publish-image"
 seen_jobs=""
 while IFS= read -r job; do
   names="$(python3 - "$PUBLISH" "$job" <<'PY'
