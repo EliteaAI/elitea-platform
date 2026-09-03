@@ -406,7 +406,19 @@ CROSS JOIN (VALUES
     -- (elitea_core/api/v2/admin.py) and `provider_hub.descriptor.register` the
     -- two registration verbs (elitea_core/api/v2/register_descriptor.py).
     ('runtime.airun.serviceproviders'),
-    ('provider_hub.descriptor.register')
+    ('provider_hub.descriptor.register'),
+    -- ADR-0023 S3, migration 0109. Activation is gated SEPARATELY from
+    -- registration — every facade registrar files a registration at boot, so
+    -- `.register` is handed out freely, while `.activate` is the switch that
+    -- lets agents call the provider. The migration grants it to this same
+    -- administration `admin` role; the row is repeated here for the reason the
+    -- whole block exists, which the header above states: this seed supplies
+    -- permissions directly and SUPPRESSES the central default-mode fallback, so
+    -- a string missing from here is a 403 on a stack the migration would have
+    -- covered. The Activate control is on the Service Descriptors page and
+    -- DWIKI-013c drives it; without this row the journey would fail on a
+    -- permission rather than on the behaviour it measures.
+    ('provider_hub.descriptor.activate')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;

@@ -1,12 +1,30 @@
 /**
  * REST client for the admin SERVICE DESCRIPTORS surface — unit A14, issue #200.
  *
- * ONE call: the listing. The reference client (`admin_ui`'s
- * `serviceDescriptorsApi.js`) declares two — the listing and a delete — and the
- * delete is not declared here because there is nothing to delete: the server
- * refuses both registration verbs, and a mutation hook that exists is a mutation
- * hook a control can be wired to. See `../ServiceDescriptors.tsx` for why the
- * whole surface is unavailable.
+ * THREE calls: the listing, activate and deactivate.
+ *
+ * ## The "answers 501" prose that used to be here was stale, and is gone
+ *
+ * This file used to say the surface refuses, that no mutation was declared
+ * because "there is nothing to delete", and that the listing is "expected to
+ * FAIL with 501 on this platform". None of that has been true since migration
+ * 0107 gave the admission plane a store: the listing answers 200 from tables,
+ * registration records a revision, and DELETE revokes one. Migration 0109 adds
+ * the policy overlay that lets a revision be ACTIVATED, which is what the two
+ * mutations below call.
+ *
+ * The 501 path still exists and is still read: a deployment that has not applied
+ * 0107 or 0109 has no admission plane, and the page renders the server's own
+ * sentence for it. What changed is that 501 is now the exception rather than the
+ * whole story — which is exactly why the prose had to go. A comment describing a
+ * refusal that no longer happens is the "disclosed gap" shape this repository
+ * has been bitten by: it reads as current, and nothing fails when it stops being
+ * true.
+ *
+ * The reference client (`admin_ui`'s `serviceDescriptorsApi.js`) declares a
+ * delete, and this file still does not: DELETE revokes rather than removes, it is
+ * terminal, and no page control issues it yet. Deactivate is the recoverable
+ * verb and is what the table offers.
  *
  * Not generated: `orval` builds from `v2.yaml`, which does not describe the
  * admin-panel routes. Handwritten in the same shape as `./adminConfigurationApi.ts`.
@@ -25,7 +43,13 @@
  * 501 from a load failure — and re-deriving them here would be a second copy to
  * drift. Nothing else: a different endpoint and its own query-key namespace.
  */
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { unwrapBody } from '@/shared/api/unwrap';
@@ -81,10 +105,41 @@ export interface AdminServiceDescriptor {
   readonly published_manifest_digest?: string | null;
 }
 
+/**
+ * How this deployment treats a provider that is recorded but not in force —
+ * `ELITEA_PROVIDER_ADMISSION`, read server-side.
+ *
+ * IT TRAVELS WITH THE ROWS BECAUSE `inactive` MEANS TWO DIFFERENT THINGS. Under
+ * `record` an inactive provider still serves every invoke; under `enforce` it is
+ * refused. A listing that showed the status without the posture would read
+ * identically in the two deployments where the same row has opposite
+ * consequences, and the operator has no other way to see which one they are on.
+ */
+type AdmissionPosture = 'record' | 'enforce';
+
 /** The listing body pylon returns. `rows` is what the reference client reads. */
 interface AdminServiceDescriptorList {
   readonly rows?: readonly AdminServiceDescriptor[];
   readonly total?: number;
+  readonly admission_posture?: string;
+}
+
+/**
+ * What the page renders: the rows AND the posture they have to be read under.
+ *
+ * A bare array would have been less churn and would have dropped the posture on
+ * the floor. `posture` is `undefined` when the server did not send one — an
+ * older build, or a body this client does not fully know — and the page says
+ * nothing rather than guessing `record`, because guessing would put a
+ * reassuring word on the screen for a deployment that might be enforcing.
+ */
+export interface AdminServiceDescriptorListing {
+  readonly rows: readonly AdminServiceDescriptor[];
+  readonly posture?: AdmissionPosture | undefined;
+}
+
+function readPosture(value: unknown): AdmissionPosture | undefined {
+  return value === 'record' || value === 'enforce' ? value : undefined;
 }
 
 /**
@@ -105,18 +160,19 @@ const adminServiceDescriptorKeys = {
 /**
  * `GET /elitea_core/admin/administration`.
  *
- * Expected to FAIL with 501 on this platform, and the failure is the page's
- * content. `retry: false` because a declared-unavailable surface is not a
- * transient error and retrying it three times only delays the explanation.
+ * Answers 200 from storage where migration 0107 has been applied, and 501 —
+ * with the server's own sentence, which the page renders — where it has not.
+ * `retry: false` because a declared-unavailable surface is not a transient
+ * error and retrying it three times only delays the explanation.
  */
 export function useAdminServiceDescriptors(): UseQueryResult<
-  readonly AdminServiceDescriptor[],
+  AdminServiceDescriptorListing,
   Error
 > {
   return useQuery({
     queryKey: adminServiceDescriptorKeys.list(),
     retry: false,
-    queryFn: async (): Promise<readonly AdminServiceDescriptor[]> => {
+    queryFn: async (): Promise<AdminServiceDescriptorListing> => {
       // `eliteaFetch` resolves the transport envelope, not the body. Reading
       // `rows` off the envelope is #132's silent empty state — and on this page
       // it would be worse than empty: an unwrapped envelope has no `rows`, so
@@ -125,8 +181,97 @@ export function useAdminServiceDescriptors(): UseQueryResult<
       const body = unwrapBody(await eliteaFetch<unknown>(DESCRIPTORS_URL)) as
         | AdminServiceDescriptorList
         | undefined;
-      return body?.rows ?? [];
+      return { rows: body?.rows ?? [], posture: readPosture(body?.admission_posture) };
     },
+  });
+}
+
+/* ── activation (migration 0109) ────────────────────────────────────────── */
+
+/**
+ * `POST /elitea_core/register_descriptor/{project_id}/activate`.
+ *
+ * `expected_digest` IS NOT OPTIONAL, and it is not a formality. The operator
+ * reviewed a manifest and wrote a policy about it; if the provider republished
+ * in between, the revision now cites bytes nobody looked at and the server
+ * answers 422 rather than putting a reviewed policy in force over an unreviewed
+ * manifest. The page sends the digest from the ROW IT IS SHOWING, so the value
+ * asserts what the operator actually saw — sending a digest re-read at click
+ * time would assert nothing at all.
+ */
+export interface ActivateServiceDescriptor {
+  readonly projectId: number;
+  readonly providerName: string;
+  readonly expectedDigest: string;
+  readonly reason: string;
+  /** Reviewed facts. v1 pins no schema; an empty object is a valid overlay. */
+  readonly overlay?: Readonly<Record<string, unknown>>;
+}
+
+export interface DeactivateServiceDescriptor {
+  readonly projectId: number;
+  readonly providerName: string;
+  readonly reason: string;
+}
+
+function registerDescriptorUrl(projectId: number, verb: string, providerName: string): string {
+  return (
+    `/elitea_core/register_descriptor/${projectId}/${verb}` +
+    `?provider_name=${encodeURIComponent(providerName)}`
+  );
+}
+
+export function useActivateServiceDescriptor(): UseMutationResult<
+  void,
+  Error,
+  ActivateServiceDescriptor
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: ActivateServiceDescriptor) => {
+      await eliteaFetch<unknown>(
+        registerDescriptorUrl(input.projectId, 'activate', input.providerName),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expected_digest: input.expectedDigest,
+            reason: input.reason,
+            overlay: input.overlay ?? {},
+          }),
+        },
+      );
+    },
+    // The SAME namespace the listing declares. A key built somewhere else is a
+    // cache nothing can reach — #132's read/write split, which made saved data
+    // look absent.
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: adminServiceDescriptorKeys.list() }),
+  });
+}
+
+/**
+ * `POST …/deactivate`. NOT a DELETE: DELETE on this surface revokes, which is
+ * terminal and records who and when. Deactivating returns a revision to the
+ * state registration left it in, so it can be put back in force without the
+ * provider republishing.
+ */
+export function useDeactivateServiceDescriptor(): UseMutationResult<
+  void,
+  Error,
+  DeactivateServiceDescriptor
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: DeactivateServiceDescriptor) => {
+      await eliteaFetch<unknown>(
+        `${registerDescriptorUrl(input.projectId, 'deactivate', input.providerName)}` +
+          `&reason=${encodeURIComponent(input.reason)}`,
+        { method: 'POST' },
+      );
+    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: adminServiceDescriptorKeys.list() }),
   });
 }
 

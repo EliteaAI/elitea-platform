@@ -7,8 +7,16 @@ package eliteacore
 //	POST   /elitea_core/register_descriptor/{projectID}   — register one
 //	DELETE /elitea_core/register_descriptor/{projectID}   — remove one
 //
-// All three answer 501 with ServiceDescriptorsUnavailableReason. Read on for why
-// that is the honest answer and not a shortcut.
+// HISTORICAL, AND KEPT AS SUCH. Everything below describes why all three routes
+// answered 501, and it is the account of a decision rather than of the current
+// behaviour: migration 0107 gave this surface a store, so the listing answers
+// from tables and both registration verbs write, and migration 0109 added the
+// policy overlay behind the activate/deactivate routes in provider_activation.go.
+// The 501 path still exists and is still reached — a deployment that has not
+// applied those migrations has no admission plane, which is exactly the state
+// the reason describes. Read on for what the subsystem is and why the shape it
+// replaces was not portable; ServiceDescriptorsUnavailableReason is still the
+// single sentence every refusal gives.
 //
 // ## What a "service descriptor" is, in the system this page came from
 //
@@ -136,6 +144,21 @@ const (
 	// legacy/plugins/elitea_core/api/v2/register_descriptor.py declares
 	// `provider_hub.descriptor.register` on POST and DELETE alike.
 	ServiceDescriptorRegisterPermission = "provider_hub.descriptor.register"
+
+	// ServiceDescriptorActivatePermission gates activate and deactivate. It has
+	// no pylon original — pylon had no activation, because it had no admission
+	// plane to activate anything in — so the string is CHOSEN, and granted by
+	// migrations/shared/0109_provider_policy_overlay.sql to the
+	// administration-mode `super_admin` and `admin` only.
+	//
+	// SEPARATE FROM `.register` ON PURPOSE. A facade's boot-time registrar
+	// files a registration on every start, so `.register` is a permission a
+	// deployment hands out freely; activation is the switch that lets agents
+	// call the provider. One string for both would make the operator who may
+	// record a descriptor automatically the operator who may put it in force —
+	// and a holder of `.register` alone gets 403 on activate, which the
+	// acceptance suite asserts rather than leaving to the router to remember.
+	ServiceDescriptorActivatePermission = "provider_hub.descriptor.activate"
 )
 
 // ServiceDescriptorsUnavailableReason is the single sentence the server gives for
@@ -175,7 +198,18 @@ func (h *Handler) ServiceDescriptors(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "total": len(rows)})
+	// THE POSTURE TRAVELS WITH THE ROWS, and it has to. `inactive` means two
+	// completely different things depending on ELITEA_PROVIDER_ADMISSION: under
+	// `record` the provider still serves every invoke, and under `enforce` it is
+	// refused. A listing that shows the status without the posture shows an
+	// operator a word whose meaning is held in an environment variable they
+	// cannot see from the page — and the page would read identically in the two
+	// deployments where the same row has opposite consequences.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":              rows,
+		"total":             len(rows),
+		"admission_posture": admissionPostureName(),
+	})
 }
 
 // RegisterDescriptor serves POST and DELETE on

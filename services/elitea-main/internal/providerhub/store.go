@@ -121,6 +121,16 @@ ON CONFLICT (revision_id) DO UPDATE
 // caller that could not tell it from a failed query would have to choose
 // between refusing every early request and ignoring real failures.
 //
+// THE ACTIVE REVISION WINS OUTRIGHT, whatever its age. The registrar
+// re-files its own revision on every tick and the upsert bumps that row's
+// admitted_at, so "latest by time" was the registrar's row minutes after an
+// operator had activated a different one: the listing showed Inactive with
+// an Activate control beside a revision that was in force, and under
+// `enforce` the gate would have refused a provider an operator had just
+// admitted. MEASURED by DWIKI-013c on the standalone stack. At most one
+// revision is active per provider (0107's partial unique index), so the
+// preference is unambiguous.
+//
 // THE TIE-BREAK ORDERS TOWARDS REFUSAL. Revoking does not touch admitted_at
 // (a revocation is a fact about a revision, not a new admission), so two
 // rows admitted inside the same clock tick could otherwise be read in
@@ -133,7 +143,7 @@ func LatestAdmission(ctx context.Context, pool *pgxpool.Pool, projectID int64, p
 SELECT revision_id, manifest_digest, status, reason
   FROM provider_hub.provider_admitted_revision
  WHERE project_id = $1 AND provider_id = $2
- ORDER BY admitted_at DESC, (status = 'revoked') DESC, revision_id DESC
+ ORDER BY (status = 'active') DESC, admitted_at DESC, (status = 'revoked') DESC, revision_id DESC
  LIMIT 1`, projectID, providerID).
 		Scan(&latest.RevisionID, &latest.ManifestDigest, &latest.Status, &latest.Reason)
 	if errors.Is(err, pgx.ErrNoRows) {
