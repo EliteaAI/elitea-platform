@@ -15,10 +15,30 @@
  * therefore hold on both stacks; both currently answer from
  * `run/fixture.go`.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import { STORAGE_STATE } from '../../../playwright.config';
 import { SEEDED, openDeepWiki } from './helpers';
+
+/** Opens the drawer on the read-only wiki and returns it. */
+async function openChatDrawer(page: Page) {
+  await openDeepWiki(page, `/app/deepwiki/${SEEDED.readOnly.toolkitId}`);
+  await page.getByRole('button', { name: 'Ask about this repository' }).click();
+  const drawer = page.getByTestId('wiki-chat-drawer');
+  await expect(drawer).toBeVisible();
+  return drawer;
+}
+
+/** Asks one question and waits for the fixture's answer to land. */
+async function ask(page: Page, question: string) {
+  const drawer = page.getByTestId('wiki-chat-drawer');
+  await drawer.getByPlaceholder('Ask about this repository').fill(question);
+  await drawer.getByRole('button', { name: 'Send' }).click();
+  await expect(drawer.getByTestId('wiki-chat-answer').last()).toContainText(
+    `Fixture answer to: ${question}`,
+    { timeout: 60_000 },
+  );
+}
 
 test.describe('DeepWiki chat', () => {
   // A provider round trip through the facade, plus the fixture's paced steps:
@@ -128,5 +148,93 @@ test.describe('DeepWiki chat', () => {
     // keeps the two tellable apart in a transcript.
     await expect(answer).toContainText(`Current question: ${question}`);
     await expect(drawer.getByTestId('wiki-chat-error')).toHaveCount(0);
+  });
+});
+
+/**
+ * DWIKI-016 — the wiki chat's history is the SERVER'S, not this browser's.
+ *
+ * The drawer used to keep its conversation in `localStorage`, so it was gone
+ * on another device, in another browser and on a cleared profile. Both turns
+ * are now written by elitea-main — the question when the invoke is accepted,
+ * the answer when the terminal poll is drained — into the ordinary tenant
+ * chat tables.
+ *
+ * WHAT MAKES THIS A JOURNEY AND NOT A UNIT TEST. Three things have to line up
+ * across two processes: the facade has to observe an invoke it only sees as a
+ * proxy, it has to tee a poll the browser drains, and the drawer has to find
+ * the conversation again through the ordinary chat listing with the right
+ * filters. Every one of those has a unit test on each side, and none of those
+ * tests can see the wiring — the defect class this repository keeps meeting
+ * (#597).
+ *
+ * THE SECOND CONTEXT IS THE ASSERTION THAT MATTERS. A reload alone would pass
+ * against the old localStorage drawer, because a reload keeps localStorage. It
+ * is a fresh browser context — nothing carried over but the sign-in — that
+ * tells "stored on the server" apart from "stored in this profile".
+ */
+test.describe('DeepWiki chat history', () => {
+  test.setTimeout(180_000);
+
+  test.use({ storageState: STORAGE_STATE.member });
+
+  test('DWIKI-016: a wiki conversation survives a reload and a fresh browser', async ({
+    page,
+    browser,
+  }) => {
+    await openChatDrawer(page);
+
+    // Two turns, so the transcript's ORDER is observable. One turn would pass
+    // against a reader that returned the newest group and stopped.
+    const stamp = Date.now();
+    const first = `Where do the wiki pages live? ${stamp}`;
+    const second = `And who writes them? ${stamp}`;
+    await ask(page, first);
+    await ask(page, second);
+
+    /* ── the same browser, after a reload ── */
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    let drawer = await openChatDrawer(page);
+    await expect(drawer.getByText(first)).toBeVisible({ timeout: 30_000 });
+    await expect(drawer.getByText(second)).toBeVisible();
+
+    /* ── a fresh browser context: same user, nothing else carried over ── */
+    const fresh = await browser.newContext({ storageState: STORAGE_STATE.member });
+    try {
+      const other = await fresh.newPage();
+      await openDeepWiki(other, `/app/deepwiki/${SEEDED.readOnly.toolkitId}`);
+      await other.getByRole('button', { name: 'Ask about this repository' }).click();
+      const otherDrawer = other.getByTestId('wiki-chat-drawer');
+      await expect(otherDrawer).toBeVisible();
+
+      // The whole point: this profile has never held the conversation, so
+      // anything on screen came off the server.
+      await expect(otherDrawer.getByText(first)).toBeVisible({ timeout: 30_000 });
+      await expect(otherDrawer.getByText(second)).toBeVisible();
+      await expect(otherDrawer.getByTestId('wiki-chat-answer').first()).toContainText(
+        `Fixture answer to: ${first}`,
+      );
+    } finally {
+      await fresh.close();
+    }
+
+    /* ── "Clear" starts a NEW conversation; it does not erase the old one ── */
+    drawer = page.getByTestId('wiki-chat-drawer');
+    await drawer.getByRole('button', { name: 'Clear the conversation' }).click();
+    await expect(drawer.getByText(first)).toHaveCount(0);
+
+    // And the cleared conversation is STILL THERE. A "Clear" that deleted
+    // tenant data would pass every assertion above and lose the history that
+    // was the point of keeping.
+    const origin = new URL(page.url()).origin;
+    const stored = await page.request.get(
+      `${origin}/api/v2/elitea_core/conversations/prompt_lib/${SEEDED.projectId}` +
+        `?source=deepwiki&entity_name=toolkit&entity_meta_id=${SEEDED.readOnly.toolkitId}` +
+        `&hidden=only&mine=true&limit=20`,
+    );
+    expect(stored.ok(), `listing wiki conversations: ${stored.status()}`).toBe(true);
+    const body = (await stored.json()) as { rows?: { name?: string }[] };
+    const names = (body.rows ?? []).map((row) => row.name ?? '');
+    expect(names, 'the cleared conversation is still stored').toContain(first);
   });
 });
