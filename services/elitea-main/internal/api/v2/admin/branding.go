@@ -43,12 +43,14 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/brandpackage"
 	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
@@ -154,6 +156,11 @@ func (h *Handler) collectBrandingAssets(ctx context.Context, stored map[string]a
 	}
 	for _, path := range paths {
 		if referenced[path] {
+			continue
+		}
+		// Kept packages (rollback, decision 9) are referenced by nothing in
+		// the section and are pruned by their own rule, never here.
+		if kind, _, _, ok := v2branding.ParseAssetPath(path); ok && kind == v2branding.KindPackage {
 			continue
 		}
 		if err := h.brandingAssets.Delete(ctx, path); err != nil {
@@ -410,6 +417,8 @@ func validateBrandingValues(values map[string]any) string {
 			reason = validateDensity(key, values[key])
 		case platformconfig.KeyBrandingFontFaces:
 			reason = validateFontFaces(key, values[key])
+		case platformconfig.KeyBrandingSchemeTokens:
+			reason = validateSchemeTokens(key, values[key])
 		}
 		if reason != "" {
 			return reason
@@ -559,10 +568,312 @@ func validateFontFaces(key string, value any) string {
 	return ""
 }
 
+// maxSchemeTokens bounds one scheme's record: the product default states 406
+// ids, and a package that hand-tunes every one of them is still under this.
+const maxSchemeTokens = 512
+
+// validateSchemeTokens checks {light|dark|hc: {id: "#rrggbb"}}. Ids are the
+// web app's token vocabulary and are not enumerated here — an unknown id is
+// ignored by the UI's unflatten step — but every value must be a six-digit
+// hex colour, so a stored record can never smuggle a CSS expression into a
+// custom property.
+func validateSchemeTokens(key string, value any) string {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%q must be an object of schemes", key)
+	}
+	for scheme, entries := range object {
+		if scheme != "light" && scheme != "dark" && scheme != "hc" {
+			return fmt.Sprintf("%q has an unknown scheme %q (light, dark or hc)", key, scheme)
+		}
+		record, ok := entries.(map[string]any)
+		if !ok {
+			return fmt.Sprintf("%q[%q] must be an object of token ids", key, scheme)
+		}
+		if len(record) > maxSchemeTokens {
+			return fmt.Sprintf("%q[%q] has too many tokens (limit %d)", key, scheme, maxSchemeTokens)
+		}
+		for id, colour := range record {
+			if utf8.RuneCountInString(id) > 64 || strings.TrimSpace(id) == "" {
+				return fmt.Sprintf("%q[%q] has an invalid token id %q", key, scheme, id)
+			}
+			text, _ := stringValue(colour)
+			if text == "" || !hexColourPattern.MatchString(text) {
+				return fmt.Sprintf("%q[%q][%q] must be a six-digit hex colour", key, scheme, id)
+			}
+		}
+	}
+	return ""
+}
+
 func validateDensity(key string, value any) string {
 	text, ok := stringValue(value)
 	if !ok || text == "" || text == "comfortable" || text == "compact" {
 		return ""
 	}
 	return fmt.Sprintf("%q must be \"comfortable\", \"compact\" or empty to inherit", key)
+}
+
+// --- the branding package (ADR-0024 decision 9) --------------------------------
+
+// BrandingPackages is the seam to internal/application/brandpackage.
+type BrandingPackages interface {
+	Export(ctx context.Context, pack *v2branding.Pack) (data []byte, name string, err error)
+	Parse(data []byte) (*brandpackage.Imported, []brandpackage.Problem)
+	Apply(ctx context.Context, imported *brandpackage.Imported) (map[string]any, error)
+	Store(ctx context.Context, data []byte) (brandpackage.Version, error)
+	Versions(ctx context.Context) ([]brandpackage.Version, error)
+	Load(ctx context.Context, digest string) ([]byte, error)
+}
+
+// WithBrandingPackages supplies the package service.
+func WithBrandingPackages(p BrandingPackages) Option {
+	return func(h *Handler) {
+		if p != nil {
+			h.packages = p
+		}
+	}
+}
+
+// BrandingPackageExport serves `GET /admin/branding/package/administration`:
+// the current brand as a zip.
+func (h *Handler) BrandingPackageExport(w http.ResponseWriter, r *http.Request) {
+	if h.packages == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "branding packages are not available on this deployment"})
+		return
+	}
+	var pack *v2branding.Pack
+	if h.branding != nil {
+		pack = h.branding.Current(r.Context()).Pack
+	}
+	data, name, err := h.packages.Export(r.Context(), pack)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not build the branding package: " + err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// brandingPackageReport is the import routes' answer.
+type brandingPackageReport struct {
+	OK       bool                   `json:"ok"`
+	DryRun   bool                   `json:"dry_run"`
+	Applied  bool                   `json:"applied"`
+	Problems []brandpackage.Problem `json:"problems"`
+	Warnings []string               `json:"warnings"`
+	Diff     []brandpackage.Change  `json:"diff"`
+	Manifest *brandpackage.Manifest `json:"manifest,omitempty"`
+	Version  *brandpackage.Version  `json:"version,omitempty"`
+	Error    string                 `json:"error,omitempty"`
+}
+
+// BrandingPackageImport serves `POST /admin/branding/package/administration`
+// with a multipart `file` part and an optional `dry_run=true` query. The dry
+// run and the apply share every check; only the store calls differ.
+func (h *Handler) BrandingPackageImport(w http.ResponseWriter, r *http.Request) {
+	if h.packages == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "branding packages are not available on this deployment"})
+		return
+	}
+	dryRun := r.URL.Query().Get("dry_run") == "true" || r.URL.Query().Get("dry_run") == "1"
+	r.Body = http.MaxBytesReader(w, r.Body, v2branding.MaxPackageBytes+64*1024)
+	if err := r.ParseMultipartForm(v2branding.MaxPackageBytes + 64*1024); err != nil {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"error": fmt.Sprintf("the upload must be a multipart form under %d MiB", v2branding.MaxPackageBytes/1024/1024),
+		})
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "a multipart part named \"file\" is required"})
+		return
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, v2branding.MaxPackageBytes+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "could not read the uploaded file"})
+		return
+	}
+	h.importPackage(w, r, data, dryRun, true)
+}
+
+// BrandingPackageVersions serves `GET /admin/branding/package/administration/versions`.
+func (h *Handler) BrandingPackageVersions(w http.ResponseWriter, r *http.Request) {
+	if h.packages == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "branding packages are not available on this deployment"})
+		return
+	}
+	versions, err := h.packages.Versions(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	if versions == nil {
+		versions = []brandpackage.Version{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
+}
+
+// BrandingPackageRestore serves
+// `POST /admin/branding/package/administration/versions/{digest}/restore`:
+// re-imports a stored package. It is not stored again, so restoring never
+// pushes an older package out of the kept set.
+func (h *Handler) BrandingPackageRestore(w http.ResponseWriter, r *http.Request) {
+	if h.packages == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "branding packages are not available on this deployment"})
+		return
+	}
+	digest := chi.URLParam(r, "digest")
+	if !digestPattern.MatchString(digest) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown package version"})
+		return
+	}
+	data, err := h.packages.Load(r.Context(), digest)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown package version"})
+		return
+	}
+	h.importPackage(w, r, data, false, false)
+}
+
+var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// importPackage is the shared body of import and restore.
+func (h *Handler) importPackage(w http.ResponseWriter, r *http.Request, data []byte, dryRun, keep bool) {
+	section, ok := findConfigSection(platformconfig.SectionBranding)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "branding section missing"})
+		return
+	}
+	report := brandingPackageReport{DryRun: dryRun, Problems: []brandpackage.Problem{}, Warnings: []string{}, Diff: []brandpackage.Change{}}
+
+	imported, problems := h.packages.Parse(data)
+	if imported != nil {
+		report.Manifest = imported.Manifest
+		if imported.Warnings != nil {
+			report.Warnings = imported.Warnings
+		}
+	}
+	if len(problems) > 0 {
+		report.Problems = problems
+		writeJSON(w, http.StatusBadRequest, report)
+		return
+	}
+
+	// The values the section WOULD hold, computed without storing anything:
+	// assets keep their package references for the diff, which is what the
+	// operator can recognise.
+	incoming := brandpackage.ValuesFromPack(imported.Pack, v2branding.ProductDefault())
+	if reason := validateSectionValues(section, incoming); reason != "" {
+		report.Problems = append(report.Problems, brandpackage.Problem{Entry: "brand-pack.json", Reason: reason})
+	}
+	// Package-relative asset references are not same-origin paths yet; they
+	// are validated per kind by Parse and become stored paths on apply, so
+	// they are blanked for the section rules and restored for the diff.
+	report.Problems = append(report.Problems, packageOnlyProblems(validateBrandingValues(withoutPackageRefs(imported, incoming)))...)
+	if len(report.Problems) > 0 {
+		writeJSON(w, http.StatusBadRequest, report)
+		return
+	}
+
+	current := map[string]any{}
+	if h.pool != nil {
+		stored, err := h.loadSectionValues(r, section.id)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not read the platform configuration store"})
+			return
+		}
+		current = mergeSectionValues(section, stored)
+	}
+	report.Diff = brandpackage.Diff(current, incoming)
+	if report.Diff == nil {
+		report.Diff = []brandpackage.Change{}
+	}
+	report.OK = true
+	if dryRun {
+		writeJSON(w, http.StatusOK, report)
+		return
+	}
+	if h.pool == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database unavailable"})
+		return
+	}
+
+	values, err := h.packages.Apply(r.Context(), imported)
+	if err != nil {
+		report.Error = err.Error()
+		writeJSON(w, http.StatusBadGateway, report)
+		return
+	}
+	if reason := validateBrandingValues(values); reason != "" {
+		report.Problems = append(report.Problems, brandpackage.Problem{Entry: "brand-pack.json", Reason: reason})
+		writeJSON(w, http.StatusBadRequest, report)
+		return
+	}
+	principal, _ := auth.UserFromContext(r.Context())
+	author := principal.Email
+	if author == "" {
+		author = principal.ID
+	}
+	if err := h.storeSectionValues(r, section.id, values, author); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not write the platform configuration store"})
+		return
+	}
+	h.invalidateBranding()
+	if keep {
+		if version, err := h.packages.Store(r.Context(), data); err == nil {
+			report.Version = &version
+		} else {
+			report.Warnings = append(report.Warnings, "the package was applied but could not be kept for rollback: "+err.Error())
+		}
+	}
+	if stored, err := h.loadSectionValues(r, section.id); err == nil {
+		h.collectBrandingAssets(r.Context(), stored)
+	}
+	report.Applied = true
+	writeJSON(w, http.StatusOK, report)
+}
+
+// withoutPackageRefs blanks the asset fields that point into the package so
+// the same-origin rule does not refuse them before Apply rewrites them.
+func withoutPackageRefs(imported *brandpackage.Imported, values map[string]any) map[string]any {
+	copied := make(map[string]any, len(values))
+	for k, v := range values {
+		copied[k] = v
+	}
+	for _, key := range []string{
+		platformconfig.KeyBrandingLogoFull, platformconfig.KeyBrandingLogoMark, platformconfig.KeyBrandingFavicon,
+		platformconfig.KeyBrandingLoginArt, platformconfig.KeyBrandingLogoEmail,
+	} {
+		if text, _ := copied[key].(string); strings.HasPrefix(text, "assets/") {
+			copied[key] = ""
+		}
+	}
+	if faces, ok := copied[platformconfig.KeyBrandingFontFaces].([]any); ok {
+		kept := make([]any, 0, len(faces))
+		for _, face := range faces {
+			if object, ok := face.(map[string]any); ok {
+				if url, _ := object["url"].(string); strings.HasPrefix(url, "assets/") {
+					continue
+				}
+			}
+			kept = append(kept, face)
+		}
+		copied[platformconfig.KeyBrandingFontFaces] = kept
+	}
+	_ = imported
+	return copied
+}
+
+func packageOnlyProblems(reason string) []brandpackage.Problem {
+	if reason == "" {
+		return nil
+	}
+	return []brandpackage.Problem{{Entry: "brand-pack.json", Reason: reason}}
 }

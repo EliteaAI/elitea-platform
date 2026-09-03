@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	browserapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/brandpackage"
 	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/mailer"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -1652,6 +1655,27 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// The variable stays a nil interface when the key is absent: a boxed nil
 	// pointer would read as "configured" downstream (#86).
 
+	// The branding package (ADR-0024 decision 9) renders the login page and
+	// the e-mails under the pack it carries, and embeds the offline previewer
+	// the image ships beside the admin SPA (Containerfile copies
+	// dist/brand-preview/ to <ADMIN_UI_STATIC_DIR>/../brand-preview/, so the
+	// file is <ADMIN_UI_STATIC_DIR>/../brand-preview/index.html). No previewer
+	// file means the package omits preview/app.html and its README says so.
+	brandingAssetStore := v2branding.NewAssetStore(objectStore)
+	previewer, previewerErr := os.ReadFile(filepath.Join(filepath.Dir(strings.TrimRight(os.Getenv("ADMIN_UI_STATIC_DIR"), "/")), "brand-preview", "index.html"))
+	if previewerErr != nil {
+		previewer = nil
+		logger.Info("branding package: no offline previewer file; packages ship without preview/app.html")
+	}
+	brandingPackages := brandpackage.New(brandingAssetStore, brandpackage.Previews{
+		Login: browserapi.RenderLoginPreview,
+		Email: func(pack *v2branding.Pack, kind string) (string, error) {
+			html, _, err := mailComposer.Preview(pack, kind)
+			return html, err
+		},
+		App: previewer,
+	}, mailSettings.PublicBaseURL)
+
 	var adminUICfg *adminui.Config
 	if dir := os.Getenv("ADMIN_UI_STATIC_DIR"); dir != "" {
 		adminUICfg = &adminui.Config{
@@ -1741,6 +1765,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		Pool:                       pool,
 		Branding:                   brandingResolver,
 		Mailer:                     mailComposer,
+		BrandingPackages:           brandingPackages,
 		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
 		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
 		ToolkitSettingsValidator:   toolkitSettingsValidator,

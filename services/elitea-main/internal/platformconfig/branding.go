@@ -74,6 +74,11 @@ const (
 	// KeyBrandingFontFaces holds an array of {family, url, weight?, style?}
 	// objects — the self-hosted faces uploaded through the asset route.
 	KeyBrandingFontFaces = "font_faces"
+	// KeyBrandingSchemeTokens holds hand-tuned scheme tokens a branding
+	// package carries: {"light": {id: "#rrggbb"}, "dark": {...}} (ADR-0024
+	// decision 9). When present and non-empty they are served as the pack's
+	// stated tokens and win over hue derivation for the ids they name.
+	KeyBrandingSchemeTokens = "scheme_tokens"
 )
 
 // FontFaceOverlay is one self-hosted face the database layer declares.
@@ -111,6 +116,8 @@ type BrandingOverlay struct {
 	LoginArt         string
 	LogoEmail        string
 	FontFaces        []FontFaceOverlay
+	// SchemeTokens is scheme name -> token id -> colour; nil when unset.
+	SchemeTokens map[string]map[string]string
 }
 
 // IsZero reports whether the layer says nothing at all — the case in which the
@@ -118,10 +125,11 @@ type BrandingOverlay struct {
 // unset global is the documented "channel C absent" path the UI already handles
 // (branding.noPackBody).
 func (o BrandingOverlay) IsZero() bool {
-	if len(o.FontFaces) > 0 {
+	if len(o.FontFaces) > 0 || len(o.SchemeTokens) > 0 {
 		return false
 	}
 	o.FontFaces = nil
+	o.SchemeTokens = nil
 	return reflect.DeepEqual(o, BrandingOverlay{})
 }
 
@@ -165,7 +173,38 @@ func brandingFrom(values Values) BrandingOverlay {
 		LoginArt:         values.trimmed(KeyBrandingLoginArt),
 		LogoEmail:        values.trimmed(KeyBrandingLogoEmail),
 		FontFaces:        fontFacesFrom(values[KeyBrandingFontFaces]),
+		SchemeTokens:     schemeTokensFrom(values[KeyBrandingSchemeTokens]),
 	}
+}
+
+// schemeTokensFrom decodes {"light": {...}, "dark": {...}, "hc": {...}}. A
+// scheme that is not an object, or a token that is not a string, is skipped;
+// an empty result is nil so IsZero stays honest.
+func schemeTokensFrom(raw any) map[string]map[string]string {
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]map[string]string{}
+	for scheme, entries := range object {
+		record, ok := entries.(map[string]any)
+		if !ok {
+			continue
+		}
+		tokens := map[string]string{}
+		for id, value := range record {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				tokens[id] = strings.TrimSpace(text)
+			}
+		}
+		if len(tokens) > 0 {
+			out[scheme] = tokens
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // fontFacesFrom decodes the font_faces array. An entry that is not an object

@@ -132,6 +132,11 @@ type RouterConfig struct {
 	// notices, the Branding page's test message. Nil means none is sent and
 	// every invite reports invitation_delivered: false.
 	Mailer *appmailer.Composer
+	// BrandingPackages exports and imports the branding package (ADR-0024
+	// decision 9). Nil means the package routes answer 503; the router does
+	// not build one because the previews it renders belong to main.go's
+	// composition (the login template and the mail composer).
+	BrandingPackages admin.BrandingPackages
 	// AuditRecorder overrides the Pool-backed `centry.audit_events` writer
 	// mounted on the /api/v2 group. Tests inject one to assert WHICH events a
 	// request produces without a live database; production leaves it unset and
@@ -912,6 +917,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	if cfg.Mailer != nil {
 		adminMailer, inviteMailer, decisionMailer = cfg.Mailer, cfg.Mailer, cfg.Mailer
 	}
+	brandingPackages := cfg.BrandingPackages
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	// Uploaded brand assets (ADR-0024 decision 3): public for the same
@@ -1216,6 +1222,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				admin.WithBranding(brandingResolver),
 				admin.WithBrandingAssets(brandingAssets),
 				admin.WithMailer(adminMailer),
+				admin.WithBrandingPackages(brandingPackages),
 				// The same store the SCIM tree writes through. One store, so
 				// the screen and a group push can never disagree about which
 				// project a binding names.
@@ -1482,6 +1489,12 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(requireBranding).Put("/branding/administration", adminHandler.BrandingSave)
 				r.With(requireBranding).Post("/branding/assets/{kind}", adminHandler.BrandingAssetUpload)
 				r.With(requireBranding).Post("/branding/test_email/administration", adminHandler.BrandingTestEmail)
+				// The branding package (ADR-0024 decision 9): export, import
+				// with a dry run, and the kept versions for rollback.
+				r.With(requireBranding).Get("/branding/package/administration", adminHandler.BrandingPackageExport)
+				r.With(requireBranding).Post("/branding/package/administration", adminHandler.BrandingPackageImport)
+				r.With(requireBranding).Get("/branding/package/administration/versions", adminHandler.BrandingPackageVersions)
+				r.With(requireBranding).Post("/branding/package/administration/versions/{digest}/restore", adminHandler.BrandingPackageRestore)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the

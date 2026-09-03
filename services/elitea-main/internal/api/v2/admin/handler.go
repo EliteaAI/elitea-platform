@@ -26,6 +26,9 @@ type Handler struct {
 	// Outbound e-mail (branding.go, user_invite.go). Nil unless WithMailer is
 	// applied; invites then report `invitation_delivered: false`.
 	mailer Mailer
+	// The branding package service (branding.go, ADR-0024 decision 9). Nil
+	// unless WithBrandingPackages is applied; the routes then answer 503.
+	packages BrandingPackages
 	// The pre-built MCP server catalogue and the vault its client secrets are
 	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
 	// is applied, and the catalogue routes answer 503 while either is.

@@ -350,8 +350,13 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * 171 -> 172, MANIFEST_ENTRY_COUNT unchanged, when branded outbound e-mail
  * landed (ADR-0024 WP7): sendBrandingTestEmail, the Branding page's "send a
  * test e-mail" action. Described for the generated client the page calls.
+ *
+ * 172 -> 176, MANIFEST_ENTRY_COUNT unchanged, when the branding package
+ * landed (ADR-0024 WP9): exportBrandingPackage, importBrandingPackage,
+ * listBrandingPackageVersions and restoreBrandingPackageVersion — the
+ * Branding page's download/import/rollback actions.
  */
-const GENERATED_OPERATION_COUNT = 172;
+const GENERATED_OPERATION_COUNT = 176;
 /*
  * 189 -> 191. The canvas mermaid quick-fix added two entries: the blocking
  * `predict_llm` sender (`chatMessages.generateContentBlocking`) and the

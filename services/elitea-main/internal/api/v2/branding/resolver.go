@@ -231,6 +231,11 @@ func newSnapshot(pack *Pack, layers Layers) Snapshot {
 	}
 }
 
+// ProductDefault returns a fresh parse of the embedded product default pack —
+// the base a branding package is compared against and exported from on a
+// deployment that has customised nothing.
+func ProductDefault() *Pack { return productDefaultPack() }
+
 // productDefaultPack parses the embedded product default. The embed is pinned
 // to the UI's file and covered by a parse test, so a failure here is a build
 // defect; it degrades to DefaultPack() only so that the branding path can
@@ -284,6 +289,27 @@ func applyOverlay(base *Pack, o platformconfig.BrandingOverlay) (*Pack, error) {
 	setString(&merged.Assets.Favicon, o.Favicon)
 	setOptional(&merged.Assets.LoginArt, o.LoginArt)
 	setOptional(&merged.Assets.LogoEmail, o.LogoEmail)
+	// Hand-tuned tokens (a branding package, decision 9) are STATED tokens:
+	// they replace the base's records for the schemes they name, so the ids
+	// they carry win over derivation and every other id still derives from
+	// the hue. They are applied after the hue rule above on purpose.
+	if len(o.SchemeTokens) > 0 {
+		merged.Schemes = Schemes{Light: map[string]string{}, Dark: map[string]string{}}
+		for scheme, tokens := range o.SchemeTokens {
+			copied := make(map[string]string, len(tokens))
+			for id, value := range tokens {
+				copied[id] = value
+			}
+			switch scheme {
+			case "light":
+				merged.Schemes.Light = copied
+			case "dark":
+				merged.Schemes.Dark = copied
+			case "hc":
+				merged.Schemes.HC = copied
+			}
+		}
+	}
 	if len(o.FontFaces) > 0 {
 		faces := make([]FontFace, 0, len(o.FontFaces))
 		for _, f := range o.FontFaces {
