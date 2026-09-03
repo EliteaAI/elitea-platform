@@ -85,6 +85,16 @@ dependencies = [
 #   langfuse
 #       optional in the legacy plugin too; the copied
 #       `engine/utils/langfuse_callback.py` degrades without it.
+#
+# CLOSURE-STAMP. The line below names the sha256 of this package's engine copy
+# manifest (src/*/engine/COPY_MANIFEST.json). It exists because the pins in
+# this extra ARE the resolution of THAT copy: moving one without the other
+# leaves a frozen engine running against versions nobody resolved it against,
+# and neither the copy's digest test nor a resolution check can see that on its
+# own. scripts/ci/check-engine-closures.sh refuses a tree where the two
+# disagree, and scripts/ci/refresh-engine-closure.py is what re-resolves the
+# closure as a SET and re-writes this line.
+# closure-stamp: COPY_MANIFEST.json sha256 5096daf12f7039a84b307c3bc7006c286bff53960adba0ed5bb1d6b35b4b86c3
 engine = [
   # Pinned to the SAME version services/elitea-worker-python pins, not to the
   # legacy plugin's floor (>=0.6.33). Two services on one platform resolving
