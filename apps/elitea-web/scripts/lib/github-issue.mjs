@@ -4,7 +4,7 @@
  * watching by design, like a weekly cron — can escalate a failure the same
  * way: a de-duplicated issue instead of a red run nobody sees.
  */
-import { request } from 'node:https';
+import { request as httpsRequest } from 'node:https';
 
 /**
  * Create (or comment on, if one is already open) a GitHub issue via the
@@ -16,12 +16,25 @@ import { request } from 'node:https';
  * De-duplicates by searching for an open issue with the same title — if one
  * exists it adds a comment instead of opening a duplicate.
  *
+ * `apiHost` and `requestFn` exist for the test in this directory: R-M1 bans
+ * `vi.mock` of application modules, so github-issue.test.mjs exercises this
+ * against a REAL local HTTP server instead of a mocked `node:https` — these
+ * two let the test point the same code at `localhost` over plain HTTP. In
+ * production neither is passed and behavior is unchanged (https to
+ * api.github.com).
+ *
  * @param {string} title
  * @param {string} body
- * @param {{ labels?: string[], logPrefix?: string, userAgent?: string }} [opts]
+ * @param {{ labels?: string[], logPrefix?: string, userAgent?: string, apiHost?: string, requestFn?: typeof httpsRequest }} [opts]
  */
 export async function createOrUpdateGitHubIssue(title, body, opts = {}) {
-  const { labels = [], logPrefix = '[github-issue]', userAgent = 'elitea-ci-incident/1.0' } = opts;
+  const {
+    labels = [],
+    logPrefix = '[github-issue]',
+    userAgent = 'elitea-ci-incident/1.0',
+    apiHost = 'api.github.com',
+    requestFn = httpsRequest,
+  } = opts;
   const token = process.env.GITHUB_TOKEN;
   const repoFull = process.env.GITHUB_REPOSITORY;
   if (!token || !repoFull) {
@@ -33,9 +46,9 @@ export async function createOrUpdateGitHubIssue(title, body, opts = {}) {
   function ghRequest(method, path, payload) {
     return new Promise((resolve, reject) => {
       const data = payload ? JSON.stringify(payload) : null;
-      const req = request(
+      const req = requestFn(
         {
-          hostname: 'api.github.com',
+          hostname: apiHost,
           path,
           method,
           headers: {
