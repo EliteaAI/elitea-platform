@@ -57,6 +57,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/wikichat"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/identityproviders"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
@@ -1301,6 +1302,24 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			deepwikiToolkitReader = deepwikiToolkits
 		}
 
+		// The wiki chat's transcript store. A deployment that cannot build it
+		// still mounts DeepWiki: the chat works exactly as it did before the
+		// history existed, and the drawer's listing simply comes back empty.
+		// Recording is a feature of the chat, not a precondition for it.
+		deepwikiHistoryRepo, historyErr := dbrepos.NewDeepWikiHistoryRepo(pool)
+		if historyErr != nil {
+			logger.Warn("DeepWiki mounts without server-side chat history",
+				"error", historyErr)
+		}
+		// Through a nil INTERFACE, never a typed nil — the same rule the
+		// toolkit reader above follows, and for the same reason: NewHistory
+		// decides on `store == nil`, and a typed nil would pass that check
+		// and then call methods on a nil pointer.
+		var deepwikiHistoryStore wikichat.Store
+		if deepwikiHistoryRepo != nil {
+			deepwikiHistoryStore = deepwikiHistoryRepo
+		}
+
 		deepwikiRoute, err = v2deepwiki.NewRoute(
 			deepwikiConfig,
 			// The API group's credential set, in either authentication mode.
@@ -1310,6 +1329,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			deepwikiToolkitReader,
 			v2deepwiki.NewAuthCallbackMinter(deepwikiTokens),
 			slog.Default(),
+			v2deepwiki.WithHistory(
+				v2deepwiki.NewHistory(deepwikiHistoryStore, slog.Default())),
 		)
 		if err != nil {
 			return fmt.Errorf("compose DeepWiki facade: %w", err)
