@@ -22,18 +22,18 @@
 # GROUPING IS DELIBERATE. Ungrouped, this configuration opens a pull request
 # per package per week across 10 Go modules, 4 Python projects, 3 npm projects
 # and a Cargo workspace. That volume is how a scanner gets switched off. Each
-# entry groups its non-major updates into one pull request; a major version is
-# left on its own because it is a real review.
+# entry groups ALL updates (major, minor, patch) for its ecosystem+directory
+# into a single pull request — one PR per entry per week, not one per package
+# and not a second PR for majors. A major bump landing alongside minor/patch
+# ones still needs the same review either way, so splitting it out only
+# doubled the PR (and CI-matrix) count without buying a safer default.
 #
-# WHEN THEY RUN, AND WHY IT IS PINNED. Every schedule below names
-# `day: saturday`, `time: "03:00"`, `timezone: "Europe/Warsaw"`. A dependabot
-# update runs as an Actions job and spends a slot out of the 20 this account
-# gets on the free plan — 58 of them landed in three days, unpinned, in the
-# middle of the working day, queued alongside the CI of the pull requests they
-# were interrupting. `interval: weekly` with no time is scheduled by GitHub at
-# an arbitrary hour, and 20 entries all firing at once is the shape that hurt.
-# The window is off-peak for this team; the interval and the groups are
-# unchanged, so nothing about WHAT is scanned moves.
+# open-pull-requests-limit caps how many PRs from one entry can be open at
+# once, so a week nobody triaged doesn't stack on top of the next.
+#
+# SCHEDULE IS STAGGERED across weekdays (not all entries on the same day) so
+# the ~20 entries don't all open at once and fire the full CI matrix — Go,
+# Web, image scan, contract tests, etc. — for every directory simultaneously.
 #
 # WHAT DEPENDABOT CANNOT DO HERE, stated so the next reader does not assume
 # coverage that is absent:
@@ -56,13 +56,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: monday
+    open-pull-requests-limit: 3
     groups:
       actions:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
 
   # ------------------------------------------------------------------- Go
   # The two services that ship, first. elitea-llm-gateway is deliberately
@@ -72,136 +70,112 @@ updates:
     directory: /services/elitea-llm-gateway
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: monday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /services/elitea-main
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: monday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /services/elitea-scheduler
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: tuesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /services/elitea-subapp-host
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: tuesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /libs/go/authlib
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: tuesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /libs/go/eventslib
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: tuesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /libs/go/observability
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: wednesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /libs/go/rpclib
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: wednesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /gen/go
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: wednesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /libs/proto/gen/go
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: wednesday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /tools/uictl
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: thursday
+    open-pull-requests-limit: 3
     groups:
-      go-minor-patch:
+      go-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
 
   # ----------------------------------------------------------------- Rust
   - package-ecosystem: cargo
     directory: /services/elitea-worker-rust
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: monday
+    open-pull-requests-limit: 3
     groups:
-      cargo-minor-patch:
+      cargo-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
 
   # --------------------------------------------------------------- Python
   # elitea-worker-python is where issue #554 lives: 30 of its image-scan
@@ -212,79 +186,65 @@ updates:
     directory: /services/elitea-worker-python
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: thursday
+    open-pull-requests-limit: 3
     groups:
-      pip-minor-patch:
+      pip-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: pip
     directory: /services/elitea-deepwiki
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: thursday
+    open-pull-requests-limit: 3
     groups:
-      pip-minor-patch:
+      pip-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: pip
     directory: /services/elitea-inventory
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: thursday
+    open-pull-requests-limit: 3
     groups:
-      pip-minor-patch:
+      pip-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: pip
     directory: /services/pylon-indexer
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: friday
+    open-pull-requests-limit: 3
     groups:
-      pip-minor-patch:
+      pip-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: pip
     directory: /libs/proto
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: friday
+    open-pull-requests-limit: 3
     groups:
-      pip-minor-patch:
+      pip-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
 
   # ------------------------------------------------------------------ npm
   - package-ecosystem: npm
     directory: /apps/elitea-web
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: friday
+    open-pull-requests-limit: 3
     groups:
-      npm-minor-patch:
+      npm-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: npm
     directory: /tools/parity-extract
     schedule:
       interval: weekly
-      day: saturday
-      time: "03:00"
-      timezone: "Europe/Warsaw"
+      day: friday
+    open-pull-requests-limit: 3
     groups:
-      npm-minor-patch:
+      npm-all:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
 
