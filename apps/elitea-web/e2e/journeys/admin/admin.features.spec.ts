@@ -112,6 +112,7 @@ function ownedCard(projectName: string): {
   title: string;
   linksLabel: string;
   cardName: string;
+  titleKey: string;
   linksKey: string;
 } {
   return projectName === 'chromium'
@@ -119,12 +120,14 @@ function ownedCard(projectName: string): {
         title: 'Documentation Card Title',
         linksLabel: 'Documentation Links',
         cardName: 'Documentation',
+        titleKey: 'resources_documentation_title',
         linksKey: 'resources_documentation_links',
       }
     : {
         title: 'Tutorials Card Title',
         linksLabel: 'Tutorials Links',
         cardName: 'Tutorials',
+        titleKey: 'resources_tutorials_title',
         linksKey: 'resources_tutorials_links',
       };
 }
@@ -710,15 +713,34 @@ adminTest.describe('the Help Center round trip', () => {
   adminTest(
     'J36g: a Help Center link saved here survives a reload and reaches /help-center',
     async ({ page }, testInfo) => {
-      await openFeatures(page);
-      await openSection(page, 'Help Center');
-
       const card = ownedCard(testInfo.project.name);
       const link = probeLink(testInfo.project.name);
 
+      await openFeatures(page);
+      // RETRY POISONING. The seed clears this card, so on a fresh stack the
+      // baseline is the schema default. But a first attempt that fails AFTER
+      // its PUT leaves the probe title in the platform-wide `resources`
+      // section, and Playwright's retry starts this journey again with the
+      // section as the failure left it: the baseline assertion below then
+      // fails on every retry ("Tutorials" expected, "E2E webkit handbook"
+      // received — run 33765076425), and journeys 36h/36j never run because
+      // the group is serial. Journey 36j is the restore, and it sits AFTER
+      // this one, so nothing else puts the card back between attempts.
+      // Restore the OWNED card only — the other browser project's card is its
+      // own, and this write must not touch it — and reload so the form shows
+      // the restored value rather than what it fetched a moment ago.
+      await restoreSection(page, 'resources', {
+        [card.titleKey]: card.cardName,
+        [card.linksKey]: [],
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await openFeatures(page);
+      await openSection(page, 'Help Center');
+
       const title = page.getByRole('textbox', { name: card.title });
-      // The seed clears this card, so the baseline is the schema default. Starting
-      // from "already set to the probe value" would prove nothing about the write.
+      // From here the baseline IS the schema default, on a fresh stack and on a
+      // retry alike. Starting from "already set to the probe value" would prove
+      // nothing about the write.
       await expect(title).toHaveValue(card.cardName);
       await title.fill(probeTitle(testInfo.project.name));
 
