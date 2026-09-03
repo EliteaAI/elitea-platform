@@ -184,10 +184,38 @@ def deep_research(*, question: str, research_type: str = "general", **_ignored: 
     }
 
 
+def resolve_wiki(*, question: str, wikis: list | None = None, **_ignored: Any) -> dict[str, Any]:
+    """The wiki resolver, without a model.
+
+    Word overlap between the question and each candidate's id and title —
+    which is what the model is asked for, and is decidable without one. The
+    Go host's own fixture table (``run/fixture.go::fixtureResolveWiki``)
+    scores identically, so a stack that runs either sidecar resolves the
+    same wiki for the same question.
+    """
+    lowered = (question or "").lower()
+    best, best_score = "", 0
+    for candidate in wikis or []:
+        if not isinstance(candidate, dict):
+            continue
+        wiki_id = str(candidate.get("wiki_id") or "")
+        text = f"{wiki_id} {candidate.get('wiki_title') or ''}".lower()
+        for separator in "-_/.":
+            text = text.replace(separator, " ")
+        score = sum(1 for word in text.split() if len(word) >= 3 and word in lowered)
+        if score > best_score:
+            best, best_score = wiki_id, score
+    if not best and len(wikis or []) == 1:
+        candidate = (wikis or [])[0]
+        best = str(candidate.get("wiki_id") or "") if isinstance(candidate, dict) else ""
+    return {"success": True, "wiki_id": best or "NONE"}
+
+
 FIXTURE_TOOLS = {
     "generate_wiki": generate_wiki,
     "ask": ask,
     "deep_research": deep_research,
+    "resolve_wiki": resolve_wiki,
 }
 
 

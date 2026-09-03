@@ -168,6 +168,18 @@ def _install_job_path() -> None:
     _JOB_PATH_INSTALLED = True
 
 
+def wiki_query_tools() -> dict[str, Callable[..., Any]]:
+    """The wiki_query family's engine-side tools.
+
+    Imported lazily for the same reason everything else here is: a default
+    build carries no langchain, and importing it at module scope would make
+    an engine-less deployment fail to boot rather than refuse per tool.
+    """
+    from .wiki_query import WIKI_QUERY_TOOLS  # noqa: PLC0415
+
+    return WIKI_QUERY_TOOLS
+
+
 _BOUND_HOST_CACHE: dict[type, type] = {}
 
 
@@ -213,6 +225,15 @@ class LegacyToolRunner:
                 return self._tools[name]
             except KeyError:
                 raise FileNotFoundError(f"Unknown tool: {name}") from None
+
+        # The wiki_query family's resolver is OURS, not the copied engine's:
+        # it is a port of methods/invoke.py::_resolve_wiki_with_llm, which
+        # lived in the handler rather than in plugin_implementation/, so it
+        # is not in the digest-guarded copy and must not be added to it.
+        # It needs no engine closure beyond a langchain chat model, so it is
+        # bound before the copied tool layer is imported at all.
+        if name in wiki_query_tools():
+            return wiki_query_tools()[name]
 
         # Imported here, not at module scope: the default image does not carry
         # the engine closure, and importing it at startup would make an

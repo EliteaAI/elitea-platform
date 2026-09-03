@@ -61,6 +61,7 @@ func NewRoute(
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
 	credentials *CredentialResolver,
+	toolkits ToolkitReader,
 	minter CallbackMinter,
 	logger *slog.Logger,
 ) (*Route, error) {
@@ -79,7 +80,7 @@ func NewRoute(
 	// would do so having already passed authentication and permissions, which
 	// is the point at which a defect stops looking like a defect.
 	rewriter, err := NewInvokeRewriter(
-		credentials, minter, cfg.CallbackBaseURL, cfg.CallbackTokenTTL)
+		credentials, toolkits, minter, cfg.CallbackBaseURL, cfg.CallbackTokenTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -107,8 +108,13 @@ func NewRoute(
 		// The handler is the shared one; only the rewrite is DeepWiki's.
 		Invoke: material.Invocation{
 			Provider: "DeepWiki",
-			Rewrite:  rewriter.Rewrite,
-			Forward:  proxy.Forward,
+			// PER TOOLKIT, not one rewrite for all three: `Wikis` names a
+			// code toolkit, `wikis_query` names a Wikis toolkit, and
+			// `wiki_query` names nothing at all (wikis.go). One rewrite
+			// requiring code_toolkit refused the last two outright.
+			RewriteFor: rewriter.For,
+			Rewrite:    rewriter.Rewrite,
+			Forward:    proxy.Forward,
 			Path: func(r *http.Request) string {
 				return providerInvokePath(
 					chi.URLParam(r, "toolkit_name"), chi.URLParam(r, "tool_name"))
@@ -146,11 +152,7 @@ func (route *Route) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // principal carries no owning user; llmproxy omits the header rather than
 // signing a blank one.
 func userIDFrom(r *http.Request) string {
-	principal, ok := auth.RuntimePrincipalFromContext(r.Context())
-	if !ok {
-		return ""
-	}
-	if owner, ok := principal.OwningUserID(); ok {
+	if owner := material.OwnerID(r); owner > 0 {
 		return strconv.FormatInt(owner, 10)
 	}
 	return ""

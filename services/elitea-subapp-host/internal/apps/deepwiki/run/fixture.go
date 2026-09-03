@@ -111,7 +111,46 @@ func FixtureTools(step time.Duration) map[string]Tool {
 		"generate_wiki": paced("generate_wiki", fixtureGenerateWiki),
 		"ask":           paced("ask", fixtureAsk),
 		"deep_research": paced("deep_research", fixtureDeepResearch),
+		ResolveWikiTool: paced(ResolveWikiTool, fixtureResolveWiki),
 	}
+}
+
+// fixtureResolveWiki stands in for the engine's LLM resolver, and it is
+// deliberately the ONLY canned part of the wiki_query family: the registry
+// read, the entry lookup, the repo_config, the delete — all of that runs
+// against the real bucket even under RUNNER=fixture, because those are the
+// steps a fixture that canned them would stop proving anything about.
+//
+// The match is word overlap between the question and each candidate's id
+// and title, which is what the model is being asked for and is decidable
+// without one. No overlap and more than one candidate is "NONE", the same
+// answer the real resolver gives when it cannot choose.
+func fixtureResolveWiki(arguments map[string]any) map[string]any {
+	question := strings.ToLower(str(arguments["question"]))
+	candidates, _ := arguments["wikis"].([]any)
+	best, bestScore := "", 0
+	for _, raw := range candidates {
+		candidate := object(raw)
+		id := str(candidate["wiki_id"])
+		score := 0
+		for _, word := range strings.FieldsFunc(strings.ToLower(id+" "+str(candidate["wiki_title"])), func(r rune) bool {
+			return r == '-' || r == '_' || r == '/' || r == ' ' || r == '.'
+		}) {
+			if len(word) >= 3 && strings.Contains(question, word) {
+				score++
+			}
+		}
+		if score > bestScore {
+			best, bestScore = id, score
+		}
+	}
+	if best == "" && len(candidates) == 1 {
+		best = str(object(candidates[0])["wiki_id"])
+	}
+	if best == "" {
+		return map[string]any{"success": true, "wiki_id": "NONE"}
+	}
+	return map[string]any{"success": true, "wiki_id": best}
 }
 
 func fixtureGenerateWiki(arguments map[string]any) map[string]any {
@@ -190,10 +229,31 @@ func fixtureDeepResearch(arguments map[string]any) map[string]any {
 // its progress by step, with the egress policy and the callback CA from
 // the host's settings.
 func NewFixtureRunner(settings spi.Settings, step time.Duration) *Runner {
+	transport := ArtifactClientFrom(settings.TLSCAFile)
+	canned := FixtureTools(step)
+	tools := map[string]Tool{}
+	for name, tool := range canned {
+		if name == ResolveWikiTool {
+			continue
+		}
+		tools[name] = tool
+	}
+	// The wiki_query family reads and deletes the REAL bucket here too. The
+	// fixture runner exists to prove the whole generate → land → read path
+	// without an engine; a canned list_wikis would list wikis the bucket
+	// does not hold, and a canned delete_wiki would report a deletion that
+	// never happened — which is the one thing the browser journeys check.
+	for name, tool := range WikiQueryTools(transport, WikiQueryDeps{
+		Resolve:      canned[ResolveWikiTool],
+		Ask:          canned["ask"],
+		DeepResearch: canned["deep_research"],
+	}) {
+		tools[name] = tool
+	}
 	return &Runner{
 		RunnerName: "fixture",
-		Tools:      FixtureTools(step),
+		Tools:      tools,
 		Egress:     spi.ParseEgressPolicy(settings.GitAllowlist),
-		Artifacts:  ArtifactClientFrom(settings.TLSCAFile),
+		Artifacts:  transport,
 	}
 }

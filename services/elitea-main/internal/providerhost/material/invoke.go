@@ -38,6 +38,17 @@ type Invocation struct {
 	// Status maps a rewrite failure to a status a caller can act on.
 	Status func(error) (int, string)
 	Logger *slog.Logger
+	// RewriteFor, when set, CHOOSES the rewrite from the toolkit and tool
+	// names in the path, and Rewrite is then the fallback for a pair it
+	// does not recognise.
+	//
+	// It exists because one provider's toolkits do not all carry the same
+	// references: DeepWiki's `Wikis` names a code toolkit, its `wikis_query`
+	// names a Wikis toolkit, and its `wiki_query` names nothing at all — it
+	// reads a bucket. One rewrite for all three would have to make every
+	// reference optional, and "optional" is how a body that names no
+	// credential gets forwarded to a tool that needs one.
+	RewriteFor func(toolkitName, toolName string) Rewriter
 	// Tools, when set, are the only tool names this handler rewrites for.
 	// Every other tool forwards plainly — rewriting a body that names no
 	// credential would mint a callback grant for work that asks for none.
@@ -86,7 +97,23 @@ func (in Invocation) Serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rewritten, grant, err := in.Rewrite(r.Context(), r.Body, projectID, userID)
+	rewrite := in.Rewrite
+	if in.RewriteFor != nil {
+		if chosen := in.RewriteFor(chi.URLParam(r, "toolkit_name"), chi.URLParam(r, "tool_name")); chosen != nil {
+			rewrite = chosen
+		}
+	}
+	if rewrite == nil {
+		// A handler with no rewrite at all would forward a body carrying
+		// references the provider cannot read, having already passed
+		// authentication and permissions — the point at which a defect
+		// stops looking like one.
+		WriteError(w, http.StatusServiceUnavailable,
+			fmt.Sprintf("%s cannot prepare this invocation.", in.Provider))
+		return
+	}
+
+	rewritten, grant, err := rewrite(r.Context(), r.Body, projectID, userID)
 	if err != nil {
 		Revoke(r.Context(), in.Minter, logger, userID, grant.UUID)
 		status, message := in.Status(err)
