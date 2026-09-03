@@ -65,12 +65,16 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Make room for the images and the node
-        # Same recipe as deepwiki-real-engine.yml: the runner's preinstalled
-        # toolchains are ~10 GB nothing here uses.
+        # The runner's preinstalled toolchains are ~10 GB nothing here uses.
+        # NOT `$AGENT_TOOLSDIRECTORY`: on GitHub's runners that is the whole
+        # /opt/hostedtoolcache, and helm/kind-action installs kind and kubectl
+        # INTO it — the first run of this job removed it and the action died
+        # with "Cache directory '/opt/hostedtoolcache' does not exist". Only
+        # the CodeQL bundle under it goes.
         run: |
           df -h / | tail -1
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache/CodeQL}" \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
             || echo "::warning::could not remove every preinstalled toolchain; continuing"
           df -h / | tail -1
 
