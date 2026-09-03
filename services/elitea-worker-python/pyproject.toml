@@ -88,7 +88,7 @@ indexing-current = [
   "langgraph-checkpoint==2.1.2",
   "langgraph-prebuilt==1.0.7",
   "langdetect==1.0.9",
-  "lxml==6.1.0",
+  "lxml==5.2.2",
   "mammoth==1.9.0",
   "markdownify==1.1.0",
   "msrest==0.7.1",
