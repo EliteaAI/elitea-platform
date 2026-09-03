@@ -28,18 +28,26 @@ on:
   pull_request:
     paths:
       - "deploy/helm/**"
+      # Render scripts and prose are helm-lint's business, not an install's.
+      - "!deploy/helm/tests/**"
+      - "!deploy/helm/**/*.md"
       - "deploy/kind/**"
       - "deploy/scripts/gen-runtime-certs.sh"
       - "services/elitea-main/internal/runtimecomposition/**"
+      # The bake step reads its targets, contexts and EXTRAS from here.
+      - "docker-bake.hcl"
       - ".github/workflows/helm-install-smoke.yml"
   push:
     branches:
       - main
     paths:
       - "deploy/helm/**"
+      - "!deploy/helm/tests/**"
+      - "!deploy/helm/**/*.md"
       - "deploy/kind/**"
       - "deploy/scripts/gen-runtime-certs.sh"
       - "services/elitea-main/internal/runtimecomposition/**"
+      - "docker-bake.hcl"
       - ".github/workflows/helm-install-smoke.yml"
   schedule:
     # Sunday 05:23 UTC, after the Saturday Dependabot slot and its merges.
@@ -59,33 +67,35 @@ jobs:
     runs-on: ubuntu-latest
     # A cold run is a kind cluster, cert-manager, three image builds warmed by
     # the shared layer cache, six side-loads, the chart's hook Jobs and one
-    # fixture generation; measured locally at ~2.5 min plus the builds.
+    # fixture generation. Measured on the first green run (2026-09-03):
+    # the whole job in under 15 min with the three images warm from the
+    # shared cache, seven side-loads (three built, four third-party).
     timeout-minutes: 40
+    env:
+      # The cache-write policy, stated once: a push to main exports every
+      # layer, everything else (pull requests, the weekly schedule — which
+      # also carries the main ref — and a dispatch) exports final layers only.
+      # Same rule as .github/actions/build-stack-images' `cache-write` input.
+      LAYER_MODE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'max' || 'min' }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Make room for the images and the node
-        # The runner's preinstalled toolchains are ~10 GB nothing here uses.
-        # NOT `$AGENT_TOOLSDIRECTORY`: on GitHub's runners that is the whole
-        # /opt/hostedtoolcache, and helm/kind-action installs kind and kubectl
-        # INTO it — the first run of this job removed it and the action died
-        # with "Cache directory '/opt/hostedtoolcache' does not exist". Only
-        # the CodeQL bundle under it goes.
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
-            || echo "::warning::could not remove every preinstalled toolchain; continuing"
-          df -h / | tail -1
+      # No disk-clearing step: the three images (the engine sidecar without
+      # its torch-sized `engine` extra), four pinned third-party images and a
+      # kind node are ~3 GB against the runner's ~21 GB free. The first version
+      # purged $AGENT_TOOLSDIRECTORY — the whole /opt/hostedtoolcache on
+      # GitHub's runners — and helm/kind-action, which installs INTO it, died.
 
       - uses: docker/setup-buildx-action@v4
         id: buildx
 
       - name: Build the three images the chart installs (shared layer cache)
-        # Under the tags kind-stack.sh looks for, so its own build step finds
-        # them present and skips. The same scopes the E2E stacks, the image
-        # scan and the release share; mode=min off main, per the repository's
-        # cache-write policy (.github/actions/build-stack-images).
+        # Under the tags kind-stack.sh looks for (KIND_IMAGE_TAG default
+        # `kind`, engine `kind-engine`), so its own build step finds them
+        # present and skips; the tags, the `e2e` target and the storage
+        # EXTRAS restate deploy/kind/kind-stack.sh's defaults and must move
+        # with them. The same scopes the E2E stacks, the image scan and the
+        # release share; the write mode is LAYER_MODE above.
         uses: docker/bake-action@v6
         with:
           source: .
@@ -102,13 +112,27 @@ jobs:
             elitea-main.target=e2e
             elitea-main.tags=ghcr.io/elitea-ng/elitea-main:kind
             elitea-main.cache-from=type=gha,scope=elitea-main-linux-amd64
-            elitea-main.cache-to=type=gha,mode=${{ github.ref == 'refs/heads/main' && 'max' || 'min' }},scope=elitea-main-linux-amd64
+            elitea-main.cache-to=type=gha,mode=${{ env.LAYER_MODE }},scope=elitea-main-linux-amd64
             elitea-subapp-host.tags=ghcr.io/elitea-ng/elitea-subapp-host:kind
             elitea-subapp-host.cache-from=type=gha,scope=elitea-subapp-host-linux-amd64
-            elitea-subapp-host.cache-to=type=gha,mode=${{ github.ref == 'refs/heads/main' && 'max' || 'min' }},scope=elitea-subapp-host-linux-amd64
+            elitea-subapp-host.cache-to=type=gha,mode=${{ env.LAYER_MODE }},scope=elitea-subapp-host-linux-amd64
             elitea-deepwiki.tags=ghcr.io/elitea-ng/elitea-deepwiki:kind-engine
             elitea-deepwiki.cache-from=type=gha,scope=elitea-deepwiki-linux-amd64
-            elitea-deepwiki.cache-to=type=gha,mode=${{ github.ref == 'refs/heads/main' && 'max' || 'min' }},scope=elitea-deepwiki-linux-amd64
+            elitea-deepwiki.cache-to=type=gha,mode=${{ env.LAYER_MODE }},scope=elitea-deepwiki-linux-amd64
+
+      - name: Pin Helm to the version helm-lint renders with
+        # Same pin as helm-lint.yml, so the chart is INSTALLED by the Helm
+        # that RENDERED it; the runner image's bundled helm is whatever it is.
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.16.0
+
+      - name: The runtime-material minting needs python3 'cryptography'
+        # deploy/scripts/gen-runtime-certs.sh mints Ed25519 keys with it and
+        # exits with a pip hint when it is missing — after the cluster and
+        # the images, which is the wrong moment to learn it. Probed, not
+        # assumed: the runner image ships it today.
+        run: python3 -c "import cryptography" 2>/dev/null || python3 -m pip install --quiet cryptography
 
       - name: Create the kind cluster
         # The cluster name is the script's default, so its `ensure_cluster`

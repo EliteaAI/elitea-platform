@@ -57,6 +57,10 @@ WIKI_ID="acme--e2e-generated--main"
 BUCKET="wiki-artifacts"
 
 ENGINE="${KIND_ENGINE:-podman}"
+# Every engine difference is decided HERE, once. podman's `save` needs the
+# archive format spelled out and kind needs the provider override; docker
+# needs neither, and `kind load docker-image` streams straight from its
+# daemon with no archive on disk.
 case "$ENGINE" in
   podman) export KIND_EXPERIMENTAL_PROVIDER=podman ;;
   docker) unset KIND_EXPERIMENTAL_PROVIDER ;;
@@ -128,7 +132,7 @@ INFRA_IMAGES=(
 load_images() {
   say "Loading images into the kind node"
   # What the node already has. Asked ONCE: each side-load is a full
-  # `podman save` plus a containerd import, and the five third-party images
+  # engine `save` plus a containerd import, and the four third-party images
   # alone are ~1.4 GB — re-doing that on every `up` cost more than everything
   # else in this script put together. Set KIND_FORCE_LOAD=1 after rebuilding
   # an image under a tag the node already carries.
@@ -144,7 +148,9 @@ except Exception:
     pass' || true)"
   fi
   local archive
-  archive="$(mktemp -t elitea-kind-XXXXXX.tar)"
+  # An explicit template: BSD mktemp reads `-t X` as a prefix, GNU as a
+  # template, and this repository has been bitten by that difference.
+  archive="$(mktemp "${TMPDIR:-/tmp}/elitea-kind-XXXXXX.tar")"
   for image in "$MAIN_IMAGE" "$HOST_IMAGE" "$ENGINE_IMAGE" "${INFRA_IMAGES[@]}"; do
     if printf '%s\n' "$present" | grep -qxF "$image"; then
       note "$image already in the node"
@@ -155,14 +161,15 @@ except Exception:
       "$ENGINE" pull "$image" >/dev/null
     fi
     note "loading $image"
-    # `kind load docker-image` shells out to the provider; the archive route
-    # is the one that behaves identically on podman and docker.
-    if [ "$ENGINE" = "podman" ]; then
-      podman save --format docker-archive -o "$archive" "$image"
+    if [ "$ENGINE" = "docker" ]; then
+      # Streams from the daemon into the node: no second copy on disk.
+      kind load docker-image "$image" --name "$CLUSTER" >/dev/null
     else
-      docker save -o "$archive" "$image"
+      # `kind load docker-image` shells out to docker; under podman the
+      # archive route is the one that works.
+      podman save --format docker-archive -o "$archive" "$image"
+      kind load image-archive "$archive" --name "$CLUSTER" >/dev/null
     fi
-    kind load image-archive "$archive" --name "$CLUSTER" >/dev/null
   done
   rm -f "$archive"
 }

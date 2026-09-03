@@ -151,7 +151,12 @@ echo "→ Asserting the stack (gateway mTLS, runtime plane, #326 edge strip)…"
 CHECK_LOG="$(mktemp "${TMPDIR:-/tmp}/chat-stream-check.XXXXXX")"
 # `--allow-skips` is a STATED choice, and it is stated here rather than assumed
 # inside `check` (#429). This journey seeds the chat plane and not the index
-# plane, so `check`'s index-toolkit assertion cannot run. Since #429 an
+# plane, so `check`'s index-toolkit assertion cannot run. On the real-model
+# lane (LLM_PROVIDER=vllm at llm-real) two more are given up, and `check`
+# names each: the embedding-path check and the elitea-sdk client check both
+# assert against llm-mock's request journal, nonce echo and 1536-wide
+# vectors, which a real upstream does not produce; the hops themselves are
+# still asserted (completion, vector width, model list). Since #429 an
 # unmeasured assertion exits non-zero by default, which is right for an operator
 # and wrong for this caller alone.
 #
@@ -269,25 +274,22 @@ E2E_WORKER="${STANDALONE_WORKER:-python}"
 # above it — the same stack, seeds and assertions — for the provider-backed
 # DeepWiki journeys.
 PLAYWRIGHT_PROJECT="${PLAYWRIGHT_PROJECT:-chat-stream}"
-# E2E_CHAT_MODEL names the model the specs expect the picker to offer. Unset,
-# the specs default to the mock's name; the real-model lane sets it to the
-# seeded `vllm/<model>` row. Forwarded explicitly because the container run
-# below starts from an EMPTY environment — a variable exported on the host and
-# not listed here reaches the host path and silently not the container path.
-# Forwarded ONLY when set: `-e E2E_CHAT_MODEL=""` would define it as the empty
-# string inside the container, and the specs' `??` / `=== undefined` reads
-# treat '' as "a real model is configured" — which silently dropped the echo
-# assertions on the mock lanes while CI stayed green.
-CHAT_MODEL_ENV=""
-[ -n "${E2E_CHAT_MODEL:-}" ] && CHAT_MODEL_ENV="-e E2E_CHAT_MODEL=${E2E_CHAT_MODEL}"
-# shellcheck disable=SC2086 -- REPEAT_ARGS and CHAT_MODEL_ENV are deliberately word-split
+# E2E_CHAT_MODEL names the model the specs expect the picker to offer. Unset
+# or empty, the specs default to the mock's name (they read it with `||`, so
+# '' is "unset" — the first version passed '' through and the specs' `??`
+# reads took it for a configured real model); the real-model lane sets it to
+# the seeded `vllm/<model>` row. Forwarded explicitly because the container
+# run below starts from an EMPTY environment — a variable exported on the
+# host and not listed here reaches the host path and silently not the
+# container path.
+# shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
     -v "$WEB_DIR":/work -w /work \
     -e CI="${CI:-}" \
     -e E2E_REUSE_STACK=1 \
     -e E2E_WORKER="$E2E_WORKER" \
-    $CHAT_MODEL_ENV \
+    -e E2E_CHAT_MODEL="${E2E_CHAT_MODEL:-}" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
@@ -295,6 +297,6 @@ else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
   E2E_WORKER="$E2E_WORKER" \
-    env ${E2E_CHAT_MODEL:+E2E_CHAT_MODEL="$E2E_CHAT_MODEL"} \
+  E2E_CHAT_MODEL="${E2E_CHAT_MODEL:-}" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 fi

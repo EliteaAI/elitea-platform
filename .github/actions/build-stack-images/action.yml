@@ -83,7 +83,11 @@ runs:
       shell: bash
       env:
         WRITE: ${{ inputs.cache-write }}
+        # The mount-cache key, computed ONCE: a writer and a reader that
+        # spelled it separately could drift apart and never hit each other.
+        MOUNT_KEY: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
       run: |
+        echo "mount-key=$MOUNT_KEY" >> "$GITHUB_OUTPUT"
         if [ "$WRITE" = "true" ]; then
           echo "write-mounts=true" >> "$GITHUB_OUTPUT"; echo "layer-mode=max" >> "$GITHUB_OUTPUT"
         else
@@ -103,13 +107,17 @@ runs:
     # action). So a writer uses the full `actions/cache@v4` — whose save is a
     # post step — registered BEFORE the dance: post steps run in reverse, the
     # dance extracts first, the cache saves second. Readers restore only.
+    # The cost, stated: actions/cache saves only when the JOB succeeds, so a
+    # main run whose journey flakes after a good bake saves nothing and the
+    # next main run rebuilds the mounts cold. Accepted — the alternative was
+    # an entry that was never populated at all.
     - name: Restore and later save BuildKit cache mounts (writers)
       if: steps.policy.outputs.write-mounts == 'true'
       id: mounts-rw
       uses: actions/cache@v4
       with:
         path: .buildkit-mounts
-        key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
+        key: ${{ steps.policy.outputs.mount-key }}
         restore-keys: |
           buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-
     - name: Restore BuildKit cache mounts (readers)
@@ -118,7 +126,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: .buildkit-mounts
-        key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
+        key: ${{ steps.policy.outputs.mount-key }}
         restore-keys: |
           buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-
 
@@ -158,7 +166,12 @@ runs:
         n_from=0
         while IFS= read -r f; do
           [ -n "$f" ] || continue
-          n_from=$(( n_from + $(grep -c 'cache-from = \["type=gha,scope=' "$f" || true) ))
+          this=$(grep -c 'cache-from = \["type=gha,scope=' "$f" || true)
+          # Per FILE, not only in total: a file that contributes zero scopes
+          # lowers both counts equally and the total check below stays green
+          # while that file's image builds with no layer cache at all.
+          [ "$this" -gt 0 ] || { echo "::error::$f declares no cache-from scope; nothing to derive a cache-to from"; exit 1; }
+          n_from=$(( n_from + this ))
           # One `target "<name>" { cache-to = [...] }` block per cache-from line,
           # named after the target block the line sits in.
           awk -v mode="$MODE" '

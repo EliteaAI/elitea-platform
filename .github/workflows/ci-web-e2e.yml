@@ -596,9 +596,9 @@ jobs:
     # Measured in the image's own CI on this runner class: 25–43 tok/s
     # generation, so a capped 256-token turn is ~10 s; the Rust lane it
     # mirrors takes ~15 min. The timeout below is the thing that turns a
-    # wedged model into minutes rather than the six-hour default; no other
-    # job in this workflow has one, and this is the one whose upstream can
-    # hang.
+    # wedged model into minutes rather than the six-hour default, and every
+    # job in this workflow now carries one; this is the one whose upstream
+    # can hang.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

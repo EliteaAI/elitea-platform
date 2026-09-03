@@ -1894,18 +1894,25 @@ except Exception as error:
     # client gate below (the running image, not $STANDALONE_WORKER). A stack
     # that holds no embedding row at all still runs the script, which aborts
     # with its own message naming the seed step.
-    # Through standalone_psql_read, whose `|| true` keeps a failing read from
-    # ending `check` under `set -e` with its error hidden; an empty answer
-    # takes the first arm below and RUNS the script.
-    EMB_CRED_API_BASE="$(standalone_psql_read \
+    # The api_base of the credential a catalogue row links to, for the row
+    # the predicate selects. Through standalone_psql_read, whose `|| true`
+    # keeps a failing read from ending `check` under `set -e` with its error
+    # hidden; an empty answer takes the first arm below and RUNS the script.
+    # Shared by this gate and the SDK gate further down, so the join and the
+    # mock's address are spelled once.
+    LLM_MOCK_API_BASE="http://llm-mock:8090"
+    linked_credential_api_base() {
+      standalone_psql_read \
         "SELECT c.data->>'api_base'
-           FROM p_${LLM_PROJECT:-1}.configuration e
+           FROM p_${LLM_PROJECT:-1}.configuration m
            JOIN p_${LLM_PROJECT:-1}.configuration c
              ON c.section = 'ai_credentials'
-            AND c.elitea_title = e.data->'ai_credentials'->>'elitea_title'
-          WHERE e.section = 'embedding' AND e.elitea_title = 'standalone-embedding'" | tr -d '[:space:]')"
+            AND c.elitea_title = m.data->'ai_credentials'->>'elitea_title'
+          WHERE $1" | tr -d '[:space:]'
+    }
+    EMB_CRED_API_BASE="$(linked_credential_api_base "m.section = 'embedding' AND m.elitea_title = 'standalone-embedding'")"
     case "${EMB_CRED_API_BASE%/}" in
-      ""|http://llm-mock:8090)
+      ""|"$LLM_MOCK_API_BASE")
         if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
           ok "the embedding path check passed all of its own assertions"
         else
@@ -1941,26 +1948,21 @@ except Exception as error:
     # Rust runtime that image is a Rust binary with no python and no SDK — the
     # SDK is not part of that leg's execution path at all, so running it there
     # can only measure the image's lack of python3 (measured: "exec: python3:
-    # executable file not found"). The gate is the running container's image,
-    # not $STANDALONE_WORKER, so a mislabelled invocation cannot dodge it.
-    # SDK conformance still rides every python-worker leg.
+    # executable file not found"). That gate is the running container's image,
+    # not $STANDALONE_WORKER, so a mislabelled invocation cannot dodge it; the
+    # second gate below is the seeded upstream, read from the database.
+    # SDK conformance still rides every python-worker leg on the mock.
     SDK_WORKER_IMAGE="$($ENGINE ps --filter "name=${PROJECT}" --format '{{.Names}} {{.Image}}' 2>/dev/null | sed -n 's/^[^ ]*elitea-worker[^ ]* //p' | head -1)"
-    # Same gate as the embedding path check above, on the CHAT credential:
-    # sdk-client-check.py asserts the nonce echo, llm-mock's request journal
-    # and a 1536-wide embedding — the mock's protocol. Against any other
-    # upstream (the `real-llm` profile) those assertions fail by construction
-    # while the SDK itself is fine, so the check is a named skip there.
-    SDK_CRED_API_BASE="$(standalone_psql_read \
-        "SELECT c.data->>'api_base'
-           FROM p_${LLM_PROJECT:-1}.configuration m
-           JOIN p_${LLM_PROJECT:-1}.configuration c
-             ON c.section = 'ai_credentials'
-            AND c.elitea_title = m.data->'ai_credentials'->>'elitea_title'
-          WHERE m.section = 'llm' AND m.type = 'llm_model' AND m.status_ok = true
-          ORDER BY m.id LIMIT 1" | tr -d '[:space:]')"
+    # A second gate, on the upstream: sdk-client-check.py asserts the nonce
+    # echo, llm-mock's request journal and a 1536-wide embedding — the mock's
+    # protocol. Against any other upstream (the `real-llm` profile) those
+    # assertions fail by construction while the SDK itself is fine, so the
+    # check is a named skip there. Read for the SAME chat row this check's
+    # own completion probe used (CHAT_MODEL_TITLE), not an arbitrary one.
+    SDK_CRED_API_BASE="$(linked_credential_api_base "m.section = 'llm' AND m.elitea_title = '${CHAT_MODEL_TITLE:-}'")"
     if [ -n "$SDK_WORKER_IMAGE" ] && [[ "$SDK_WORKER_IMAGE" == *worker-rust* ]]; then
       skip "the elitea-sdk client check does not apply: the worker is the native runtime (${SDK_WORKER_IMAGE}), which carries no SDK"
-    elif [ -n "$SDK_CRED_API_BASE" ] && [ "${SDK_CRED_API_BASE%/}" != "http://llm-mock:8090" ]; then
+    elif [ -n "$SDK_CRED_API_BASE" ] && [ "${SDK_CRED_API_BASE%/}" != "$LLM_MOCK_API_BASE" ]; then
       skip "the elitea-sdk client check does not apply: its nonce, journal and wire-model assertions are written against llm-mock's protocol, and this stack's chat credential points at ${SDK_CRED_API_BASE}"
     else
     sdk_check_log="$(mktemp)"

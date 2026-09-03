@@ -4,7 +4,7 @@ name: CI — Web
 # at cutover step 8 — until then both run side by side. Every job here is
 # node-only (plus go for `parity`), runs in a couple of minutes, and blocks
 # PRs: quality (typecheck + lint), storybook, the sharded unit-test + coverage
-# jobs, the gate-* family, build, image, parity.
+# jobs, the gate-* family, build, parity.
 #
 # JOB COUNT IS A BUDGET. The organisation is on the GitHub free plan: 20
 # concurrent jobs for the WHOLE org. This workflow used to start 37 runner jobs
@@ -42,7 +42,6 @@ on:
       - "tools/uictl/**"
       - "services/elitea-main/**"
       - "deploy/**"
-      - "docker-bake.hcl"
       - ".github/workflows/ci-web.yml"
   push:
     branches:
@@ -52,7 +51,6 @@ on:
       - "tools/uictl/**"
       - "services/elitea-main/**"
       - "deploy/**"
-      - "docker-bake.hcl"
       - ".github/workflows/ci-web.yml"
     # NO `tags: v*` — issue #309, Gate 2. publish.yml cuts release tags with
     # `secrets.GITHUB_TOKEN`, and GitHub does not start workflow runs for refs

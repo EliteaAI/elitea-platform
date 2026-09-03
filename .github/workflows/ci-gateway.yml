@@ -132,9 +132,6 @@ jobs:
           path: |
             services/elitea-llm-gateway/coverage.out
             services/elitea-llm-gateway/internal/llmproxy/coverage.xml
-      # Folded in from the former `build` job: `go test` compiles the packages
-      # it tests, not cmd/elitea-llm-gateway, and a main that stops compiling
-      # must still fail here. Production images are built from the
-      # Containerfile, not here.
-      - name: Build elitea-llm-gateway
-        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-llm-gateway ./cmd/elitea-llm-gateway
+      # The former `build` job is gone: `go vet ./...` above type-checks
+      # cmd/elitea-llm-gateway too, so a main that stops compiling already
+      # fails here. Production images are built from the Containerfile.
