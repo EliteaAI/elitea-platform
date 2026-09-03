@@ -80,7 +80,7 @@
 import { expect, test } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
-import { AUTOTEST_PREFIX, expectStoredAssistantAnswer } from '../fixtures/api';
+import { AUTOTEST_PREFIX, expectStoredAssistantAnswer, fillComposer } from '../fixtures/api';
 
 const APPLICATIONS_RE = /\/elitea_core\/applications\/prompt_lib\/(\d+)/;
 /** Matched WITHOUT a project id: the chat persona works inside its own personal project (#290). */
@@ -338,25 +338,17 @@ test('a pipeline authored on the pipelines create page runs its graph and answer
   ).toBe('pipeline');
 
   // ── 4. Send, and require the turn to be ADMITTED ───────────────────────
-  // The composer is made ready BEFORE the response budget is armed. Armed
-  // above it, the 45 s covered `toBeEditable`'s own 20 s and the fill as well
-  // as the request, so a stack that was merely slow to release the composer
-  // spent the budget before the send even happened — and the failure it then
-  // reported was "the start was never admitted", about a turn that had not
-  // been asked for yet. Observed in run 33810201650: `waitForResponse` timed
-  // out and the click on the next line died with "Test ended".
-  //
-  // Arming it immediately before the click is still race-free: Playwright
-  // begins buffering matching responses when the promise is created, and the
-  // click cannot produce one earlier than that.
-  const input = page.getByTestId('chat-message-input');
-  await expect(input).toBeEditable({ timeout: 20_000 });
-  await input.fill(`autotest pipeline ${Date.now()}`);
+  // The composer is settled by `fillComposer` — which retries the fill,
+  // because this pane discards one that lands while it is still resolving its
+  // conversation, and run 33812152063 spent this test's whole budget clicking
+  // at the Send control that absence leaves unrendered. The response budget is
+  // armed only once that has resolved; see the helper for both halves.
+  const sendButton = await fillComposer(page, `autotest pipeline ${Date.now()}`);
   const started = page.waitForResponse(
     (r) => START_RE.test(r.url()) && r.request().method() === 'POST',
     { timeout: 45_000 },
   );
-  await page.getByTestId('chat-send-button').click();
+  await sendButton.click();
 
   const startResponse = await started;
   // Spelled out because 422 is the status every admission refusal produces and
