@@ -9,6 +9,7 @@
  * correct and the wiring is the bug (#597).
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ComponentProps } from 'react';
 import { ThemeProvider } from '@mui/material/styles';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -109,12 +110,22 @@ afterEach(() => {
 
 const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
-function open() {
+/**
+ * Renders the drawer with everything it needs, `overrides` on top.
+ *
+ * The QueryClientProvider is not optional and is not this test file's
+ * boilerplate: the drawer reads its stored conversation through react-query,
+ * so a bare `render` throws "No QueryClient set" before a single assertion
+ * runs — which is how a drawer test for an unrelated feature (the attachment
+ * picker) failed on this branch until it came through here too. One helper,
+ * so the next one cannot miss it.
+ */
+function open(overrides: Partial<ComponentProps<typeof WikiChatDrawer>> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
       <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
-        <WikiChatDrawer open onClose={vi.fn()} target={TARGET} newId={newId} />
+        <WikiChatDrawer open onClose={vi.fn()} target={TARGET} newId={newId} {...overrides} />
       </ThemeProvider>
     </QueryClientProvider>,
   );
@@ -311,6 +322,51 @@ describe('the drawer', () => {
     await user.click(screen.getByRole('button', { name: 'Clear the conversation' }));
     expect(screen.queryByText('an old question')).toBeNull();
   });
+
+  it('sends the pages the reader attached, with the open version pinned', async () => {
+    // THE WIRING, which is the whole reason this test is here rather than in
+    // the picker's own file. The picker holds a selection, the drawer folds it
+    // into the target, and the API module renders it into `parameters` — three
+    // correct halves and no proof any of them are joined. #597 is that defect.
+    const user = userEvent.setup();
+    let sent: Record<string, unknown> | undefined;
+    server.use(
+      http.post(`${BASE}/deepwiki/tools/:projectId/:toolkit/:tool/invoke`, async ({ request }) => {
+        const body = (await request.json()) as { parameters: Record<string, unknown> };
+        sent = body.parameters;
+        return HttpResponse.json({ invocation_id: 'inv-1' });
+      }),
+      http.get(`${BASE}/deepwiki/invocations/:projectId/:toolkit/:tool/:invocation`, () =>
+        HttpResponse.json({ status: 'InProgress' }),
+      ),
+    );
+
+    open({
+      target: { ...TARGET, wikiVersionId: 'fixture-1' },
+      contextPages: ['wiki_pages/overview/getting-started.md', 'wiki_pages/components/storage.md'],
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Attach wiki pages' }));
+    await user.click(screen.getByText('components / storage'));
+    await user.keyboard('{Escape}');
+
+    await user.type(screen.getByLabelText('Question'), 'Where do notes live?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(sent).toMatchObject({
+        context_paths: ['wiki_pages/components/storage.md'],
+        context_wiki_version_id: 'fixture-1',
+      });
+    });
+  });
+
+  it('offers no attachment control for a wiki with no pages', () => {
+    // Not a disabled button: a picker with nothing in it reads as a broken
+    // feature, and every wiki has pages once one has been generated.
+    open();
+    expect(screen.queryByRole('button', { name: 'Attach wiki pages' })).toBeNull();
+  });
 });
 
 /*
@@ -471,55 +527,4 @@ describe('the drawer restores a conversation from the server', () => {
     expect(headers[0]!.get('X-Elitea-Wiki-Toolkit')).toBe('42');
   });
 
-  it('sends the pages the reader attached, with the open version pinned', async () => {
-    // THE WIRING, which is the whole reason this test is here rather than in
-    // the picker's own file. The picker holds a selection, the drawer folds it
-    // into the target, and the API module renders it into `parameters` — three
-    // correct halves and no proof any of them are joined. #597 is that defect.
-    const user = userEvent.setup();
-    let sent: Record<string, unknown> | undefined;
-    server.use(
-      http.post(`${BASE}/deepwiki/tools/:projectId/:toolkit/:tool/invoke`, async ({ request }) => {
-        const body = (await request.json()) as { parameters: Record<string, unknown> };
-        sent = body.parameters;
-        return HttpResponse.json({ invocation_id: 'inv-1' });
-      }),
-      http.get(`${BASE}/deepwiki/invocations/:projectId/:toolkit/:tool/:invocation`, () =>
-        HttpResponse.json({ status: 'InProgress' }),
-      ),
-    );
-
-    render(
-      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
-        <WikiChatDrawer
-          open
-          onClose={vi.fn()}
-          target={{ ...TARGET, wikiVersionId: 'fixture-1' }}
-          contextPages={['wiki_pages/overview/getting-started.md', 'wiki_pages/components/storage.md']}
-          newId={newId}
-        />
-      </ThemeProvider>,
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Attach wiki pages' }));
-    await user.click(screen.getByText('components / storage'));
-    await user.keyboard('{Escape}');
-
-    await user.type(screen.getByLabelText('Question'), 'Where do notes live?');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
-
-    await waitFor(() => {
-      expect(sent).toMatchObject({
-        context_paths: ['wiki_pages/components/storage.md'],
-        context_wiki_version_id: 'fixture-1',
-      });
-    });
-  });
-
-  it('offers no attachment control for a wiki with no pages', () => {
-    // Not a disabled button: a picker with nothing in it reads as a broken
-    // feature, and every wiki has pages once one has been generated.
-    open();
-    expect(screen.queryByRole('button', { name: 'Attach wiki pages' })).toBeNull();
-  });
 });

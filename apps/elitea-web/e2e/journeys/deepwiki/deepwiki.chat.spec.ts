@@ -1,7 +1,8 @@
 /**
  * DWIKI-012 — the wiki chat, through the facade to the provider's `ask`;
  * DWIKI-012b, the same round trip in research mode through `deep_research`;
- * DWIKI-016, a wiki page attached to the question as context.
+ * DWIKI-016, a wiki page attached to the question as context;
+ * DWIKI-017, the conversation surviving a reload and a different browser.
  *
  * The SPI has no token channel (#701): the answer arrives whole with the
  * completed invocation, so this asserts the round trip, the sources and the
@@ -152,7 +153,7 @@ test.describe('DeepWiki chat', () => {
 });
 
 /**
- * DWIKI-016 — the wiki chat's history is the SERVER'S, not this browser's.
+ * DWIKI-017 — the wiki chat's history is the SERVER'S, not this browser's.
  *
  * The drawer used to keep its conversation in `localStorage`, so it was gone
  * on another device, in another browser and on a cleared profile. Both turns
@@ -178,7 +179,7 @@ test.describe('DeepWiki chat history', () => {
 
   test.use({ storageState: STORAGE_STATE.member });
 
-  test('DWIKI-016: a wiki conversation survives a reload and a fresh browser', async ({
+  test('DWIKI-017: a wiki conversation survives a reload and a fresh browser', async ({
     page,
     browser,
   }) => {
