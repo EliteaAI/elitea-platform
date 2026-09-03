@@ -36,6 +36,8 @@ import Stack from '@mui/material/Stack';
  * posture as that source.
  */
 export interface McpAuthRequiredAction {
+  readonly id?: string;
+  readonly authorizationRequestId?: string;
   readonly response_metadata?: {
     readonly resource_metadata?: RawMcpResourceMetadata;
     readonly provided_settings?: McpProvidedSettingsLocal;

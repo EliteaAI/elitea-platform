@@ -6,13 +6,15 @@ use std::time::Duration;
 use adk_rust::tool::{BasicToolset, SimpleToolContext};
 use adk_rust::{ErrorCategory, ErrorComponent, ReadonlyContext, Tool, ToolContext, Toolset};
 use async_trait::async_trait;
+use rmcp::transport::auth::AuthorizationMetadata;
 use serde_json::{Map, Value, json};
 
 use super::delegated_auth::delegated_authorization_requirement;
 use super::mcp::{
     McpConnector, McpMaterializationError, McpMaterializationErrorCode, RemoteMcpConfig,
-    materialize_mcp_toolsets, materialize_mcp_toolsets_with_tokens,
-    materialize_mcp_toolsets_with_tokens_and_authorization, mcp_authorization_required_fixture,
+    authorization_resource_metadata, materialize_mcp_toolsets,
+    materialize_mcp_toolsets_with_tokens, materialize_mcp_toolsets_with_tokens_and_authorization,
+    mcp_authorization_required_fixture,
 };
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::FrozenToolSnapshot;
@@ -93,6 +95,80 @@ fn context() -> Arc<SimpleToolContext> {
             .with_session_id("session-1")
             .with_function_call_id("call-1"),
     )
+}
+
+#[test]
+fn discovered_oauth_metadata_is_bounded_to_the_browser_contract() {
+    let metadata = serde_json::from_value::<AuthorizationMetadata>(json!({
+        "authorization_endpoint": "https://login.example.invalid/oauth/authorize",
+        "token_endpoint": "https://login.example.invalid/oauth/token",
+        "registration_endpoint": "https://login.example.invalid/oauth/register",
+        "issuer": "https://login.example.invalid",
+        "jwks_uri": "https://login.example.invalid/oauth/keys",
+        "scopes_supported": ["mcp:read", "offline_access"],
+        "response_types_supported": ["code"],
+        "code_challenge_methods_supported": ["S256"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "revocation_endpoint": "https://login.example.invalid/oauth/revoke",
+        "client_secret": "must-not-project",
+        "unowned_provider_extension": {"value": true}
+    }))
+    .expect("authorization metadata fixture");
+
+    let projected =
+        authorization_resource_metadata(&metadata, "https://mcp.example.invalid/v1/mcp")
+            .expect("sanitized OAuth metadata");
+    assert_eq!(
+        projected["authorization_servers"],
+        json!(["https://login.example.invalid/"])
+    );
+    assert_eq!(
+        projected["oauth_authorization_server"]["authorization_endpoint"],
+        "https://login.example.invalid/oauth/authorize"
+    );
+    assert_eq!(
+        projected["oauth_authorization_server"]["registration_endpoint"],
+        "https://login.example.invalid/oauth/register"
+    );
+    assert_eq!(
+        projected["oauth_authorization_server"]["grant_types_supported"],
+        json!(["authorization_code", "refresh_token"])
+    );
+    assert_eq!(
+        projected["scopes_supported"],
+        json!(["mcp:read", "offline_access"])
+    );
+    assert!(
+        projected["oauth_authorization_server"]
+            .get("client_secret")
+            .is_none()
+    );
+    assert!(
+        projected["oauth_authorization_server"]
+            .get("unowned_provider_extension")
+            .is_none()
+    );
+}
+
+#[test]
+fn legacy_oauth_metadata_uses_only_the_mcp_server_origin() {
+    let metadata = serde_json::from_value::<AuthorizationMetadata>(json!({
+        "authorization_endpoint": "https://mcp.example.invalid/authorize",
+        "token_endpoint": "https://mcp.example.invalid/token",
+        "registration_endpoint": "https://mcp.example.invalid/register"
+    }))
+    .expect("legacy authorization metadata fixture");
+
+    let projected = authorization_resource_metadata(
+        &metadata,
+        "https://mcp.example.invalid/v1/mcp?tenant=hidden",
+    )
+    .expect("legacy OAuth metadata");
+    assert_eq!(
+        projected["authorization_servers"],
+        json!(["https://mcp.example.invalid"])
+    );
+    assert!(!projected.to_string().contains("tenant"));
 }
 
 struct FixtureConnector {

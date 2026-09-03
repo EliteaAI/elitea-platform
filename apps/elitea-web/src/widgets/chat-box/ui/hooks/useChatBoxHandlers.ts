@@ -9,13 +9,8 @@
  *
  * DISCLOSED GAPS vs. baseline: payloads carry only fields this hook's deps
  * can supply — baseline's `generateMessagePayload`/
- * `generateApplicationStreamingPayload`/`getRegeneratePayload` (llm_settings
- * by participant type) and `McpAuthHelpers.getAllTokens()`/
- * `getServersWithoutTokens()` (`mcp_tokens`/`ignored_mcp_servers`, deep paths
- * in `features/mcps/lib/` not on that slice's public barrel — importing them
- * would violate `no-deep-slice-import-cross-slice`) aren't ported; same gaps
- * `useToolkitChat.types.ts` already records. `user_declined_mcp_servers`
- * (session-only) IS ported. `continueHitl`'s Track-1 "parallel fan-out"
+ * `generateApplicationStreamingPayload`/`getRegeneratePayload` still have
+ * participant-specific gaps. `continueHitl`'s Track-1 "parallel fan-out"
  * decision-batching isn't ported (each decision resumes independently);
  * Track-2's independent fan-out-child resume IS (routes on `childThreadId`).
  *
@@ -28,29 +23,18 @@
  * every approval paused server-side. It never emits after a route that
  * ACCEPTED the resume; that would run the agent twice.
  *
- * MCP authorization still stays on the socket. It would need
- * `agent.continue.authorization.v1`, which
- *    REQUIRES an `authorization_request_id`. Nothing in this app captures that
- *    field off the `mcp_authorization_required` frame yet, and the same
- *    contract refuses the non-empty `user_declined_mcp_servers` this handler
- *    sends.
- *
- * It still reverts its optimistic patch when no transport takes the resume.
+ * Delegated authorization uses its exact REST contract. It never falls back
+ * to the socket because that payload cannot identify the paused invocation.
  */
 
 import { conversationApi } from "@/entities/conversation";
 import type { ChatMessage } from "@/features/chat-messages";
-import { ToolActionStatus } from "@/shared/lib/chat";
 
 import {
   buildChatContinuePayload,
-  buildDeclinedServersList,
   extractCopyableContent,
-  findActionRequiredToolAction,
   findQuestionText,
-  readServerUrl,
   revertContinuation,
-  trackMcpAuthDecision,
   tryEmit,
 } from "./useChatBoxHandlers.helpers";
 import {
@@ -60,7 +44,6 @@ import {
 import type {
   ChatBoxHandlerDeps,
   HitlInterruptAction,
-  ToolActionLike,
   UseChatBoxHandlersResult,
 } from "./useChatBoxHandlers.helpers";
 import {
@@ -70,6 +53,7 @@ import {
   undeliveredText,
 } from "./useChatBoxHandlers.turns";
 import { createRegenerateAnswer } from "./useChatBoxHandlers.regenerate";
+import { resumeMcpAuthorization } from './useChatBoxHandlers.authorization';
 
 /*
  * [#71] `UpdatedMessageItem` and `UploadedAttachmentOutcome` were dropped from
@@ -245,53 +229,16 @@ export function useChatBoxHandlers(
       revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
-  const resumeMcpFlow = (messageId: string, addToIgnoreList = false): void => {
-    const message = deps.chatHistory.find((item) => item.id === messageId);
-    if (!message) return;
-    const authRequiredAction = findActionRequiredToolAction(message);
-    trackMcpAuthDecision(
-      deps.sessionDeclinedMcpServersRef,
-      authRequiredAction,
-      readServerUrl(authRequiredAction),
-      addToIgnoreList,
-    );
-    const question = findQuestionText(deps.chatHistory, message) ?? "Continue";
-    const payload: Record<string, unknown> = {
-      ...buildChatContinuePayload(deps, {
-        messageId,
-        threadId: message.threadId,
-        question,
-      }),
-      user_declined_mcp_servers: buildDeclinedServersList(
-        deps.sessionDeclinedMcpServersRef,
-      ),
-    };
-    setChatHistory((prev) =>
-      prev.map((msg) =>
-        msg.id !== messageId
-          ? msg
-          : {
-              ...msg,
-              isLoading: true,
-              isStreaming: true,
-              toolActions: (
-                (msg.toolActions ?? []) as readonly ToolActionLike[]
-              ).filter(
-                (a) => a.status !== ToolActionStatus.actionRequired,
-              ) as unknown as ChatMessage["toolActions"],
-            },
-      ),
-    );
-    setStreamingInfo(message.questionId ?? messageId);
-    if (
-      !tryEmit(
-        () => emitSocket("chat_continue_predict", payload),
-        "resumeMcpFlow",
-      )
-    ) {
-      revertContinuation(setChatHistory, message, undeliveredText());
-    }
-  };
+  const resumeMcpFlow = (
+    messageId: string,
+    addToIgnoreList = false,
+    authorizationRequestId?: string,
+  ): Promise<void> => resumeMcpAuthorization(
+    deps,
+    messageId,
+    addToIgnoreList ? 'skip' : 'authorize',
+    authorizationRequestId,
+  );
   const continueTokenLimit = async (messageId: string): Promise<void> => {
     const message = deps.chatHistory.find((item) => item.id === messageId);
     if (!message) return;

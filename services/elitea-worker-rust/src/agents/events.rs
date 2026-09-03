@@ -41,7 +41,7 @@ use crate::protocol::node_event::{
 };
 use crate::toolkits::{
     DELEGATED_AUTHORIZATION_METADATA_KEY, DelegatedAuthorizationCatalog,
-    decode_delegated_authorization_requirement,
+    DelegatedAuthorizationRequirement, decode_delegated_authorization_requirement,
 };
 
 const MAX_TOOL_CALLS_PER_MODEL_TURN: usize = 16;
@@ -1301,6 +1301,8 @@ impl AgentEventProjector {
             "server_url": requirement.server_url(),
             "resource_metadata_url": requirement.resource_metadata_url(),
             "www_authenticate": requirement.www_authenticate(),
+            "resource_metadata": requirement.resource_metadata(),
+            "authorization_servers": requirement.authorization_servers(),
             "resume_strategy": "root",
         });
         let mut batch = ProjectedAgentEventBatch::new();
@@ -1547,6 +1549,8 @@ impl AgentEventProjector {
             "server_url": data.server_url,
             "resource_metadata_url": data.resource_metadata_url,
             "www_authenticate": data.www_authenticate,
+            "resource_metadata": data.resource_metadata,
+            "authorization_servers": data.authorization_servers(),
             "resume_strategy": "root",
         });
         let mut batch = ProjectedAgentEventBatch::new();
@@ -2537,10 +2541,21 @@ struct PipelineMcpAuthData {
     resource_metadata_url: Option<String>,
     www_authenticate: Option<String>,
     #[serde(default)]
+    resource_metadata: Option<Value>,
+    #[serde(default)]
     llm_replay: Option<PipelineLlmReplayEnvelope>,
 }
 
 impl PipelineMcpAuthData {
+    fn authorization_servers(&self) -> Option<&[Value]> {
+        self.resource_metadata
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata.get("authorization_servers"))
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+    }
+
     fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
         if self.schema_revision != PIPELINE_MCP_AUTH_SCHEMA
             || self.interrupt_type != "hitl"
@@ -2565,6 +2580,22 @@ impl PipelineMcpAuthData {
                 value.is_empty() || value.len() > 16 * 1024 || value.chars().any(char::is_control)
             })
         {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let requirement = DelegatedAuthorizationRequirement::new(
+            self.toolkit_name.clone(),
+            self.toolkit_type.clone(),
+            self.server_url.clone(),
+            self.resource_metadata_url.clone(),
+            self.www_authenticate.clone(),
+        )
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let requirement = match &self.resource_metadata {
+            Some(metadata) => requirement.with_resource_metadata(metadata.clone()),
+            None => Some(requirement),
+        }
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if requirement.resource_metadata() != self.resource_metadata.as_ref() {
             return Err(AgentEventProjectionError::invalid_state());
         }
         if let Some(replay) = &self.llm_replay {
@@ -2794,6 +2825,10 @@ impl PipelineMcpAuthEventBinding {
 
     pub(crate) fn www_authenticate(&self) -> Option<&str> {
         self.data.www_authenticate.as_deref()
+    }
+
+    pub(crate) fn resource_metadata(&self) -> Option<&Value> {
+        self.data.resource_metadata.as_ref()
     }
 
     pub(crate) fn llm_replay(&self) -> Option<&PipelineLlmReplayEnvelope> {

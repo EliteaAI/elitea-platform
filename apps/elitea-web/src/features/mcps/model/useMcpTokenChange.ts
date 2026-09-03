@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { MCP_TOKEN_CHANGE_EVENT } from '../lib/constants';
+import { getLogoutMarkerEventKey } from '../lib/logoutSync';
 import { getAccessToken, getStorageKey } from '../lib/storage';
 
 export interface McpTokenChangeOptions {
@@ -32,6 +33,7 @@ export function useMcpTokenChange(serverUrlOrOptions: string | McpTokenChangeOpt
   const options = typeof serverUrlOrOptions === 'string' ? { serverUrl: serverUrlOrOptions } : (serverUrlOrOptions ?? {});
   const { serverUrl, toolkitType } = options;
   const storageKey = getStorageKey({ serverUrl, toolkitType });
+  const logoutMarkerKey = getLogoutMarkerEventKey(storageKey);
 
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => (storageKey ? getAccessToken(serverUrl, toolkitType) !== null : false));
 
@@ -51,9 +53,17 @@ export function useMcpTokenChange(serverUrlOrOptions: string | McpTokenChangeOpt
       if (detail?.serverUrl === storageKey) refreshLoginStatus();
     }
 
+    function handleCrossTabLogout(event: StorageEvent): void {
+      if (event.key === logoutMarkerKey && event.newValue !== null) refreshLoginStatus();
+    }
+
     window.addEventListener(MCP_TOKEN_CHANGE_EVENT, handleTokenChange);
-    return () => window.removeEventListener(MCP_TOKEN_CHANGE_EVENT, handleTokenChange);
-  }, [storageKey, refreshLoginStatus]);
+    window.addEventListener('storage', handleCrossTabLogout);
+    return () => {
+      window.removeEventListener(MCP_TOKEN_CHANGE_EVENT, handleTokenChange);
+      window.removeEventListener('storage', handleCrossTabLogout);
+    };
+  }, [storageKey, logoutMarkerKey, refreshLoginStatus]);
 
   return { isLoggedIn, refreshLoginStatus };
 }

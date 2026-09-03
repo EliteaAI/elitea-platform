@@ -1278,6 +1278,18 @@ fn graph_mcp_authorization_projects_current_durable_card_without_tool_arguments(
             "server_url": "https://mcp.example.invalid/v1/mcp",
             "resource_metadata_url": "https://mcp.example.invalid/.well-known/oauth-protected-resource",
             "www_authenticate": "Bearer resource_metadata=\"https://mcp.example.invalid/.well-known/oauth-protected-resource\"",
+            "resource_metadata": {
+                "authorization_servers": ["https://login.example.invalid"],
+                "oauth_authorization_server": {
+                    "issuer": "https://login.example.invalid",
+                    "authorization_endpoint": "https://login.example.invalid/authorize",
+                    "token_endpoint": "https://login.example.invalid/token",
+                    "registration_endpoint": "https://login.example.invalid/register",
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                    "code_challenge_methods_supported": ["S256"]
+                },
+                "scopes_supported": ["mcp:read"]
+            },
         })))
         .expect("MCP authorization projection")
         .into_iter()
@@ -1291,6 +1303,14 @@ fn graph_mcp_authorization_projects_current_durable_card_without_tool_arguments(
     assert_eq!(metadata["tool_call_id"], "pipeline:lookup:4");
     assert_eq!(metadata["tool_args"], json!({}));
     assert_eq!(metadata["resume_strategy"], "root");
+    assert_eq!(
+        metadata["authorization_servers"],
+        json!(["https://login.example.invalid"])
+    );
+    assert_eq!(
+        metadata["resource_metadata"]["oauth_authorization_server"]["registration_endpoint"],
+        "https://login.example.invalid/register"
+    );
     assert!(
         metadata["interrupt_id"]
             .as_str()
@@ -1299,7 +1319,10 @@ fn graph_mcp_authorization_projects_current_durable_card_without_tool_arguments(
     assert!(metadata.get("checkpoint_id").is_none());
     assert!(metadata.get("definition_digest").is_none());
     assert!(projector.is_paused());
+}
 
+#[test]
+fn graph_delegated_toolkit_authorization_projects_current_card() {
     let sharepoint_message = "Authorization is required to use the Team Documents toolkit. Choose Authorize to sign in, or Skip to stop this pipeline safely.";
     let mut sharepoint =
         AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))

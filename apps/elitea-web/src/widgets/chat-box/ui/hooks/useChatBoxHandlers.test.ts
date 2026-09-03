@@ -570,6 +570,36 @@ const pausedMessage: ChatMessage = {
   hitlInterrupt: { tool_call_id: "call-1" },
 };
 
+function authorizationAction(
+  interruptId: string,
+  toolCallId: string,
+  storageKey = "cfg-1:https://login.example.test",
+) {
+  return {
+    id: interruptId,
+    authorizationRequestId: interruptId,
+    name: "SharePoint search",
+    status: "action_required",
+    type: "toolkit",
+    toolOutputs: { server_url: storageKey },
+    toolMeta: {
+      interrupt_id: interruptId,
+      tool_call_id: toolCallId,
+      server_url: "https://sharepoint.example.test",
+      toolkit_type: "sharepoint",
+    },
+  };
+}
+
+function authorizationMessage(...actions: readonly ReturnType<typeof authorizationAction>[]): ChatMessage {
+  return {
+    ...pausedMessage,
+    hitlInterrupt: undefined,
+    threadId: "thread-auth-1",
+    toolActions: actions,
+  };
+}
+
 describe("continueHitl — a resume no transport accepted", () => {
   it("puts the approval card back and stops the spinner", async () => {
     const history = makeHistory([pausedMessage]);
@@ -867,20 +897,112 @@ describe("continueTokenLimit / resumeMcpFlow transport", () => {
     expect(history.read()[0]?.exception).toBeDefined();
   });
 
-  it("resumeMcpFlow reverts its own spinner", () => {
-    const history = makeHistory([tokenLimitMessage]);
+  it("resumeMcpFlow reverts its own spinner", async () => {
+    const message = authorizationMessage(authorizationAction("auth-1", "call-1"));
+    const history = makeHistory([message]);
     const handlers = useChatBoxHandlers(
       makeDeps({
         setChatHistory: history.setChatHistory,
-        chatHistory: [tokenLimitMessage],
+        chatHistory: [message],
         emitSocket: deadSocket(),
       }),
     );
 
-    handlers.resumeMcpFlow("answer-1");
+    await handlers.resumeMcpFlow("answer-1", false, "auth-1");
 
     expect(history.read()[0]?.isStreaming).toBe(false);
     expect(history.read()[0]?.exception).toBeDefined();
+  });
+
+  it("resumes one exact request with the OAuth token map", async () => {
+    const message = authorizationMessage(authorizationAction("auth-1", "call-1"));
+    const history = makeHistory([message]);
+    const seen = captureContinuations();
+    const emitSocket = vi.fn(() => true);
+    const handlers = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: [message],
+      emitSocket,
+      getMcpTokens: () => ({ "cfg-1:https://login.example.test": { access_token: "runtime-token" } }),
+      continueStreamedExecution: seen.continueStreamedExecution,
+    }));
+
+    await handlers.resumeMcpFlow("answer-1", false, "auth-1");
+
+    expect(emitSocket).not.toHaveBeenCalled();
+    expect(seen.calls).toEqual([{
+      conversationUuid: "conv-uuid-1",
+      contract: "agent.continue.authorization.v1",
+      body: expect.objectContaining({
+        project_id: 1,
+        authorization_request_id: "auth-1",
+        authorization_action: "authorize",
+        hitl_resume: false,
+        mcp_tokens: { "cfg-1:https://login.example.test": { access_token: "runtime-token" } },
+      }),
+    }]);
+  });
+
+  it("applies one authorization to parallel requests sharing the same credential", async () => {
+    const message = authorizationMessage(
+      authorizationAction("auth-1", "call-1"),
+      authorizationAction("auth-2", "call-2"),
+    );
+    const history = makeHistory([message]);
+    const seen = captureContinuations();
+    const handlers = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: [message],
+      sessionMcpAuthorizationBatchesRef: { current: new Map() },
+      getMcpTokens: () => ({ "cfg-1:https://login.example.test": { access_token: "runtime-token" } }),
+      continueStreamedExecution: seen.continueStreamedExecution,
+    }));
+
+    await handlers.resumeMcpFlow("answer-1", false, "auth-1");
+
+    expect(seen.calls).toHaveLength(1);
+    expect(seen.calls[0]?.body).toMatchObject({
+      hitl_resume: true,
+      authorization_request_id: "",
+      authorization_action: "",
+      hitl_decisions: [
+        { interrupt_id: "auth-1", tool_call_id: "call-1", guardrail_type: "mcp_auth", action: "authorize" },
+        { interrupt_id: "auth-2", tool_call_id: "call-2", guardrail_type: "mcp_auth", action: "authorize" },
+      ],
+    });
+  });
+
+  it("waits for separate OAuth groups and then sends one complete decision set", async () => {
+    const message = authorizationMessage(
+      authorizationAction("auth-1", "call-1", "cfg-1:https://login.example.test"),
+      authorizationAction("auth-2", "call-2", "cfg-2:https://login.example.test"),
+    );
+    const history = makeHistory([message]);
+    const seen = captureContinuations();
+    const batches = { current: new Map() };
+    const first = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: [message],
+      sessionMcpAuthorizationBatchesRef: batches,
+      continueStreamedExecution: seen.continueStreamedExecution,
+    }));
+
+    await first.resumeMcpFlow("answer-1", false, "auth-1");
+    expect(seen.calls).toHaveLength(0);
+    expect(history.read()[0]?.toolActions).toHaveLength(1);
+
+    const second = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: history.read(),
+      sessionMcpAuthorizationBatchesRef: batches,
+      continueStreamedExecution: seen.continueStreamedExecution,
+    }));
+    await second.resumeMcpFlow("answer-1", true, "auth-2");
+
+    expect(seen.calls[0]?.body['hitl_decisions']).toEqual([
+      { interrupt_id: "auth-1", tool_call_id: "call-1", guardrail_type: "mcp_auth", action: "authorize" },
+      { interrupt_id: "auth-2", tool_call_id: "call-2", guardrail_type: "mcp_auth", action: "skip" },
+    ]);
   });
 });
 

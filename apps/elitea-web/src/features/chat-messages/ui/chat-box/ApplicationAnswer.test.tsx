@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, screen } from '@testing-library/react';
 
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
@@ -40,5 +40,39 @@ describe('ApplicationAnswer', () => {
 
     expect(screen.getByTestId('error-trace')).toBeInTheDocument();
     expect(screen.getByText('Configuration type is not supported.')).toBeInTheDocument();
+  });
+
+  it('renders every authorization request and resumes only after OAuth succeeds', () => {
+    const onContinue = vi.fn();
+    const action = (id: string) => ({
+      id,
+      authorizationRequestId: id,
+      type: 'toolkit',
+      status: 'action_required',
+      toolMeta: { interrupt_id: id, authorization_servers: ['https://login.example.test'] },
+      toolOutputs: { server_url: 'https://mcp.example.test' },
+    });
+    const answer = {
+      id: 'answer-auth',
+      role: 'assistant',
+      content: '',
+      toolActions: [action('auth-1'), action('auth-2')],
+    } as unknown as ChatMessage;
+
+    renderWithTheme(<ApplicationAnswer
+      answer={answer}
+      messageId={answer.id}
+      toolActions={answer.toolActions}
+      continuation={{
+        onContinueMcpExecution: onContinue,
+        renderAuthModal: (props) => <button onClick={() => { props.onClose(true); }}>Complete OAuth</button>,
+      }}
+    />);
+
+    expect(screen.getAllByRole('button', { name: 'Continue (Auth)' })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Continue (Auth)' })[0]!);
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Complete OAuth' }));
+    expect(onContinue).toHaveBeenCalledWith('answer-auth', false, 'auth-1');
   });
 });

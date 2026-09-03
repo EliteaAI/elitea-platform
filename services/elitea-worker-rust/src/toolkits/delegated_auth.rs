@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 use super::tool_binding::ToolBindingPlan;
 
 const MAX_AUTH_CHALLENGE_BYTES: usize = 16 * 1_024;
+const MAX_AUTH_METADATA_BYTES: usize = 64 * 1_024;
+const MAX_AUTH_METADATA_LIST_ITEMS: usize = 64;
+const MAX_AUTH_METADATA_STRING_BYTES: usize = 4 * 1_024;
 const MAX_TOOLKIT_IDENTITY_BYTES: usize = 1_024;
 
 /// Stable private ADK error code used to carry the current `mcp_auth` control
@@ -143,6 +146,8 @@ pub(crate) struct DelegatedAuthorizationRequirement {
     server_url: String,
     resource_metadata_url: Option<String>,
     www_authenticate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resource_metadata: Option<Value>,
 }
 
 impl DelegatedAuthorizationRequirement {
@@ -159,8 +164,14 @@ impl DelegatedAuthorizationRequirement {
             server_url,
             resource_metadata_url,
             www_authenticate,
+            resource_metadata: None,
         };
         valid_requirement(&requirement).then_some(requirement)
+    }
+
+    pub(crate) fn with_resource_metadata(mut self, resource_metadata: Value) -> Option<Self> {
+        self.resource_metadata = Some(resource_metadata);
+        valid_requirement(&self).then_some(self)
     }
 
     pub(crate) fn toolkit_name(&self) -> &str {
@@ -181,6 +192,18 @@ impl DelegatedAuthorizationRequirement {
 
     pub(crate) fn www_authenticate(&self) -> Option<&str> {
         self.www_authenticate.as_deref()
+    }
+
+    pub(crate) fn resource_metadata(&self) -> Option<&Value> {
+        self.resource_metadata.as_ref()
+    }
+
+    pub(crate) fn authorization_servers(&self) -> Option<&[Value]> {
+        self.resource_metadata()
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata.get("authorization_servers"))
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
     }
 
     pub(crate) fn user_message(&self) -> String {
@@ -216,7 +239,7 @@ pub(crate) fn delegated_authorization_declined_result(
         "auth_context": {
             "resource_metadata_url": requirement.resource_metadata_url(),
             "www_authenticate": requirement.www_authenticate(),
-            "resource_metadata": Value::Null,
+            "resource_metadata": requirement.resource_metadata(),
         },
         "denial_reason": "user_declined",
     })
@@ -291,6 +314,133 @@ fn valid_requirement(requirement: &DelegatedAuthorizationRequirement) -> bool {
     requirement
         .resource_metadata_url()
         .is_none_or(|url| valid_https_url(url).is_some())
+        && requirement
+            .resource_metadata()
+            .is_none_or(valid_resource_metadata)
+}
+
+fn valid_resource_metadata(value: &Value) -> bool {
+    if serde_json::to_vec(value)
+        .ok()
+        .is_none_or(|encoded| encoded.len() > MAX_AUTH_METADATA_BYTES)
+    {
+        return false;
+    }
+    let Some(metadata) = value.as_object() else {
+        return false;
+    };
+    if metadata.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "authorization_servers" | "oauth_authorization_server" | "scopes_supported"
+        )
+    }) {
+        return false;
+    }
+    let Some(servers) = metadata
+        .get("authorization_servers")
+        .and_then(Value::as_array)
+        .filter(|servers| !servers.is_empty() && servers.len() <= MAX_AUTH_METADATA_LIST_ITEMS)
+    else {
+        return false;
+    };
+    if !valid_url_list(servers) {
+        return false;
+    }
+    if metadata
+        .get("scopes_supported")
+        .is_some_and(|scopes| !valid_string_list(scopes))
+    {
+        return false;
+    }
+    let Some(server) = metadata
+        .get("oauth_authorization_server")
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    if server.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "authorization_endpoint"
+                | "token_endpoint"
+                | "registration_endpoint"
+                | "issuer"
+                | "jwks_uri"
+                | "revocation_endpoint"
+                | "userinfo_endpoint"
+                | "scopes_supported"
+                | "response_types_supported"
+                | "grant_types_supported"
+                | "token_endpoint_auth_methods_supported"
+                | "code_challenge_methods_supported"
+        )
+    }) {
+        return false;
+    }
+    for required in ["authorization_endpoint", "token_endpoint"] {
+        if server
+            .get(required)
+            .and_then(Value::as_str)
+            .and_then(valid_https_url)
+            .is_none()
+        {
+            return false;
+        }
+    }
+    for optional in [
+        "registration_endpoint",
+        "issuer",
+        "jwks_uri",
+        "revocation_endpoint",
+        "userinfo_endpoint",
+    ] {
+        if server
+            .get(optional)
+            .is_some_and(|url| url.as_str().and_then(valid_https_url).is_none())
+        {
+            return false;
+        }
+    }
+    for list in [
+        "scopes_supported",
+        "response_types_supported",
+        "grant_types_supported",
+        "token_endpoint_auth_methods_supported",
+        "code_challenge_methods_supported",
+    ] {
+        if server
+            .get(list)
+            .is_some_and(|values| !valid_string_list(values))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_url_list(values: &[Value]) -> bool {
+    values.iter().all(|value| {
+        value
+            .as_str()
+            .filter(|value| value.len() <= MAX_AUTH_METADATA_STRING_BYTES)
+            .and_then(valid_https_url)
+            .is_some()
+    })
+}
+
+fn valid_string_list(value: &Value) -> bool {
+    value.as_array().is_some_and(|values| {
+        !values.is_empty()
+            && values.len() <= MAX_AUTH_METADATA_LIST_ITEMS
+            && values.iter().all(|value| {
+                value.as_str().is_some_and(|value| {
+                    !value.is_empty()
+                        && value.len() <= MAX_AUTH_METADATA_STRING_BYTES
+                        && !value.chars().any(char::is_control)
+                })
+            })
+    })
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -343,9 +493,12 @@ mod tests {
 
     use adk_rust::tool::{BasicToolset, FunctionTool};
     use adk_rust::{Tool, Toolset};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::{DelegatedAuthorizationCatalog, DelegatedAuthorizationRequirement};
+    use super::{
+        DelegatedAuthorizationCatalog, DelegatedAuthorizationRequirement,
+        decode_delegated_authorization_requirement, encode_delegated_authorization_requirement,
+    };
     use crate::toolkits::bind_toolsets;
 
     #[tokio::test]
@@ -397,5 +550,83 @@ mod tests {
             Some("audit intelligence")
         );
         assert!(catalog.requirement_for("lookup").is_none());
+    }
+
+    #[test]
+    fn authorization_metadata_round_trip_preserves_only_the_validated_shape() {
+        let requirement = DelegatedAuthorizationRequirement::new(
+            "release intelligence".to_owned(),
+            "mcp".to_owned(),
+            "https://mcp.example.invalid/v1/mcp".to_owned(),
+            Some("https://mcp.example.invalid/.well-known/oauth-protected-resource".to_owned()),
+            None,
+        )
+        .expect("base requirement")
+        .with_resource_metadata(json!({
+            "authorization_servers": ["https://login.example.invalid"],
+            "oauth_authorization_server": {
+                "issuer": "https://login.example.invalid",
+                "authorization_endpoint": "https://login.example.invalid/authorize",
+                "token_endpoint": "https://login.example.invalid/token",
+                "registration_endpoint": "https://login.example.invalid/register",
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+                "code_challenge_methods_supported": ["S256"]
+            },
+            "scopes_supported": ["mcp:read"]
+        }))
+        .expect("validated resource metadata");
+
+        let encoded = encode_delegated_authorization_requirement(&requirement)
+            .expect("encoded delegated authorization");
+        let decoded = decode_delegated_authorization_requirement(&encoded)
+            .expect("decoded delegated authorization");
+        assert!(decoded == requirement);
+        assert_eq!(
+            decoded
+                .authorization_servers()
+                .and_then(|servers| servers.first())
+                .and_then(Value::as_str),
+            Some("https://login.example.invalid")
+        );
+    }
+
+    #[test]
+    fn authorization_metadata_rejects_unowned_or_unsafe_fields() {
+        let base = || {
+            DelegatedAuthorizationRequirement::new(
+                "release intelligence".to_owned(),
+                "mcp".to_owned(),
+                "https://mcp.example.invalid/v1/mcp".to_owned(),
+                None,
+                None,
+            )
+            .expect("base requirement")
+        };
+        for invalid in [
+            json!({
+                "authorization_servers": ["https://login.example.invalid"],
+                "oauth_authorization_server": {
+                    "authorization_endpoint": "https://login.example.invalid/authorize",
+                    "token_endpoint": "https://login.example.invalid/token",
+                    "client_secret": "must-not-cross-the-boundary"
+                }
+            }),
+            json!({
+                "authorization_servers": ["http://login.example.invalid"],
+                "oauth_authorization_server": {
+                    "authorization_endpoint": "https://login.example.invalid/authorize",
+                    "token_endpoint": "https://login.example.invalid/token"
+                }
+            }),
+            json!({
+                "authorization_servers": [],
+                "oauth_authorization_server": {
+                    "authorization_endpoint": "https://login.example.invalid/authorize",
+                    "token_endpoint": "https://login.example.invalid/token"
+                }
+            }),
+        ] {
+            assert!(base().with_resource_metadata(invalid).is_none());
+        }
     }
 }

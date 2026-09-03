@@ -26,6 +26,7 @@ import { createStorage } from '@/shared/lib/storage';
 
 import { forgetClientSecret, recallClientSecret, rememberClientSecret, stripClientSecrets, withRecalledSecret } from './clientSecretVault';
 import { MC_TOKENS_STORAGE_KEY, MCP_CONNECTION_VERIFIED, MCP_CREDENTIALS_STORAGE_KEY, MCP_IGNORED_SERVERS_STORAGE_KEY, MCP_PREBUILD_PREFIX, MCP_TOKEN_CHANGE_EVENT } from './constants';
+import { loadLogoutMarker, publishLogout } from './logoutSync';
 import type { IgnoredServerMap, SetAccessTokenOAuthMeta, StoredMcpCredential, StoredMcpCredentialMap, StoredMcpToken, StoredMcpTokenMap } from './types';
 
 export type { SetAccessTokenOAuthMeta };
@@ -103,7 +104,15 @@ function dispatchTokenChangeEvent(keyOrServerUrl: string, type: 'login' | 'logou
 /* ── raw record accessors ─────────────────────────────────────────────── */
 
 function loadTokens(): StoredMcpTokenMap {
-  return sessionStore().getJSON<StoredMcpTokenMap>(MC_TOKENS_STORAGE_KEY) ?? {};
+  const stored = sessionStore().getJSON<StoredMcpTokenMap>(MC_TOKENS_STORAGE_KEY) ?? {};
+  const tokens = Object.fromEntries(
+    Object.entries(stored).filter(([key, token]) => {
+      const marker = loadLogoutMarker(key);
+      return !marker || Number(token.issued_at) > marker;
+    }),
+  );
+  if (Object.keys(tokens).length !== Object.keys(stored).length) saveTokens(tokens);
+  return tokens;
 }
 function saveTokens(tokens: StoredMcpTokenMap): void {
   sessionStore().setJSON(MC_TOKENS_STORAGE_KEY, stripClientSecrets(tokens));
@@ -226,7 +235,8 @@ export function setAccessToken(
   if (!key) return;
 
   const tokens = loadTokens();
-  const now = Date.now();
+  const logoutMarker = loadLogoutMarker(key);
+  const now = Math.max(Date.now(), logoutMarker + 1);
   const expiresAt = expiresInSec ? now + Number(expiresInSec) * 1000 : null;
   const existingToken = tokens[key] ?? ({} as StoredMcpToken);
 
@@ -240,7 +250,9 @@ export function setAccessToken(
 
   tokens[key] = {
     access_token: accessToken,
-    issued_at: oauthMeta.issued_at ?? now,
+    issued_at: oauthMeta.issued_at === undefined
+      ? now
+      : Math.max(Number(oauthMeta.issued_at), logoutMarker + 1),
     expires_at: expiresAt,
     ...(sessionId ? { session_id: sessionId } : {}),
     ...(idToken ? { id_token: idToken } : {}),
@@ -279,8 +291,9 @@ export function logout(serverUrl?: string, toolkitType?: string): void {
   if (tokens[key]) {
     delete tokens[key];
     saveTokens(tokens);
-    dispatchTokenChangeEvent(key, 'logout');
   }
+  publishLogout(key);
+  dispatchTokenChangeEvent(key, 'logout');
 }
 
 /**

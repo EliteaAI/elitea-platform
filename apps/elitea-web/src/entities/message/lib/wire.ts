@@ -144,6 +144,7 @@ export interface MessageGroupMetaWire {
   readonly thread_id?: string;
   readonly output_limit_reached?: boolean;
   readonly output_limit_sequence?: number | string;
+  readonly authorization_requests?: readonly Record<string, unknown>[];
 }
 
 /**

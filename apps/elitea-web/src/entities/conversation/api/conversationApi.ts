@@ -274,6 +274,7 @@ export async function startAgentExecution(params: StartAgentExecutionParams): Pr
  * the same durable session; it is not a HITL or checkpoint resume.
  */
 export const AGENT_CONTINUE_HITL_CONTRACT = 'agent.continue.hitl.v1';
+export const AGENT_CONTINUE_AUTHORIZATION_CONTRACT = 'agent.continue.authorization.v1';
 export const AGENT_CONTINUE_OUTPUT_LIMIT_CONTRACT = 'agent.continue.output-limit.v1';
 
 export interface ContinueAgentExecutionParams {

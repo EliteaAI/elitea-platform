@@ -23,6 +23,7 @@ import type { AttachmentButtonHandle, PlusChatButtonEntitySubmenus, VoiceButtonH
 import { ChatConversationStarters, NewChatInput, voiceHooks } from '@/features/chat-input';
 import { useSocketClient } from '@/shared/api/socket/client';
 import { ChatMessageList, useDeleteMessageAlert } from '@/features/chat-messages';
+import { getAllTokens, McpAuthModal } from '@/features/mcps';
 import { conversationApi } from '@/entities/conversation';
 import { t } from '@/shared/i18n';
 
@@ -58,7 +59,7 @@ import { useChatBoxMentions } from './hooks/useChatBoxMentions';
 import { useChatBoxActions } from './hooks/useChatBoxActions';
 import { useAddEntityParticipant } from './hooks/useAddEntityParticipant';
 import { useActiveParticipantSelection } from './hooks/useActiveParticipantSelection';
-import { useSessionDeclinedMcpServersRef } from './hooks/useSessionDeclinedMcpServersRef';
+import { useSessionMcpAuthorizationRefs } from './hooks/useSessionMcpAuthorizationRefs';
 import { useChatBoxSend } from './hooks/useChatBoxSend';
 import { useStableRef } from './hooks/useStableRef';
 
@@ -127,11 +128,9 @@ const ChatBoxInner = memo(function ChatBox({
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
   const { activeParticipant, onChangeParticipant } = useActiveParticipantSelection(participant, conversationParticipants);
 
-  // Data layer
   const data = useChatBoxData(buildChatBoxDataParams({ activeConversation, activeParticipant, projectId, userId, userName, userAvatar, isAgentsPage }));
   const messages = data.messageList.messages;
 
-  // Participant normalisation + details fetch
   const { participantForEditor, normalisedParticipants, agentEditorParticipantDetails, isFetchingParticipantDetails } = useChatBoxParticipant({
     activeParticipant,
     conversationParticipants,
@@ -152,7 +151,6 @@ const ChatBoxInner = memo(function ChatBox({
     activeParticipantVersions,
   }));
 
-  // Socket client + read-aloud (TTS)
   const socketClient = useSocketClient();
   const readAloud = voiceHooks.useReadAloud({
     projectId: projectIdString,
@@ -167,7 +165,6 @@ const ChatBoxInner = memo(function ChatBox({
     setChatHistory?.(messages);
   }, [messages, setChatHistory]);
 
-  // Nav blocker
   const setStreamingBlockNav = useNavBlockerStore((s) => s.setStreamingBlockNav);
   useEffect(() => {
     setStreamingBlockNav(data.streaming.isStreamingNow, 'prompt');
@@ -175,7 +172,8 @@ const ChatBoxInner = memo(function ChatBox({
 
   // Session-scoped bookkeeping of MCP servers declined/authenticated this
   // conversation (never persisted) — resets whenever the conversation changes.
-  const sessionDeclinedMcpServersRef = useSessionDeclinedMcpServersRef(conversationUuid);
+  const { sessionDeclinedMcpServersRef, sessionMcpAuthorizationBatchesRef } =
+    useSessionMcpAuthorizationRefs(conversationUuid);
 
   // Real RTK/TanStack mutations the action handlers below trigger.
   const { mutateAsync: regenerateMutateAsync } = conversationApi.useRegenerate();
@@ -221,6 +219,8 @@ const ChatBoxInner = memo(function ChatBox({
     projectId,
     socketId: socketClient.socket.id,
     sessionDeclinedMcpServersRef,
+    sessionMcpAuthorizationBatchesRef,
+    getMcpTokens: getAllTokens,
     startStreamedExecution, continueStreamedExecution, regenerateStreamedExecution,
   });
 
@@ -244,7 +244,6 @@ const ChatBoxInner = memo(function ChatBox({
     setSelectedModel: data.setSelectedModel,
   });
 
-  // Real internal-tools-config persistence
   const { internalToolsButtonTools, handleInternalToolChange, isUpdatingInternalToolsConfig } = useChatBoxInternalTools({
     conversationId,
     conversationMeta,
@@ -339,6 +338,7 @@ const ChatBoxInner = memo(function ChatBox({
             onHitlResume: handleHitlResume,
             onContinueMcpExecution: handleContinueMcpExecution,
             onContinueTokenLimitExecution: handleContinueTokenLimit,
+            renderAuthModal: (props) => <McpAuthModal {...props} projectId={projectIdString} />,
           }}
           tts={buildTtsProps(readAloud)}
         />

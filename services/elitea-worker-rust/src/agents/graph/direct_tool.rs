@@ -604,6 +604,7 @@ impl DirectToolNode {
                 "server_url": requirement.server_url(),
                 "resource_metadata_url": requirement.resource_metadata_url(),
                 "www_authenticate": requirement.www_authenticate(),
+                "resource_metadata": requirement.resource_metadata(),
             }),
         )
     }

@@ -11,6 +11,7 @@
  */
 import { convertJsonToString } from '@/shared/lib/json';
 import { TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
+import { buildAuthorizationActions } from '@/entities/message';
 
 import { normalizeExecutionHierarchy } from './executionHierarchy';
 import {
@@ -67,37 +68,6 @@ function toolDisplayName(frame: ChatStreamFrame, metadata: Record<string, unknow
   const responseMetadata = frame.response_metadata;
   const wrapped = metadata['original_name'] && responseMetadata?.tool_meta?.name;
   return wrapped ? (responseMetadata.tool_meta?.name as string) : responseMetadata?.tool_name;
-}
-
-/**
- * The key the backend will look this toolkit's OAuth token up under.
- *
- * This is NOT cosmetic and NOT always the server URL: the backend resolves
- * tokens from `kwargs['tokens']` by a key that differs per toolkit family, so
- * getting it wrong stores a token the toolkit will never find and the user is
- * asked to authorize again on every call.
- *
- *   pre-built MCP (`mcp_*`)   the toolkit type — the backend matches by
- *                             server/toolkit name, not by OAuth server URL
- *   delegated OAuth with a    `{configuration_uuid}:{oauth endpoint}`, the
- *   configuration uuid        SDK's primary composite lookup
- *   SharePoint / OpenAPI      the discovery endpoint
- *   regular MCP               the MCP server URL, which IS its OAuth endpoint
- */
-function mcpTokenStorageKey(frame: ChatStreamFrame, serverUrl: string): string {
-  const responseMetadata = frame.response_metadata;
-  const resource = responseMetadata?.resource_metadata;
-  const authServers = resource?.authorization_servers ?? responseMetadata?.authorization_servers;
-  const oauthEndpoint = authServers?.[0];
-  const configUuid = resource?.configuration_uuid;
-  const toolkitType = responseMetadata?.toolkit_type;
-
-  if (typeof toolkitType === 'string' && toolkitType.startsWith('mcp_') && toolkitType !== 'mcp') return toolkitType;
-  if (configUuid && oauthEndpoint) return `${configUuid}:${oauthEndpoint}`;
-  if (resource?.resource_name === 'SharePoint' || resource?.resource_name === 'OpenAPI') {
-    return oauthEndpoint ?? serverUrl;
-  }
-  return serverUrl;
 }
 
 /**
@@ -246,50 +216,19 @@ export function reduceToolFrame(
       if (index === -1) return history;
       const current = history[index];
       if (!current) return history;
-      const responseMetadata = frame.response_metadata;
-      const runId = responseMetadata?.tool_run_id ?? crypto.randomUUID();
-      const toolName = responseMetadata?.tool_name ?? 'MCP toolkit';
-      const serverUrl = responseMetadata?.server_url ?? 'MCP server';
-      const statusCode = responseMetadata?.status ?? 401;
-      const authServers = responseMetadata?.resource_metadata?.authorization_servers ?? responseMetadata?.authorization_servers;
-      const hasAuthServers = Boolean(authServers && authServers.length > 0);
-
-      const draft: Record<string, unknown> = {
-        name: toolName,
-        id: runId,
-        status: hasAuthServers ? ToolActionStatus.actionRequired : ToolActionStatus.error,
-        toolInputs: undefined,
-        toolOutputs: hasAuthServers
-          ? {
-              resource_metadata_url: responseMetadata?.resource_metadata_url ?? null,
-              authorization_servers: authServers,
-              server_url: mcpTokenStorageKey(frame, serverUrl),
-            }
-          : undefined,
-        toolMeta: responseMetadata,
-        created_at: frame.created_at,
-        ended_at: frame.created_at,
-        type: TOOL_ACTION_TYPES.Toolkit,
-        markdown: false,
-        renderHtml: false,
-        content: hasAuthServers
-          ? // `authServers` is non-empty on this branch by construction.
-            `${convertJsonToString(frame.content ?? 'Authorization required.', true)}${
-              responseMetadata?.resource_metadata_url
-                ? `\n\nResource metadata: ${responseMetadata.resource_metadata_url}`
-                : `\n\nAuthorization servers: ${(authServers ?? []).join(', ')}`
-            }`
-          : `${statusCode}: Authorization error in "${toolName}" toolkit.\n\n` +
-            `The MCP server at ${serverUrl} requires OAuth authorization, but the server ` +
-            `did not provide the authorization server configuration. ` +
-            `Please contact the server administrator or check the toolkit configuration.`,
-      };
-
-      const actions = (current.toolActions ?? []) as readonly ToolAction[];
-      const exists = actions.some((action) => action.id === runId);
-      const next = exists
-        ? actions.map((action) => (action.id === runId ? ({ ...action, ...draft } as ToolAction) : action))
-        : [...actions, draft as unknown as ToolAction];
+      const drafts = buildAuthorizationActions(
+        frame.response_metadata ?? {},
+        convertJsonToString(frame.content ?? 'Authorization required.', true),
+        String(frame.created_at ?? ''),
+      );
+      let next = [...((current.toolActions ?? []) as readonly ToolAction[])];
+      for (const draft of drafts) {
+        const hierarchy = normalizeExecutionHierarchy(draft.toolMeta?.['metadata'], draft.toolMeta, draft);
+        const enriched = { ...draft, ...hierarchy, toolMeta: { ...draft.toolMeta, ...hierarchy } } as ToolAction;
+        const existing = next.findIndex((action) => action.id === draft.id);
+        if (existing === -1) next.push(enriched);
+        else next[existing] = enriched;
+      }
 
       // The user has to act, so nothing is in flight any more.
       return replaceAt(history, index, {

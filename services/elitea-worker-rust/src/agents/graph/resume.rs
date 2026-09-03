@@ -22,9 +22,9 @@ use crate::agents::direct_hitl::{
     ResolvedDirectHitlStart,
 };
 use crate::agents::events::{
-    pipeline_application_event_binding, pipeline_clarifying_event_binding,
-    pipeline_hitl_event_binding, pipeline_mcp_auth_event_binding, pipeline_printer_event_binding,
-    pipeline_tool_event_binding,
+    PipelineMcpAuthEventBinding, pipeline_application_event_binding,
+    pipeline_clarifying_event_binding, pipeline_hitl_event_binding,
+    pipeline_mcp_auth_event_binding, pipeline_printer_event_binding, pipeline_tool_event_binding,
 };
 use crate::agents::request::AgentExecutionPayload;
 use crate::toolkits::DelegatedAuthorizationRequirement;
@@ -149,14 +149,7 @@ impl PipelineMcpAuthorizationContinuation {
             {
                 return Err(PipelineResumeError::stale());
             }
-            let requirement = DelegatedAuthorizationRequirement::new(
-                binding.toolkit_name().to_owned(),
-                binding.toolkit_type().to_owned(),
-                binding.server_url().to_owned(),
-                binding.resource_metadata_url().map(ToOwned::to_owned),
-                binding.www_authenticate().map(ToOwned::to_owned),
-            )
-            .ok_or_else(PipelineResumeError::corrupt)?;
+            let requirement = delegated_requirement(&binding)?;
             let resolved = replay
                 .resolve_authorization_decision(
                     binding.tool_call_id(),
@@ -208,6 +201,24 @@ impl PipelineMcpAuthorizationContinuation {
             .collect(),
         })
     }
+}
+
+fn delegated_requirement(
+    binding: &PipelineMcpAuthEventBinding,
+) -> Result<DelegatedAuthorizationRequirement, PipelineResumeError> {
+    let requirement = DelegatedAuthorizationRequirement::new(
+        binding.toolkit_name().to_owned(),
+        binding.toolkit_type().to_owned(),
+        binding.server_url().to_owned(),
+        binding.resource_metadata_url().map(ToOwned::to_owned),
+        binding.www_authenticate().map(ToOwned::to_owned),
+    )
+    .ok_or_else(PipelineResumeError::corrupt)?;
+    match binding.resource_metadata() {
+        Some(metadata) => requirement.with_resource_metadata(metadata.clone()),
+        None => Some(requirement),
+    }
+    .ok_or_else(PipelineResumeError::corrupt)
 }
 
 fn declined_server_url(value: &Value) -> Option<&str> {

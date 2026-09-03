@@ -39,5 +39,6 @@ export { useMcpTokenChange } from './model/useMcpTokenChange';
 // lib — the storage/flow primitives a non-UI caller (e.g. a chat tool-action
 // handler reacting to `mcp_authorization_required`, per manifest JRNY-018)
 // needs without pulling in React.
-export { getAccessToken, isPrebuildMcpType } from './lib/storage';
+export { getAccessToken } from './lib/storage';
+export { getAllTokens } from './lib/tokenRefresh';
 export { startMcpAuthFlow } from './lib/oauthFlow';

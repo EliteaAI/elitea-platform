@@ -16,6 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adk_rust::tool::mcp::rmcp::ServiceExt as _;
+use adk_rust::tool::mcp::rmcp::transport::auth::{
+    AuthorizationManager, AuthorizationMetadata, WWWAuthenticateParams,
+};
 use adk_rust::tool::mcp::rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
@@ -48,6 +51,9 @@ const MAX_RESULT_STRING_BYTES: usize = 512 * 1_024;
 const MAX_SSE_EVENT_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ACCESS_TOKEN_BYTES: usize = 16 * 1_024;
 const MAX_AUTH_CHALLENGE_BYTES: usize = 16 * 1_024;
+const AUTH_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_AUTH_METADATA_LIST_ITEMS: usize = 64;
+const MAX_AUTH_METADATA_STRING_BYTES: usize = 4 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum McpMaterializationErrorCode {
@@ -242,7 +248,9 @@ impl McpConnector for AdkHttpMcpConnector {
         let running = match tokio::time::timeout(config.timeout(), ().serve(transport)).await {
             Ok(Ok(running)) => running,
             Ok(Err(error)) if error.is_authorization_required() => {
-                return Err(authorization_required(config, error.auth_challenge()));
+                return Err(
+                    authorization_required_with_metadata(config, error.auth_challenge()).await,
+                );
             }
             Err(_) | Ok(Err(_)) => return Err(dependency_unavailable()),
         };
@@ -695,6 +703,36 @@ fn authorization_required(
     }
 }
 
+async fn authorization_required_with_metadata(
+    config: &RemoteMcpConfig,
+    challenge: Option<&str>,
+) -> McpMaterializationError {
+    let mut error = authorization_required(config, challenge);
+    let timeout = config.timeout().min(AUTH_METADATA_TIMEOUT);
+    let resolution = tokio::time::timeout(timeout, async {
+        let manager = AuthorizationManager::new(config.endpoint()).await?;
+        manager.resolve_metadata_from_challenge(challenge).await
+    })
+    .await
+    .ok()
+    .and_then(Result::ok);
+    let Some(resource_metadata) = resolution
+        .as_ref()
+        .filter(|resolution| resolution.source.is_discovered())
+        .and_then(|resolution| {
+            authorization_resource_metadata(&resolution.metadata, config.endpoint())
+        })
+    else {
+        return error;
+    };
+    error.authorization = error.authorization.take().and_then(|requirement| {
+        requirement
+            .with_resource_metadata(resource_metadata)
+            .map(Box::new)
+    });
+    error
+}
+
 #[cfg(test)]
 pub(crate) fn mcp_authorization_required_fixture(
     config: &RemoteMcpConfig,
@@ -704,38 +742,139 @@ pub(crate) fn mcp_authorization_required_fixture(
 }
 
 fn resource_metadata_url(challenge: &str, endpoint: &str) -> Option<String> {
-    let lowercase = challenge.to_ascii_lowercase();
-    let offset = lowercase.find("resource_metadata=")? + "resource_metadata=".len();
-    let value = challenge.get(offset..)?.trim_start();
-    let raw = if let Some(quoted) = value.strip_prefix('"') {
-        let mut escaped = false;
-        let end = quoted.char_indices().find_map(|(index, character)| {
-            if escaped {
-                escaped = false;
-                return None;
-            }
-            if character == '\\' {
-                escaped = true;
-                return None;
-            }
-            (character == '"').then_some(index)
-        })?;
-        quoted.get(..end)?.replace("\\\"", "\"")
-    } else {
-        value
-            .split(|character: char| character == ',' || character.is_ascii_whitespace())
-            .next()?
-            .to_owned()
-    };
     let server = valid_https_url(endpoint)?;
-    let metadata = server.join(&raw).ok()?;
-    (metadata.scheme() == server.scheme()
-        && metadata.host_str() == server.host_str()
-        && metadata.port_or_known_default() == server.port_or_known_default()
-        && metadata.username().is_empty()
-        && metadata.password().is_none()
-        && metadata.fragment().is_none())
-    .then(|| metadata.to_string())
+    WWWAuthenticateParams::parse(challenge, &server)
+        .resource_metadata_url
+        .map(|url| url.to_string())
+}
+
+pub(super) fn authorization_resource_metadata(
+    metadata: &AuthorizationMetadata,
+    endpoint: &str,
+) -> Option<Value> {
+    let authorization_endpoint = safe_auth_url(&metadata.authorization_endpoint)?;
+    let token_endpoint = safe_auth_url(&metadata.token_endpoint)?;
+    let authorization_server = metadata
+        .issuer
+        .as_deref()
+        .and_then(safe_auth_url)
+        .or_else(|| endpoint_origin(endpoint))?;
+    let mut server = Map::from_iter([
+        (
+            "authorization_endpoint".to_owned(),
+            Value::String(authorization_endpoint),
+        ),
+        ("token_endpoint".to_owned(), Value::String(token_endpoint)),
+    ]);
+    for (key, value) in [
+        (
+            "registration_endpoint",
+            metadata.registration_endpoint.as_deref(),
+        ),
+        ("issuer", metadata.issuer.as_deref()),
+        ("jwks_uri", metadata.jwks_uri.as_deref()),
+        (
+            "revocation_endpoint",
+            metadata
+                .additional_fields
+                .get("revocation_endpoint")
+                .and_then(Value::as_str),
+        ),
+        (
+            "userinfo_endpoint",
+            metadata
+                .additional_fields
+                .get("userinfo_endpoint")
+                .and_then(Value::as_str),
+        ),
+    ] {
+        if let Some(value) = value.and_then(safe_auth_url) {
+            server.insert(key.to_owned(), Value::String(value));
+        }
+    }
+    for (key, values) in [
+        ("scopes_supported", metadata.scopes_supported.as_deref()),
+        (
+            "response_types_supported",
+            metadata.response_types_supported.as_deref(),
+        ),
+        (
+            "code_challenge_methods_supported",
+            metadata.code_challenge_methods_supported.as_deref(),
+        ),
+    ] {
+        if let Some(values) = values.and_then(safe_auth_string_list) {
+            server.insert(key.to_owned(), values.clone());
+        }
+    }
+    for key in [
+        "grant_types_supported",
+        "token_endpoint_auth_methods_supported",
+    ] {
+        if let Some(values) = metadata
+            .additional_fields
+            .get(key)
+            .and_then(Value::as_array)
+            .and_then(|values| safe_auth_value_list(values))
+        {
+            server.insert(key.to_owned(), values);
+        }
+    }
+    let mut resource = Map::from_iter([
+        (
+            "authorization_servers".to_owned(),
+            json!([authorization_server]),
+        ),
+        (
+            "oauth_authorization_server".to_owned(),
+            Value::Object(server),
+        ),
+    ]);
+    if let Some(scopes) = metadata
+        .scopes_supported
+        .as_deref()
+        .and_then(safe_auth_string_list)
+    {
+        resource.insert("scopes_supported".to_owned(), scopes.clone());
+    }
+    Some(Value::Object(resource))
+}
+
+fn endpoint_origin(endpoint: &str) -> Option<String> {
+    let mut url = valid_https_url(endpoint)?;
+    url.set_path("");
+    url.set_query(None);
+    Some(url.to_string().trim_end_matches('/').to_owned())
+}
+
+fn safe_auth_url(value: &str) -> Option<String> {
+    (value.len() <= MAX_AUTH_METADATA_STRING_BYTES)
+        .then(|| valid_https_url(value).map(|url| url.to_string()))
+        .flatten()
+}
+
+fn safe_auth_string_list(values: &[String]) -> Option<Value> {
+    (values.len() <= MAX_AUTH_METADATA_LIST_ITEMS
+        && !values.is_empty()
+        && values.iter().all(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_AUTH_METADATA_STRING_BYTES
+                && !value.chars().any(char::is_control)
+        }))
+    .then(|| json!(values))
+}
+
+fn safe_auth_value_list(values: &[Value]) -> Option<Value> {
+    (!values.is_empty()
+        && values.len() <= MAX_AUTH_METADATA_LIST_ITEMS
+        && values.iter().all(|value| {
+            value.as_str().is_some_and(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_AUTH_METADATA_STRING_BYTES
+                    && !value.chars().any(char::is_control)
+            })
+        }))
+    .then(|| Value::Array(values.to_vec()))
 }
 
 fn valid_https_url(value: &str) -> Option<reqwest_mcp::Url> {

@@ -878,6 +878,31 @@ describe('applyChatStreamFrame — interrupts', () => {
       expect(history[0]?.toolActions).toHaveLength(1);
       expect(((history[0]?.toolActions ?? [])[0] as ToolAction).status).toBe('action_required');
     });
+
+    it('renders every exact request from a parallel terminal event without duplicates', () => {
+      const request = (interruptId: string, toolCallId: string) => ({
+        interrupt_id: interruptId,
+        tool_call_id: toolCallId,
+        guardrail_type: 'mcp_auth',
+        tool_name: 'SharePoint search',
+        toolkit_type: 'sharepoint',
+        server_url: 'https://sharepoint.example',
+        resource_metadata: {
+          resource_name: 'SharePoint',
+          authorization_servers: ['https://login.example'],
+        },
+      });
+      const terminal = authFrame({
+        authorization_requests: [request('auth-1', 'call-1'), request('auth-2', 'call-2')],
+      });
+      let history = applyChatStreamFrame([pendingAssistant()], terminal, CONTEXT);
+      history = applyChatStreamFrame(history, terminal, CONTEXT);
+
+      expect(history[0]?.toolActions).toHaveLength(2);
+      expect(history[0]?.toolActions?.map(
+        (action) => (action as ToolAction & { authorizationRequestId?: string }).authorizationRequestId,
+      )).toEqual(['auth-1', 'auth-2']);
+    });
   });
 });
 

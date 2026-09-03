@@ -32,7 +32,7 @@ import Typography from '@mui/material/Typography';
 import { ApplicationAnswerActions } from './ApplicationAnswerActions';
 import { actionKey, asDraft, ApplicationAnswerThinking, swarmChildContent } from './ApplicationAnswerThinking';
 import { ChatContinue } from '../chat-continue/ChatContinue';
-import type { McpAuthRequiredAction } from '../chat-continue/ChatContinue';
+import type { ChatContinueProps, McpAuthRequiredAction } from '../chat-continue/ChatContinue';
 import { ChatHitlActions } from '../chat-hitl-actions/ChatHitlActions';
 import type { HitlInterrupt, HitlResumePayload } from '../chat-hitl-actions/ChatHitlActions';
 import { ErrorTrace } from '../error-trace/ErrorTrace';
@@ -73,9 +73,17 @@ export interface ApplicationAnswerTts {
 
 /** MCP-auth / token-limit continue-execution props, grouped to stay under the component-props budget. */
 export interface ApplicationAnswerContinuation {
-  readonly onContinueMcpExecution?: ((messageId: string, addToIgnoreList?: boolean) => void) | undefined;
+  readonly onContinueMcpExecution?: ((messageId: string, addToIgnoreList?: boolean, authorizationRequestId?: string) => void) | undefined;
   readonly onContinueTokenLimitExecution?: ((messageId: string) => void) | undefined;
+  readonly renderAuthModal?: ChatContinueProps['renderAuthModal'];
   readonly hideContinueButton?: boolean;
+}
+
+function authorizationRequestId(action: SubAgentGroupable): string | undefined {
+  const draft = asDraft(action);
+  const metadata = (draft.toolMeta ?? {}) as Record<string, unknown>;
+  const value = draft.authorizationRequestId ?? metadata['authorization_request_id'] ?? metadata['interrupt_id'] ?? draft.id;
+  return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
 /** HITL interrupt/resume props, grouped to stay under the component-props budget. */
@@ -146,7 +154,7 @@ export function ApplicationAnswer({
   status: { isLoading = false, isStreaming = false, isRegenerating = false } = {},
   actions: { onCopy, onDelete, onRegenerate, shouldDisableRegenerate = false } = {},
   tts: { onAutoSpeak, speakingMessageId } = {},
-  continuation: { onContinueMcpExecution, onContinueTokenLimitExecution, hideContinueButton = false } = {},
+  continuation: { onContinueMcpExecution, onContinueTokenLimitExecution, renderAuthModal, hideContinueButton = false } = {},
   hitl: { hitlInterrupt, hitlInterrupts, onHitlResume } = {},
 }: ApplicationAnswerProps): ReactNode {
   const isProcessing = isLoading || isRegenerating || isStreaming;
@@ -165,8 +173,8 @@ export function ApplicationAnswer({
     return { swarmChildActions: swarm, nonSwarmChildActions: others };
   }, [toolActions, isProcessing]);
 
-  const authRequiredAction = useMemo(
-    () => toolActions.find((action) => asDraft(action).status === ToolActionStatus.actionRequired),
+  const authRequiredActions = useMemo(
+    () => toolActions.filter((action) => asDraft(action).status === ToolActionStatus.actionRequired),
     [toolActions],
   );
 
@@ -174,14 +182,6 @@ export function ApplicationAnswer({
     const list = Array.isArray(hitlInterrupts) && hitlInterrupts.length > 0 ? hitlInterrupts : hitlInterrupt ? [hitlInterrupt] : [];
     return list as unknown as readonly HitlInterrupt[];
   }, [hitlInterrupt, hitlInterrupts]);
-
-  const onContinueWithoutAuth = useCallback(() => {
-    onContinueMcpExecution?.(messageId, true);
-  }, [onContinueMcpExecution, messageId]);
-
-  const onAuthSuccess = useCallback(() => {
-    onContinueMcpExecution?.(messageId, false);
-  }, [onContinueMcpExecution, messageId]);
 
   const onContinueWithConfirmation = useCallback(() => {
     onContinueTokenLimitExecution?.(messageId);
@@ -202,7 +202,7 @@ export function ApplicationAnswer({
   const shouldRenderAnswerBlock =
     hasTextContent ||
     !!exception ||
-    (!!authRequiredAction && !!onContinueMcpExecution) ||
+    (authRequiredActions.length > 0 && !!onContinueMcpExecution) ||
     (!!requiresConfirmationSignal && !!onContinueTokenLimitExecution) ||
     effectiveHitlInterrupts.length > 0;
 
@@ -260,15 +260,20 @@ export function ApplicationAnswer({
 
           {!!exception && <ErrorTrace error={exception} />}
 
-          {!!authRequiredAction && (
-            <ChatContinue
-              authRequired
-              disabled={!onContinueMcpExecution}
-              onContinueWithoutAuth={onContinueWithoutAuth}
-              onAuthSuccess={onAuthSuccess}
-              authRequiredAction={authRequiredAction as unknown as McpAuthRequiredAction}
-            />
-          )}
+          {authRequiredActions.map((action, index) => {
+            const requestId = authorizationRequestId(action);
+            return (
+              <ChatContinue
+                key={requestId ?? `authorization-${index}`}
+                authRequired
+                disabled={!onContinueMcpExecution || !requestId}
+                onContinueWithoutAuth={() => { onContinueMcpExecution?.(messageId, true, requestId); }}
+                onAuthSuccess={() => { onContinueMcpExecution?.(messageId, false, requestId); }}
+                authRequiredAction={action as unknown as McpAuthRequiredAction}
+                renderAuthModal={renderAuthModal}
+              />
+            );
+          })}
 
           {!hideContinueButton && !!requiresConfirmationSignal && (
             <ChatContinue
