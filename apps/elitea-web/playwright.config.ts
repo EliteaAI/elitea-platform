@@ -322,6 +322,105 @@ export default defineConfig({
     },
 
     /*
+     * ── chat-stream-real — the structural chat journeys against a REAL model ─
+     *
+     * The same stack as `chat-stream` with the `real-llm` compose profile
+     * (deploy/docker-compose.standalone-full.yml, service `llm-real`): a
+     * digest-pinned llama.cpp image serving Qwen3-0.6B, seeded through the
+     * self-hosted path and named to the specs by E2E_CHAT_MODEL. Run by the
+     * `chat-stream-real` job in .github/workflows/ci-web-e2e.yml through
+     * scripts/chat-stream-e2e.sh with PLAYWRIGHT_PROJECT=chat-stream-real.
+     *
+     * An EXPLICIT list, not a regex, because membership is a per-spec
+     * judgement that a filename cannot express. A spec belongs here only when
+     * every assertion it makes holds against text nobody scripted: no echo,
+     * no `[[mock:…]]` marker, no sentinel, no journal read, no timing keyed
+     * on MOCK_LLM_CHUNK_DELAY_MS. The audit that placed each one lives in
+     * the `llm-real` service comment; the short version:
+     *
+     *   admin-providers   no model turn at all; the live check branches on
+     *                     the captured verdict, so any upstream passes
+     *   agent             answer asserted non-empty, stored row without
+     *                     `contains`
+     *   mcp               stored non-error answer; the refusal string it
+     *                     matches is the runtime's, not the model's
+     *   pipeline*         trace must name the LLM node(s); every one of them
+     *                     already says "the graph runs a real model, which
+     *                     echoes nothing" — they NEED E2E_WORKER=rust, which
+     *                     is why the job runs on STANDALONE_WORKER=rust
+     *   regenerate        the echo `contains` is relaxed under
+     *                     E2E_CHAT_MODEL; the regeneration half polls
+     *                     `execution_generation`, never text
+     *
+     * Deliberately NOT here, and not because they are mock-bound:
+     *   nested-agent      its prompt ORDERS delegation; the mock never
+     *                     takes the offer, a real model will, and the spec
+     *                     fails on the child's `is_error` — real signal,
+     *                     but a flake by construction at 0.6B
+     *   agent-tools       arms seven internal tools for a 0.6B model to
+     *                     mis-call; same shape of flake
+     * Both are the first candidates once a larger model or a judgement on
+     * tool-call quality exists. The nine echo/marker/journal specs (stop,
+     * hitl, toolkit, toolkit-hitl, variables, attachments, streaming,
+     * multiturn) stay on `chat-stream`; the mock is what makes them
+     * assertable at all.
+     *
+     * Serial for the same execution-stream budget as `chat-stream`, and
+     * through the same `--workers=1` pin in the script.
+     */
+    {
+      name: 'chat-stream-real',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: [
+        /streaming\/chat\.admin-providers\.spec\.ts/,
+        /streaming\/chat\.agent\.spec\.ts/,
+        /streaming\/chat\.mcp\.spec\.ts/,
+        /streaming\/chat\.pipeline\.spec\.ts/,
+        /streaming\/chat\.pipeline-authored\.spec\.ts/,
+        /streaming\/chat\.pipeline-multinode\.spec\.ts/,
+        /streaming\/chat\.regenerate\.spec\.ts/,
+      ],
+      fullyParallel: false,
+    },
+
+    /*
+     * ── chat-stream-real-nightly — the real-model lane's exploratory superset ─
+     *
+     * Everything in `chat-stream-real` plus the two specs it deliberately
+     * leaves out, `nested-agent` and `agent-tools`: the ones whose prompts
+     * OFFER a tool call that the mock never takes and a real model will. On a
+     * pull request that is a flake by construction at 0.6B; on a schedule it
+     * is the measurement that decides when they can join the PR lane. Run by
+     * .github/workflows/nightly-real-llm.yml on both runtimes.
+     */
+    {
+      name: 'chat-stream-real-nightly',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: [
+        /streaming\/chat\.admin-providers\.spec\.ts/,
+        /streaming\/chat\.agent\.spec\.ts/,
+        /streaming\/chat\.agent-tools\.spec\.ts/,
+        /streaming\/chat\.mcp\.spec\.ts/,
+        /streaming\/chat\.nested-agent\.spec\.ts/,
+        /streaming\/chat\.pipeline\.spec\.ts/,
+        /streaming\/chat\.pipeline-authored\.spec\.ts/,
+        /streaming\/chat\.pipeline-multinode\.spec\.ts/,
+        /streaming\/chat\.regenerate\.spec\.ts/,
+      ],
+      fullyParallel: false,
+    },
+
+    /*
      * ── index-stream (#93 Surface A) — the index definition-of-done journey ──
      *
      * Its own project for the same reason `chat-stream` is: it needs the FULL

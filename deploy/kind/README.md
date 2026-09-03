@@ -19,6 +19,10 @@ it ships to production (ADR-0023):
 
 * `podman` — this machine has no docker. `kind` is driven with
   `KIND_EXPERIMENTAL_PROVIDER=podman`, which the script exports itself.
+  `KIND_ENGINE=docker` switches every build, save and exec to docker.
+  It also drops the provider override. That is how
+  `.github/workflows/helm-install-smoke.yml` runs this stack on a GitHub
+  runner.
 * `kind` v0.33+, `kubectl`, `helm` v3/v4, `python3`, `curl`.
 * Network access for the first run only: the cert-manager chart and its
   images. Everything else is built locally or side-loaded from podman.
@@ -101,7 +105,10 @@ Every check exits non-zero on failure.
 
 ## How long
 
-Measured on an Apple-silicon laptop, `down` then `up` then `verify`:
+Measured on an Apple-silicon laptop under podman, `down` then `up` then
+`verify`. The GitHub runner path (`helm-install-smoke.yml`, docker, images
+from the shared layer cache) records its own duration in the job summary;
+the laptop numbers below say nothing about it.
 
 * **`up` from no cluster at all: 2m26s**, with the three application images
   already built in podman. That is a fresh kind cluster, six image side-loads,

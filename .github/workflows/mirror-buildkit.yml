@@ -1,0 +1,102 @@
+name: Mirror BuildKit
+
+# Copies the BuildKit builder image docker/setup-buildx-action runs into the
+# organisation's own registry, so no CI job pulls it from Docker Hub.
+#
+# WHY. setup-buildx creates a docker-container builder from
+# `docker.io/moby/buildkit:buildx-stable-1`, pulled anonymously, once per
+# job that builds an image — eight times per pull-request run of
+# ci-web-e2e.yml alone. Docker Hub rate-limits anonymous pulls per source
+# address, and hosted runners share addresses: measured 2026-09-03, run
+# 33710882572's index leg died at that pull with "Client.Timeout exceeded
+# while awaiting headers" before a line of this repository ran. Every
+# `setup-buildx-action` site now passes
+# `driver-opts: image=ghcr.io/elitea-ng/buildkit@sha256:…`, and this workflow
+# is what puts that image there.
+#
+# WHAT IS COPIED. One pinned digest, every platform, byte for byte (`skopeo
+# copy --all` preserves the manifest list, so the digest the sites pin is the
+# same on both registries). The copy is asserted, not assumed: the
+# destination's digest must equal the source's or the job fails.
+#
+# WHEN. On a change to this file (which is how the first copy happens, on the
+# pull request that adds it), on a dispatch, and monthly — a refresh only
+# matters when BUILDKIT_DIGEST below is bumped, which is a deliberate edit.
+#
+# The package `ghcr.io/elitea-ng/buildkit` is created PRIVATE by GitHub on
+# first push. It must be made public once (package settings → Change
+# visibility), the same step elitea-e2e-llm needed: the consumers pull it
+# without a token, before they have logged in anywhere.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mirror-buildkit.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/mirror-buildkit.yml"
+  schedule:
+    # First Sunday-ish of the month, 04:41 UTC.
+    - cron: "41 4 1 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # docker.io/moby/buildkit:buildx-stable-1 as resolved 2026-09-03 (index
+  # digest; linux amd64, arm64, arm, ppc64le, s390x, riscv64). Bump by
+  # resolving the tag again:
+  #   skopeo inspect --raw docker://docker.io/moby/buildkit:buildx-stable-1 | sha256sum
+  # and updating the same digest at every `driver-opts: image=` site.
+  BUILDKIT_DIGEST: sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+  MIRROR: ghcr.io/elitea-ng/buildkit
+
+jobs:
+  mirror:
+    name: Copy moby/buildkit into ghcr.io/elitea-ng
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q skopeo
+          skopeo --version
+
+      - name: Copy every platform of the pinned digest
+        env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/skopeo-auth.json
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          skopeo login ghcr.io --username "${{ github.actor }}" --password-stdin <<< "$TOKEN"
+          skopeo copy --all --src-no-creds \
+            "docker://docker.io/moby/buildkit@${BUILDKIT_DIGEST}" \
+            "docker://${MIRROR}:buildx-stable-1"
+
+      - name: The mirror carries the same digest as the source
+        env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/skopeo-auth.json
+        run: |
+          set -euo pipefail
+          got="$(skopeo inspect --raw "docker://${MIRROR}:buildx-stable-1" | sha256sum | cut -d' ' -f1)"
+          if [ "sha256:${got}" != "${BUILDKIT_DIGEST}" ]; then
+            echo "::error::mirror digest sha256:${got} != pinned ${BUILDKIT_DIGEST}; the copy did not preserve the manifest list"
+            exit 1
+          fi
+          echo "${MIRROR}@${BUILDKIT_DIGEST} is the pinned image, byte for byte" | tee -a "$GITHUB_STEP_SUMMARY"

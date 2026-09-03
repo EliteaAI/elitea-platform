@@ -35,6 +35,7 @@ EXEMPT=$(cat <<'EXEMPTIONS'
 apps/elitea-web/tools/lint-rules/fixtures/knip/bad/package.json  knip lint-rule fixture: its dependencies are deliberately wrong, and bumping them breaks the rule it exercises
 apps/elitea-web/tools/lint-rules/fixtures/knip/good/package.json knip lint-rule fixture, same reason
 conformance/provider/pyproject.toml              test harness: a pytest runner and an HTTP client, shipping in no image, run in CI against a container someone else built
+services/elitea-worker-python/pyproject.toml    frozen runtime capability profile (elitea-sdk.lock.json verifies 80 + 6 distributions at build and at start); pins move by regenerating the profile, never by a scanner — see .github/dependabot.yml
 EXEMPTIONS
 )
 
@@ -61,8 +62,14 @@ fi
 # "    directory: " prefix and matched nothing — both directions of the check
 # would have failed on every entry. That is a loud failure rather than a silent
 # pass, which is the only reason it was caught on the first run.
-configured=$(grep -E '^[[:space:]]+directory:' "$CONFIG" \
-  | sed -E 's|^[[:space:]]+directory:[[:space:]]*/?||; s|/$||')
+# Both spellings: `directory: /x` and a `directories:` list of `- /x` items.
+# Multi-directory entries are what give one pull request per ecosystem.
+configured=$(awk '
+  /^[[:space:]]+directory:/      { sub(/^[[:space:]]+directory:[[:space:]]*/, ""); print; next }
+  /^[[:space:]]+directories:/    { inlist = 1; next }
+  inlist && /^[[:space:]]+-[[:space:]]*\//  { sub(/^[[:space:]]+-[[:space:]]*/, ""); print; next }
+  inlist && !/^[[:space:]]+-/    { inlist = 0 }
+' "$CONFIG" | sed -E 's|^/?||; s|/$||')
 
 fail=0
 

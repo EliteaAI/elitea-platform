@@ -6,6 +6,19 @@
 #   apps/elitea-web/scripts/chat-stream-e2e.sh --keep     # leave the stack up
 #   CHAT_STREAM_REPEAT=3 …/chat-stream-e2e.sh            # flake check
 #   STANDALONE_WORKER=rust …/chat-stream-e2e.sh          # native Rust runtime
+#   COMPOSE_PROFILES=real-llm LLM_PROVIDER=vllm LLM_API_BASE=http://llm-real:8090 \
+#     LLM_MODEL=qwen3-0.6b LLM_EMBEDDING_MODEL=vllm/nomic-embed-text-v1.5 \
+#     PLAYWRIGHT_PROJECT=chat-stream-real E2E_CHAT_MODEL=vllm/qwen3-0.6b \
+#     …/chat-stream-e2e.sh                               # real-model lane
+#
+# The real-model lane changes nothing in this script's lifecycle: the LLM_*
+# variables reach `seed-llm` through the environment every `run_stack` call
+# inherits, COMPOSE_PROFILES reaches compose the same way, and the mock stays
+# up beside the real model because `check` still asserts against it. What the
+# lane DOES change is which Playwright project runs and which model name the
+# specs expect (E2E_CHAT_MODEL), both forwarded below. See the `llm-real`
+# service in deploy/docker-compose.standalone-full.yml for what this lane can
+# and cannot assert.
 #
 # STANDALONE_WORKER is read by deploy/scripts/standalone-stack.sh, not by this
 # script, and reaches it through the environment every `run_stack` call
@@ -62,14 +75,27 @@ run_stack() {
 echo "→ Runtime PKI + secrets (idempotent)…"
 run_stack certs
 
-echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python}, mock chunk delay ${DELAY_MS}ms)…"
+echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python}, profiles=${COMPOSE_PROFILES:-none}, mock chunk delay ${DELAY_MS}ms)…"
 # `up` reuses an image that already exists, so a source change lands only if
 # the build is asked for explicitly. That is not a nicety here: the whole
 # incremental-render assertion depends on the mock's per-chunk delay actually
 # running, and a stale mock streams the reply in one burst — which reads as
 # "the UI does not stream" rather than "the harness did not slow anything
 # down". Measured: chunk frames 33ms apart with the delay set to 600.
-run_stack build
+#
+# STANDALONE_SKIP_BUILD=1 is set by the continuous-integration jobs, which
+# have already built and loaded every image through
+# .github/actions/build-stack-images (buildx bake, one shared layer cache per
+# image, the cache mounts carried across runs) and asserted each one is in the
+# local store. Running `compose build` again here would rebuild them from
+# scratch on the daemon's own builder, cache-less — the 5-to-10-minute cost
+# that action exists to remove. Locally the variable is unset and the build
+# runs, for the reason above.
+if [ "${STANDALONE_SKIP_BUILD:-0}" = "1" ]; then
+  echo "→ STANDALONE_SKIP_BUILD=1: images were built and asserted by the caller; not rebuilding"
+else
+  run_stack build
+fi
 # `up` exits non-zero when a service declares no healthcheck even though the
 # stack is fine, so readiness is asserted below rather than taken from it.
 run_stack up || true
@@ -125,7 +151,12 @@ echo "→ Asserting the stack (gateway mTLS, runtime plane, #326 edge strip)…"
 CHECK_LOG="$(mktemp "${TMPDIR:-/tmp}/chat-stream-check.XXXXXX")"
 # `--allow-skips` is a STATED choice, and it is stated here rather than assumed
 # inside `check` (#429). This journey seeds the chat plane and not the index
-# plane, so `check`'s index-toolkit assertion cannot run. Since #429 an
+# plane, so `check`'s index-toolkit assertion cannot run. On the real-model
+# lane (LLM_PROVIDER=vllm at llm-real) two more are given up, and `check`
+# names each: the embedding-path check and the elitea-sdk client check both
+# assert against llm-mock's request journal, nonce echo and 1536-wide
+# vectors, which a real upstream does not produce; the hops themselves are
+# still asserted (completion, vector width, model list). Since #429 an
 # unmeasured assertion exits non-zero by default, which is right for an operator
 # and wrong for this caller alone.
 #
@@ -243,6 +274,14 @@ E2E_WORKER="${STANDALONE_WORKER:-python}"
 # above it — the same stack, seeds and assertions — for the provider-backed
 # DeepWiki journeys.
 PLAYWRIGHT_PROJECT="${PLAYWRIGHT_PROJECT:-chat-stream}"
+# E2E_CHAT_MODEL names the model the specs expect the picker to offer. Unset
+# or empty, the specs default to the mock's name (they read it with `||`, so
+# '' is "unset" — the first version passed '' through and the specs' `??`
+# reads took it for a configured real model); the real-model lane sets it to
+# the seeded `vllm/<model>` row. Forwarded explicitly because the container
+# run below starts from an EMPTY environment — a variable exported on the
+# host and not listed here reaches the host path and silently not the
+# container path.
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
@@ -250,6 +289,7 @@ if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
     -e CI="${CI:-}" \
     -e E2E_REUSE_STACK=1 \
     -e E2E_WORKER="$E2E_WORKER" \
+    -e E2E_CHAT_MODEL="${E2E_CHAT_MODEL:-}" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
@@ -257,5 +297,6 @@ else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
   E2E_WORKER="$E2E_WORKER" \
+  E2E_CHAT_MODEL="${E2E_CHAT_MODEL:-}" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 fi

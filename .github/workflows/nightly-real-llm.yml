@@ -1,0 +1,118 @@
+name: Nightly — chat journeys against a real model
+
+# The real-model lane's EXPLORATORY superset, on a schedule.
+#
+# The pull-request lane (`chat-stream-real` in ci-web-e2e.yml) runs the seven
+# specs whose every assertion holds against unscripted text, on the native
+# Rust runtime, and only when a change touches the model path. This workflow
+# runs the same specs PLUS the two that lane leaves out on purpose —
+# `chat.nested-agent` and `chat.agent-tools`, whose prompts offer a tool call
+# the mock never takes and a real model will — and runs them on BOTH runtimes,
+# so the python worker's SDK path sees a real model too.
+#
+# It is the measurement that decides when those two specs can join the PR
+# lane, and the place a larger model or a different quantisation gets tried
+# (the image and its digest live in deploy/docker-compose.standalone-full.yml).
+# Its result is not a gate on anything; a failure here is read the next
+# morning, with the Playwright report and the stack's own logs attached.
+#
+# Same stack recipe as the PR lane: the standalone compose stack with the
+# `real-llm` profile, images built through the shared cache action, the
+# gateway seeded at llm-real through the self-hosted path.
+
+on:
+  schedule:
+    # 03:17 UTC daily — off the working day and off Dependabot's Saturday slot.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      chat_model:
+        description: "Model id to seed (a preset section name the image serves; default qwen3-0.6b)"
+        type: string
+        required: false
+        default: "qwen3-0.6b"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/elitea-web
+
+jobs:
+  real-llm:
+    name: Real model, ${{ matrix.worker }} runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [rust, python]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        # The Playwright container bind-mounts this checkout at /work and runs
+        # the specs from the host's node_modules, so this install is what the
+        # container path executes — not a host-only leftover.
+        run: npm ci
+      - name: Pre-pull the pinned Playwright container and the model image
+        working-directory: ${{ github.workspace }}
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+          timeout 900 docker compose -f deploy/docker-compose.standalone-full.yml --profile real-llm pull -q llm-real \
+            || echo "::warning::pull of the real-model image failed or timed out; compose will pull it inline at up"
+      - name: Build the stack images (shared cache)
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.standalone-full.yml
+            ${{ matrix.worker == 'rust' && 'docker-compose.standalone-rust-agent.yml' || '' }}
+          cache-hcl: |
+            ci/bake-cache.hcl
+            ${{ matrix.worker == 'rust' && 'ci/bake-cache-rust.hcl' || '' }}
+          targets: standalone
+          mount-cache-suffix: ${{ matrix.worker }}
+          # A scheduled run carries the main ref but is not a push to main:
+          # it reads main's caches and writes nothing into the 10 GB cap.
+          cache-write: "false"
+      - name: Run the superset against a fresh real-model stack
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          STANDALONE_SKIP_BUILD: "1"
+          STANDALONE_WORKER: ${{ matrix.worker }}
+          COMPOSE_PROFILES: real-llm
+          LLM_PROVIDER: vllm
+          LLM_API_BASE: http://llm-real:8090
+          LLM_MODEL: ${{ inputs.chat_model || 'qwen3-0.6b' }}
+          LLM_EMBEDDING_MODEL: vllm/nomic-embed-text-v1.5
+          PLAYWRIGHT_PROJECT: chat-stream-real-nightly
+          E2E_CHAT_MODEL: vllm/${{ inputs.chat_model || 'qwen3-0.6b' }}
+          CHAT_STREAM_PROJECT: elitea-chatstream-nightly-${{ matrix.worker }}
+          CHAT_STREAM_PORT: "8089"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
+        run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Give the report back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-nightly-real-llm-${{ matrix.worker }}
+          path: |
+            apps/elitea-web/playwright-report/
+            apps/elitea-web/playwright-results/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -44,6 +44,31 @@ jobs:
           rustc --version
           cargo --version
 
+      # Both jobs below used to do a COLD build of the whole 418-crate
+      # dependency graph on every Rust PR — twice per PR, once here and once in
+      # the other job, with nothing carried between runs. Nothing in this
+      # workflow cached ~/.cargo or target/.
+      #
+      # `workspaces` is repo-relative (the `defaults.run.working-directory`
+      # above applies to `run:` steps, not to `uses:`), and points at the
+      # Cargo.toml this workflow builds.
+      #
+      # CARGO_INCREMENTAL=0 above stays. rust-cache is designed for CI with
+      # incremental off — it caches the registry, the git checkouts and the
+      # dependency artefacts in target/, none of which are incremental state —
+      # and it deliberately does not cache the workspace crates themselves.
+      #
+      # The two jobs get separate cache entries (rust-cache keys on the job),
+      # which is correct: `quality` builds --release and docs, `test` builds
+      # test targets, and one shared entry would thrash between them.
+      - name: Cache cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Read everywhere, write on main only: a pull request's target directory
+          # is ~1 GB of the repository's 10 GB Actions cache, duplicated per branch.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: services/elitea-worker-rust
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -86,6 +111,31 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      # Both jobs below used to do a COLD build of the whole 418-crate
+      # dependency graph on every Rust PR — twice per PR, once here and once in
+      # the other job, with nothing carried between runs. Nothing in this
+      # workflow cached ~/.cargo or target/.
+      #
+      # `workspaces` is repo-relative (the `defaults.run.working-directory`
+      # above applies to `run:` steps, not to `uses:`), and points at the
+      # Cargo.toml this workflow builds.
+      #
+      # CARGO_INCREMENTAL=0 above stays. rust-cache is designed for CI with
+      # incremental off — it caches the registry, the git checkouts and the
+      # dependency artefacts in target/, none of which are incremental state —
+      # and it deliberately does not cache the workspace crates themselves.
+      #
+      # The two jobs get separate cache entries (rust-cache keys on the job),
+      # which is correct: `quality` builds --release and docs, `test` builds
+      # test targets, and one shared entry would thrash between them.
+      - name: Cache cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Read everywhere, write on main only: a pull request's target directory
+          # is ~1 GB of the repository's 10 GB Actions cache, duplicated per branch.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: services/elitea-worker-rust
 
       - name: Run all targets and features
         env:

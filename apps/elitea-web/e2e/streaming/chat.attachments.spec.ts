@@ -193,7 +193,7 @@ const UPLOAD_RE = /\/elitea_core\/attachments\/prompt_lib\/(\d+)\/([^/?]+)$/;
 const START_RE = /\/elitea_core\/messages\/prompt_lib\/(\d+)\/[0-9a-f-]+/;
 
 /** The model `seed-llm` seeds into every personal project (see `chat.streaming.spec.ts`). */
-const MODEL_NAME = process.env['E2E_CHAT_MODEL'] ?? 'E2E-MOCK-MODEL';
+const MODEL_NAME = process.env['E2E_CHAT_MODEL'] || 'E2E-MOCK-MODEL';
 
 /** Which runtime answers the turn. `chat-stream-e2e.sh` sets it; the local default is the dev stack's native runtime. */
 const WORKER = process.env['E2E_WORKER'] ?? 'rust';

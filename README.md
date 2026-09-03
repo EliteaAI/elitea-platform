@@ -216,7 +216,7 @@ All workflows are in `.github/workflows/`:
 | `ci-ui.yml` | PR/push to UI paths | Lint, build SPA |
 | `ci-python.yml` | PR/push to pylon-indexer | Validate YAML configs |
 | `helm-lint.yml` | PR/push to helm paths | Lint charts, template dry-run |
-| `publish.yml` | Push to main/next | Semantic release → build → sign |
+| `publish.yml` | Push to main/next | Semantic release → build → publish-image (scan, manifest, sign) → chart |
 
 ### Release Flow
 

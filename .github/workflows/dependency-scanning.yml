@@ -13,6 +13,17 @@ on:
     branches:
       - main
 
+# A new push cancels the queued previous run of THIS workflow on the same ref.
+# This does not narrow what the gate sees: it still runs unfiltered on every
+# push and pull_request (see above), it just stops N superseded copies of the
+# same commit range sitting in the queue. The org is on the GitHub free plan —
+# 20 concurrent jobs for the whole account — and a push to main starts ~100
+# jobs, so a queued run that can never report on current code is a slot another
+# gate needs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

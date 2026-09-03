@@ -76,6 +76,14 @@ on:
       # nothing under apps/elitea-web. Without this path the job that exists to
       # catch that drift would not start on the change that caused it.
       - "services/elitea-worker-rust/**"
+      # The real-model lane's own subjects: the gateway's SSE relay, the
+      # python worker's SDK path, and the shared build action every stack
+      # job here uses. The `model-path-changes` job names these; a prefix it
+      # names must also START this workflow, or the lane silently never runs
+      # for the change it exists to catch.
+      - "services/elitea-llm-gateway/**"
+      - "services/elitea-worker-python/**"
+      - ".github/actions/**"
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
@@ -93,6 +101,14 @@ on:
       # nothing under apps/elitea-web. Without this path the job that exists to
       # catch that drift would not start on the change that caused it.
       - "services/elitea-worker-rust/**"
+      # The real-model lane's own subjects: the gateway's SSE relay, the
+      # python worker's SDK path, and the shared build action every stack
+      # job here uses. The `model-path-changes` job names these; a prefix it
+      # names must also START this workflow, or the lane silently never runs
+      # for the change it exists to catch.
+      - "services/elitea-llm-gateway/**"
+      - "services/elitea-worker-python/**"
+      - ".github/actions/**"
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
@@ -118,7 +134,7 @@ defaults:
 
 jobs:
   e2e:
-    name: E2E (${{ matrix.engine }})
+    name: E2E (${{ matrix.leg }})
     # Runs on pull requests (issue #158). It previously carried
     #   if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     # which skipped it on every PR — confirmed on runs 31335173296 and
@@ -128,22 +144,33 @@ jobs:
     # engine leg is affordable on every PR; both legs stay in the matrix
     # below so chromium and webkit are each still validated (§6.6/§7.6).
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       # Both engines are validated independently. Issue #60 requires chromium AND
       # webkit; the job used to run whatever `npm run e2e` defaulted to, so half
       # the acceptance was never checked. `fail-fast: false` keeps a webkit-only
       # regression from hiding chromium's result (and vice versa).
       fail-fast: false
+      # webkit is sharded in two: its Playwright run measured 7.6 min against
+      # chromium's 3.3 for the same suite (2026-09-02), and once the image
+      # build stopped costing 3 min it was the longest thing on a pull request.
+      # `leg` names the artifacts and the job; `shard` is passed straight to
+      # `playwright test --shard`.
       matrix:
-        engine: [chromium, webkit]
+        include:
+          - engine: chromium
+            leg: chromium
+            shard: ""
+          - engine: webkit
+            leg: webkit-1of2
+            shard: "1/2"
+          - engine: webkit
+            leg: webkit-2of2
+            shard: "2/2"
     # E2E needs Docker + docker-compose for the stack.
     # GitHub-hosted ubuntu-latest has Docker and docker compose (v2 plugin) pre-installed.
     steps:
       - uses: actions/checkout@v7
-        with:
-          # elitea-web's Containerfile copies from apps/elitea-web/ using repo-root context,
-          # so a full checkout (not shallow) is needed to build the image.
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -151,85 +178,35 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Build elitea-main:e2e and elitea-web:e2e from source
-        # docker-compose.e2e-standalone.yml references elitea-main:e2e and
-        # elitea-web:e2e. Build both here so the stack never needs a published
-        # `:e2e` tag — a tag that has never existed outside a developer laptop,
-        # and whose absence is what killed every dispatch of this job (#154).
-        #
-        # Two plain `docker build`s, deliberately: they are the same two commands
-        # a developer runs locally (with podman), and `docker build` loads its
-        # result into the image store that compose then reads. The previous
-        # revision built elitea-web with `docker buildx bake` and no `--load`,
-        # which leaves the result in the BUILDER's cache only — `docker images`
-        # never saw the tag, compose fell through to a registry PULL, and run
-        # 31324533092 got `denied`. elitea-main, built with `docker build` on the
-        # same runner, was found; that asymmetry is the whole bug, and it is why
-        # only elitea-web appeared in the pull list.
-        #
-        # No buildx/gha layer cache here on purpose: correctness of this job must
-        # not depend on a cache, and a byte-identical cached rebuild that is
-        # believed to carry a fix it does not carry has already misled this
-        # effort once.
+      - name: Pre-pull the pinned Playwright container (background)
+        # Network-bound, so it overlaps the CPU-bound bake below. Started with
+        # nohup and left running: the runner does not reap a step's background
+        # processes, and the test step's `docker run` pulls the image itself if
+        # this has not finished, so a slow or failed pull costs the overlap and
+        # never the run. Bounded so a stalled pull cannot outlive the job.
+        run: |
+          nohup timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble >/tmp/playwright-pull.log 2>&1 &
+      - name: Build elitea-main:e2e, elitea-web:e2e and elitea-subapp-host:e2e
+        # Through the shared action rather than three plain `docker build`s:
+        # buildx bake over the SAME compose file the stack runs, one
+        # content-addressed layer cache per image shared with the release and
+        # the image scan, the dependency cache mounts carried across runs, and
+        # — the guard this job has always had — an assertion that every image
+        # compose would build is in the local store before compose runs. The
+        # action's own header carries the history (issue #154, and why a
+        # content-addressed cache cannot serve a stale fix).
         #
         # elitea-main uses the `e2e` target, which builds the admin SPA from
         # apps/elitea-web/src/entries/admin — the same bundle the shipping
         # `final` stage carries, since `final` derives from `e2e`.
-        #
-        # The pinned Playwright image is pulled HERE, in the background, rather
-        # than in a step of its own. The two builds are CPU-bound and the pull
-        # is network-bound, so the ~27s pull (measured, run 31775604015's visual
-        # job) hides completely inside the ~160s build and the test step below
-        # starts against a warm local image.
-        working-directory: ${{ github.workspace }}
-        run: |
-          # Bounded and NON-FATAL, both deliberately. `docker run` in the test
-          # step pulls the image itself if it is missing, so a failed or slow
-          # pull here costs the overlap, never the run — and `timeout` stops a
-          # stalled pull from hanging this step and getting mis-blamed on the
-          # build, which is what the naive `docker pull &` would have done.
-          (
-            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
-              || echo "::warning::background pull of the pinned Playwright image failed or timed out; the test step will pull it inline"
-          ) &
-          pw_pull=$!
-          docker build \
-            --file services/elitea-main/Containerfile \
-            --target e2e \
-            --tag ghcr.io/eliteaai/elitea-main:e2e \
-            --platform linux/amd64 \
-            .
-          docker build \
-            --file apps/elitea-web/Containerfile \
-            --tag ghcr.io/eliteaai/elitea-web:e2e \
-            --platform linux/amd64 \
-            .
-          # The DeepWiki provider: the Go sub-application host (ADR-0023
-          # H1.1), which the E2E compose runs with
-          # ELITEA_DEEPWIKI_RUNNER=fixture behind the facade.
-          docker build \
-            --file services/elitea-subapp-host/Containerfile \
-            --tag ghcr.io/eliteaai/elitea-subapp-host:e2e \
-            --platform linux/amd64 \
-            .
-          # The subshell above swallows its own failure, so this only joins the
-          # background job — it cannot fail the step.
-          wait "$pw_pull"
-      - name: Both images are present in the local image store
-        # Without this, a build that silently fails to load looks like a working
-        # job right up until compose quietly tries the registry. Assert the end
-        # state instead of trusting the build step's exit code, and print the
-        # digests so a run's provenance is legible from its log.
-        run: |
-          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e ghcr.io/eliteaai/elitea-subapp-host:e2e; do
-            id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
-            if [ -z "$id" ]; then
-              echo "::error::$img was not loaded into the local image store."
-              echo "compose would now try to PULL it from ghcr and fail with 'denied' (issue #154)."
-              exit 1
-            fi
-            echo "  ✓ $img $id"
-          done
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.e2e-standalone.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+          targets: e2e
+          mount-cache-suffix: e2e
       - name: Bring up E2E stack
         # e2e-stack.sh uses deploy/docker-compose.e2e-standalone.yml which references
         # elitea-main:e2e and elitea-web:e2e (both built and asserted above).
@@ -296,7 +273,7 @@ jobs:
             -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
             -e E2E_TZ="${E2E_TZ:-UTC}" \
             mcr.microsoft.com/playwright:v1.62.1-noble \
-            npx playwright test --project=${{ matrix.engine }}
+            npx playwright test --project=${{ matrix.engine }} ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
       - name: Collect the stack's own logs
         # ONLY ON FAILURE, and BEFORE the teardown below removes the stack.
         #
@@ -329,7 +306,7 @@ jobs:
         with:
           # Per-engine name: upload-artifact v7 rejects a duplicate name, so a
           # shared one would fail the second matrix leg to finish.
-          name: playwright-report-${{ matrix.engine }}
+          name: playwright-report-${{ matrix.leg }}
           # BOTH paths, and the second one is the point.
           #
           # `playwright-results/` is the raw output directory: per-test folders
@@ -354,7 +331,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-failed-videos-${{ matrix.engine }}
+          name: playwright-failed-videos-${{ matrix.leg }}
           path: apps/elitea-web/playwright-results/**/*.webm
           if-no-files-found: ignore
           retention-days: 14
@@ -377,11 +354,9 @@ jobs:
     # stack cannot run an agent turn at all, so this journey would fail there
     # for a reason that has nothing to do with the change under test.
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
-        with:
-          # The web and worker images build from repo-root context.
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -389,19 +364,28 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Pre-pull the pinned Playwright container
-        # No `npx playwright install --with-deps chromium` step — that spent
-        # ~57s, most of it apt fetching system libraries the runner then throws
-        # away (see the `e2e` job's fuller version of this note). The journey
-        # runs inside the pinned Playwright image instead, which ships the
-        # browsers AND those libraries; the journey itself stays on Desktop
-        # Chrome (the script's --project selects it), so nothing about coverage
-        # changes. Bounded and NON-FATAL: the script's `docker run` pulls the
-        # image itself if this fails, so a stalled pull costs the overlap,
-        # never the run.
+      - name: Pre-pull the pinned Playwright container (background)
+        # Started with nohup and left running while the bake below uses the
+        # CPU: the runner does not reap a step's background processes, and
+        # compose / the test step pull inline if this has not finished, so a
+        # slow pull costs the overlap and never the run.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
-            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+          nohup bash -c 'timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble' >/tmp/prepull.log 2>&1 &
+      - name: Build the stack images (shared cache)
+        # Replaces the script's own `compose build` (STANDALONE_SKIP_BUILD=1
+        # below): every `build:` service of the compose file(s) the stack runs,
+        # baked with one shared layer cache per image and the cargo/Go/pip
+        # cache mounts restored from the previous run, then asserted present.
+        # Measured before this: 5.3 min (python worker) to 10.6 min (Rust
+        # worker, 9.6 of it one sequential cargo chain) of every such job.
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.standalone-full.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+          targets: standalone
+          mount-cache-suffix: python
       - name: Run the journey against a fresh standalone stack
         # The script owns the whole lifecycle: runtime PKI, compose up, the
         # three seed steps, then Playwright. It uses its own compose project so
@@ -429,6 +413,7 @@ jobs:
         env:
           COMPOSE_BIN: docker compose
           CI: "true"
+          STANDALONE_SKIP_BUILD: "1"
           CHAT_STREAM_PROJECT: elitea-chatstream-ci
           CHAT_STREAM_PORT: "8084"
           MOCK_LLM_CHUNK_DELAY_MS: "120"
@@ -467,11 +452,9 @@ jobs:
     # both publish the fixed oidc-mock port 9400 and cannot share a host, and a
     # matrix would also hide which runtime failed behind one job name.
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-        with:
-          # The web, main and worker images all build from repo-root context.
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -479,12 +462,30 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Pre-pull the pinned Playwright container
-        # Bounded and NON-FATAL, for the reasons the `chat-stream` job's copy of
-        # this step spells out.
+      - name: Pre-pull the pinned Playwright container (background)
+        # Started with nohup and left running while the bake below uses the
+        # CPU: the runner does not reap a step's background processes, and
+        # compose / the test step pull inline if this has not finished, so a
+        # slow pull costs the overlap and never the run.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
-            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+          nohup bash -c 'timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble' >/tmp/prepull.log 2>&1 &
+      - name: Build the stack images (shared cache)
+        # Replaces the script's own `compose build` (STANDALONE_SKIP_BUILD=1
+        # below): every `build:` service of the compose file(s) the stack runs,
+        # baked with one shared layer cache per image and the cargo/Go/pip
+        # cache mounts restored from the previous run, then asserted present.
+        # Measured before this: 5.3 min (python worker) to 10.6 min (Rust
+        # worker, 9.6 of it one sequential cargo chain) of every such job.
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.standalone-full.yml
+            docker-compose.standalone-rust-agent.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+            ci/bake-cache-rust.hcl
+          targets: standalone
+          mount-cache-suffix: rust
       - name: Run the journeys against a fresh Rust-runtime stack
         # The Rust worker is compiled from source by the stack's own `build`
         # step, which is why this job's budget is larger than `chat-stream`'s.
@@ -498,6 +499,7 @@ jobs:
         env:
           COMPOSE_BIN: docker compose
           CI: "true"
+          STANDALONE_SKIP_BUILD: "1"
           STANDALONE_WORKER: rust
           CHAT_STREAM_PROJECT: elitea-chatstream-rust-ci
           # NOT 8085: that is the stack's own gateway debug port
@@ -520,6 +522,160 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  model-path-changes:
+    name: Does this change reach the model path?
+    # Decides whether the real-model lane runs on a pull request. The lane's
+    # signal — the gateway's SSE relay against a vendor's real chunks, and a
+    # tool call the model chose — changes only when the gateway, a worker,
+    # the execution plane, the chat surface, the E2E harness or the stack
+    # itself changes. A pull request that touches none of those gets the mock
+    # lanes, which already prove the product's own code paths, and skips this
+    # one. Every push to main and every dispatch runs it.
+    #
+    # A plain `git diff` against the pull request's base, not a third-party
+    # path-filter action: the list below is the whole mechanism, and it needs
+    # no extra token scope.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reaches-model: ${{ steps.filter.outputs.reaches-model }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        working-directory: ${{ github.workspace }}
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "reaches-model=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request: the real-model lane runs"
+            exit 0
+          fi
+          changed="$(git diff --name-only "${BASE_SHA}...HEAD")"
+          pattern='^(services/elitea-llm-gateway/|services/elitea-worker-rust/|services/elitea-worker-python/|services/elitea-main/internal/api/v2/executions/|services/elitea-main/internal/llmproxy/|services/elitea-main/internal/runtimecomposition/|apps/elitea-web/src/features/chat-|apps/elitea-web/e2e/|apps/elitea-web/scripts/chat-stream-e2e\.sh|apps/elitea-web/playwright\.config\.ts|deploy/docker-compose\.standalone-(full|rust-agent)\.yml|deploy/scripts/|deploy/ci/|\.github/actions/|\.github/workflows/ci-web-e2e\.yml)'
+          if printf '%s\n' "$changed" | grep -qE "$pattern"; then
+            echo "reaches-model=true" >> "$GITHUB_OUTPUT"
+            echo "model path touched:"; printf '%s\n' "$changed" | grep -E "$pattern"
+          else
+            echo "reaches-model=false" >> "$GITHUB_OUTPUT"
+            echo "no model-path file changed; the real-model lane is skipped on this pull request"
+          fi
+
+  chat-stream-real:
+    name: Chat journeys against a real model
+    needs: model-path-changes
+    if: needs.model-path-changes.outputs.reaches-model == 'true'
+    # The structural chat journeys against a REAL model — Qwen3-0.6B under
+    # llama.cpp, baked into an image built and smoke-tested in
+    # github.com/elitea-ng/elitea-e2e-llm and pinned by digest in the compose
+    # file (the `llm-real` service, `real-llm` profile). Next to the mock
+    # lanes, never instead of them: the mock is what makes `chat.stop`,
+    # `chat.hitl`, the toolkit sentinels and the journal-reading specs
+    # assertable at all, and none of those run here.
+    #
+    # What this job alone can catch: the gateway's SSE relay against a
+    # vendor's real chunk shapes (a `reasoning_content` field, a trailing
+    # usage chunk, real finish reasons) and a tool call the model chose from
+    # the schema the runtime presented — as opposed to one a prompt marker
+    # forced. Every assertion in the `chat-stream-real` Playwright project is
+    # semantic or structural for that reason; an exact-text assertion here
+    # would be a flake by construction.
+    #
+    # On the NATIVE runtime (STANDALONE_WORKER=rust): three of the seven
+    # specs in the project are the pipeline journeys, which author the Rust
+    # runtime's graph shapes and skip themselves on the python leg. The
+    # python leg would run four specs for the same stack cost.
+    #
+    # A separate job for the same reason `chat-stream-rust` is: the stacks
+    # share the fixed oidc-mock port and cannot coexist on one host, and one
+    # job name per lane keeps the failing lane legible.
+    #
+    # Measured in the image's own CI on this runner class: 25–43 tok/s
+    # generation, so a capped 256-token turn is ~10 s; the Rust lane it
+    # mirrors takes ~15 min. The timeout below is the thing that turns a
+    # wedged model into minutes rather than the six-hour default, and every
+    # job in this workflow now carries one; this is the one whose upstream
+    # can hang.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Pre-pull the pinned Playwright container and the model image (background)
+        # Started with nohup and left running while the bake below uses the
+        # CPU: the runner does not reap a step's background processes, and
+        # compose / the test step pull inline if this has not finished, so a
+        # slow pull costs the overlap and never the run.
+        working-directory: ${{ github.workspace }}
+        run: |
+          nohup bash -c 'timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble ; timeout 900 docker compose -f deploy/docker-compose.standalone-full.yml --profile real-llm pull -q llm-real' >/tmp/prepull.log 2>&1 &
+      - name: Build the stack images (shared cache)
+        # Replaces the script's own `compose build` (STANDALONE_SKIP_BUILD=1
+        # below): every `build:` service of the compose file(s) the stack runs,
+        # baked with one shared layer cache per image and the cargo/Go/pip
+        # cache mounts restored from the previous run, then asserted present.
+        # Measured before this: 5.3 min (python worker) to 10.6 min (Rust
+        # worker, 9.6 of it one sequential cargo chain) of every such job.
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.standalone-full.yml
+            docker-compose.standalone-rust-agent.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+            ci/bake-cache-rust.hcl
+          targets: standalone
+          mount-cache-suffix: rust
+      - name: Run the journeys against a fresh real-model stack
+        # The same script and lifecycle as `chat-stream`. What differs is the
+        # environment: the profile that starts `llm-real`, the LLM_* variables
+        # `seed-llm` reads to point the gateway at it (LLM_EMBEDDING_MODEL
+        # carries the `vllm/` prefix itself — see resolve_embedding_model),
+        # the Playwright project that holds only the structural specs, and
+        # E2E_CHAT_MODEL so those specs expect the seeded row's name.
+        #
+        # No MOCK_LLM_CHUNK_DELAY_MS: the mock is up for `check` but answers
+        # no journey here, and a real model paces itself.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          STANDALONE_SKIP_BUILD: "1"
+          STANDALONE_WORKER: rust
+          COMPOSE_PROFILES: real-llm
+          LLM_PROVIDER: vllm
+          LLM_API_BASE: http://llm-real:8090
+          LLM_MODEL: qwen3-0.6b
+          LLM_EMBEDDING_MODEL: vllm/nomic-embed-text-v1.5
+          PLAYWRIGHT_PROJECT: chat-stream-real
+          E2E_CHAT_MODEL: vllm/qwen3-0.6b
+          CHAT_STREAM_PROJECT: elitea-chatstream-real-ci
+          # Not 8085 (the gateway's debug port) and not 8086 (the Rust lane's),
+          # so the three lanes can never collide even on one host.
+          CHAT_STREAM_PORT: "8087"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
+        run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Give the report back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-chat-stream-real
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   deepwiki-stack:
     name: DeepWiki journeys through the facade and the provider
     # The provider-backed DeepWiki journeys (DWIKI-005/006/010/011/012):
@@ -530,10 +686,9 @@ jobs:
     # apps/elitea-web/scripts/deepwiki-e2e.sh. Its own compose project and
     # port so it can share a host with the two chat jobs' stacks.
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -541,15 +696,34 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Pre-pull the pinned Playwright container
+      - name: Pre-pull the pinned Playwright container (background)
+        # Started with nohup and left running while the bake below uses the
+        # CPU: the runner does not reap a step's background processes, and
+        # compose / the test step pull inline if this has not finished, so a
+        # slow pull costs the overlap and never the run.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
-            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+          nohup bash -c 'timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble' >/tmp/prepull.log 2>&1 &
+      - name: Build the stack images (shared cache)
+        # Replaces the script's own `compose build` (STANDALONE_SKIP_BUILD=1
+        # below): every `build:` service of the compose file(s) the stack runs,
+        # baked with one shared layer cache per image and the cargo/Go/pip
+        # cache mounts restored from the previous run, then asserted present.
+        # Measured before this: 5.3 min (python worker) to 10.6 min (Rust
+        # worker, 9.6 of it one sequential cargo chain) of every such job.
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.standalone-full.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+          targets: standalone
+          mount-cache-suffix: python
       - name: Run the DeepWiki journeys against a fresh standalone stack
         working-directory: ${{ github.workspace }}
         env:
           COMPOSE_BIN: docker compose
           CI: "true"
+          STANDALONE_SKIP_BUILD: "1"
           DEEPWIKI_STREAM_PROJECT: elitea-deepwiki-ci
           DEEPWIKI_STREAM_PORT: "8087"
           PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.1-noble
@@ -581,11 +755,9 @@ jobs:
     # standalone stack can be up per host, because oidc-mock's port 9400 cannot
     # be remapped (the issuer comes from the Host header).
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-        with:
-          # The web and worker images build from repo-root context.
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -593,13 +765,28 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Pre-pull the pinned Playwright container
-        # Replaces `npx playwright install --with-deps chromium` — see the
-        # `chat-stream` job's copy of this step for the reasoning. Bounded and
-        # non-fatal: the script's `docker run` pulls inline if this fails.
+      - name: Pre-pull the pinned Playwright container (background)
+        # Started with nohup and left running while the bake below uses the
+        # CPU: the runner does not reap a step's background processes, and
+        # compose / the test step pull inline if this has not finished, so a
+        # slow pull costs the overlap and never the run.
         run: |
-          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble \
-            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+          nohup bash -c 'timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.1-noble' >/tmp/prepull.log 2>&1 &
+      - name: Build the stack images (shared cache)
+        # Replaces the script's own `compose build` (STANDALONE_SKIP_BUILD=1
+        # below): every `build:` service of the compose file(s) the stack runs,
+        # baked with one shared layer cache per image and the cargo/Go/pip
+        # cache mounts restored from the previous run, then asserted present.
+        # Measured before this: 5.3 min (python worker) to 10.6 min (Rust
+        # worker, 9.6 of it one sequential cargo chain) of every such job.
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.standalone-full.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+          targets: standalone
+          mount-cache-suffix: python
       - name: Run the journey against a fresh standalone stack
         # The script owns the whole lifecycle: runtime PKI, build, compose up,
         # four seed steps, the embedding-path assertions, then Playwright. It
@@ -612,6 +799,7 @@ jobs:
         env:
           COMPOSE_BIN: docker compose
           CI: "true"
+          STANDALONE_SKIP_BUILD: "1"
           INDEX_STREAM_PROJECT: elitea-indexstream-ci
           INDEX_STREAM_PORT: "8087"
           INDEX_STREAM_MOCK_PORT: "8091"
@@ -649,6 +837,7 @@ jobs:
     # matching PR, pushes to main, `v*` tags, and manual dispatch. ~4 min, one
     # engine, no matrix; cheaper than either E2E leg.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -674,6 +863,18 @@ jobs:
       # building the stack's two images from the compose `build:` stanzas, which
       # is CPU-bound, while the ~27s pull is network-bound. Overlapping them
       # takes the pull off the critical path of the snapshot step below.
+      - name: Build the E2E stack images (shared cache)
+        # Before `e2e-stack.sh up`: without this, compose falls through to its
+        # `build:` stanzas and rebuilds the three images cache-less on this
+        # runner — the same 3 minutes the `e2e` job's legs used to pay each.
+        uses: ./.github/actions/build-stack-images
+        with:
+          compose-files: |
+            docker-compose.e2e-standalone.yml
+          cache-hcl: |
+            ci/bake-cache.hcl
+          targets: e2e
+          mount-cache-suffix: e2e
       - name: Bring up the E2E stack (host)
         env:
           COMPOSE_BIN: docker compose

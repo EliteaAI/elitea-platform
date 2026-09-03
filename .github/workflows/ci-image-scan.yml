@@ -275,16 +275,21 @@ jobs:
           set -euo pipefail
           indent() { while IFS= read -r line; do printf '  %s\n' "$line"; done; }
 
-          expression='.jobs.scan.strategy.matrix.image[] | .name + "|" + .expect_type + "|" + (.blocking | tostring)'
-          here="$(yq -r "$expression" .github/workflows/ci-image-scan.yml | sort -u)"
-          release="$(yq -r "$expression" .github/workflows/publish.yml | sort -u)"
+          # Both files name the job `scan`; in publish.yml it is the job the
+          # manifest job `needs`, so one refused image stops every manifest. The
+          # signature are one job so a release costs 10 runner slots instead of
+          # 30. The MATRIX FIELDS being compared are identical, which is what
+          # this step is about.
+          fields='.name + "|" + .expect_type + "|" + (.blocking | tostring)'
+          here="$(yq -r ".jobs.scan.strategy.matrix.image[] | $fields" .github/workflows/ci-image-scan.yml | sort -u)"
+          release="$(yq -r ".jobs.scan.strategy.matrix.image[] | $fields" .github/workflows/publish.yml | sort -u)"
 
           if [ -z "$here" ]; then
             echo "::error::read no scan entry from this workflow — the comparison below would pass on an empty set"
             exit 1
           fi
           if [ -z "$release" ]; then
-            echo "::error::read no scan entry from publish.yml. Either the release scan job was renamed or deleted (#501), or its matrix key changed. A release that scans nothing must not read as a release that scanned everything."
+            echo "::error::read no scan entry from publish.yml. Either the release scan job (\`scan\`) was renamed or deleted (#501), or its matrix key changed. A release that scans nothing must not read as a release that scanned everything."
             exit 1
           fi
 
@@ -440,6 +445,10 @@ jobs:
           submodules: recursive
 
       - uses: docker/setup-buildx-action@v4
+        with:
+          # The builder image from the org's own mirror (mirror-buildkit.yml), by
+          # digest: no anonymous Docker Hub pull per job.
+          driver-opts: image=ghcr.io/elitea-ng/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
       # One platform. The scan reads Go module metadata and OS package
       # databases, and neither depends on the architecture.
@@ -459,8 +468,28 @@ jobs:
           load: true
           tags: ${{ matrix.image.name }}:ci-scan
           platforms: linux/amd64
-          cache-from: type=gha,scope=${{ matrix.image.name }}-ci-scan
-          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-ci-scan
+          # ONE content-addressed layer cache per image, named after the
+          # platform it holds — NOT a private `-ci-scan` scope.
+          #
+          # This step builds linux/amd64 from the same Containerfile, the same
+          # context and the same build-args as publish.yml's amd64 `build` leg,
+          # so its layers ARE that build's layers. Under the old scope name the
+          # same image was cached three times per push under three unrelated
+          # keys (nothing in ci-web-e2e.yml, `<name>-ci-scan` here,
+          # `<name>-linux-amd64` in publish.yml), so every one of them was cold
+          # for work another job on the same commit had already done, and the
+          # 10 GB GHA cache was spent holding three copies.
+          #
+          # Sharing the scope is safe precisely because the cache is
+          # content-addressed: a layer is keyed by its inputs, so a job that
+          # builds something different simply misses instead of reading a wrong
+          # entry. It is a hit rate, never a source of truth — the scan still
+          # builds and reads the image it is given.
+          cache-from: type=gha,scope=${{ matrix.image.name }}-linux-amd64
+          # mode=max on a PUSH to main, mode=min otherwise — the daily schedule
+          # also carries the main ref and must not export every layer nightly.
+          # The same write policy as .github/actions/build-stack-images.
+          cache-to: type=gha,mode=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'max' || 'min' }},scope=${{ matrix.image.name }}-linux-amd64
 
       # exit-code 0 on purpose: this step collects the report, and the step
       # below is the gate. Splitting them lets the gate print every finding.
