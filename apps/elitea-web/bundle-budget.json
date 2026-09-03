@@ -23,6 +23,12 @@
       "minJsChunks": 0,
       "initialKB": 300,
       "routeChunkKB": 250
+    },
+    "brand-preview": {
+      "html": "index.html",
+      "minJsChunks": 0,
+      "initialKB": 300,
+      "routeChunkKB": 250
     }
   }
 }

@@ -13,10 +13,11 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "npm run build:app && npm run build:admin && npm run build:maintenance",
+    "build": "npm run build:app && npm run build:admin && npm run build:maintenance && npm run build:brand-preview",
     "build:app": "vite build",
     "build:admin": "vite build --mode admin",
     "build:maintenance": "vite build --mode maintenance",
+    "build:brand-preview": "vite build --mode brand-preview",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint -c .oxlintrc.json",
     "test:unit": "vitest run --config vitest.config.ts --project node",

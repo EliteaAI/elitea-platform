@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Brand preview</title>
+    <!-- ADR-0024 WP9: the offline brand previewer (`preview/app.html` of a
+         branding package). The build inlines every script and style into this
+         one file, and the page makes NO request of its own: it opens from disk
+         with no Elitea running.
+
+         The exporter writes the deployment's brand pack as the BODY of the
+         element below. An empty body means "no pack shipped", and the page
+         then starts from the compiled default pack. -->
+    <script type="application/json" id="brand-pack"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
