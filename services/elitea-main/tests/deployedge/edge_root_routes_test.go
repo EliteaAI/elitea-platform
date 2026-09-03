@@ -74,6 +74,7 @@ var rootMountedGoPaths = map[string]string{
 	"/artifacts/1/bucket/k":         "router.go: the artifacts download family",
 	"/admin/app":                    "router.go: the admin SPA mount",
 	"/api/v2/branding/bootstrap.js": "router.go: the branding bootstrap, inside /api/",
+	"/api/v2/branding/assets/logo-full/" + strings.Repeat("ab", 32) + ".svg": "router.go: uploaded brand assets, inside /api/, public like /icons",
 }
 
 // notForwardedGoPaths are root-mounted Go routes that must NOT reach this

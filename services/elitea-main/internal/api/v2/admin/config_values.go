@@ -241,6 +241,9 @@ func (h *Handler) AdministrationPluginConfigValuesSave(w http.ResponseWriter, r 
 	}
 	if section.id == platformconfig.SectionBranding {
 		h.invalidateBranding()
+		if stored, err := h.loadSectionValues(r, section.id); err == nil {
+			h.collectBrandingAssets(r.Context(), stored)
+		}
 	}
 
 	// Re-READ rather than echo. An echo would make a write that silently failed

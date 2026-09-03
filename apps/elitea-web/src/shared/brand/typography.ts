@@ -79,10 +79,26 @@ const round4 = (value: number): number => Number(value.toFixed(4));
 
 const rem = (px: number): string => `${round4(px / ROOT_FONT_SIZE)}rem`;
 
-/** The one place the token layer names a CSS variable by hand. */
-const paletteVar = (path: string): string => `var(--${CSS_VAR_PREFIX}-palette-${path})`;
+/**
+ * The one place the token layer names a CSS variable by hand. A typography
+ * variant is a plain style object — MUI offers it no `theme.vars` — so the
+ * variable is spelled out, and it MUST carry the prefix of the theme the
+ * variant is built into. A theme built under another scope (the Branding
+ * page's preview, `--elp-*`) that named `--el-*` here would paint its
+ * headings with the OUTER app theme's `text.secondary`: white, from the
+ * console's dark scheme, on the preview's light surface.
+ */
+const paletteVar = (cssVarPrefix: string, path: string): string =>
+  `var(--${cssVarPrefix}-palette-${path})`;
 
-export function toTypography(typography: BrandPack['typography']): TypographyVariantsOptions {
+/**
+ * @param cssVarPrefix the `cssVariables.cssVarPrefix` of the theme this
+ *   typography is built into; the app theme's by default.
+ */
+export function toTypography(
+  typography: BrandPack['typography'],
+  cssVarPrefix: string = CSS_VAR_PREFIX,
+): TypographyVariantsOptions {
   const { fontFamily, fontFamilyMono, baseSize, scale } = typography;
   const variants: Record<string, unknown> = {};
 
@@ -98,7 +114,9 @@ export function toTypography(typography: BrandPack['typography']): TypographyVar
         ? {}
         : { letterSpacing: `${round4(spec.letterSpacingPx * ratio)}px` }),
       ...(spec.textTransform === undefined ? {} : { textTransform: spec.textTransform }),
-      ...(spec.secondaryText === undefined ? {} : { color: paletteVar('text-secondary') }),
+      ...(spec.secondaryText === undefined
+        ? {}
+        : { color: paletteVar(cssVarPrefix, 'text-secondary') }),
     };
   }
 

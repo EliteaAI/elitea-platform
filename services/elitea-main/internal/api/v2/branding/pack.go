@@ -78,6 +78,20 @@ type Typography struct {
 	FontFamilyMono string  `json:"fontFamilyMono"`
 	BaseSize       float64 `json:"baseSize"`
 	Scale          float64 `json:"scale"`
+	// FontFaces are the self-hosted faces the web app declares as @font-face
+	// rules so that FontFamily resolves (ADR-0024 WP2/WP3; schema.ts
+	// `typography.fontFaces`, optional). Absent means "no self-hosted face".
+	FontFaces []FontFace `json:"fontFaces,omitempty"`
+}
+
+// FontFace mirrors one BrandPack.typography.fontFaces entry.
+type FontFace struct {
+	Family string `json:"family"`
+	// URL is a same-origin path — the asset route hands out exactly this
+	// shape — never an external origin (the theme gate forbids those).
+	URL    string  `json:"url"`
+	Weight *string `json:"weight,omitempty"`
+	Style  *string `json:"style,omitempty"` // enum: normal | italic
 }
 
 // Shape mirrors BrandPack.shape.
@@ -337,6 +351,14 @@ func ParsePack(data []byte) (*Pack, error) {
 	}
 	p.Schemes = Schemes{Light: light, Dark: dark, HC: hc}
 
+	if raw, ok := tkeys["fontFaces"]; ok {
+		faces, err := fontFaces(raw)
+		if err != nil {
+			return nil, err
+		}
+		p.Typography.FontFaces = faces
+	}
+
 	// Materialise .default() values for ABSENT keys (zod fills defaults on
 	// parse; a present-but-null key was already rejected by sectionKeys).
 	if _, ok := tkeys["baseSize"]; !ok {
@@ -453,6 +475,50 @@ func stringRecord(raw json.RawMessage, name string) (map[string]string, error) {
 		out[k] = s
 	}
 	return out, nil
+}
+
+// fontFaces decodes typography.fontFaces: an array of objects with a
+// non-empty family and url, an optional weight, and an optional style that
+// must be "normal" or "italic". Unknown keys inside an entry are stripped
+// (zod default mode), a null entry or field rejects the pack.
+func fontFaces(raw json.RawMessage) ([]FontFace, error) {
+	if isJSONNull(raw) {
+		return nil, fmt.Errorf("typography.fontFaces must not be null")
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("typography.fontFaces must be an array: %w", err)
+	}
+	faces := make([]FontFace, 0, len(entries))
+	for i, entry := range entries {
+		name := fmt.Sprintf("typography.fontFaces[%d]", i)
+		keys, err := sectionKeys(entry, name, "family", "url")
+		if err != nil {
+			return nil, err
+		}
+		var face FontFace
+		for _, f := range []struct {
+			key string
+			dst any
+		}{
+			{"family", &face.Family}, {"url", &face.URL}, {"weight", &face.Weight}, {"style", &face.Style},
+		} {
+			if err := decodeExact(keys, f.key, name+"."+f.key, f.dst); err != nil {
+				return nil, err
+			}
+		}
+		if face.Family == "" {
+			return nil, fmt.Errorf("%s.family must be a non-empty string", name)
+		}
+		if face.URL == "" {
+			return nil, fmt.Errorf("%s.url must be a non-empty string", name)
+		}
+		if face.Style != nil && *face.Style != "normal" && *face.Style != "italic" {
+			return nil, fmt.Errorf("%s.style must be \"normal\" or \"italic\", got %q", name, *face.Style)
+		}
+		faces = append(faces, face)
+	}
+	return faces, nil
 }
 
 // optionalURL validates an optional z.string().url() field: absent is fine,

@@ -20,12 +20,19 @@ const PUBLIC_SURFACE = [
   'DEFAULT_BRAND_PACK',
   'DEFAULT_COLOR_SCHEME',
   'INIT_COLOR_SCHEME_PROPS',
+  // The admin Branding page's live-preview path (ADR-0024 WP4).
+  'PREVIEW_SCHEME_ATTRIBUTE',
+  'PREVIEW_THEME_SCOPE',
+  'WCAG_AA_NORMAL_TEXT',
   'buildEliteaTheme',
   'catalogueFor',
+  'contrastRatio',
   'hueDeltaFor',
   'parseBrandPack',
+  'primaryContrastOf',
   'resolveBrandPack',
   'resolveScheme',
+  'swatchesOf',
   'toMuiPalette',
 ] as const;
 

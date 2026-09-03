@@ -45,6 +45,7 @@ import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
 import type {
+  BrandingAsset,
   BrandingSettings,
   GlobalUserInviteResult,
   MessageResponse,
@@ -199,6 +200,24 @@ export const getGetBrandingSettingsResponseMock = (
         fontFamilyMono: faker.string.alpha({ length: { min: 10, max: 20 } }),
         baseSize: faker.number.float({ fractionDigits: 2 }),
         scale: faker.number.float({ fractionDigits: 2 }),
+        fontFaces: faker.helpers.arrayElement([
+          Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => ({
+            family: faker.string.alpha({ length: { min: 10, max: 20 } }),
+            url: faker.string.alpha({ length: { min: 10, max: 20 } }),
+            weight: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            style: faker.helpers.arrayElement([
+              faker.helpers.arrayElement(["normal", "italic"] as const),
+              undefined,
+            ]),
+          })),
+          undefined,
+        ]),
       },
       shape: {
         radiusSm: faker.number.float({ fractionDigits: 2 }),
@@ -295,6 +314,24 @@ export const getSaveBrandingSettingsResponseMock = (
         fontFamilyMono: faker.string.alpha({ length: { min: 10, max: 20 } }),
         baseSize: faker.number.float({ fractionDigits: 2 }),
         scale: faker.number.float({ fractionDigits: 2 }),
+        fontFaces: faker.helpers.arrayElement([
+          Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => ({
+            family: faker.string.alpha({ length: { min: 10, max: 20 } }),
+            url: faker.string.alpha({ length: { min: 10, max: 20 } }),
+            weight: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            style: faker.helpers.arrayElement([
+              faker.helpers.arrayElement(["normal", "italic"] as const),
+              undefined,
+            ]),
+          })),
+          undefined,
+        ]),
       },
       shape: {
         radiusSm: faker.number.float({ fractionDigits: 2 }),
@@ -345,6 +382,18 @@ export const getSaveBrandingSettingsResponseMock = (
     undefined,
   ]),
   saved: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  ...overrideResponse,
+});
+
+export const getUploadBrandingAssetResponseMock = (
+  overrideResponse: Partial<Extract<BrandingAsset, object>> = {},
+): BrandingAsset => ({
+  kind: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  digest: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  extension: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  content_type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  size: faker.number.int(),
+  path: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
 
@@ -492,6 +541,15 @@ export const getGetPlatformSettingsResponseMock = (
   ]),
   ...overrideResponse,
 });
+
+export const getGetBrandingAssetResponseMock = (): ArrayBuffer =>
+  faker.helpers.arrayElement([
+    new ArrayBuffer(faker.number.int({ min: 1, max: 64 })),
+    new ArrayBuffer(faker.number.int({ min: 1, max: 64 })),
+    new ArrayBuffer(faker.number.int({ min: 1, max: 64 })),
+    new ArrayBuffer(faker.number.int({ min: 1, max: 64 })),
+    new ArrayBuffer(faker.number.int({ min: 1, max: 64 })),
+  ]);
 
 export const getListAdminPublishedAgentsResponseMock = (
   overrideResponse: Partial<Extract<PublishedAgentsListing, object>> = {},
@@ -795,6 +853,32 @@ export const getSaveBrandingSettingsMockHandler = (
   );
 };
 
+export const getUploadBrandingAssetMockHandler = (
+  overrideResponse?:
+    | BrandingAsset
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<BrandingAsset> | BrandingAsset),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/admin/branding/assets/:kind",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadBrandingAssetResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetUserProjectPermissionsMockHandler = (
   overrideResponse?:
     | UserProjectRoleMap
@@ -952,6 +1036,34 @@ export const getGetPlatformSettingsMockHandler = (
   );
 };
 
+export const getGetBrandingAssetMockHandler = (
+  overrideResponse?:
+    | ArrayBuffer
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ArrayBuffer> | ArrayBuffer),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/branding/assets/:kind/:file",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      const binaryBody =
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetBrandingAssetResponseMock();
+      return HttpResponse.arrayBuffer(
+        binaryBody instanceof ArrayBuffer ? binaryBody : new ArrayBuffer(0),
+        { status: 200, headers: { "Content-Type": "image/svg+xml" } },
+      );
+    },
+    options,
+  );
+};
+
 export const getListAdminPublishedAgentsMockHandler = (
   overrideResponse?:
     | PublishedAgentsListing
@@ -988,11 +1100,13 @@ export const getAdminMock = () => [
   getInviteUserGloballyMockHandler(),
   getGetBrandingSettingsMockHandler(),
   getSaveBrandingSettingsMockHandler(),
+  getUploadBrandingAssetMockHandler(),
   getGetUserProjectPermissionsMockHandler(),
   getUpdateUserProjectPermissionsMockHandler(),
   getRoleListMockHandler(),
   getModerationStatusMockHandler(),
   getCreateModerationRequestMockHandler(),
   getGetPlatformSettingsMockHandler(),
+  getGetBrandingAssetMockHandler(),
   getListAdminPublishedAgentsMockHandler(),
 ];

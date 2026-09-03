@@ -37,6 +37,8 @@ package platformconfig
 
 import (
 	"context"
+	"reflect"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -66,7 +68,18 @@ const (
 	KeyBrandingLogoMark         = "logo_mark"
 	KeyBrandingFavicon          = "favicon"
 	KeyBrandingLoginArt         = "login_art"
+	// KeyBrandingFontFaces holds an array of {family, url, weight?, style?}
+	// objects — the self-hosted faces uploaded through the asset route.
+	KeyBrandingFontFaces = "font_faces"
 )
+
+// FontFaceOverlay is one self-hosted face the database layer declares.
+type FontFaceOverlay struct {
+	Family string
+	URL    string
+	Weight string
+	Style  string
+}
 
 // BrandingOverlay is the database layer, decoded. A zero field is "not set";
 // see the file doc.
@@ -91,6 +104,7 @@ type BrandingOverlay struct {
 	LogoMark         string
 	Favicon          string
 	LoginArt         string
+	FontFaces        []FontFaceOverlay
 }
 
 // IsZero reports whether the layer says nothing at all — the case in which the
@@ -98,7 +112,11 @@ type BrandingOverlay struct {
 // unset global is the documented "channel C absent" path the UI already handles
 // (branding.noPackBody).
 func (o BrandingOverlay) IsZero() bool {
-	return o == BrandingOverlay{}
+	if len(o.FontFaces) > 0 {
+		return false
+	}
+	o.FontFaces = nil
+	return reflect.DeepEqual(o, BrandingOverlay{})
 }
 
 // LoadBranding resolves the database layer. A read error yields the zero
@@ -137,5 +155,43 @@ func brandingFrom(values Values) BrandingOverlay {
 		LogoMark:         values.trimmed(KeyBrandingLogoMark),
 		Favicon:          values.trimmed(KeyBrandingFavicon),
 		LoginArt:         values.trimmed(KeyBrandingLoginArt),
+		FontFaces:        fontFacesFrom(values[KeyBrandingFontFaces]),
 	}
+}
+
+// fontFacesFrom decodes the font_faces array. An entry that is not an object
+// with a non-empty family and url is skipped rather than kept as a half
+// face: the web app would declare an @font-face with no src, which is a
+// silent no-op there and a puzzle for the operator here.
+func fontFacesFrom(raw any) []FontFaceOverlay {
+	entries, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	faces := make([]FontFaceOverlay, 0, len(entries))
+	for _, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		face := FontFaceOverlay{
+			Family: strings.TrimSpace(stringOf(object["family"])),
+			URL:    strings.TrimSpace(stringOf(object["url"])),
+			Weight: strings.TrimSpace(stringOf(object["weight"])),
+			Style:  strings.TrimSpace(stringOf(object["style"])),
+		}
+		if face.Family == "" || face.URL == "" {
+			continue
+		}
+		faces = append(faces, face)
+	}
+	if len(faces) == 0 {
+		return nil
+	}
+	return faces
+}
+
+func stringOf(v any) string {
+	s, _ := v.(string)
+	return s
 }

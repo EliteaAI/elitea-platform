@@ -64,6 +64,19 @@ export const BrandPack = zod
       fontFamilyMono: zod.string(),
       baseSize: zod.number(),
       scale: zod.number(),
+      fontFaces: zod
+        .array(
+          zod.object({
+            family: zod.string(),
+            url: zod
+              .string()
+              .describe("Same-origin path of an uploaded font asset."),
+            weight: zod.string().optional(),
+            style: zod.enum(["normal", "italic"]).optional(),
+          }),
+        )
+        .optional()
+        .describe("Self-hosted faces the web app declares as @font-face."),
     }),
     shape: zod.object({
       radiusSm: zod.number(),

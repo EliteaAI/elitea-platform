@@ -303,6 +303,21 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     landmark: (page) => page.getByRole('gridcell', { name: 'global', exact: true }),
   },
   {
+    // @covers /admin/app/branding
+    name: 'admin-branding',
+    path: '/admin/app/branding',
+    // The product-name input. The page renders its FORM only once the
+    // settings query resolved (`state.isLoaded`); during load it shows the
+    // heading, the subtitle and a LinearProgress and nothing else, so no
+    // field can be mistaken for a loading state. The two preview surfaces
+    // are gated the same way and would do as well; the input is the smaller
+    // locator. NOT measured with the stall experiment the entries above
+    // record (this change ran without the E2E stack); the claim rests on the
+    // `isLoaded` gate in Branding.tsx, which unmounts the whole form until
+    // the query resolves.
+    landmark: (page) => page.getByRole('textbox', { name: 'Product name' }),
+  },
+  {
     // @covers /admin/app/service-descriptors
     name: 'admin-service-descriptors',
     path: '/admin/app/service-descriptors',

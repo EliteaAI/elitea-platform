@@ -341,8 +341,13 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * the typed admin editor behind the Branding page. Described in v2.yaml so
  * orval generates the hooks WP4's page calls; nothing in the app calls them
  * yet, so the manifest is unchanged.
+ *
+ * 169 -> 171, MANIFEST_ENTRY_COUNT unchanged, when brand asset upload landed
+ * (ADR-0024 WP2): uploadBrandingAsset (admin, multipart) and
+ * getBrandingAsset (the public content-addressed download). Same reason as
+ * the step above: described for the generated client, not yet called.
  */
-const GENERATED_OPERATION_COUNT = 169;
+const GENERATED_OPERATION_COUNT = 171;
 /*
  * 189 -> 191. The canvas mermaid quick-fix added two entries: the blocking
  * `predict_llm` sender (`chatMessages.generateContentBlocking`) and the

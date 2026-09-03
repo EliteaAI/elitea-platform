@@ -33,6 +33,35 @@ func NewObjectRef(projectID, bucket, key string) (ObjectRef, error) {
 	return ref, nil
 }
 
+// PlatformScopeID is the project-id segment of PLATFORM-scoped objects: the
+// deployment's own assets (brand logos, fonts — ADR-0024 decision 3) that
+// belong to no project. It can never collide with a real project because
+// projectIDPattern admits digits only, and it keeps the `p/<id>/b/<bucket>/o/`
+// key layout every backend already lists and audits by.
+const PlatformScopeID = "platform"
+
+// NewPlatformObjectRef returns a ref for one platform-scoped object. The
+// bucket and key rules are the project ones; only the scope differs.
+func NewPlatformObjectRef(bucket, key string) (ObjectRef, error) {
+	ref, err := NewPlatformBucketRef(bucket)
+	if err != nil {
+		return ObjectRef{}, err
+	}
+	if err := validateKey(key); err != nil {
+		return ObjectRef{}, err
+	}
+	ref.key = key
+	return ref, nil
+}
+
+// NewPlatformBucketRef returns a platform-scoped bucket ref (empty key).
+func NewPlatformBucketRef(bucket string) (ObjectRef, error) {
+	if !bucketPattern.MatchString(bucket) {
+		return ObjectRef{}, fmt.Errorf("%w: invalid bucket %q", ErrInvalidKey, bucket)
+	}
+	return ObjectRef{projectID: PlatformScopeID, bucket: bucket}, nil
+}
+
 // NewBucketRef validates projectID and bucket and returns a ref with an
 // empty key, identifying the bucket itself.
 func NewBucketRef(projectID, bucket string) (ObjectRef, error) {

@@ -91,6 +91,7 @@ const AdminGatewayGovernance = lazyRouteComponent(
   () => import('./GatewayGovernance'),
   'AdminGatewayGovernance',
 );
+const AdminBranding = lazyRouteComponent(() => import('./Branding'), 'AdminBranding');
 
 /**
  * The root route renders `AdminLayout` — the nav plus an `<Outlet/>` — rather
@@ -185,7 +186,21 @@ const governanceRoute = createRoute({
   component: AdminGatewayGovernance,
 });
 
+/**
+ * Admin › Branding (ADR-0024 WP4). The `branding` section of the platform
+ * configuration edited as what it is — a brand pack — with a live preview,
+ * asset uploads and font faces. The Configuration page keeps the section's
+ * row and points here instead of rendering the generic form over the same
+ * keys.
+ */
+const brandingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/branding',
+  component: AdminBranding,
+});
+
 const adminRouteTree = rootRoute.addChildren([
+  brandingRoute,
   indexRoute,
   usersRoute,
   auditTrailRoute,
