@@ -1,6 +1,7 @@
 /**
- * DWIKI-012 — the wiki chat, through the facade to the provider's `ask`, and
- * DWIKI-012b, the same round trip in research mode through `deep_research`.
+ * DWIKI-012 — the wiki chat, through the facade to the provider's `ask`;
+ * DWIKI-012b, the same round trip in research mode through `deep_research`;
+ * DWIKI-016, a wiki page attached to the question as context.
  *
  * The SPI has no token channel (#701): the answer arrives whole with the
  * completed invocation, so this asserts the round trip, the sources and the
@@ -82,6 +83,50 @@ test.describe('DeepWiki chat', () => {
       timeout: 60_000,
     });
     await expect(drawer.getByTestId('wiki-chat-answer').last()).toContainText(`Question: ${question}`);
+    await expect(drawer.getByTestId('wiki-chat-error')).toHaveCount(0);
+  });
+
+  test('DWIKI-016: a page attached as context reaches the invocation, resolved to its text', async ({
+    page,
+  }) => {
+    /**
+     * THE ONE ASSERTION THAT CAN TELL THE FEATURE FROM ITS PARTS. The picker
+     * sends page IDS; the host resolves them against the pinned version's
+     * manifest and prepends the page BODIES to the question. Every unit test
+     * on either side of that can pass while the two are not joined — the
+     * defect class this repository keeps meeting (#597).
+     *
+     * The fixture `ask` echoes the question it was handed
+     * (`run/fixture.go::fixtureAsk`), so the answer is a verbatim window onto
+     * what the engine would have received. The sentence asserted below exists
+     * ONLY in the seeded page body (`scripts/e2e-stack.sh`, router.md) — the
+     * browser never had it, so it can only have arrived by the server reading
+     * that page.
+     */
+    await openDeepWiki(page, `/app/deepwiki/${SEEDED.readOnly.toolkitId}`);
+    await page.getByRole('button', { name: 'Ask about this repository' }).click();
+    const drawer = page.getByTestId('wiki-chat-drawer');
+    await expect(drawer).toBeVisible();
+
+    await drawer.getByRole('button', { name: 'Attach wiki pages' }).click();
+    await page.getByText('architecture / router', { exact: true }).click();
+    await page.keyboard.press('Escape');
+
+    // The chip is the reader's own record of what the next question carries.
+    await expect(drawer.getByTestId('wiki-chat-context-chips')).toContainText('architecture / router');
+
+    const question = 'Which file assembles the router?';
+    await drawer.getByPlaceholder('Ask about this repository').fill(question);
+    await drawer.getByRole('button', { name: 'Send' }).click();
+
+    const answer = drawer.getByTestId('wiki-chat-answer').last();
+    // The RESOLVED page text, and the source header that frames it.
+    await expect(answer).toContainText('The HTTP router is assembled in', { timeout: 60_000 });
+    await expect(answer).toContainText('wiki_pages/architecture/router.md');
+    // The question is still the question: context is PREPENDED, not
+    // substituted, and the engine's `Current question: ` hand-off is what
+    // keeps the two tellable apart in a transcript.
+    await expect(answer).toContainText(`Current question: ${question}`);
     await expect(drawer.getByTestId('wiki-chat-error')).toHaveCount(0);
   });
 });

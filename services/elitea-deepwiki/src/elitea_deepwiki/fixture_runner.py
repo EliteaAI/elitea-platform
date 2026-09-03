@@ -24,6 +24,9 @@ import json
 from typing import Any
 
 from .legacy_runner import LegacyToolRunner
+# The ONE wiki-id derivation in this package. A fixture that derived a
+# different one would land its pages under keys nothing reads.
+from .wiki_context import wiki_id_for
 
 #: Progress the fixture emits before each tool answers, in order. The legacy
 #: engine emitted prose like this through ``invocation_thinking``; the UI's
@@ -85,19 +88,6 @@ graph TD
 
 After the diagram.
 """
-
-
-def wiki_id_for(repo_config: dict[str, Any] | None, branch: str | None) -> str:
-    """The canonical ``{owner}--{repo}--{branch}`` the engine would derive."""
-    repository = ""
-    if isinstance(repo_config, dict):
-        repository = str(repo_config.get("repository") or "")
-        if not repository:
-            provider = repo_config.get("provider_config")
-            if isinstance(provider, dict):
-                repository = str(provider.get("repository") or "")
-    repository = repository.strip().strip("/") or "fixture/repository"
-    return f"{repository.replace('/', '--')}--{(branch or 'main').strip() or 'main'}"
 
 
 def generate_wiki(

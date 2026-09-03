@@ -13,7 +13,7 @@
  * is how the drawer and the stream come to disagree about whether a turn is
  * still running.
  */
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -46,6 +46,12 @@ export interface WikiChatDrawerProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly target: WikiChatTarget;
+  /**
+   * The open wiki version's page ids, offered as attachable context. They come
+   * from the manifest the page already has open, so the picker can only offer
+   * what the provider will accept for that version.
+   */
+  readonly contextPages?: readonly string[];
   /** A fresh identifier. Injected so a test can make ids predictable. */
   readonly newId?: () => string;
 }
@@ -54,15 +60,37 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
   open,
   onClose,
   target,
+  contextPages,
   newId,
 }: WikiChatDrawerProps) {
+  /**
+   * The attachment lives HERE, not in the conversation state.
+   *
+   * It is a property of the next question, not of a turn already sent, and the
+   * controller is deliberately headless — threading a selection through it
+   * would put a rendering concern into a slice that has none. The consequence
+   * is that `regenerate` re-asks with whatever is attached NOW, which is what
+   * the control on screen says it will do.
+   */
+  const [contextPaths, setContextPaths] = useState<readonly string[]>([]);
   const storage = useMemo(
     () => createWikiChatStorage(target.projectId, target.toolkitId),
     [target.projectId, target.toolkitId],
   );
 
+  // The selection is folded into the target rather than into the controller's
+  // input, so `features/wiki-chat` needs no knowledge of attachments at all.
+  const attaching = useMemo(
+    () => ({ ...target, contextPaths }),
+    [target, contextPaths],
+  );
+
+  const onContextPathsChange = useCallback((selected: readonly string[]) => {
+    setContextPaths(selected);
+  }, []);
+
   const chat = useWikiChat({
-    invoke: (input) => startWikiChat(target, input),
+    invoke: (input) => startWikiChat(attaching, input),
     // The tool name is carried on the state's own pending turn rather than
     // recomputed from the mode: the mode can move while a turn is in flight,
     // and polling the wrong tool's path returns a 404 that reads as a lost
@@ -143,6 +171,9 @@ export const WikiChatDrawer = memo(function WikiChatDrawer({
         onClear={chat.clear}
         isLoading={chat.state.isLoading}
         canRegenerate={canRegenerate}
+        contextPages={contextPages ?? []}
+        contextPaths={contextPaths}
+        onContextPathsChange={onContextPathsChange}
       />
     </ResizableDrawer>
   );

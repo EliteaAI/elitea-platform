@@ -21,6 +21,7 @@ services/elitea-deepwiki/
 │   ├── toolrunner.py    the seam between the sidecar and the engine
 │   ├── legacy_runner.py the engine's host hooks, run_engine_tool, and the index publish
 │   ├── repo_config.py   repository-config extraction, copied from the handler
+│   ├── wiki_context.py  reader-selected wiki pages as question context (`context_paths`)
 │   ├── publishing.py    publish a completed generation into PostgreSQL
 │   ├── jobs.py          the Kubernetes-Job manifest, repointed at this layout
 │   ├── security/        the git-host egress allowlist (mTLS and identity are the Go host's)
@@ -37,6 +38,7 @@ services/elitea-deepwiki/
 │       └── migrate.py   versioned, checksummed migrations
 ├── src/elitea_deepwiki/migrations/  service-owned SQL, applied against the deepwiki DB
 ├── tools/               refresh_engine_copy.py — re-copy and re-digest
+│                        build_descriptor_v1.py — derive descriptor revision `legacy-v1`
 ├── e2e/                 the end-to-end harness + a deterministic LLM stub
 ├── tests/
 │   ├── conformance/     replays the P0 SPI fixtures against the real app

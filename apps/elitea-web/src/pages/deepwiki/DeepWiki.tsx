@@ -207,6 +207,7 @@ export function DeepWiki({
             setChatOpen(false);
           }}
           target={chatTarget}
+          contextPages={open?.pages ?? []}
         />
       )}
     </Box>
@@ -324,5 +325,10 @@ function chatTargetFor(
     toolkitType: WIKI_TOOLKIT_NAME,
     settings,
     ...chatPinsFor(open),
+    // The VERSION pin for an attachment. It is deliberately the open
+    // manifest's own id rather than "whatever is newest": a page attached to
+    // a question must resolve against the version the reader was reading,
+    // even if a regeneration lands while they are typing.
+    ...(open?.wiki_version_id ? { wikiVersionId: open.wiki_version_id } : {}),
   };
 }

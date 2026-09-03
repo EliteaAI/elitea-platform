@@ -307,6 +307,73 @@ class LegacyToolRunner:
                 f"{counts['embeddings']} vectors"
             )
 
+    def _artifact_download(self, arguments: dict[str, Any]):
+        """The read half of the artifact transport this request carries.
+
+        Derived from ``llm_settings`` exactly as the upload half is — there
+        is no deployment-wide credential to build one from, and there must
+        not be: the grant is the caller's, minted by the facade for the
+        caller's project, which is what scopes a page read to a project at
+        all. ``None`` when the request carried no transport.
+        """
+        llm_settings = arguments.get("llm_settings") or {}
+        if not isinstance(llm_settings, dict) or not llm_settings:
+            return None
+        from .engine.artifacts_platform_client import (  # noqa: PLC0415
+            create_platform_client_from_llm_settings,
+        )
+
+        client = create_platform_client_from_llm_settings(llm_settings)
+        if client is None:
+            return None
+        return client.download_artifact
+
+    def _apply_context_paths(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Resolve reader-selected pages into ``question``.
+
+        WHERE THIS RUNS, AND WHY NOT IN ``tool_operations.py``. The tool
+        layer is a guarded verbatim copy of the legacy ``Method`` mixin with
+        four declared substitutions (``engine/COPY_MANIFEST.json`` records
+        its digest, and ``tools/refresh_engine_copy.py --check`` compares
+        it); adding a feature to it would falsify the claim the manifest
+        exists to make. This seam — the sidecar's entry into the engine —
+        is ours, and it is the last point before the tool sees its keywords.
+
+        NORMALLY A NO-OP, deliberately. The Go sub-application host resolves
+        the same selection in front of its tool table
+        (``internal/apps/deepwiki/run/contextpaths.go``) and REMOVES the two
+        keys, so a request that came through the host arrives here with
+        nothing left to do. What this covers is a sidecar called directly —
+        a host that does not resolve, or a harness — where the alternative
+        is an attachment the reader made being silently ignored.
+        """
+        from .wiki_context import (  # noqa: PLC0415
+            PATHS_PARAM,
+            ContextRefused,
+            consume,
+            prepend_context,
+            resolve_context_paths,
+            wiki_id_for,
+        )
+
+        if not arguments.get(PATHS_PARAM):
+            return consume(arguments)
+        if tool_name not in ("ask", "deep_research"):
+            raise ContextRefused(
+                f"{PATHS_PARAM} is not supported by {tool_name}; attach pages "
+                f"to ask or deep_research"
+            )
+        repo_config = arguments.get("repo_config") or {}
+        wiki_id = wiki_id_for(repo_config, repo_config.get("branch"))
+        block = resolve_context_paths(
+            parameters=arguments,
+            wiki_id=wiki_id,
+            download=self._artifact_download(arguments),
+        )
+        resolved = consume(arguments)
+        resolved["question"] = prepend_context(arguments.get("question") or "", block)
+        return resolved
+
     async def _paced(self, tool_name: str, context: Any) -> None:
         """Progress emitted before the engine answers; the fixture paces here."""
 
@@ -325,6 +392,7 @@ class LegacyToolRunner:
         import asyncio  # noqa: PLC0415
         import functools  # noqa: PLC0415
 
+        arguments = self._apply_context_paths(tool_name, arguments)
         await self._paced(tool_name, context)
         tool = self._bound_tool(tool_name, context)
         return await asyncio.to_thread(functools.partial(tool, **arguments))
