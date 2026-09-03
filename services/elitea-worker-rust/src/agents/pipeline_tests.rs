@@ -38,7 +38,7 @@ use crate::toolkits::{
     mcp_authorization_required_fixture,
 };
 use crate::transport::model_facade::ModelFacade;
-use crate::transport::model_gateway::{
+use crate::transport::openai_compatible_facade::{
     CapturedModelRequests, TestModelGatewayOutcome, test_model_gateway_client,
     test_model_gateway_config, test_model_gateway_response,
 };

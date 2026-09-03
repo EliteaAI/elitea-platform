@@ -1,4 +1,4 @@
-//! Contract tests for the hardened Elitea model gateway.
+//! Contract tests for the OpenAI-compatible facade and shared Elitea gateway transport.
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -14,10 +14,10 @@ use http_body_util::{Full, StreamBody};
 use tokio_stream::StreamExt as _;
 use tonic::body::Body;
 
-use super::model_gateway::{
-    CapturedModelRequest, ModelGatewayError, ModelReasoningEffort, TestModelGatewayOutcome,
-    test_model_gateway_client, test_model_gateway_config, test_model_gateway_invocation,
-    test_model_gateway_request, test_model_gateway_response,
+use super::openai_compatible_facade::{
+    CapturedModelRequest, ModelFacadeError, ModelReasoningEffort, TestModelGatewayOutcome,
+    test_model_facade_invocation, test_model_gateway_client, test_model_gateway_config,
+    test_model_gateway_response, test_model_request,
 };
 use super::runtime_context::ClaimScopedEliteaContext;
 
@@ -154,13 +154,13 @@ async fn exact_sdk_request_and_fragmented_sse_are_preserved() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             23,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
 
     let responses = drain(
         bound
-            .generate_for_test(test_model_gateway_request("explain this"))
+            .generate_for_test(test_model_request("explain this"))
             .await
             .expect("model response stream"),
     )
@@ -205,7 +205,7 @@ async fn automatic_max_tokens_omits_the_openai_wire_limit() {
         test_model_gateway_config(),
     )
     .expect("model gateway client");
-    let mut invocation = test_model_gateway_invocation();
+    let mut invocation = test_model_facade_invocation();
     invocation.max_tokens = None;
     let bound = client
         .bind_ordinary(
@@ -214,7 +214,7 @@ async fn automatic_max_tokens_omits_the_openai_wire_limit() {
             invocation,
         )
         .expect("bound automatic-limit model");
-    let mut request = test_model_gateway_request("explain this");
+    let mut request = test_model_request("explain this");
     request
         .config
         .as_mut()
@@ -245,7 +245,7 @@ async fn empty_system_instruction_is_omitted_from_openai_messages() {
         test_model_gateway_config(),
     )
     .expect("model gateway client");
-    let mut invocation = test_model_gateway_invocation();
+    let mut invocation = test_model_facade_invocation();
     invocation.system_instruction.clear();
     let bound = client
         .bind_ordinary(
@@ -257,7 +257,7 @@ async fn empty_system_instruction_is_omitted_from_openai_messages() {
 
     drain(
         bound
-            .generate_for_test(test_model_gateway_request("explain this"))
+            .generate_for_test(test_model_request("explain this"))
             .await
             .expect("model response stream"),
     )
@@ -297,7 +297,7 @@ async fn tool_declarations_calls_and_results_round_trip_across_model_turns() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
 
@@ -316,6 +316,7 @@ async fn tool_declarations_calls_and_results_round_trip_across_model_turns() {
         .and_then(|content| content.parts.first())
         .cloned()
         .expect("function call");
+    assert!(!first.last().expect("tool terminal response").turn_complete);
     assert!(matches!(
         &call,
         Part::FunctionCall { name, args, id, .. }
@@ -369,6 +370,48 @@ async fn tool_declarations_calls_and_results_round_trip_across_model_turns() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn gpt_56_tools_default_to_no_reasoning_when_main_omits_an_effort() {
+    let tool_sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"double\",\"arguments\":\"{\\\"value\\\":21}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (client, captured) = test_model_gateway_client(
+        vec![TestModelGatewayOutcome::Response(
+            test_model_gateway_response(Body::new(Full::new(Bytes::from(tool_sse)))),
+        )],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway client");
+    let mut invocation = test_model_facade_invocation();
+    invocation.model_name = "gpt-5.6-terra".to_owned();
+    invocation.reasoning_effort = None;
+    let bound = client
+        .bind_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation,
+        )
+        .expect("bound GPT-5.6 model");
+    let mut request = tool_request(vec![Content::new("user").with_text("double 21")]);
+    request.model = "gpt-5.6-terra".to_owned();
+
+    drain(
+        bound
+            .generate_for_test(request)
+            .await
+            .expect("tool-call stream"),
+    )
+    .await
+    .expect("tool-call response");
+
+    let captured = captured.lock().expect("captured requests");
+    let body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("model request JSON");
+    assert_eq!(body["reasoning_effort"], "none");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn model_credential_and_completion_are_single_use() {
     let response = test_model_gateway_response(Body::new(Full::new(Bytes::from(ordinary_sse()))));
     let (client, captured) = test_model_gateway_client(
@@ -379,7 +422,7 @@ async fn model_credential_and_completion_are_single_use() {
         test_model_gateway_config(),
     )
     .expect("model gateway client");
-    let mut invocation = test_model_gateway_invocation();
+    let mut invocation = test_model_facade_invocation();
     invocation.max_model_turns = 1;
     let bound = client
         .bind_ordinary(
@@ -390,17 +433,14 @@ async fn model_credential_and_completion_are_single_use() {
         .expect("bound model");
     drain(
         bound
-            .generate_for_test(test_model_gateway_request("first"))
+            .generate_for_test(test_model_request("first"))
             .await
             .expect("first stream"),
     )
     .await
     .expect("first completion");
 
-    let Err(error) = bound
-        .generate_for_test(test_model_gateway_request("second"))
-        .await
-    else {
+    let Err(error) = bound.generate_for_test(test_model_request("second")).await else {
         panic!("one claim credential cannot make a second model call")
     };
     assert_eq!(error.code, "model_gateway.turn_limit");
@@ -424,10 +464,10 @@ async fn request_profile_and_local_bounds_fail_before_network() {
             .bind_ordinary(
                 &ClaimScopedEliteaContext::fixture(17, TOKEN),
                 17,
-                test_model_gateway_invocation(),
+                test_model_facade_invocation(),
             )
             .expect("bound model");
-        let mut request = test_model_gateway_request("valid");
+        let mut request = test_model_request("valid");
         match mutation {
             0 => request.model = "other-model".to_owned(),
             1 => {
@@ -459,11 +499,11 @@ async fn request_profile_and_local_bounds_fail_before_network() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
     let Err(error) = bound
-        .generate_for_test(test_model_gateway_request(&"x".repeat(256)))
+        .generate_for_test(test_model_request(&"x".repeat(256)))
         .await
     else {
         panic!("oversized request must fail")
@@ -528,13 +568,10 @@ async fn status_metadata_and_transport_errors_are_stable_and_secret_safe() {
             .bind_ordinary(
                 &ClaimScopedEliteaContext::fixture(17, TOKEN),
                 17,
-                test_model_gateway_invocation(),
+                test_model_facade_invocation(),
             )
             .expect("bound model");
-        let Err(error) = bound
-            .generate_for_test(test_model_gateway_request("request"))
-            .await
-        else {
+        let Err(error) = bound.generate_for_test(test_model_request("request")).await else {
             panic!("status must fail")
         };
         assert_eq!(error.category, expected_category);
@@ -553,13 +590,10 @@ async fn status_metadata_and_transport_errors_are_stable_and_secret_safe() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
-    let Err(error) = bound
-        .generate_for_test(test_model_gateway_request("request"))
-        .await
-    else {
+    let Err(error) = bound.generate_for_test(test_model_request("request")).await else {
         panic!("transport failure expected")
     };
     assert_eq!(error.code, "model_gateway.transport");
@@ -594,13 +628,10 @@ async fn response_metadata_and_header_timeout_are_dependency_failures() {
             .bind_ordinary(
                 &ClaimScopedEliteaContext::fixture(17, TOKEN),
                 17,
-                test_model_gateway_invocation(),
+                test_model_facade_invocation(),
             )
             .expect("bound model");
-        let Err(error) = bound
-            .generate_for_test(test_model_gateway_request("request"))
-            .await
-        else {
+        let Err(error) = bound.generate_for_test(test_model_request("request")).await else {
             panic!("invalid response metadata must fail")
         };
         assert!(matches!(error.category, ErrorCategory::Unavailable));
@@ -615,13 +646,10 @@ async fn response_metadata_and_header_timeout_are_dependency_failures() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
-    let Err(error) = bound
-        .generate_for_test(test_model_gateway_request("request"))
-        .await
-    else {
+    let Err(error) = bound.generate_for_test(test_model_request("request")).await else {
         panic!("response header timeout expected")
     };
     assert_eq!(error.code, "model_gateway.response_header_timeout");
@@ -656,11 +684,11 @@ async fn sse_protocol_resource_and_tool_shapes_fail_closed() {
             .bind_ordinary(
                 &ClaimScopedEliteaContext::fixture(17, TOKEN),
                 17,
-                test_model_gateway_invocation(),
+                test_model_facade_invocation(),
             )
             .expect("bound model");
         let stream = bound
-            .generate_for_test(test_model_gateway_request("request"))
+            .generate_for_test(test_model_request("request"))
             .await
             .expect("response head");
         let error = drain(stream).await.expect_err("invalid SSE");
@@ -688,11 +716,11 @@ async fn sse_completion_event_count_and_stream_size_are_bounded() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
     let stream = bound
-        .generate_for_test(test_model_gateway_request("request"))
+        .generate_for_test(test_model_request("request"))
         .await
         .expect("response head");
     assert_eq!(
@@ -713,11 +741,11 @@ async fn sse_completion_event_count_and_stream_size_are_bounded() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
     let stream = bound
-        .generate_for_test(test_model_gateway_request("request"))
+        .generate_for_test(test_model_request("request"))
         .await
         .expect("response head");
     assert_eq!(
@@ -739,11 +767,11 @@ async fn sse_completion_event_count_and_stream_size_are_bounded() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
     let stream = bound
-        .generate_for_test(test_model_gateway_request("request"))
+        .generate_for_test(test_model_request("request"))
         .await
         .expect("response head");
     assert_eq!(
@@ -765,11 +793,11 @@ async fn idle_stream_and_trailers_fail_without_exposing_payloads() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
     let stream = bound
-        .generate_for_test(test_model_gateway_request("request"))
+        .generate_for_test(test_model_request("request"))
         .await
         .expect("response head");
     let error = drain(stream).await.expect_err("idle stream timeout");
@@ -792,11 +820,11 @@ async fn idle_stream_and_trailers_fail_without_exposing_payloads() {
         .bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             17,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         )
         .expect("bound model");
     let stream = bound
-        .generate_for_test(test_model_gateway_request("request"))
+        .generate_for_test(test_model_request("request"))
         .await
         .expect("response head");
     let error = drain(stream).await.expect_err("trailers are forbidden");
@@ -812,7 +840,7 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
         test_model_gateway_config(),
     )
     .expect("model gateway client");
-    let mut invocation = test_model_gateway_invocation();
+    let mut invocation = test_model_facade_invocation();
     invocation.model_name = "o3-mini".to_owned();
     let bound = client
         .bind_ordinary(
@@ -821,7 +849,7 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
             invocation,
         )
         .expect("o-series model");
-    let mut request = test_model_gateway_request("request");
+    let mut request = test_model_request("request");
     request.model = "o3-mini".to_owned();
     drain(
         bound
@@ -843,7 +871,7 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
         test_model_gateway_config(),
     )
     .expect("disabled-reasoning model gateway client");
-    let mut disabled_reasoning = test_model_gateway_invocation();
+    let mut disabled_reasoning = test_model_facade_invocation();
     disabled_reasoning.reasoning_effort = Some(ModelReasoningEffort::None);
     disabled_reasoning.temperature = Some(0.2);
     let bound = client
@@ -853,7 +881,7 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
             disabled_reasoning,
         )
         .expect("disabled reasoning with temperature");
-    let mut request = test_model_gateway_request("request");
+    let mut request = test_model_request("request");
     request
         .config
         .as_mut()
@@ -873,7 +901,7 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
     assert_eq!(body["reasoning_effort"], "none");
     assert_eq!(body["temperature"], 0.2);
 
-    let mut invalid_invocation = test_model_gateway_invocation();
+    let mut invalid_invocation = test_model_facade_invocation();
     invalid_invocation.temperature = Some(0.2);
     assert!(matches!(
         client.bind_ordinary(
@@ -881,15 +909,15 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
             17,
             invalid_invocation,
         ),
-        Err(ModelGatewayError::InvalidInvocation)
+        Err(ModelFacadeError::InvalidInvocation)
     ));
     assert!(matches!(
         client.bind_ordinary(
             &ClaimScopedEliteaContext::fixture(17, TOKEN),
             0,
-            test_model_gateway_invocation(),
+            test_model_facade_invocation(),
         ),
-        Err(ModelGatewayError::InvalidInvocation)
+        Err(ModelFacadeError::InvalidInvocation)
     ));
 
     for mutation in 0..4 {
@@ -903,7 +931,7 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
         }
         assert!(matches!(
             test_model_gateway_client(Vec::new(), config),
-            Err(ModelGatewayError::InvalidConfiguration)
+            Err(ModelFacadeError::InvalidConfiguration)
         ));
     }
 }

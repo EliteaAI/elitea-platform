@@ -127,13 +127,22 @@ turn through both direct and pipeline LLM execution; property-style collision
 matrices prove deterministic valid names, bounds and reserved runtime-tool
 isolation.
 
-Current dependency baseline: ADK `2.2.0` is the current target release, while
-this worker's direct ADK dependencies are still pinned to `2.1.0`.
-The lockfile already contains compatible transitive ADK `2.2.0` crates where
-the published constraints select them. A deliberate direct `2.2.0` upgrade is
-a separate model-facade compatibility slice; it is not an MCP prerequisite and
-must pass the full provider, tool-call, session and graph corpus before the
-pins move.
+Current dependency baseline: every direct and transitive ADK dependency now
+resolves to `2.2.0`. The direct-pin upgrade is a model/Runner compatibility
+slice, not an MCP prerequisite. The architect's preceding `2.1.0` baseline
+already contained the important provider corrections. The Elitea adapters now
+match its open tool-turn semantics for OpenAI-compatible and Anthropic calls,
+apply the GPT-5.6 Chat Completions tool default, and reject explicit sampling
+for current Anthropic models before network I/O. Provider-neutral reasoning
+`none` disables native Anthropic thinking by omitting its thinking/effort
+fields; Rust does not copy the Python SDK's truthy-string fallback to a 4096
+token legacy budget. Provider catalogs, pricing and server-side refusal
+fallback remain Main/Bifrost profile concerns rather than implicit worker
+policy. The `2.1.0` to `2.2.0` delta adds Vertex Gemini RAG support, exposes
+Runner session state through `ReadonlyContext`, and instruments the drained
+agent stream; Elitea's transport and authority boundaries remain unchanged.
+Full provider, tool-call, session and graph verification is required before
+this checkpoint is pushed.
 
 Current observability checkpoint: the worker emits redacted structured logs and
 standard OTLP traces across command verification, Redis delivery, claim,
@@ -294,7 +303,7 @@ reducer ownership, item checkpoints, aggregate interrupts, bounds, and gates.
 | SDK `tools/zephyr_squad/{__init__,api_wrapper,zephyr_squad_cloud_client}.py`; Main current toolkit snapshot/freezer/materializer; Python worker shared SDK adapter | Fifteen Jira-backed Zephyr Squad step, BDD, cycle, folder and execution operations, inline credential materialization, empty/subset selection and `read`/`write`/`delete` grouping | `src/toolkits/families/zephyr_squad/{config,client,tools}.rs` | Eight focused inline-config/JWT-golden/exact-route/body/error/argument/model-metadata/policy tests plus future credentialed application/ad-hoc component proof | Capability-disabled complete family: all 5 reads, 8 writes and 2 deletes are present; fixed-origin JWT requests and provider results are bounded, descriptions are selection-oriented, and live materialization, exact-interrupt HITL plus cancellation-safe effect reconciliation remain gates |
 | SDK `configurations/report_portal.py` and `tools/report_portal/{__init__,api_wrapper,report_portal_client}.py`; Main configuration/toolkit catalog, freezer/materializer; Python worker shared SDK adapter | Nine project, launch, item, log, user, dashboard and raw/readable report reads, empty/subset selection, live connection-check contract and application/ad-hoc parity | `src/toolkits/families/report_portal/{config,client,tools}.rs` | Thirteen focused configuration/wire/export/text/result/bound/model-metadata/policy tests plus future credentialed application/ad-hoc component proof | Capability-disabled complete read family: all nine operations are present; raw HTML is bounded UTF-8, small raw PDF has a bounded base64 fallback, readable analysis uses deterministic HTML text, and the provider page index defaults to zero. Authorized materialization, egress policy, provider check composition, durable large-export artifact streaming and live proof remain gates |
 | `projects/centry/pylon_indexer/plugins/indexer_worker/**` | Current application/ad-hoc invocation, callback, checkpoint, child dispatch, and indexing behavior | `src/agents/`, `src/compat/`, then `src/indexing/` | Differential fixtures plus cross-process tests | Not started |
-| `adk-rust = 2.0.0` published crates | Native agent, graph, toolset, session, checkpoint, MCP, and HITL primitives | Capability owners under `src/agents`, `src/toolkits`, `src/state` and `src/transport` | Native direct-agent/graph/session/checkpoint/model/tool/MCP/HITL component and contract corpus | Adopted selectively. Direct HTTP MCP graph nodes use RMCP challenge classification plus ADK dynamic interrupts and the existing durable session/checkpoint owner. Materializer-known root and pipeline-LLM calls use native original-call confirmation. Nested same-family authorization cards now aggregate under one paused terminal; independent partial resume, mixed-guardrail aggregation, platform OAuth/DCR, runtime-discovered configured families, MCP catalog/sync, prebuilt/static/stdio clients and Elitea-as-MCP-server exposure remain explicit gates |
+| `adk-rust = 2.2.0` published crates | Native agent, graph, toolset, session, checkpoint, MCP, and HITL primitives | Capability owners under `src/agents`, `src/toolkits`, `src/state` and `src/transport` | Native direct-agent/graph/session/checkpoint/model/tool/MCP/HITL component and contract corpus | Adopted selectively. Direct HTTP MCP graph nodes use RMCP challenge classification plus ADK dynamic interrupts and the existing durable session/checkpoint owner. Materializer-known root and pipeline-LLM calls use native original-call confirmation. Nested same-family authorization cards now aggregate under one paused terminal; independent partial resume, mixed-guardrail aggregation, platform OAuth/DCR, runtime-discovered configured families, MCP catalog/sync, prebuilt/static/stdio clients and Elitea-as-MCP-server exposure remain explicit gates |
 | This reconstruction | Fail-closed diagnostic with no production registration | `src/capabilities.rs`, `src/lib.rs` | Deterministic JSON and rejection tests | Implemented; transport availability does not enable agent execution |
 
 The tracked mapping will be expanded to source symbols and proving test files as

@@ -862,12 +862,6 @@ fn validate_model(
     } else {
         OrdinaryModelProvider::NativeAnthropic
     };
-    if model_provider == OrdinaryModelProvider::NativeAnthropic
-        && reasoning_effort == Some(ReasoningEffort::None)
-        && adaptive_anthropic_model(&model_name)
-    {
-        return Err(invalid_profile());
-    }
     Ok(ValidatedModel {
         instructions: instructions.to_owned(),
         model_name,
@@ -882,27 +876,6 @@ fn validate_model(
 fn anthropic_model_name(model_name: &str) -> bool {
     let model_name = model_name.to_ascii_lowercase();
     model_name.contains("anthropic") || model_name.contains("claude")
-}
-
-fn adaptive_anthropic_model(model_name: &str) -> bool {
-    let model_name = model_name.to_ascii_lowercase();
-    [
-        "opus-4-7",
-        "opus_4_7",
-        "opus-4.7",
-        "opus-4-8",
-        "opus_4_8",
-        "opus-4.8",
-        "sonnet-4-6",
-        "sonnet_4_6",
-        "sonnet-4.6",
-        "sonnet-5",
-        "sonnet_5",
-        "opus-5",
-        "opus_5",
-    ]
-    .iter()
-    .any(|pattern| model_name.contains(pattern))
 }
 
 fn positive_u32(value: Option<&Value>) -> Result<u32, NativeAgentAssemblyError> {

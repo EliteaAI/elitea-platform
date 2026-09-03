@@ -10,8 +10,8 @@ use http_body_util::Full;
 use tokio_stream::StreamExt as _;
 use tonic::body::Body;
 
-use super::model_gateway::{
-    ModelGatewayInvocation, ModelReasoningEffort, TestModelGatewayOutcome,
+use super::openai_compatible_facade::{
+    ModelFacadeInvocation, ModelReasoningEffort, TestModelGatewayOutcome,
     test_model_gateway_client, test_model_gateway_config, test_model_gateway_response,
 };
 use super::runtime_context::ClaimScopedEliteaContext;
@@ -19,8 +19,8 @@ use super::runtime_context::ClaimScopedEliteaContext;
 const TOKEN: &str = "ephemeral-anthropic-fixture-token";
 const MODEL: &str = "claude-sonnet-4-5";
 
-fn invocation(model: &str, effort: Option<ModelReasoningEffort>) -> ModelGatewayInvocation {
-    ModelGatewayInvocation {
+fn invocation(model: &str, effort: Option<ModelReasoningEffort>) -> ModelFacadeInvocation {
+    ModelFacadeInvocation {
         model_name: model.to_owned(),
         system_instruction: "review carefully\nbe concise".to_owned(),
         max_tokens: Some(4_000),
@@ -39,7 +39,7 @@ fn native_anthropic_rejects_an_unresolved_automatic_limit() {
     assert!(matches!(
         client
             .bind_anthropic_ordinary(&ClaimScopedEliteaContext::fixture(17, TOKEN), 17, settings,),
-        Err(super::model_gateway::ModelGatewayError::InvalidInvocation)
+        Err(super::openai_compatible_facade::ModelFacadeError::InvalidInvocation)
     ));
 }
 
@@ -295,6 +295,7 @@ async fn native_tools_calls_and_results_round_trip_across_model_turns() {
         .and_then(|content| content.parts.first())
         .cloned()
         .expect("function call");
+    assert!(!first.last().expect("tool terminal response").turn_complete);
     assert!(matches!(
         &call,
         Part::FunctionCall { name, args, id, .. }
@@ -354,7 +355,36 @@ async fn native_tools_calls_and_results_round_trip_across_model_turns() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn adaptive_and_legacy_reasoning_match_the_pinned_sdk_profiles() {
+async fn current_anthropic_models_reject_explicit_sampling_before_network_io() {
+    for model in [
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-5",
+        "claude-sonnet-5",
+    ] {
+        let (client, captured) = test_model_gateway_client(Vec::new(), test_model_gateway_config())
+            .expect("model gateway client");
+        let bound = client
+            .bind_anthropic_ordinary(
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
+                invocation(model, None),
+            )
+            .expect("bound native Anthropic model");
+
+        let Err(error) = bound.generate_for_test(request(model, Some(0.7))).await else {
+            panic!("sampling must fail before network I/O");
+        };
+
+        assert_eq!(error.code, "anthropic_gateway.sampling_unsupported");
+        assert!(captured.lock().expect("captured requests").is_empty());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn adaptive_and_disabled_reasoning_follow_provider_contracts() {
     for (model, effort, temperature, expected) in [
         (
             "claude-opus-4-7",
@@ -377,13 +407,20 @@ async fn adaptive_and_legacy_reasoning_match_the_pinned_sdk_profiles() {
             }),
         ),
         (
+            "claude-sonnet-4-6",
+            Some(ModelReasoningEffort::None),
+            None,
+            serde_json::json!({
+                "max_tokens": 4000,
+            }),
+        ),
+        (
             MODEL,
             Some(ModelReasoningEffort::None),
             Some(0.7),
             serde_json::json!({
-                "max_tokens": 8096,
-                "temperature": 1.0,
-                "thinking": {"type": "enabled", "budget_tokens": 4096},
+                "max_tokens": 4000,
+                "temperature": 0.7,
             }),
         ),
     ] {
@@ -417,6 +454,9 @@ async fn adaptive_and_legacy_reasoning_match_the_pinned_sdk_profiles() {
             assert!(body.get("temperature").is_none());
         } else {
             assert!(body.get("output_config").is_none());
+        }
+        if effort == Some(ModelReasoningEffort::None) {
+            assert!(body.get("thinking").is_none());
         }
     }
 }

@@ -236,7 +236,7 @@ Maintained Rust runtime ownership registry:
   interpretation, writes, rich discovery/DCR/refresh metadata and production
   egress remain closed;
 - `src/transport/model_facade.rs`: provider-neutral model ownership over
-  `model_gateway.rs` and `anthropic_gateway.rs`, including frozen
+  `openai_compatible_facade.rs` and `anthropic_facade.rs`, including frozen
   `model_project_id` authority;
 - `src/transport/platform_client.rs`: claim-bound application/version lookup
   today and future artifact grants; `runtime_context.rs` owns the concrete

@@ -6,9 +6,9 @@ rust-version = "1.95"
 publish = false
 
 [dependencies]
-adk-anthropic = "=2.1.0"
-adk-runner = { version = "=2.1.0", default-features = false, features = ["context-compaction"] }
-adk-rust = { version = "=2.1.0", default-features = false, features = ["agents", "runner", "sessions", "models", "anthropic", "graph", "tools", "mcp-http"] }
+adk-anthropic = "=2.2.0"
+adk-runner = { version = "=2.2.0", default-features = false, features = ["context-compaction"] }
+adk-rust = { version = "=2.2.0", default-features = false, features = ["agents", "runner", "sessions", "models", "anthropic", "graph", "tools", "mcp-http"] }
 async-stream = "=0.3.6"
 async-trait = "=0.1.92"
 base64 = "=0.23.1"

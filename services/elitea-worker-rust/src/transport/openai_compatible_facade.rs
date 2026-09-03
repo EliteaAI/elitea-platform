@@ -1,4 +1,4 @@
-//! Hardened Elitea OpenAI-compatible model gateway for ADK-Rust 2.0.0.
+//! Hardened OpenAI-compatible model facade over the Elitea gateway for ADK-Rust 2.2.0.
 //!
 //! The stock ADK OpenAI-compatible provider owns an unrestricted HTTP client
 //! and includes upstream response bodies in errors. The worker instead keeps a
@@ -70,7 +70,7 @@ pub(crate) struct ModelGatewayConfig {
 }
 
 impl ModelGatewayConfig {
-    fn validate(&self) -> Result<String, ModelGatewayError> {
+    fn validate(&self) -> Result<String, ModelFacadeError> {
         let origin = canonical_https_origin(&self.origin)?;
         if !valid_timeout(self.connect_timeout)
             || !valid_timeout(self.response_header_timeout)
@@ -84,14 +84,14 @@ impl ModelGatewayConfig {
             || self.max_sse_events == 0
             || self.max_sse_events > MAX_SSE_EVENTS
         {
-            return Err(ModelGatewayError::InvalidConfiguration);
+            return Err(ModelFacadeError::InvalidConfiguration);
         }
         Ok(origin)
     }
 }
 
 /// Frozen generation controls admitted before the PAT reaches this module.
-pub(crate) struct ModelGatewayInvocation {
+pub(crate) struct ModelFacadeInvocation {
     pub(crate) model_name: String,
     pub(crate) system_instruction: String,
     pub(crate) max_tokens: Option<u32>,
@@ -120,16 +120,16 @@ impl ModelReasoningEffort {
     }
 }
 
-/// Stable, data-free model-gateway setup failure.
+/// Stable, data-free model-facade setup failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ModelGatewayError {
+pub(crate) enum ModelFacadeError {
     InvalidConfiguration,
     InvalidInvocation,
     ResourceExhausted,
     DependencyUnavailable,
 }
 
-impl ModelGatewayError {
+impl ModelFacadeError {
     #[must_use]
     pub(crate) const fn code(self) -> &'static str {
         match self {
@@ -146,18 +146,18 @@ impl ModelGatewayError {
     }
 }
 
-impl fmt::Display for ModelGatewayError {
+impl fmt::Display for ModelFacadeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidConfiguration => "the model gateway configuration is malformed",
-            Self::InvalidInvocation => "the model gateway invocation is malformed",
+            Self::InvalidConfiguration => "the model facade configuration is malformed",
+            Self::InvalidInvocation => "the model facade invocation is malformed",
             Self::ResourceExhausted => "the model gateway request exceeds its approved limit",
             Self::DependencyUnavailable => "the model gateway is unavailable",
         })
     }
 }
 
-impl std::error::Error for ModelGatewayError {}
+impl std::error::Error for ModelFacadeError {}
 
 #[async_trait]
 pub(super) trait ModelGatewayTransport: Send + Sync {
@@ -224,18 +224,18 @@ impl ModelGatewayClient {
         mut config: ModelGatewayConfig,
         private_ca: Certificate,
         client_identity: Identity,
-    ) -> Result<Self, ModelGatewayError> {
+    ) -> Result<Self, ModelFacadeError> {
         let origin = config.validate()?;
         let tls = ClientTlsConfig::new()
             .ca_certificate(private_ca)
             .identity(client_identity);
         let endpoint = Endpoint::from_shared(origin.clone())
             .and_then(|endpoint| endpoint.tls_config(tls))
-            .map_err(|_| ModelGatewayError::InvalidConfiguration)?;
+            .map_err(|_| ModelFacadeError::InvalidConfiguration)?;
         let channel = timeout(config.connect_timeout, endpoint.connect())
             .await
-            .map_err(|_| ModelGatewayError::DependencyUnavailable)?
-            .map_err(|_| ModelGatewayError::DependencyUnavailable)?;
+            .map_err(|_| ModelFacadeError::DependencyUnavailable)?
+            .map_err(|_| ModelFacadeError::DependencyUnavailable)?;
         config.origin = origin;
         Ok(Self {
             transport: Arc::new(TonicModelGatewayTransport { channel }),
@@ -247,7 +247,7 @@ impl ModelGatewayClient {
     fn with_rpc(
         transport: impl ModelGatewayTransport + 'static,
         mut config: ModelGatewayConfig,
-    ) -> Result<Self, ModelGatewayError> {
+    ) -> Result<Self, ModelFacadeError> {
         config.origin = config.validate()?;
         Ok(Self {
             transport: Arc::new(transport),
@@ -265,13 +265,13 @@ impl ModelGatewayClient {
         &self,
         context: &ClaimScopedEliteaContext,
         model_owner_project_id: u32,
-        invocation: ModelGatewayInvocation,
-    ) -> Result<BoundModelGateway, ModelGatewayError> {
+        invocation: ModelFacadeInvocation,
+    ) -> Result<BoundOpenAiCompatibleFacade, ModelFacadeError> {
         validate_invocation(&invocation)?;
         let token = context.model_facade_token();
         let billing_project_id = context.resource_project_id();
         if model_owner_project_id == 0 || billing_project_id == 0 || token.is_empty() {
-            return Err(ModelGatewayError::InvalidInvocation);
+            return Err(ModelFacadeError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(CompletionState::default()));
         let model = Arc::new(EliteaOpenAiCompatibleModel {
@@ -283,20 +283,20 @@ impl ModelGatewayClient {
             completion: completion.clone(),
             calls: AtomicU32::new(0),
         });
-        Ok(BoundModelGateway {
+        Ok(BoundOpenAiCompatibleFacade {
             model,
-            completion: ModelGatewayCompletion { state: completion },
+            completion: OpenAiCompatibleCompletion { state: completion },
         })
     }
 }
 
 /// Inseparable single-use model and its exact completion capture.
-pub(crate) struct BoundModelGateway {
+pub(crate) struct BoundOpenAiCompatibleFacade {
     model: Arc<EliteaOpenAiCompatibleModel>,
-    completion: ModelGatewayCompletion,
+    completion: OpenAiCompatibleCompletion,
 }
 
-impl BoundOrdinaryAgentModel for BoundModelGateway {
+impl BoundOrdinaryAgentModel for BoundOpenAiCompatibleFacade {
     fn adk_model(&self) -> Arc<dyn Llm> {
         self.model.clone()
     }
@@ -310,14 +310,14 @@ impl BoundOrdinaryAgentModel for BoundModelGateway {
     }
 }
 
-fn model_completion_error(error: ModelGatewayError) -> NativeAgentAssemblyError {
+fn model_completion_error(error: ModelFacadeError) -> NativeAgentAssemblyError {
     let code = match error {
-        ModelGatewayError::InvalidConfiguration => {
+        ModelFacadeError::InvalidConfiguration => {
             NativeAgentAssemblyErrorCode::InvalidConfiguration
         }
-        ModelGatewayError::InvalidInvocation => NativeAgentAssemblyErrorCode::InvalidResult,
-        ModelGatewayError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
-        ModelGatewayError::DependencyUnavailable => {
+        ModelFacadeError::InvalidInvocation => NativeAgentAssemblyErrorCode::InvalidResult,
+        ModelFacadeError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+        ModelFacadeError::DependencyUnavailable => {
             NativeAgentAssemblyErrorCode::DependencyUnavailable
         }
     };
@@ -325,7 +325,7 @@ fn model_completion_error(error: ModelGatewayError) -> NativeAgentAssemblyError 
 }
 
 #[cfg(test)]
-impl BoundModelGateway {
+impl BoundOpenAiCompatibleFacade {
     pub(super) async fn generate_for_test(
         &self,
         request: LlmRequest,
@@ -333,7 +333,7 @@ impl BoundModelGateway {
         self.model.generate_content(request, true).await
     }
 
-    pub(super) fn take_completion_for_test(self) -> Result<String, ModelGatewayError> {
+    pub(super) fn take_completion_for_test(self) -> Result<String, ModelFacadeError> {
         self.completion.take()
     }
 }
@@ -344,7 +344,7 @@ struct CompletionState {
     consumed: bool,
 }
 
-struct ModelGatewayCompletion {
+struct OpenAiCompatibleCompletion {
     state: Arc<Mutex<CompletionState>>,
 }
 
@@ -360,19 +360,19 @@ impl DurableModelCompletion for Mutex<CompletionState> {
     }
 }
 
-impl ModelGatewayCompletion {
-    fn take(self) -> Result<String, ModelGatewayError> {
+impl OpenAiCompatibleCompletion {
+    fn take(self) -> Result<String, ModelFacadeError> {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| ModelGatewayError::DependencyUnavailable)?;
+            .map_err(|_| ModelFacadeError::DependencyUnavailable)?;
         if state.consumed {
-            return Err(ModelGatewayError::InvalidInvocation);
+            return Err(ModelFacadeError::InvalidInvocation);
         }
         let value = state
             .value
             .take()
-            .ok_or(ModelGatewayError::InvalidInvocation)?;
+            .ok_or(ModelFacadeError::InvalidInvocation)?;
         state.consumed = true;
         Ok(value)
     }
@@ -381,7 +381,7 @@ impl ModelGatewayCompletion {
 struct EliteaOpenAiCompatibleModel {
     transport: Arc<dyn ModelGatewayTransport>,
     config: ModelGatewayConfig,
-    invocation: ModelGatewayInvocation,
+    invocation: ModelFacadeInvocation,
     billing_project_id: u64,
     token: Zeroizing<String>,
     completion: Arc<Mutex<CompletionState>>,
@@ -485,8 +485,8 @@ impl Llm for EliteaOpenAiCompatibleModel {
 }
 
 pub(super) fn validate_invocation(
-    invocation: &ModelGatewayInvocation,
-) -> Result<(), ModelGatewayError> {
+    invocation: &ModelFacadeInvocation,
+) -> Result<(), ModelFacadeError> {
     if !bounded_header_text(&invocation.model_name, MAX_MODEL_NAME_BYTES)
         || invocation.system_instruction.len() > MAX_INSTRUCTION_BYTES
         || invocation.system_instruction.contains('\0')
@@ -504,7 +504,7 @@ pub(super) fn validate_invocation(
             .temperature
             .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
     {
-        return Err(ModelGatewayError::InvalidInvocation);
+        return Err(ModelFacadeError::InvalidInvocation);
     }
     Ok(())
 }
@@ -512,7 +512,7 @@ pub(super) fn validate_invocation(
 fn build_request_body(
     request: &LlmRequest,
     stream: bool,
-    invocation: &ModelGatewayInvocation,
+    invocation: &ModelFacadeInvocation,
     config: &ModelGatewayConfig,
 ) -> Result<Bytes, AdkError> {
     let contents = validate_llm_request(request, stream, invocation)?;
@@ -539,6 +539,15 @@ fn build_request_body(
             "tool_choice".to_owned(),
             serde_json::Value::String("auto".to_owned()),
         );
+        // GPT-5.6 defaults to medium reasoning, but Chat Completions tool
+        // calls require effective reasoning `none`. Match ADK 2.1+'s provider
+        // contract when Main has not frozen an explicit effort.
+        if invocation.model_name.starts_with("gpt-5.6") && invocation.reasoning_effort.is_none() {
+            body.insert(
+                "reasoning_effort".to_owned(),
+                serde_json::Value::String("none".to_owned()),
+            );
+        }
     }
     body.insert("stream".to_owned(), serde_json::Value::Bool(true));
     body.insert(
@@ -583,7 +592,7 @@ fn build_request_body(
 pub(super) fn validate_llm_request<'a>(
     request: &'a LlmRequest,
     stream: bool,
-    invocation: &ModelGatewayInvocation,
+    invocation: &ModelFacadeInvocation,
 ) -> Result<&'a [Content], AdkError> {
     let config = request.config.as_ref().ok_or_else(invalid_llm_request)?;
     if !stream
@@ -848,7 +857,7 @@ fn instruction_role(model_name: &str) -> &'static str {
 
 fn generation_config_matches(
     config: &GenerateContentConfig,
-    invocation: &ModelGatewayInvocation,
+    invocation: &ModelFacadeInvocation,
 ) -> bool {
     config.temperature == invocation.temperature
         && config.max_output_tokens
@@ -1573,7 +1582,9 @@ impl OpenAiStreamState {
             }),
             finish_reason: Some(finish_reason),
             partial: false,
-            turn_complete: true,
+            // A function call closes this provider response, not the agent
+            // turn: ADK must execute the tool and ask the model again.
+            turn_complete: !has_tool_calls,
             ..LlmResponse::default()
         });
         Ok(None)
@@ -1711,13 +1722,13 @@ pub(super) fn model_error(
     AdkError::new(ErrorComponent::Model, category, code, message).with_provider("elitea")
 }
 
-fn canonical_https_origin(value: &str) -> Result<String, ModelGatewayError> {
+fn canonical_https_origin(value: &str) -> Result<String, ModelFacadeError> {
     if value.is_empty() || value.len() > MAX_ORIGIN_BYTES {
-        return Err(ModelGatewayError::InvalidConfiguration);
+        return Err(ModelFacadeError::InvalidConfiguration);
     }
     let uri = value
         .parse::<http::Uri>()
-        .map_err(|_| ModelGatewayError::InvalidConfiguration)?;
+        .map_err(|_| ModelFacadeError::InvalidConfiguration)?;
     if uri.scheme_str() != Some("https")
         || uri.authority().is_none()
         || uri.path() != "/"
@@ -1726,14 +1737,14 @@ fn canonical_https_origin(value: &str) -> Result<String, ModelGatewayError> {
             authority.as_str().contains('@') || !authority.as_str().is_ascii()
         })
     {
-        return Err(ModelGatewayError::InvalidConfiguration);
+        return Err(ModelFacadeError::InvalidConfiguration);
     }
     let authority = uri
         .authority()
-        .ok_or(ModelGatewayError::InvalidConfiguration)?;
+        .ok_or(ModelFacadeError::InvalidConfiguration)?;
     let host = authority.host();
     if host.is_empty() {
-        return Err(ModelGatewayError::InvalidConfiguration);
+        return Err(ModelFacadeError::InvalidConfiguration);
     }
     let host = host.to_ascii_lowercase();
     let host = if host.contains(':') {
@@ -1871,7 +1882,7 @@ pub(crate) fn test_model_gateway_config() -> ModelGatewayConfig {
 pub(crate) fn test_model_gateway_client(
     outcomes: Vec<TestModelGatewayOutcome>,
     config: ModelGatewayConfig,
-) -> Result<(ModelGatewayClient, CapturedModelRequests), ModelGatewayError> {
+) -> Result<(ModelGatewayClient, CapturedModelRequests), ModelFacadeError> {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let client = ModelGatewayClient::with_rpc(
         TestModelGatewayTransport {
@@ -1884,8 +1895,8 @@ pub(crate) fn test_model_gateway_client(
 }
 
 #[cfg(test)]
-pub(super) fn test_model_gateway_invocation() -> ModelGatewayInvocation {
-    ModelGatewayInvocation {
+pub(super) fn test_model_facade_invocation() -> ModelFacadeInvocation {
+    ModelFacadeInvocation {
         model_name: "fixture-model".to_owned(),
         system_instruction: "review carefully\nbe concise".to_owned(),
         max_tokens: Some(4_000),
@@ -1896,7 +1907,7 @@ pub(super) fn test_model_gateway_invocation() -> ModelGatewayInvocation {
 }
 
 #[cfg(test)]
-pub(super) fn test_model_gateway_request(user: &str) -> LlmRequest {
+pub(super) fn test_model_request(user: &str) -> LlmRequest {
     LlmRequest {
         model: "fixture-model".to_owned(),
         contents: vec![Content::new("user").with_text(user)],

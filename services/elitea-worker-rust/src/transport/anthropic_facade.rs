@@ -1,6 +1,6 @@
-//! Native Anthropic `/messages` adapter over the Elitea model-gateway pool.
+//! Native Anthropic `/messages` facade over the Elitea gateway transport pool.
 //!
-//! ADK-Rust 2.0.0 supplies the native Anthropic wire types and schema adapter,
+//! ADK-Rust 2.2.0 supplies the native Anthropic wire types and schema adapter,
 //! while Elitea retains credential scope, project routing, transport policy,
 //! bounded streaming, error redaction and single-use completion ownership. The
 //! stock ADK client is deliberately not used because it constructs a separate
@@ -36,8 +36,8 @@ use tonic::body::Body;
 use tracing::Instrument as _;
 use zeroize::Zeroizing;
 
-use super::model_gateway::{
-    BoundedSseEvent, ModelGatewayClient, ModelGatewayError, ModelGatewayInvocation,
+use super::openai_compatible_facade::{
+    BoundedSseEvent, ModelFacadeError, ModelFacadeInvocation, ModelGatewayClient,
     ModelReasoningEffort, SseParser, model_error, next_response_chunk, valid_tool_call_id,
     valid_tool_name, validate_invocation, validate_llm_request, validate_response_head,
 };
@@ -64,18 +64,18 @@ impl ModelGatewayClient {
         &self,
         context: &ClaimScopedEliteaContext,
         model_owner_project_id: u32,
-        invocation: ModelGatewayInvocation,
-    ) -> Result<BoundAnthropicGateway, ModelGatewayError> {
+        invocation: ModelFacadeInvocation,
+    ) -> Result<BoundAnthropicFacade, ModelFacadeError> {
         validate_invocation(&invocation)?;
         if invocation.max_tokens.is_none() {
             // Anthropic Messages requires max_tokens. Main resolves Auto to
             // the configured model maximum before it freezes a native model.
-            return Err(ModelGatewayError::InvalidInvocation);
+            return Err(ModelFacadeError::InvalidInvocation);
         }
         let token = context.model_facade_token();
         let billing_project_id = context.resource_project_id();
         if model_owner_project_id == 0 || billing_project_id == 0 || token.is_empty() {
-            return Err(ModelGatewayError::InvalidInvocation);
+            return Err(ModelFacadeError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(AnthropicCompletionState::default()));
         let model = Arc::new(EliteaAnthropicModel {
@@ -87,7 +87,7 @@ impl ModelGatewayClient {
             completion: completion.clone(),
             calls: AtomicU32::new(0),
         });
-        Ok(BoundAnthropicGateway {
+        Ok(BoundAnthropicFacade {
             model,
             completion: AnthropicCompletion { state: completion },
         })
@@ -95,12 +95,12 @@ impl ModelGatewayClient {
 }
 
 /// Inseparable native model and its exact completed text.
-pub(crate) struct BoundAnthropicGateway {
+pub(crate) struct BoundAnthropicFacade {
     model: Arc<EliteaAnthropicModel>,
     completion: AnthropicCompletion,
 }
 
-impl BoundOrdinaryAgentModel for BoundAnthropicGateway {
+impl BoundOrdinaryAgentModel for BoundAnthropicFacade {
     fn adk_model(&self) -> Arc<dyn Llm> {
         self.model.clone()
     }
@@ -115,7 +115,7 @@ impl BoundOrdinaryAgentModel for BoundAnthropicGateway {
 }
 
 #[cfg(test)]
-impl BoundAnthropicGateway {
+impl BoundAnthropicFacade {
     pub(super) async fn generate_for_test(
         &self,
         request: LlmRequest,
@@ -123,7 +123,7 @@ impl BoundAnthropicGateway {
         self.model.generate_content(request, true).await
     }
 
-    pub(super) fn take_completion_for_test(self) -> Result<String, ModelGatewayError> {
+    pub(super) fn take_completion_for_test(self) -> Result<String, ModelFacadeError> {
         self.completion.take()
     }
 }
@@ -151,31 +151,31 @@ impl DurableModelCompletion for Mutex<AnthropicCompletionState> {
 }
 
 impl AnthropicCompletion {
-    fn take(self) -> Result<String, ModelGatewayError> {
+    fn take(self) -> Result<String, ModelFacadeError> {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| ModelGatewayError::DependencyUnavailable)?;
+            .map_err(|_| ModelFacadeError::DependencyUnavailable)?;
         if state.consumed {
-            return Err(ModelGatewayError::InvalidInvocation);
+            return Err(ModelFacadeError::InvalidInvocation);
         }
         let value = state
             .value
             .take()
-            .ok_or(ModelGatewayError::InvalidInvocation)?;
+            .ok_or(ModelFacadeError::InvalidInvocation)?;
         state.consumed = true;
         Ok(value)
     }
 }
 
-fn anthropic_completion_error(error: ModelGatewayError) -> NativeAgentAssemblyError {
+fn anthropic_completion_error(error: ModelFacadeError) -> NativeAgentAssemblyError {
     let code = match error {
-        ModelGatewayError::InvalidConfiguration => {
+        ModelFacadeError::InvalidConfiguration => {
             NativeAgentAssemblyErrorCode::InvalidConfiguration
         }
-        ModelGatewayError::InvalidInvocation => NativeAgentAssemblyErrorCode::InvalidResult,
-        ModelGatewayError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
-        ModelGatewayError::DependencyUnavailable => {
+        ModelFacadeError::InvalidInvocation => NativeAgentAssemblyErrorCode::InvalidResult,
+        ModelFacadeError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+        ModelFacadeError::DependencyUnavailable => {
             NativeAgentAssemblyErrorCode::DependencyUnavailable
         }
     };
@@ -183,9 +183,9 @@ fn anthropic_completion_error(error: ModelGatewayError) -> NativeAgentAssemblyEr
 }
 
 struct EliteaAnthropicModel {
-    transport: Arc<dyn super::model_gateway::ModelGatewayTransport>,
-    config: super::model_gateway::ModelGatewayConfig,
-    invocation: ModelGatewayInvocation,
+    transport: Arc<dyn super::openai_compatible_facade::ModelGatewayTransport>,
+    config: super::openai_compatible_facade::ModelGatewayConfig,
+    invocation: ModelFacadeInvocation,
     billing_project_id: u64,
     token: Zeroizing<String>,
     completion: Arc<Mutex<AnthropicCompletionState>>,
@@ -300,8 +300,8 @@ impl Llm for EliteaAnthropicModel {
 fn build_anthropic_body(
     request: &LlmRequest,
     stream: bool,
-    invocation: &ModelGatewayInvocation,
-    config: &super::model_gateway::ModelGatewayConfig,
+    invocation: &ModelFacadeInvocation,
+    config: &super::openai_compatible_facade::ModelGatewayConfig,
 ) -> Result<Bytes, AdkError> {
     let contents = validate_llm_request(request, stream, invocation)?;
     let generation = native_generation(invocation)?;
@@ -427,10 +427,17 @@ struct NativeGeneration {
     output_config: Option<OutputConfig>,
 }
 
-fn native_generation(invocation: &ModelGatewayInvocation) -> Result<NativeGeneration, AdkError> {
+fn native_generation(invocation: &ModelFacadeInvocation) -> Result<NativeGeneration, AdkError> {
     let max_tokens = invocation
         .max_tokens
         .ok_or_else(invalid_anthropic_request)?;
+    if rejects_explicit_sampling(&invocation.model_name) && invocation.temperature.is_some() {
+        return Err(anthropic_error(
+            ErrorCategory::InvalidInput,
+            "sampling_unsupported",
+            "the native Anthropic model does not accept explicit sampling controls",
+        ));
+    }
     let Some(effort) = invocation.reasoning_effort else {
         return Ok(NativeGeneration {
             max_tokens,
@@ -439,6 +446,14 @@ fn native_generation(invocation: &ModelGatewayInvocation) -> Result<NativeGenera
             output_config: None,
         });
     };
+    if effort == ModelReasoningEffort::None {
+        return Ok(NativeGeneration {
+            max_tokens,
+            temperature: invocation.temperature,
+            thinking: None,
+            output_config: None,
+        });
+    }
     if adaptive_thinking_model(&invocation.model_name) {
         return Ok(NativeGeneration {
             max_tokens,
@@ -451,8 +466,9 @@ fn native_generation(invocation: &ModelGatewayInvocation) -> Result<NativeGenera
     }
     let budget = match effort {
         ModelReasoningEffort::Low => 2_048,
-        ModelReasoningEffort::Medium | ModelReasoningEffort::None => 4_096,
+        ModelReasoningEffort::Medium => 4_096,
         ModelReasoningEffort::High => 9_092,
+        ModelReasoningEffort::None => return Err(invalid_anthropic_request()),
     };
     let max_tokens = max_tokens
         .checked_add(budget)
@@ -494,6 +510,30 @@ fn adaptive_thinking_model(model_name: &str) -> bool {
         "sonnet_5",
         "opus-5",
         "opus_5",
+    ]
+    .iter()
+    .any(|pattern| name.contains(pattern))
+}
+
+fn rejects_explicit_sampling(model_name: &str) -> bool {
+    let name = model_name.to_ascii_lowercase();
+    [
+        "fable-5",
+        "fable_5",
+        "mythos-5",
+        "mythos_5",
+        "mythos-preview",
+        "mythos_preview",
+        "opus-4-7",
+        "opus_4_7",
+        "opus-4.7",
+        "opus-4-8",
+        "opus_4_8",
+        "opus-4.8",
+        "opus-5",
+        "opus_5",
+        "sonnet-5",
+        "sonnet_5",
     ]
     .iter()
     .any(|pattern| name.contains(pattern))
@@ -811,7 +851,9 @@ impl AnthropicStreamState {
             usage_metadata: Some(usage),
             finish_reason: Some(finish_reason),
             partial: false,
-            turn_complete: true,
+            // Tool use keeps the ADK turn open until the tool result and the
+            // subsequent model response complete it.
+            turn_complete: !tool_turn,
             ..LlmResponse::default()
         }));
         Ok(None)
@@ -1033,7 +1075,7 @@ fn unsupported_anthropic_citations() -> AdkError {
     anthropic_error(
         ErrorCategory::Unsupported,
         "citations_unmapped",
-        "native Anthropic citations are not mapped by ADK-Rust 2.0.0",
+        "native Anthropic citations are not mapped by the Elitea ADK adapter",
     )
 }
 
@@ -1059,6 +1101,7 @@ fn anthropic_error(
         "completion_state" => "anthropic_gateway.completion_state",
         "completion_reused" => "anthropic_gateway.completion_reused",
         "invalid_request" => "anthropic_gateway.invalid_request",
+        "sampling_unsupported" => "anthropic_gateway.sampling_unsupported",
         "invalid_stream" => "anthropic_gateway.invalid_stream",
         "incomplete_stream" => "anthropic_gateway.incomplete_stream",
         "unsupported_output" => "anthropic_gateway.unsupported_output",
@@ -1069,8 +1112,8 @@ fn anthropic_error(
     model_error(category, code, message)
 }
 
-impl fmt::Debug for BoundAnthropicGateway {
+impl fmt::Debug for BoundAnthropicFacade {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("BoundAnthropicGateway(..)")
+        formatter.write_str("BoundAnthropicFacade(..)")
     }
 }

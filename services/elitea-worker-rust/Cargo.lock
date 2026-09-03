@@ -27,9 +27,9 @@ dependencies = [
 
 [[package]]
 name = "adk-anthropic"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6cd2a5536c5a04c872c75c6b25e7b26390d5850174123be50a202285d85c51d"
+checksum = "3c11edf5ec930b32eff86b8f2a5b2ef23abcbd5a8811e280eefdd0308e70fcea"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -85,9 +85,9 @@ dependencies = [
 
 [[package]]
 name = "adk-model"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc0c979791e694c205142ca6eb86c26f9559411ddbc19e85fa74b1b8fafd38b1"
+checksum = "4b5170b6a23b7df96213d5062c0ecc9fd987c6a8cfed73db97d36b834b1a9e33"
 dependencies = [
  "adk-anthropic",
  "adk-core",
@@ -106,9 +106,9 @@ dependencies = [
 
 [[package]]
 name = "adk-runner"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcb69638c50904de4d8d332420bebacdfe40241f64eabf3f92f463b36928bd7a"
+checksum = "31262e6bb997df8daa5bed8cc54bdefb3d92c84014c8715b937eb51731446bb0"
 dependencies = [
  "adk-core",
  "adk-session",
@@ -126,9 +126,9 @@ dependencies = [
 
 [[package]]
 name = "adk-rust"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5244ddd601fb2f9a9671a2407312d8c25914b211381e6e6bf62e0b8eadba72e"
+checksum = "71cc9684fdcf1bf323482a40c1bf589c944883ae81e9bd50e266a63b6bc2f9c2"
 dependencies = [
  "adk-agent",
  "adk-core",

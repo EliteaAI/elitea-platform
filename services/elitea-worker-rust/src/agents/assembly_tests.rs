@@ -623,8 +623,8 @@ fn authoritative_compatibility_selects_the_sdk_provider_dialect() {
         OrdinaryModelProvider::OpenAiChat
     );
 
-    let mut unsupported_adaptive_none = ordinary_request(AgentExecutionKind::Adhoc);
-    let settings = unsupported_adaptive_none
+    let mut disabled_adaptive_reasoning = ordinary_request(AgentExecutionKind::Adhoc);
+    let settings = disabled_adaptive_reasoning
         .payload
         .llm
         .get_mut("kwargs")
@@ -633,11 +633,15 @@ fn authoritative_compatibility_selects_the_sdk_provider_dialect() {
     settings.insert("model".to_owned(), json!("claude-sonnet-4-6"));
     settings.insert("openai_compatible".to_owned(), json!(false));
     settings.insert("reasoning_effort".to_owned(), json!("none"));
+    let disabled_adaptive_reasoning = OrdinaryNoToolProfile::validate(&disabled_adaptive_reasoning)
+        .expect("native Anthropic may disable adaptive reasoning");
     assert_eq!(
-        OrdinaryNoToolProfile::validate(&unsupported_adaptive_none)
-            .expect_err("pinned SDK cannot construct adaptive effort none")
-            .code(),
-        NativeAgentAssemblyErrorCode::InvalidInput
+        disabled_adaptive_reasoning.reasoning_effort(),
+        Some(ReasoningEffort::None)
+    );
+    assert_eq!(
+        disabled_adaptive_reasoning.model_provider(),
+        OrdinaryModelProvider::NativeAnthropic
     );
 }
 
