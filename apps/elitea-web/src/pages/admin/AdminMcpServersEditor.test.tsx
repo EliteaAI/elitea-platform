@@ -23,7 +23,7 @@
  * No fixture value here is or resembles a real credential.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 
@@ -43,7 +43,12 @@ const CATALOGUE = [
     client_id: 'copilot-client',
     client_secret: '******',
     timeout: 30,
-    headers: {},
+    headers: { Authorization: 'Bearer {api_token}' },
+    config_schema: {
+      properties: {
+        api_token: { type: 'string', required: true, secret: true },
+      },
+    },
     enabled: true,
   },
   {
@@ -54,6 +59,7 @@ const CATALOGUE = [
     client_id: '',
     timeout: 0,
     headers: {},
+    config_schema: { properties: {} },
     enabled: false,
   },
 ];
@@ -198,6 +204,56 @@ describe('Admin › MCP Servers catalogue', () => {
     // Declared explicitly so the server's stdio refusal is a contract this
     // client is on the right side of, not a default it leans on.
     expect(body['transport']).toBe('http');
+  });
+
+  it('edits templated headers and the dynamic project parameter schema', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminMcpServersEditor />);
+    await openEditFor('GitHub Copilot');
+
+    fireEvent.change(await screen.findByLabelText('Headers (YAML mapping)'), {
+      target: {
+        value: 'Authorization: Bearer {project_token}\nX-Tenant: "{tenant}"\n',
+      },
+    });
+    fireEvent.change(screen.getByLabelText('Project parameter schema (YAML mapping)'), {
+      target: {
+        value:
+          'properties:\n  project_token:\n    type: string\n    required: true\n    secret: true\n  tenant:\n    type: string\n    required: true\n',
+      },
+    });
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(writes()).toHaveLength(1);
+    });
+    const body = writes()[0]?.body as Record<string, unknown>;
+    expect(body['headers']).toEqual({
+      Authorization: 'Bearer {project_token}',
+      'X-Tenant': '{tenant}',
+    });
+    expect(body['config_schema']).toEqual({
+      properties: {
+        project_token: { type: 'string', required: true, secret: true },
+        tenant: { type: 'string', required: true },
+      },
+    });
+  });
+
+  it('keeps an invalid YAML mapping in the dialog and sends no write', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminMcpServersEditor />);
+    await openEditFor('GitHub Copilot');
+
+    fireEvent.change(await screen.findByLabelText('Headers (YAML mapping)'), {
+      target: { value: '- not\n- a\n- mapping\n' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByTestId('admin-mcp-server-dialog-error')).toHaveTextContent(
+      'Headers must be a valid YAML mapping.',
+    );
+    expect(writes()).toHaveLength(0);
   });
 
   it('keeps the dialog open and renders the SERVER reason when a save is refused', async () => {

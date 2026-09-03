@@ -108,7 +108,7 @@ these are *known* gaps, not bugs.
 | Surface | State |
 |---|---|
 | **Service descriptors / provider hub** | `v2/eliteacore/service_descriptors.go:145`. Successor is ADR-0012/P3. DeepWiki and Inventory already deploy separately and self-register — only the hub is missing |
-| **Prebuilt MCP config machinery** | Partially ported (0092 catalogue); pylon's writer was not |
+| **Prebuilt MCP config machinery** | Main and Admin UI own manual catalogue editing. Legacy YAML migration and hot reload remain unported. |
 
 ---
 

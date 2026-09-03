@@ -72,6 +72,8 @@ export interface AdminMcpServer {
   readonly client_secret?: string;
   readonly timeout: number;
   readonly headers: Readonly<Record<string, string>>;
+  /** Project-owned fields rendered on each ready-made toolkit form. */
+  readonly config_schema: Readonly<Record<string, unknown>>;
   readonly enabled: boolean;
 }
 
@@ -113,6 +115,7 @@ export interface AdminMcpServerDraft {
   readonly clientSecret: string | undefined;
   readonly timeout: number;
   readonly headers: Readonly<Record<string, string>>;
+  readonly configSchema: Readonly<Record<string, unknown>>;
   readonly enabled: boolean;
 }
 
@@ -128,6 +131,7 @@ export function useSaveAdminMcpServer(): UseMutationResult<void, Error, AdminMcp
         client_id: draft.clientId,
         timeout: draft.timeout,
         headers: draft.headers,
+        config_schema: draft.configSchema,
         enabled: draft.enabled,
         // Declared explicitly so the server's stdio refusal is a contract this
         // client is on the right side of, rather than a default it relies on.

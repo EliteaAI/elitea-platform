@@ -11,6 +11,7 @@ This slice admits fixed HTTP definitions from Main's durable catalogue. It does 
 | SDK `runtime/toolkits/mcp_config.py::McpConfigToolkit` | Resolve `mcp_config` by `server_name`, build dynamic parameter schemas, and filter discovered tools. | Main serves enabled `mcp_*` schemas and resolves their fixed authority. Rust filters and executes tools. |
 | SDK `runtime/toolkits/mcp_config.py::_load_http_tools` and `runtime/utils/mcp_oauth.py::substitute_mcp_placeholders` | Replace declared URL and header placeholders before the HTTP connection. | Main `internal/mcpregistry` validates and materializes operator-owned templates after claim. |
 | Indexer `methods/indexer_mcp_prebuilt_config.py` | Publish configured server definitions and dynamic `mcp_*` toolkit types. | Main persists definitions in `elitea_mcp.prebuilt_servers` and serves the dynamic toolkit catalogue. |
+| Admin plugin configuration and Indexer worker YAML | Let an operator manage platform-wide server definitions. | The new Admin UI edits the Main-owned catalogue. It supports URL templates, templated headers, and dynamic project parameter schemas as YAML mappings. |
 | Core `methods/mcp_prebuilt_config.py` | Match normalized server names and toolkit types. | Main `internal/mcpregistry` performs the lookup. |
 | Core and SDK configuration expansion | Keep project secret values outside queued execution documents. | Main seals dynamic secret fields on toolkit write and redeems only declared parameters after claim. |
 
@@ -48,10 +49,14 @@ Claim tests cover forged-marker removal, authoritative connection replacement, r
 
 Rust tests cover static headers, header sensitivity, exclusions, reserved headers, unresolved-template rejection, token precedence, aliases, and authorization identity.
 
+Admin UI tests cover YAML mapping edits, write bodies, invalid mappings, secret preservation, and server refusal messages.
+
 ## Remaining gates
 
 Stdio remains assigned to an external runner with explicit process, package, environment, and egress authority.
 
 Runtime post-discovery authorization failures need typed RMCP call errors before automatic reauthorization can be safe.
 
-Static descriptor sync and hot reload, internal PAT stamping, and Elitea-as-MCP exposure remain separate platform capabilities. The admin catalogue API is available, but a dedicated operator UI remains a separate surface.
+Legacy descriptor migration and hot reload remain separate deployment capabilities.
+
+Internal PAT stamping and Elitea-as-MCP exposure remain separate platform capabilities.
