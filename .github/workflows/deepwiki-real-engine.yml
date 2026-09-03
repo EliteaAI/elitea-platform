@@ -64,6 +64,10 @@ concurrency:
 
 permissions:
   contents: read
+  # Needed by the failure-tier incident escalation below (issue #62's pattern,
+  # see ci-web-mutation.yml). Paired with GITHUB_TOKEN on that step — the
+  # permission alone does nothing.
+  issues: write
 
 jobs:
   real-engine:
@@ -191,3 +195,17 @@ jobs:
             apps/elitea-web/playwright-results/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: File an incident issue on failure
+        # This job runs unattended (weekly cron), same as ci-web-mutation.yml,
+        # and for the same reason carries the same escalation: a red run here
+        # would otherwise sit in the Actions tab until someone happens to look.
+        # De-duplicated by title — see scripts/lib/github-issue.mjs — so a
+        # second bad Sunday comments on the existing issue instead of opening
+        # another one.
+        if: failure()
+        working-directory: apps/elitea-web
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEEPWIKI_ENGINE_IMAGE: ${{ inputs.engine_image || 'ghcr.io/eliteaai/elitea-deepwiki:local-engine' }}
+        run: node scripts/deepwiki-real-engine-incident.mjs
