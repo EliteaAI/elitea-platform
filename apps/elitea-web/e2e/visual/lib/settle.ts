@@ -277,6 +277,26 @@ export async function settle(page: Page): Promise<void> {
  * So: a light-scheme state that is drawn only as a low-alpha wash is outside
  * what this suite can assert. Pin it in a unit or Storybook test instead of
  * assuming a green visual run covers it.
+ *
+ * `pipeline-editor-authored-graph` was the same trap wearing different
+ * clothes, and it is the reason a full refresh is worth running even when
+ * nothing looks wrong. Its four siblings were refreshed at #739; it was not,
+ * because its diff scored under the ceiling, so it sat at its #615 rendering
+ * while they moved on. The whole 17,640 px is the React Flow dot lattice
+ * sitting one pixel to the right: the node cards do not move at all (a card
+ * edge shifting a pixel would score in the hundreds, and the maximum here is
+ * 42.9), because `<Background>` phases its `<pattern>` on `x % gap` and rounds
+ * separately from the viewport's own CSS transform.
+ *
+ * ── TELLING DRIFT FROM FLAKE ───────────────────────────────────────────────
+ *
+ * Before adopting any sub-threshold refresh, run the full refresh TWICE and
+ * diff the two artifacts against each other. Measured on this branch: the
+ * noise floor between two runs is 11-70 px on 17 of the 50 shots, so a shot
+ * that reproduces its diff EXACTLY across both runs is recording a real
+ * change, and one that differs run to run is recording the renderer. Both
+ * baselines taken here cleared it — 17,640 px and 80,152 px against a 27 px
+ * and 0 px run-to-run delta respectively.
  */
 export const SNAPSHOT_TOLERANCE = { maxDiffPixels: 3, threshold: 0.05 } as const;
 
