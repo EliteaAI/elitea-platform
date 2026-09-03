@@ -338,13 +338,24 @@ test('a pipeline authored on the pipelines create page runs its graph and answer
   ).toBe('pipeline');
 
   // ── 4. Send, and require the turn to be ADMITTED ───────────────────────
+  // The composer is made ready BEFORE the response budget is armed. Armed
+  // above it, the 45 s covered `toBeEditable`'s own 20 s and the fill as well
+  // as the request, so a stack that was merely slow to release the composer
+  // spent the budget before the send even happened — and the failure it then
+  // reported was "the start was never admitted", about a turn that had not
+  // been asked for yet. Observed in run 33810201650: `waitForResponse` timed
+  // out and the click on the next line died with "Test ended".
+  //
+  // Arming it immediately before the click is still race-free: Playwright
+  // begins buffering matching responses when the promise is created, and the
+  // click cannot produce one earlier than that.
+  const input = page.getByTestId('chat-message-input');
+  await expect(input).toBeEditable({ timeout: 20_000 });
+  await input.fill(`autotest pipeline ${Date.now()}`);
   const started = page.waitForResponse(
     (r) => START_RE.test(r.url()) && r.request().method() === 'POST',
     { timeout: 45_000 },
   );
-  const input = page.getByTestId('chat-message-input');
-  await expect(input).toBeEditable({ timeout: 20_000 });
-  await input.fill(`autotest pipeline ${Date.now()}`);
   await page.getByTestId('chat-send-button').click();
 
   const startResponse = await started;
