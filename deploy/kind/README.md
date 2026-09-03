@@ -19,6 +19,9 @@ it ships to production (ADR-0023):
 
 * `podman` — this machine has no docker. `kind` is driven with
   `KIND_EXPERIMENTAL_PROVIDER=podman`, which the script exports itself.
+  `KIND_ENGINE=docker` switches every build, save and exec to docker and
+  drops the provider override; that is how `.github/workflows/helm-install-smoke.yml`
+  runs this stack on a GitHub runner.
 * `kind` v0.33+, `kubectl`, `helm` v3/v4, `python3`, `curl`.
 * Network access for the first run only: the cert-manager chart and its
   images. Everything else is built locally or side-loaded from podman.

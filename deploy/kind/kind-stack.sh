@@ -16,7 +16,9 @@
 #   deploy/kind/kind-stack.sh verify   # prove the four claims below
 #   deploy/kind/kind-stack.sh down     # delete the cluster
 #
-# podman, not docker, everywhere; kind runs with KIND_EXPERIMENTAL_PROVIDER=podman.
+# podman by default (this machine has no docker); KIND_ENGINE=docker switches
+# every build/save/exec to docker, which is what the CI runner has
+# (.github/workflows/helm-install-smoke.yml). kind's provider follows the engine.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,7 +56,12 @@ CODE_TOOLKIT_ID=9010
 WIKI_ID="acme--e2e-generated--main"
 BUCKET="wiki-artifacts"
 
-export KIND_EXPERIMENTAL_PROVIDER=podman
+ENGINE="${KIND_ENGINE:-podman}"
+case "$ENGINE" in
+  podman) export KIND_EXPERIMENTAL_PROVIDER=podman ;;
+  docker) unset KIND_EXPERIMENTAL_PROVIDER ;;
+  *) printf '\nERROR: KIND_ENGINE must be podman or docker (got %s)\n' "$ENGINE" >&2; exit 1 ;;
+esac
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
@@ -63,7 +70,7 @@ die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 kc() { kubectl --context "kind-${CLUSTER}" "$@"; }
 
 require_tools() {
-  for tool in podman kind kubectl helm python3; do
+  for tool in "$ENGINE" kind kubectl helm python3; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is not on PATH"
   done
 }
@@ -74,20 +81,20 @@ ensure_cluster() {
   if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
     note "cluster ${CLUSTER} already exists"
   else
-    say "Creating the kind cluster (podman provider)"
+    say "Creating the kind cluster (${ENGINE} provider)"
     kind create cluster --name "$CLUSTER" --wait 180s
   fi
 }
 
-have_image() { podman image exists "$1"; }
+have_image() { "$ENGINE" image inspect "$1" >/dev/null 2>&1; }
 
 build_images() {
-  say "Building the application images with podman"
+  say "Building the application images with ${ENGINE}"
   if have_image "$HOST_IMAGE"; then
     note "$HOST_IMAGE present"
   else
     note "building $HOST_IMAGE"
-    podman build -f "${REPO_ROOT}/services/elitea-subapp-host/Containerfile" \
+    "$ENGINE" build -f "${REPO_ROOT}/services/elitea-subapp-host/Containerfile" \
       -t "$HOST_IMAGE" "$REPO_ROOT"
   fi
   if have_image "$MAIN_IMAGE"; then
@@ -96,14 +103,14 @@ build_images() {
     note "building $MAIN_IMAGE"
     # `e2e` is byte-identical to the shipping `final` stage and builds the
     # admin SPA from apps/elitea-web, so no admin-ui submodule is needed.
-    podman build -f "${REPO_ROOT}/services/elitea-main/Containerfile" --target e2e \
+    "$ENGINE" build -f "${REPO_ROOT}/services/elitea-main/Containerfile" --target e2e \
       -t "$MAIN_IMAGE" "$REPO_ROOT"
   fi
   if have_image "$ENGINE_IMAGE"; then
     note "$ENGINE_IMAGE present"
   else
     note "building $ENGINE_IMAGE (EXTRAS=${DEEPWIKI_ENGINE_EXTRAS})"
-    podman build -f "${REPO_ROOT}/services/elitea-deepwiki/Containerfile" \
+    "$ENGINE" build -f "${REPO_ROOT}/services/elitea-deepwiki/Containerfile" \
       --build-arg "EXTRAS=${DEEPWIKI_ENGINE_EXTRAS}" \
       -t "$ENGINE_IMAGE" "$REPO_ROOT"
   fi
@@ -127,7 +134,7 @@ load_images() {
   # an image under a tag the node already carries.
   local present=""
   if [ "${KIND_FORCE_LOAD:-0}" != "1" ]; then
-    present="$(podman exec "${CLUSTER}-control-plane" crictl images -o json 2>/dev/null \
+    present="$("$ENGINE" exec "${CLUSTER}-control-plane" crictl images -o json 2>/dev/null \
       | python3 -c 'import json,sys
 try:
     for image in json.load(sys.stdin).get("images", []):
@@ -145,12 +152,16 @@ except Exception:
     fi
     if ! have_image "$image"; then
       note "pulling $image"
-      podman pull "$image" >/dev/null
+      "$ENGINE" pull "$image" >/dev/null
     fi
     note "loading $image"
     # `kind load docker-image` shells out to the provider; the archive route
     # is the one that behaves identically on podman and docker.
-    podman save --format docker-archive -o "$archive" "$image"
+    if [ "$ENGINE" = "podman" ]; then
+      podman save --format docker-archive -o "$archive" "$image"
+    else
+      docker save -o "$archive" "$image"
+    fi
     kind load image-archive "$archive" --name "$CLUSTER" >/dev/null
   done
   rm -f "$archive"
@@ -475,8 +486,8 @@ for o in (b.get("items") or b.get("objects") or []):
 cmd_down() {
   say "Deleting the kind cluster ${CLUSTER}"
   kind delete cluster --name "$CLUSTER"
-  note "the built images are left in podman; remove them with:"
-  note "  podman rmi ${MAIN_IMAGE} ${HOST_IMAGE} ${ENGINE_IMAGE}"
+  note "the built images are left in ${ENGINE}; remove them with:"
+  note "  ${ENGINE} rmi ${MAIN_IMAGE} ${HOST_IMAGE} ${ENGINE_IMAGE}"
 }
 
 case "${1:-}" in

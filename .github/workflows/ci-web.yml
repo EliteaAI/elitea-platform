@@ -659,19 +659,6 @@ jobs:
           path: apps/elitea-web/dist/
           retention-days: 7
 
-  image:
-    # Not folded into `build`: the bake runs the Containerfile's own build
-    # inside buildx and shares no output with the runner's `npm run build`, and
-    # this job installs neither node nor node_modules.
-    name: Image (bake, no push)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - name: Bake elitea-web (build only, push happens in publish.yml)
-        working-directory: .
-        run: docker buildx bake --set '*.platform=linux/amd64' elitea-web
-
   parity:
     # Keeps its own job: it needs go, `submodules: recursive` and
     # `fetch-depth: 0`, and none of the node gates want that checkout cost.

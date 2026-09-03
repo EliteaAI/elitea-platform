@@ -377,6 +377,42 @@ jobs:
           path: "**/coverage.out"
           if-no-files-found: error
 
+      # ── The binaries, folded in from the former `build` job ────────────────
+      # `go test` compiles every package it tests, but the cmd/ mains it does
+      # not, and a main that stops compiling must still fail here. Folded into
+      # this job rather than run after it: the former job waited on five
+      # others for a 30-second compile and paid a runner's queue (measured
+      # 42 min once) for a slot the free plan's 20-job cap could not spare.
+      # Production images are built from the Containerfiles, not here.
+      - name: Build elitea-main
+        run: |
+          cd services/elitea-main
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-main ./cmd/elitea-main
+          test -x /tmp/elitea-main
+          echo "Build OK: /tmp/elitea-main"
+
+      - name: Build cutover-ctl
+        run: |
+          cd services/elitea-main
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/cutover-ctl ./cmd/cutover-ctl
+
+      - name: Build migration, Auth validation, and index preflight tools
+        run: |
+          cd services/elitea-main
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-migrate ./cmd/elitea-migrate
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-auth-validate ./cmd/elitea-auth-validate
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/index-v2-preflight ./cmd/index-v2-preflight
+
+      - name: Build elitea-scheduler
+        run: |
+          cd services/elitea-scheduler
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-scheduler ./cmd/elitea-scheduler
+
+      - name: Build elitea-subapp-host
+        run: |
+          cd services/elitea-subapp-host
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-subapp-host ./cmd/elitea-subapp-host
+
   integration:
     name: Integration (Postgres + pgvector)
     runs-on: ubuntu-latest
@@ -417,49 +453,3 @@ jobs:
   # published images too, and adding apps/elitea-web/** to this workflow's
   # triggers would run the Postgres service, the storage emulators and the whole
   # Go test suite on every front-end change.
-
-  build:
-    name: Build
-    # CI validation only — confirms the binaries compile cleanly on every PR/push.
-    # Production images are built via Containerfile in publish.yml, not here.
-    runs-on: ubuntu-latest
-    needs: [sqlc, lint, test, env-drift, integration]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.25"
-          cache-dependency-path: |
-            services/elitea-main/go.sum
-            services/elitea-scheduler/go.sum
-            services/elitea-subapp-host/go.sum
-            libs/proto/gen/go/go.sum
-
-      - name: Build elitea-main
-        run: |
-          cd services/elitea-main
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-main ./cmd/elitea-main
-          test -x /tmp/elitea-main
-          echo "Build OK: /tmp/elitea-main"
-
-      - name: Build cutover-ctl
-        run: |
-          cd services/elitea-main
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/cutover-ctl ./cmd/cutover-ctl
-
-      - name: Build migration, Auth validation, and index preflight tools
-        run: |
-          cd services/elitea-main
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-migrate ./cmd/elitea-migrate
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-auth-validate ./cmd/elitea-auth-validate
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/index-v2-preflight ./cmd/index-v2-preflight
-
-      - name: Build elitea-scheduler
-        run: |
-          cd services/elitea-scheduler
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-scheduler ./cmd/elitea-scheduler
-
-      - name: Build elitea-subapp-host
-        run: |
-          cd services/elitea-subapp-host
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-subapp-host ./cmd/elitea-subapp-host
