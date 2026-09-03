@@ -1,6 +1,6 @@
 module github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway
 
-go 1.27.0
+go 1.26.4
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.45.1
@@ -9,7 +9,7 @@ require (
 	github.com/google/cel-go v0.29.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/maximhq/bifrost/core v1.8.4
+	github.com/maximhq/bifrost/core v1.7.3
 	github.com/nats-io/nats.go v1.53.1
 	github.com/sony/gobreaker/v2 v2.4.0
 	golang.org/x/oauth2 v0.36.0
@@ -50,7 +50,6 @@ require (
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -67,7 +66,6 @@ require (
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
-	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
