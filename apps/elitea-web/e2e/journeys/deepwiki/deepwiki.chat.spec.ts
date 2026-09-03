@@ -30,6 +30,22 @@ async function openChatDrawer(page: Page) {
   return drawer;
 }
 
+/**
+ * Pins which conversation a browser resumes, before the app boots.
+ *
+ * `addInitScript` and not `evaluate`: the drawer reads the key the first time
+ * it renders, so a value written after navigation arrives too late and the
+ * drawer has already minted one of its own.
+ */
+async function seedConversationKey(page: Page, key: string) {
+  await page.addInitScript(
+    ([project, toolkit, value]) => {
+      localStorage.setItem(`el.deepwiki.chat.conversation.${project}.${toolkit}`, value);
+    },
+    [SEEDED.projectId, SEEDED.readOnly.toolkitId, key] as const,
+  );
+}
+
 /** Asks one question and waits for the fixture's answer to land. */
 async function ask(page: Page, question: string) {
   const drawer = page.getByTestId('wiki-chat-drawer');
@@ -183,11 +199,32 @@ test.describe('DeepWiki chat history', () => {
     page,
     browser,
   }) => {
+    /*
+     * THIS JOURNEY OWNS ITS CONVERSATION, and seeds the key that says so.
+     *
+     * Left to itself the drawer ADOPTS the user's most recent stored
+     * conversation whenever this browser has never opened the wiki before —
+     * which is the feature, and which makes a shared stack non-deterministic:
+     * CI runs with `E2E_REUSE_STACK=1`, so DWIKI-012's conversations from an
+     * earlier run are already there, and this journey would append its two
+     * turns to one of them. Everything positional then shifts, the
+     * conversation's NAME is somebody else's first question, and the failure
+     * reads as a broken feature rather than as a test asserting on a
+     * transcript it did not write.
+     *
+     * Seeding a key makes `resolve()` report no mint, so no adoption happens
+     * and the conversation below is this run's alone. Adoption keeps its own
+     * coverage in the drawer's unit tests, where a stack full of other
+     * journeys' rows cannot move it.
+     */
+    const stamp = Date.now();
+    const conversationKey = `dwiki-017-${stamp}`;
+    await seedConversationKey(page, conversationKey);
+
     await openChatDrawer(page);
 
     // Two turns, so the transcript's ORDER is observable. One turn would pass
     // against a reader that returned the newest group and stopped.
-    const stamp = Date.now();
     const first = `Where do the wiki pages live? ${stamp}`;
     const second = `And who writes them? ${stamp}`;
     await ask(page, first);
@@ -203,33 +240,16 @@ test.describe('DeepWiki chat history', () => {
     await expect(drawer.getByText(second, { exact: true })).toBeVisible();
 
     /*
-     * ── a fresh browser context: same user, ONE 36-character key carried ──
+     * ── a fresh browser context: same user, ONE short key carried ──
      *
      * The key is the browser's handle on WHICH conversation, and nothing else:
      * not a message, not an answer, not a timestamp. Everything that appears
-     * below therefore came off the server. Carrying it is what makes the
-     * journey deterministic — the drawer will otherwise adopt the user's most
-     * recent wiki conversation, which on a parallel run is one of DWIKI-012's.
-     * That adoption is the right behaviour and is pinned in the drawer's unit
-     * tests; it is simply not a stable thing to assert alongside two other
-     * journeys writing to the same toolkit.
+     * below therefore came off the server.
      */
-    const conversationKey = await page.evaluate(
-      ([project, toolkit]) =>
-        localStorage.getItem(`el.deepwiki.chat.conversation.${project}.${toolkit}`),
-      [SEEDED.projectId, SEEDED.readOnly.toolkitId] as const,
-    );
-    expect(conversationKey, 'the drawer minted a conversation key').toBeTruthy();
-
     const fresh = await browser.newContext({ storageState: STORAGE_STATE.member });
     try {
       const other = await fresh.newPage();
-      await other.addInitScript(
-        ([project, toolkit, key]) => {
-          localStorage.setItem(`el.deepwiki.chat.conversation.${project}.${toolkit}`, key);
-        },
-        [SEEDED.projectId, SEEDED.readOnly.toolkitId, conversationKey ?? ''] as const,
-      );
+      await seedConversationKey(other, conversationKey);
       await openDeepWiki(other, `/app/deepwiki/${SEEDED.readOnly.toolkitId}`);
       await other.getByRole('button', { name: 'Ask about this repository' }).click();
       const otherDrawer = other.getByTestId('wiki-chat-drawer');
@@ -239,8 +259,17 @@ test.describe('DeepWiki chat history', () => {
       // anything on screen came off the server.
       await expect(otherDrawer.getByText(first, { exact: true })).toBeVisible({ timeout: 30_000 });
       await expect(otherDrawer.getByText(second, { exact: true })).toBeVisible();
-      await expect(otherDrawer.getByTestId('wiki-chat-answer').first()).toContainText(
-        `Fixture answer to: ${first}`,
+
+      // The ANSWERS came back too, not only the questions — matched by their
+      // own text rather than by position. `.first()` used to say this, and it
+      // was wrong the moment the drawer started restoring earlier turns: on a
+      // reused stack the first answer on screen can belong to a conversation
+      // this test never wrote.
+      await expect(
+        otherDrawer.getByTestId('wiki-chat-answer').filter({ hasText: `Fixture answer to: ${first}` }),
+      ).toHaveCount(1);
+      await expect(otherDrawer.getByTestId('wiki-chat-answer').last()).toContainText(
+        `Fixture answer to: ${second}`,
       );
     } finally {
       await fresh.close();
@@ -251,18 +280,29 @@ test.describe('DeepWiki chat history', () => {
     await drawer.getByRole('button', { name: 'Clear the conversation' }).click();
     await expect(drawer.getByText(first, { exact: true })).toHaveCount(0);
 
-    // And the cleared conversation is STILL THERE. A "Clear" that deleted
-    // tenant data would pass every assertion above and lose the history that
-    // was the point of keeping.
+    /*
+     * And the cleared conversation is STILL THERE. A "Clear" that deleted
+     * tenant data would pass every assertion above and lose the history that
+     * was the point of keeping.
+     *
+     * Found by its KEY, not by its name or its position. On a reused stack
+     * this listing holds every conversation every earlier run left behind, so
+     * "the newest row" and "within the first page" are both things this test
+     * cannot know — and the drawer's own query is the one under test, so it
+     * is the one asked.
+     */
     const origin = new URL(page.url()).origin;
     const stored = await page.request.get(
       `${origin}/api/v2/elitea_core/conversations/prompt_lib/${SEEDED.projectId}` +
         `?source=deepwiki&entity_name=toolkit&entity_meta_id=${SEEDED.readOnly.toolkitId}` +
-        `&hidden=only&mine=true&limit=20`,
+        `&hidden=only&mine=true&limit=100`,
     );
     expect(stored.ok(), `listing wiki conversations: ${stored.status()}`).toBe(true);
-    const body = (await stored.json()) as { rows?: { name?: string }[] };
-    const names = (body.rows ?? []).map((row) => row.name ?? '');
-    expect(names, 'the cleared conversation is still stored').toContain(first);
+    const body = (await stored.json()) as {
+      rows?: { name?: string; meta?: { wiki_chat_key?: string } }[];
+    };
+    const cleared = (body.rows ?? []).find((row) => row.meta?.wiki_chat_key === conversationKey);
+    expect(cleared, 'the cleared conversation is still stored').toBeDefined();
+    expect(cleared?.name, 'and still named after the question that opened it').toBe(first);
   });
 });

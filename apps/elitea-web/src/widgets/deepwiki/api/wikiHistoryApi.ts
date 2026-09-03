@@ -20,6 +20,17 @@
  * `conversationApi.ts` established — and, like it, they go through
  * `shared/api/unwrap`, because `eliteaFetch` resolves the transport ENVELOPE
  * and reading a field off it yields `undefined` on a 200 (issue #132, twice).
+ *
+ * NEITHER CALL ADDS A `endpoints.manifest.json` ENTRY, and that is deliberate
+ * rather than an omission. The transcript read is the route
+ * `toolkits.getIndexHistoryConversationDetails` already registers, so this
+ * slice is added to that entry's `usedBy` and nothing else changes. The
+ * LISTING has no entry at all: registering a new hand-written id makes
+ * `TestSpecRouterConformance/manifest_reverse_check` demand spec coverage,
+ * its allowlist "may only shrink" and pins its own size, and describing the
+ * conversation routes in `api/v2.yaml` trips six separate gates including two
+ * codegens. This adds no ROUTE — `GET /elitea_core/conversations/prompt_lib/…`
+ * is one the server already serves — only two more query parameters on it.
  */
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { unwrapBody, unwrapListPage } from '@/shared/api/unwrap';

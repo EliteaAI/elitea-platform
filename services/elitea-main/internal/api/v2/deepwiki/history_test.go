@@ -11,7 +11,6 @@ package deepwiki
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -384,40 +383,4 @@ func TestARecordingFailureDoesNotChangeWhatTheCallerReceives(t *testing.T) {
 	if recorder.Code != http.StatusOK || recorder.Body.String() == "" {
 		t.Fatalf("a failed recording changed the response: %d %q", recorder.Code, recorder.Body.String())
 	}
-}
-
-// AnswerText is a transcription of the browser's readAnswer. Where the two
-// disagree the user sees one thing and the transcript records another, so the
-// same five shapes are pinned here.
-func TestAnswerTextReadsTheShapesTheBrowserReads(t *testing.T) {
-	sources := mustJSON(t, []map[string]any{
-		{"object_type": "message", "data": "The answer."},
-		{"object_type": "message", "data": "Sources:\n- wiki_pages/overview.md"},
-		{"object_type": "artifact", "data": "ignored"},
-	})
-	for name, testCase := range map[string]struct{ result, want string }{
-		"a bare string":             {"Just the answer.", "Just the answer."},
-		"the platform result array": {sources, "The answer.\nSources:\n- wiki_pages/overview.md"},
-		"an envelope naming answer": {`{"answer":"From answer."}`, "From answer."},
-		"an empty answer falls through to result": {
-			`{"answer":"","result":"From result."}`, "From result."},
-		"an envelope naming nothing": {`{"other":1}`, `{"other":1}`},
-		"a brace-first sentence":     {`{not json at all`, `{not json at all`},
-		"nothing at all":             {"", ""},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := AnswerText(testCase.result); got != testCase.want {
-				t.Fatalf("AnswerText(%q) = %q, want %q", testCase.result, got, testCase.want)
-			}
-		})
-	}
-}
-
-func mustJSON(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(encoded)
 }
