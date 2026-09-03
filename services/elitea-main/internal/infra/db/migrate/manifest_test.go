@@ -346,7 +346,15 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// administration-mode super_admin and admin — a NEW string, not a reuse of
 	// `.register`, because every facade registrar files a registration at boot
 	// while activation is the switch that lets agents call the provider.
-	require.EqualValues(t, 109, Head(shared))
+	//
+	// 110: shared/0110_branding_permission.sql, the one administration-mode
+	// grant behind the admin Branding surface (ADR-0024 decision 5):
+	// `configuration.branding` to super_admin and admin, the holder set of
+	// every other central configuration grant. Chosen rather than recovered:
+	// white-labeling is net-new, so the legacy catalogue has no string for
+	// it. A new file for 0082's reason — 0060 returns early on any configured
+	// deployment, and migrations are checksum-immutable.
+	require.EqualValues(t, 110, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

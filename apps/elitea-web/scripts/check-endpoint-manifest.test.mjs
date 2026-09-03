@@ -335,8 +335,14 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * plain `fetch` calls and no generated client — it is interim by declaration
  * (decision 8), and the native elitea-web feature that replaces it is the
  * change that will add manifest entries.
+ *
+ * 167 -> 169, MANIFEST_ENTRY_COUNT unchanged, when the brand pack's database
+ * layer landed (ADR-0024 WP1): getBrandingSettings and saveBrandingSettings,
+ * the typed admin editor behind the Branding page. Described in v2.yaml so
+ * orval generates the hooks WP4's page calls; nothing in the app calls them
+ * yet, so the manifest is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 167;
+const GENERATED_OPERATION_COUNT = 169;
 /*
  * 189 -> 191. The canvas mermaid quick-fix added two entries: the blocking
  * `predict_llm` sender (`chatMessages.generateContentBlocking`) and the

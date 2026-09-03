@@ -629,6 +629,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("notification API route enabled (OIDC-only auth)")
 	}
 
+	brandPack, err := brandPackConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load brand pack settings: %w", err)
+	}
+
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load current project-info settings: %w", err)
@@ -1696,6 +1701,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	r := api.NewRouter(api.RouterConfig{
 		AdminUI:                    adminUICfg,
 		Pool:                       pool,
+		BrandPackPath:              brandPack.Path,
 		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
 		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
 		ToolkitSettingsValidator:   toolkitSettingsValidator,

@@ -45,6 +45,7 @@ import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
 import type {
+  BrandingSettings,
   GlobalUserInviteResult,
   MessageResponse,
   ModeRoleAssignResult,
@@ -152,6 +153,198 @@ export const getInviteUserGloballyResponseMock = (
   created: faker.datatype.boolean(),
   invitation_delivered: faker.datatype.boolean(),
   invitation_delivery: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetBrandingSettingsResponseMock = (
+  overrideResponse: Partial<Extract<BrandingSettings, object>> = {},
+): BrandingSettings => ({
+  values: {},
+  layers: {
+    file: faker.datatype.boolean(),
+    database: faker.datatype.boolean(),
+  },
+  effective: faker.helpers.arrayElement([
+    {
+      $schema: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      version: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      product: {
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        shortName: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        tagline: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        docsUrl: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        supportUrl: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      },
+      assets: {
+        logoFull: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        logoMark: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        favicon: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        loginArt: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      },
+      typography: {
+        fontFamily: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        fontFamilyMono: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        baseSize: faker.number.float({ fractionDigits: 2 }),
+        scale: faker.number.float({ fractionDigits: 2 }),
+      },
+      shape: {
+        radiusSm: faker.number.float({ fractionDigits: 2 }),
+        radiusMd: faker.number.float({ fractionDigits: 2 }),
+        radiusLg: faker.number.float({ fractionDigits: 2 }),
+        radiusPill: faker.number.float({ fractionDigits: 2 }),
+        density: faker.helpers.arrayElement([
+          "comfortable",
+          "compact",
+        ] as const),
+      },
+      locale: {
+        default: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        dateLocale: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      },
+      brand: {
+        hue: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        onBrand: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      },
+      schemes: {
+        light: {
+          [faker.string.alphanumeric(5)]: faker.string.alpha({
+            length: { min: 10, max: 20 },
+          }),
+        },
+        dark: {
+          [faker.string.alphanumeric(5)]: faker.string.alpha({
+            length: { min: 10, max: 20 },
+          }),
+        },
+        hc: faker.helpers.arrayElement([
+          {
+            [faker.string.alphanumeric(5)]: faker.string.alpha({
+              length: { min: 10, max: 20 },
+            }),
+          },
+          undefined,
+        ]),
+      },
+    },
+    null,
+  ]),
+  etag: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  saved: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  ...overrideResponse,
+});
+
+export const getSaveBrandingSettingsResponseMock = (
+  overrideResponse: Partial<Extract<BrandingSettings, object>> = {},
+): BrandingSettings => ({
+  values: {},
+  layers: {
+    file: faker.datatype.boolean(),
+    database: faker.datatype.boolean(),
+  },
+  effective: faker.helpers.arrayElement([
+    {
+      $schema: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      version: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      product: {
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        shortName: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        tagline: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        docsUrl: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        supportUrl: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      },
+      assets: {
+        logoFull: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        logoMark: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        favicon: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        loginArt: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      },
+      typography: {
+        fontFamily: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        fontFamilyMono: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        baseSize: faker.number.float({ fractionDigits: 2 }),
+        scale: faker.number.float({ fractionDigits: 2 }),
+      },
+      shape: {
+        radiusSm: faker.number.float({ fractionDigits: 2 }),
+        radiusMd: faker.number.float({ fractionDigits: 2 }),
+        radiusLg: faker.number.float({ fractionDigits: 2 }),
+        radiusPill: faker.number.float({ fractionDigits: 2 }),
+        density: faker.helpers.arrayElement([
+          "comfortable",
+          "compact",
+        ] as const),
+      },
+      locale: {
+        default: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        dateLocale: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      },
+      brand: {
+        hue: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        onBrand: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      },
+      schemes: {
+        light: {
+          [faker.string.alphanumeric(5)]: faker.string.alpha({
+            length: { min: 10, max: 20 },
+          }),
+        },
+        dark: {
+          [faker.string.alphanumeric(5)]: faker.string.alpha({
+            length: { min: 10, max: 20 },
+          }),
+        },
+        hc: faker.helpers.arrayElement([
+          {
+            [faker.string.alphanumeric(5)]: faker.string.alpha({
+              length: { min: 10, max: 20 },
+            }),
+          },
+          undefined,
+        ]),
+      },
+    },
+    null,
+  ]),
+  etag: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  saved: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
   ...overrideResponse,
 });
 
@@ -550,6 +743,58 @@ export const getInviteUserGloballyMockHandler = (
   );
 };
 
+export const getGetBrandingSettingsMockHandler = (
+  overrideResponse?:
+    | BrandingSettings
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<BrandingSettings> | BrandingSettings),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/admin/branding/administration",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetBrandingSettingsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getSaveBrandingSettingsMockHandler = (
+  overrideResponse?:
+    | BrandingSettings
+    | ((
+        info: Parameters<Parameters<typeof http.put>[1]>[0],
+      ) => Promise<BrandingSettings> | BrandingSettings),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    "*/admin/branding/administration",
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSaveBrandingSettingsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetUserProjectPermissionsMockHandler = (
   overrideResponse?:
     | UserProjectRoleMap
@@ -741,6 +986,8 @@ export const getAdminMock = () => [
   getAssignUserModeRoleMockHandler(),
   getRemoveUserModeRoleMockHandler(),
   getInviteUserGloballyMockHandler(),
+  getGetBrandingSettingsMockHandler(),
+  getSaveBrandingSettingsMockHandler(),
   getGetUserProjectPermissionsMockHandler(),
   getUpdateUserProjectPermissionsMockHandler(),
   getRoleListMockHandler(),

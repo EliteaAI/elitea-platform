@@ -118,6 +118,9 @@ type RouterConfig struct {
 	SAMLHandler        *v2auth.SAMLHandler
 	HealthDeps         health.Deps
 	Pool               *pgxpool.Pool
+	// BrandPackPath is the brand pack's file layer (BRAND_PACK_PATH, read in
+	// cmd/elitea-main/brand_pack_config.go). Empty means no file layer.
+	BrandPackPath string
 	// AuditRecorder overrides the Pool-backed `centry.audit_events` writer
 	// mounted on the /api/v2 group. Tests inject one to assert WHICH events a
 	// request produces without a live database; production leaves it unset and
@@ -874,7 +877,16 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	r.Get(v2social.CurrentAvatarDownloadPath, v2social.DownloadAvatar(cfg.ObjectStore))
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
-	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
+	//
+	// The pack is resolved from three layers (ADR-0024): the product default
+	// under the BRAND_PACK_PATH file under the admin-authored `branding`
+	// section, read through cfg.Pool and cached briefly. The admin routes
+	// below invalidate the same resolver on a save.
+	brandingResolver := v2branding.NewResolver(v2branding.ResolverConfig{
+		PackPath: cfg.BrandPackPath,
+		Pool:     cfg.Pool,
+	})
+	brandingHandler := v2branding.NewHandler(v2branding.Config{Resolver: brandingResolver})
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 
@@ -1168,6 +1180,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				admin.WithToolkitRegistry(cfg.ToolkitRegistry),
 				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 				admin.WithIdentityProviders(identityProviderStore, prebuiltMCPVault),
+				admin.WithBranding(brandingResolver),
 				// The same store the SCIM tree writes through. One store, so
 				// the screen and a group push can never disagree about which
 				// project a binding names.
@@ -1425,6 +1438,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Put("/identity_providers/administration/{key}", adminHandler.IdentityProviderSave)
 				r.With(requireRuntimePlugins).
 					Delete("/identity_providers/administration/{key}", adminHandler.IdentityProviderDelete)
+				// The brand pack's database layer (ADR-0024 decision 5). Its own
+				// permission, granted by shared migration 0109: a rebrand
+				// changes what every user sees, and `runtime.plugins` is
+				// already the widest configuration grant on this page.
+				requireBranding := central("configuration.branding")
+				r.With(requireBranding).Get("/branding/administration", adminHandler.BrandingRead)
+				r.With(requireBranding).Put("/branding/administration", adminHandler.BrandingSave)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the

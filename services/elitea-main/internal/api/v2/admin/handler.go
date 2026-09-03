@@ -16,6 +16,9 @@ type Handler struct {
 	pool        *pgxpool.Pool
 	resolver    auth.PermissionResolver
 	suggestions ToolkitRegistrySource
+	// The brand-pack resolver the Branding surface reads and invalidates
+	// (branding.go). Nil unless WithBranding is applied.
+	branding BrandingResolver
 	// The pre-built MCP server catalogue and the vault its client secrets are
 	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
 	// is applied, and the catalogue routes answer 503 while either is.

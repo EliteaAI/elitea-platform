@@ -166,6 +166,10 @@ services:
       REDIS_URL: "redis:6379"
       SHADOW_ENABLED: "false"
       LEGACY_URL: ""
+      # The brand pack's FILE layer (ADR-0024); empty means the journeys brand
+      # from the database layer over the product default, as a fresh install
+      # does. See docker-compose.standalone-full.yml for the mount recipe.
+      BRAND_PACK_PATH: "${BRAND_PACK_PATH:-}"
       ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
       APPLICATION_SECRET_KEY: "changeme-e2e"
       SKIP_MIGRATIONS: "1"

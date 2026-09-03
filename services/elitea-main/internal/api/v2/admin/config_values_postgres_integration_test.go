@@ -715,8 +715,14 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	                    `observability` section rather than newly written —
 	//	                    see config_schemas.go's "Observability, Runtime and
 	//	                    Admin Panel are GONE too" note.
+	//	branding          → platformconfig.LoadBranding, read by
+	//	                    internal/api/v2/branding's Resolver on every
+	//	                    bootstrap.js request (cached 15 s), merged over the
+	//	                    file layer and served as window.elitea_brand to the
+	//	                    web app, the admin console and the login page
+	//	                    (ADR-0024 WP1)
 	want := map[string]bool{
-		"resources": true, "mcp_configuration": true,
+		"resources": true, "mcp_configuration": true, "branding": true,
 		"agent_publishing": true, "skill_publishing": true,
 		"voice_features": true, "support_assistant": true,
 		"guardrails": true, "dedicated_banner": true,

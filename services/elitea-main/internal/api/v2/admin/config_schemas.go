@@ -249,6 +249,7 @@ func configSections() []map[string]any {
 		authSection(),
 		resourcesSection(),
 		dedicatedBannerSection(),
+		brandingSection(),
 		supportAssistantSection(),
 		voiceFeaturesSection(),
 		serviceDescriptorsSection(),
@@ -1199,6 +1200,69 @@ func dedicatedBannerSection() map[string]any {
 				"section": "dedicated_banner",
 				"default": "",
 			},
+		},
+	}
+}
+
+// brandingSection is the DATABASE layer of the brand pack (ADR-0024).
+//
+// LIVE: every field is read by `internal/platformconfig.LoadBranding` through
+// `internal/api/v2/branding`'s resolver on the next bootstrap.js request. The
+// typed Branding routes (`/admin/branding/administration`, branding.go) edit
+// the same rows with the same rules and add the layer/effective-pack view the
+// dedicated admin page needs; this section is the same editor without the
+// preview, so an operator can rebrand from the Configuration page today.
+//
+// Every field is OPTIONAL and an empty value means "inherit from the layer
+// below" — the mounted BRAND_PACK_PATH file, or the product default. The
+// defaults here are therefore the empty string and 0, not the product's
+// values: a form that showed "Elitea" as the default would store "Elitea" on
+// the first save and pin the name over any file the operator mounts later.
+func brandingSection() map[string]any {
+	text := func(key, title, description string) map[string]any {
+		return map[string]any{
+			"key": key, "type": "string", "title": title,
+			"description": description + " Leave empty to inherit.",
+			"section":     "branding", "default": "",
+		}
+	}
+	number := func(key, title, description string) map[string]any {
+		return map[string]any{
+			"key": key, "type": "number", "title": title,
+			"description": description + " 0 inherits.",
+			"section":     "branding", "default": float64(0),
+		}
+	}
+	return map[string]any{
+		"id":    "branding",
+		"title": "Branding",
+		"description": "Restyle the platform in your organisation's name, colours and typography. " +
+			"Changes reach every user on their next page load; no rebuild or restart.",
+		"order":               88,
+		"icon":                "palette",
+		"always_visible":      true,
+		"required_permission": "configuration.branding",
+		"fields": []map[string]any{
+			text("product_name", "Product name", "Shown in the document title, the login page and e-mail."),
+			text("product_short_name", "Short name", "Used where the full name does not fit."),
+			text("product_tagline", "Tagline", "A short line under the name on the login page."),
+			text("docs_url", "Documentation URL", "Absolute http(s) URL the help links open."),
+			text("support_url", "Support URL", "Absolute http(s) URL the support links open."),
+			text("brand_hue", "Brand colour", "Six-digit hex colour, e.g. #1A73E8. Every accent and surface tint is derived from it."),
+			text("brand_on_brand", "Text on brand colour", "Six-digit hex colour for text placed on the brand colour."),
+			text("font_family", "Font family", "CSS font-family list for text, e.g. \"Inter\", Arial, sans-serif. Self-hosted faces arrive with asset upload."),
+			text("font_family_mono", "Monospace font family", "CSS font-family list for code."),
+			number("base_size", "Base font size", "Pixels, 12 to 18."),
+			number("scale", "Type scale", "Ratio between heading steps, 1.05 to 1.5."),
+			number("radius_sm", "Small radius", "Pixels."),
+			number("radius_md", "Medium radius", "Pixels."),
+			number("radius_lg", "Large radius", "Pixels."),
+			number("radius_pill", "Pill radius", "Pixels; 9999 for a full pill."),
+			text("density", "Density", "comfortable or compact."),
+			text("logo_full", "Logo", "Path on this origin, e.g. /branding/assets/logo-full/<digest>.svg."),
+			text("logo_mark", "Logo mark", "Path on this origin for the compact mark."),
+			text("favicon", "Favicon", "Path on this origin."),
+			text("login_art", "Login artwork", "Path on this origin for the login page image."),
 		},
 	}
 }

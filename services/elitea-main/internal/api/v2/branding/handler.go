@@ -1,10 +1,8 @@
 package branding
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,48 +21,37 @@ const (
 
 // Config carries the handler's wiring inputs.
 type Config struct {
-	// PackPath is the deployment-level brand pack file (BRAND_PACK_PATH env
-	// var; Q5 v1 = deployment-level pack only). Empty means "not configured":
-	// the built-in default pack is served.
+	// PackPath is the file layer (BRAND_PACK_PATH env var). Empty means no
+	// file layer. Ignored when Resolver is set.
 	PackPath string
+	// Resolver supplies the pack. Nil builds a file-only Resolver from
+	// PackPath — the shape every pre-ADR-0024 caller and test used.
+	Resolver *Resolver
 }
 
 // Handler serves GET /api/v2/branding/bootstrap.js.
 //
-// The pack is resolved once at construction: a deployment-level pack can
-// only change with a redeploy/restart (Q5 v1), so loading at startup gives a
-// stable body, a stable strong ETag, and zero per-request filesystem I/O.
+// The pack is no longer fixed at construction: the Resolver merges the file
+// layer with the admin-authored database layer (ADR-0024), so the body and
+// its strong ETag are taken from the current Snapshot per request. The
+// Resolver caches, so this costs one indexed query per TTL, not per request.
 type Handler struct {
-	body      []byte
-	etag      string // strong quoted form sent in the ETag header: "<hex>"
-	etagValue string // unquoted hex — the ?v= token
+	resolver *Resolver
 }
 
-// NewHandler resolves the pack per Config and precomputes the bootstrap
-// body. It never fails: every degradation path lands on the built-in
-// default pack and is logged.
+// NewHandler wires the handler. It never fails: every degradation path is
+// the Resolver's, and lands on a lower layer with the reason logged.
 func NewHandler(cfg Config) *Handler {
-	var pack *Pack
-	if cfg.PackPath == "" {
-		slog.Info("branding: BRAND_PACK_PATH not set; publishing no pack so the UI renders its compiled-in default")
-	} else if loaded, err := LoadPack(cfg.PackPath); err != nil {
-		slog.Warn("branding: degrading to the UI's compiled-in default brand pack",
-			"path", cfg.PackPath, "reason", err.Error())
-	} else {
-		pack = loaded
-		slog.Info("branding: serving deployment brand pack",
-			"path", cfg.PackPath, "pack_id", pack.ID, "pack_version", pack.Version)
+	resolver := cfg.Resolver
+	if resolver == nil {
+		resolver = NewResolver(ResolverConfig{PackPath: cfg.PackPath})
 	}
-
-	body := renderBootstrapJS(pack)
-	sum := sha256.Sum256(body)
-	etagValue := hex.EncodeToString(sum[:])
-	return &Handler{
-		body:      body,
-		etag:      `"` + etagValue + `"`,
-		etagValue: etagValue,
-	}
+	return &Handler{resolver: resolver}
 }
+
+// Resolver exposes the handler's resolver so the admin save path can
+// invalidate it.
+func (h *Handler) Resolver() *Resolver { return h.resolver }
 
 // noPackBody is what the endpoint serves when this deployment has no brand
 // pack of its own. It deliberately leaves `window.elitea_brand` UNSET.
@@ -107,7 +94,7 @@ func renderBootstrapJS(p *Pack) []byte {
 
 // ETag returns the strong quoted entity tag of the current body (test hook
 // and the value index.html templating would embed as ?v=, unquoted).
-func (h *Handler) ETag() string { return h.etag }
+func (h *Handler) ETag() string { return h.resolver.Current(context.Background()).ETag }
 
 // Bootstrap handles GET /api/v2/branding/bootstrap.js per spec §4.3 C.
 //
@@ -126,10 +113,11 @@ func (h *Handler) ETag() string { return h.etag }
 // and lands the client on the correct immutable URL in one hop. The redirect
 // itself is marked no-cache so a recovered version token is never masked.
 func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
+	snap := h.resolver.Current(r.Context())
 	v := r.URL.Query().Get("v")
-	if v != "" && v != h.etagValue {
+	if v != "" && v != snap.ETagValue {
 		w.Header().Set("Cache-Control", cacheRevalidate)
-		http.Redirect(w, r, r.URL.Path+"?v="+h.etagValue, http.StatusFound)
+		http.Redirect(w, r, r.URL.Path+"?v="+snap.ETagValue, http.StatusFound)
 		return
 	}
 
@@ -137,17 +125,17 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	if v != "" { // v == h.etagValue: content-addressed URL
 		cacheControl = cacheImmutable
 	}
-	w.Header().Set("ETag", h.etag)
+	w.Header().Set("ETag", snap.ETag)
 	w.Header().Set("Cache-Control", cacheControl)
 
-	if etagMatches(r.Header.Get("If-None-Match"), h.etag) {
+	if etagMatches(r.Header.Get("If-None-Match"), snap.ETag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Length", strconv.Itoa(len(h.body)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(snap.Body)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		// HEAD carries the exact GET headers (including Content-Length of
@@ -155,7 +143,7 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 		// monitoring probes expect this instead of a 401/405.
 		return
 	}
-	_, _ = w.Write(h.body)
+	_, _ = w.Write(snap.Body)
 }
 
 // etagMatches implements If-None-Match evaluation (RFC 9110 §13.1.2) against

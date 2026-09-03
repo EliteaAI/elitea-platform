@@ -5612,6 +5612,140 @@ components:
           type: integer
           description: Assignments deleted. Never 0 — an id that matched none is a 404.
 
+    BrandingSettingsSave:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: object
+          description: >-
+            Keys of the `branding` section (product_name, brand_hue,
+            font_family, logo_full, ...). An empty string or 0 inherits from
+            the layer below.
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the key set is the `branding` section's declared
+            fields (internal/api/v2/admin/config_schemas.go:1221), the same
+            `{"values": {...}}` body the generic Configuration page sends;
+            the handler refuses any key the section does not declare and
+            re-reads rather than echoes (internal/api/v2/admin/branding.go:97).
+            Listing the twenty keys here would pin the admin form's schema
+            in two places.
+    BrandingSettings:
+      type: object
+      required: [values, layers, effective]
+      properties:
+        values:
+          type: object
+          description: Declared keys with stored values overlaid on defaults.
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): mergeSectionValues overlays the stored rows onto the
+            section's declared keys and defaults
+            (internal/api/v2/admin/config_values.go:361); the key set is the
+            section schema's (internal/api/v2/admin/config_schemas.go:1221),
+            not this document's.
+        layers:
+          type: object
+          required: [file, database]
+          properties:
+            file:
+              type: boolean
+              description: BRAND_PACK_PATH names a pack that parsed.
+            database:
+              type: boolean
+              description: The branding section holds at least one value.
+        effective:
+          description: >-
+            The merged brand pack the bootstrap route serves
+            (https://elitea.ai/schemas/brand-pack/1.json), or null when no
+            pack is served and the UI renders its compiled default.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/BrandPack'
+        etag:
+          type: string
+          description: Unquoted content hash of the served bootstrap body.
+        saved:
+          type: boolean
+    BrandPack:
+      type: object
+      description: >-
+        A brand pack conforming to https://elitea.ai/schemas/brand-pack/1.json.
+        NOTE(W2): mirrors internal/api/v2/branding/pack.go:123 field for
+        field (the Go mirror of apps/elitea-web/src/shared/brand/schema.ts).
+      required: [$schema, id, version, product, assets, typography, shape, locale, brand, schemes]
+      properties:
+        $schema: { type: string }
+        id: { type: string }
+        version: { type: string }
+        product:
+          type: object
+          required: [name, shortName]
+          properties:
+            name: { type: string }
+            shortName: { type: string }
+            tagline: { type: string }
+            docsUrl: { type: string }
+            supportUrl: { type: string }
+        assets:
+          type: object
+          required: [logoFull, logoMark, favicon]
+          properties:
+            logoFull: { type: string }
+            logoMark: { type: string }
+            favicon: { type: string }
+            loginArt: { type: string }
+        typography:
+          type: object
+          required: [fontFamily, fontFamilyMono, baseSize, scale]
+          properties:
+            fontFamily: { type: string }
+            fontFamilyMono: { type: string }
+            baseSize: { type: number }
+            scale: { type: number }
+        shape:
+          type: object
+          required: [radiusSm, radiusMd, radiusLg, radiusPill, density]
+          properties:
+            radiusSm: { type: number }
+            radiusMd: { type: number }
+            radiusLg: { type: number }
+            radiusPill: { type: number }
+            density: { type: string, enum: [comfortable, compact] }
+        locale:
+          type: object
+          required: [default, dateLocale]
+          properties:
+            default: { type: string }
+            dateLocale: { type: string }
+        brand:
+          type: object
+          required: [hue]
+          properties:
+            hue: { type: string }
+            onBrand: { type: string }
+        schemes:
+          type: object
+          required: [light, dark]
+          properties:
+            light:
+              type: object
+              additionalProperties: { type: string }
+              x-elitea-passthrough: >-
+                NOTE(W2): a token-id → colour record whose id vocabulary
+                belongs to the web app's default pack, decoded as
+                map[string]string at internal/api/v2/branding/pack.go:116.
+            dark:
+              type: object
+              additionalProperties: { type: string }
+              x-elitea-passthrough: >-
+                NOTE(W2): as `light` — internal/api/v2/branding/pack.go:116.
+            hc:
+              type: object
+              additionalProperties: { type: string }
+              x-elitea-passthrough: >-
+                NOTE(W2): as `light` — internal/api/v2/branding/pack.go:116.
     GlobalUserInviteRequest:
       type: object
       required: [user_name, user_email]
@@ -6382,6 +6516,61 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GlobalUserInviteResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /admin/branding/administration:
+    # ADR-0024 decision 5: the typed editor of the brand pack's DATABASE
+    # layer. The same rows the generic Configuration page's `branding`
+    # section edits through plugin_config_values, plus the facts that page
+    # cannot show: which layers contribute, the effective merged pack and
+    # its ETag. Gated on `configuration.branding` (shared migration 0109).
+    get:
+      operationId: getBrandingSettings
+      summary: Read the brand pack's database layer and the effective pack
+      description: |
+        Returns the `branding` section's declared keys with stored values
+        overlaid on the schema defaults (an empty string or 0 means "inherit
+        from the layer below"), which of the two operator layers contribute to
+        the served pack, the merged pack `GET /branding/bootstrap.js` serves
+        right now (null when nothing is served), and its unquoted ETag.
+      tags: [admin]
+      responses:
+        '200':
+          description: The branding state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingSettings'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+    put:
+      operationId: saveBrandingSettings
+      summary: Write the brand pack's database layer
+      description: |
+        Stores the supplied keys in one transaction (unknown keys are refused
+        with 400, as are a hue that is not six hex digits, a link that is not
+        an absolute http(s) URL and an asset that is not a path on this
+        origin), invalidates the resolver's cache so the next bootstrap
+        request on this replica serves the new brand, and answers with a
+        fresh read of the same shape as GET with `saved: true`.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrandingSettingsSave'
+      responses:
+        '200':
+          description: The branding state after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingSettings'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }

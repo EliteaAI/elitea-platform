@@ -450,8 +450,8 @@ main:
   # does not build these ConfigMaps for you — point configMapName at a
   # ConfigMap you provision out-of-band (kubectl create configmap / kustomize /
   # a GitOps overlay) and the chart wires the volume + volumeMount + env var
-  # pointing at the mounted path. See internal/api/router.go (BRAND_PACK_PATH)
-  # and cmd/elitea-main/main.go:1119 (ELITEA_AUTH_CONFIG_FILE).
+  # pointing at the mounted path. See cmd/elitea-main/brand_pack_config.go
+  # (BRAND_PACK_PATH) and cmd/elitea-main/main.go (ELITEA_AUTH_CONFIG_FILE).
   fileConfig:
     authConfig:
       enabled: false
@@ -823,12 +823,12 @@ main:
     # is never undone by the next login. Empty grants nobody.
     ELITEA_INITIAL_GLOBAL_ADMINS: ""
 
-    # Filesystem path to a custom brand pack directory (internal/api/router.go);
-    # empty serves the built-in default brand pack. Discovered unwired while
-    # empirically verifying S17's env-drift gate — not itself a storage
-    # variable, but the same one-line fix as everything else in this map, and
-    # left unfixed it would have made the freshly-wired gate immediately red
-    # for an unrelated pre-existing reason.
+    # Filesystem path to a brand pack FILE — the middle of the three brand
+    # layers (ADR-0024): product default ← this file ← the admin Branding
+    # section in the database. Empty means no file layer; the admin section
+    # still brands the deployment at runtime. Read in
+    # cmd/elitea-main/brand_pack_config.go; mounted by fileConfig.brandPack
+    # above. Discovered unwired while verifying S17's env-drift gate.
     BRAND_PACK_PATH: ""
 
     # --- Object storage (S17; ADR-0016) -----------------------------------------
