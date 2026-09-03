@@ -100,6 +100,30 @@ export function buildInvokeRequest(target: WikiChatTarget, input: ChatInvokeInpu
 }
 
 /**
+ * The two headers that tell elitea-main which conversation a question belongs
+ * to, so it can file the turn it is about to record.
+ *
+ * HEADERS AND NOT BODY FIELDS, and the reason is on the other side of the
+ * hop: the body is an SPI envelope that travels to the provider almost
+ * verbatim, so a key put there for the platform's own bookkeeping would be
+ * forwarded to a service that has no idea what it means. The facade reads
+ * these two and DELETES them before forwarding (its `WrapInvoke`).
+ *
+ * The toolkit is sent because the body cannot supply it: `Wikis` names a code
+ * toolkit, `wikis_query` names a Wikis toolkit and `wiki_query` names nothing
+ * at all, so there is no one field that means "the wiki I am looking at".
+ */
+function wikiChatHeaders(
+  target: WikiChatTarget,
+  conversationKey: string,
+): Record<string, string> {
+  return {
+    'X-Elitea-Wiki-Chat': conversationKey,
+    'X-Elitea-Wiki-Toolkit': String(target.toolkitId),
+  };
+}
+
+/**
  * Start one invocation and return its id.
  *
  * `unwrapBody` because `eliteaFetch` resolves the transport ENVELOPE, not the
@@ -110,12 +134,14 @@ export function buildInvokeRequest(target: WikiChatTarget, input: ChatInvokeInpu
 export async function startWikiChat(
   target: WikiChatTarget,
   input: ChatInvokeInput,
+  conversationKey?: string,
 ): Promise<string> {
   const response = await invokeDeepWikiTool(
     target.projectId,
     target.toolkitName,
     input.toolName,
     buildInvokeRequest(target, input),
+    conversationKey ? { headers: wikiChatHeaders(target, conversationKey) } : undefined,
   );
   return invocationIdFrom(
     unwrapBody(response),

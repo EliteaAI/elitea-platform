@@ -10,27 +10,27 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isThinkingBlock, type ChatCapability, type ChatMessage } from './types';
+import { isThinkingBlock, type ChatCapability } from './types';
 import { useWikiChat, type ChatInvokeInput, type WikiChatOptions } from './useWikiChat';
 import type { ChatInvocationPoll } from '../lib/framesFromChatPoll';
 
-function memoryStorage(seed: readonly ChatMessage[] = [], capability: ChatCapability | null = null) {
-  let messages = seed;
+/**
+ * The capability toggle's last position, and nothing else.
+ *
+ * The transcript used to be here too. It is the SERVER's now — elitea-main
+ * writes both turns of a wiki chat as they happen — so a conversation the
+ * hook opens with arrives as `initialMessages` and one it is handed later
+ * arrives through `hydrate`.
+ */
+function memoryStorage(capability: ChatCapability | null = null) {
   let saved = capability;
   return {
-    loadMessages: () => messages,
-    saveMessages: (next: readonly ChatMessage[]) => {
-      messages = next;
-    },
     loadCapability: () => saved,
     saveCapability: (next: ChatCapability) => {
       saved = next;
     },
     get savedCapability() {
       return saved;
-    },
-    get savedMessages() {
-      return messages;
     },
   };
 }
@@ -106,11 +106,12 @@ describe('sending', () => {
   });
 
   it('does NOT send the question as its own prior context', async () => {
-    const storage = memoryStorage([
-      { role: 'user', content: 'earlier' },
-      { role: 'assistant', content: 'earlier answer' },
-    ]);
-    const { options, invocations } = harness({ storage });
+    const { options, invocations } = harness({
+      initialMessages: [
+        { role: 'user', content: 'earlier' },
+        { role: 'assistant', content: 'earlier answer' },
+      ],
+    });
     const { result } = renderHook(() => useWikiChat(options));
 
     act(() => {
@@ -240,11 +241,12 @@ describe('polling', () => {
 
 describe('regenerate', () => {
   it('re-asks the last question with the bad answer removed', async () => {
-    const storage = memoryStorage([
-      { role: 'user', content: 'why?' },
-      { role: 'assistant', content: 'a bad answer' },
-    ]);
-    const { options, invocations } = harness({ storage });
+    const { options, invocations } = harness({
+      initialMessages: [
+        { role: 'user', content: 'why?' },
+        { role: 'assistant', content: 'a bad answer' },
+      ],
+    });
     const { result } = renderHook(() => useWikiChat(options));
 
     act(() => {
@@ -269,30 +271,60 @@ describe('regenerate', () => {
 });
 
 describe('the conversation that outlives the mount', () => {
-  it('starts from what storage holds', () => {
-    const storage = memoryStorage([{ role: 'user', content: 'from last time' }], 'research');
-    const { options } = harness({ storage });
+  it('opens with the transcript it was given and the stored mode', () => {
+    const { options } = harness({
+      storage: memoryStorage('research'),
+      initialMessages: [{ role: 'user', content: 'from last time' }],
+    });
     const { result } = renderHook(() => useWikiChat(options));
 
     expect(result.current.state.messages).toHaveLength(1);
     expect(result.current.state.mode).toBe('research');
   });
 
-  it('writes every change back, including the ones the stream makes', async () => {
-    const storage = memoryStorage();
-    const { options, polls } = harness({ storage });
-    polls.push({ status: 'Completed', result: 'answered' });
+  // The drawer hands over the server's copy of the conversation once it has
+  // loaded. Without this the hook could only ever show what it was born with.
+  it('hydrate replaces the transcript with a loaded one', () => {
+    const { options } = harness({ initialMessages: [{ role: 'user', content: 'local' }] });
     const { result } = renderHook(() => useWikiChat(options));
 
     act(() => {
-      result.current.send('q');
+      result.current.hydrate([
+        { role: 'user', content: 'stored question' },
+        { role: 'assistant', content: 'stored answer' },
+      ]);
     });
-    await waitFor(() => expect(storage.savedMessages.at(-1)).toMatchObject({ content: 'answered' }));
+    expect(result.current.state.messages).toEqual([
+      { role: 'user', content: 'stored question' },
+      { role: 'assistant', content: 'stored answer' },
+    ]);
+  });
+
+  // THE ONE CASE HYDRATION MUST REFUSE. The server writes the answer when the
+  // terminal poll is drained, so its copy is behind the screen's for as long
+  // as a turn is in flight — hydrating then would delete a live answer.
+  it('hydrate is refused while a turn is running', async () => {
+    const { options, invocations } = harness();
+    const { result } = renderHook(() => useWikiChat(options));
+
+    act(() => {
+      result.current.send('a question');
+    });
+    await waitFor(() => expect(invocations).toHaveLength(1));
+    expect(result.current.state.isLoading).toBe(true);
+
+    act(() => {
+      result.current.hydrate([{ role: 'user', content: 'the server’s older copy' }]);
+    });
+    expect(result.current.state.messages.some((m) => !isThinkingBlock(m) && m.content === 'a question')).toBe(true);
+    expect(result.current.state.messages.some((m) => !isThinkingBlock(m) && m.content === 'the server’s older copy')).toBe(false);
   });
 
   it('clear empties the conversation but keeps the mode', () => {
-    const storage = memoryStorage([{ role: 'user', content: 'old' }], 'research');
-    const { options } = harness({ storage });
+    const { options } = harness({
+      storage: memoryStorage('research'),
+      initialMessages: [{ role: 'user', content: 'old' }],
+    });
     const { result } = renderHook(() => useWikiChat(options));
 
     act(() => {
@@ -303,14 +335,13 @@ describe('the conversation that outlives the mount', () => {
   });
 
   it('restoreCapability follows the last answer, not the toggle', () => {
-    const storage = memoryStorage(
-      [
+    const { options } = harness({
+      storage: memoryStorage('research'),
+      initialMessages: [
         { role: 'user', content: 'q' },
         { role: 'assistant', content: 'a', capability: 'ask' },
       ],
-      'research',
-    );
-    const { options } = harness({ storage });
+    });
     const { result } = renderHook(() => useWikiChat(options));
 
     act(() => {

@@ -1537,7 +1537,8 @@
             "fixture": null,
             "usedBy": [
                 "features/toolkits",
-                "entities/conversation"
+                "entities/conversation",
+                "widgets/deepwiki"
             ]
         },
         {
