@@ -48,6 +48,14 @@ inputs:
     description: Extra suffix for the cache-mount key, so lanes with different mount contents (python vs rust worker) keep separate entries.
     required: false
     default: ""
+  cache-write:
+    description: >-
+      Whether this run may WRITE caches: export every layer (mode=max) and save
+      the cargo/Go/pip mounts. Defaults to "on main"; a caller that runs on the
+      main ref without being a push to main (a scheduled workflow) passes
+      "false" so intent lives with the caller, not with the ref.
+    required: false
+    default: ${{ github.ref == 'refs/heads/main' }}
 runs:
   using: composite
   steps:
@@ -74,9 +82,9 @@ runs:
       id: policy
       shell: bash
       env:
-        REF: ${{ github.ref }}
+        WRITE: ${{ inputs.cache-write }}
       run: |
-        if [ "$REF" = "refs/heads/main" ]; then
+        if [ "$WRITE" = "true" ]; then
           echo "write-mounts=true" >> "$GITHUB_OUTPUT"; echo "layer-mode=max" >> "$GITHUB_OUTPUT"
         else
           echo "write-mounts=false" >> "$GITHUB_OUTPUT"; echo "layer-mode=min" >> "$GITHUB_OUTPUT"
@@ -86,9 +94,27 @@ runs:
     # Go module + build cache, pip. Keyed on the lockfiles so a dependency bump
     # writes a new entry, with a prefix fallback so a miss still restores the
     # closest older entry and the build is incremental rather than cold.
-    # Restore-only here; the save step below runs on main alone.
-    - name: Restore BuildKit cache mounts
-      id: mounts
+    #
+    # ORDER IS LOAD-BEARING. buildkit-cache-dance injects the mounts in its
+    # main step and EXTRACTS them back to `.buildkit-mounts` only in its POST
+    # step. A save that runs as a main step therefore uploads six empty
+    # directories, the key then exists, and every later run hits it, skips
+    # extraction and never populates it (measured on the first version of this
+    # action). So a writer uses the full `actions/cache@v4` — whose save is a
+    # post step — registered BEFORE the dance: post steps run in reverse, the
+    # dance extracts first, the cache saves second. Readers restore only.
+    - name: Restore and later save BuildKit cache mounts (writers)
+      if: steps.policy.outputs.write-mounts == 'true'
+      id: mounts-rw
+      uses: actions/cache@v4
+      with:
+        path: .buildkit-mounts
+        key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
+        restore-keys: |
+          buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-
+    - name: Restore BuildKit cache mounts (readers)
+      if: steps.policy.outputs.write-mounts != 'true'
+      id: mounts-ro
       uses: actions/cache/restore@v4
       with:
         path: .buildkit-mounts
@@ -104,7 +130,7 @@ runs:
       uses: reproducible-containers/buildkit-cache-dance@v3
       with:
         builder: ${{ steps.buildx.outputs.name }}
-        skip-extraction: ${{ steps.policy.outputs.write-mounts != 'true' || steps.mounts.outputs.cache-hit == 'true' }}
+        skip-extraction: ${{ steps.policy.outputs.write-mounts != 'true' || steps.mounts-rw.outputs.cache-hit == 'true' }}
         cache-map: |
           {
             ".buildkit-mounts/cargo-registry": "/usr/local/cargo/registry",
@@ -132,7 +158,7 @@ runs:
         n_from=0
         while IFS= read -r f; do
           [ -n "$f" ] || continue
-          n_from=$(( n_from + $(grep -c 'cache-from = \["type=gha,scope=' "$f") ))
+          n_from=$(( n_from + $(grep -c 'cache-from = \["type=gha,scope=' "$f" || true) ))
           # One `target "<name>" { cache-to = [...] }` block per cache-from line,
           # named after the target block the line sits in.
           awk -v mode="$MODE" '
@@ -170,15 +196,6 @@ runs:
         provenance: false
         set: |
           *.platform=linux/amd64
-
-    # Main alone persists the mounts, and only when this key did not exist
-    # yet — a hit means the entry is already there.
-    - name: Save BuildKit cache mounts (main only)
-      if: steps.policy.outputs.write-mounts == 'true' && steps.mounts.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: .buildkit-mounts
-        key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
 
     # The guard. Reads the image tags compose would build from the SAME files
     # and requires each to exist locally. A tag that is missing here would

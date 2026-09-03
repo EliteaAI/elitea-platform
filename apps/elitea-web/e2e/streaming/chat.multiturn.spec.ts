@@ -65,7 +65,7 @@ const START_RE = /\/elitea_core\/messages\/prompt_lib\/(\d+)\/[0-9a-f-]+/;
  * an operator actually has seeded (a real vLLM/Qwen deployment), and CI leaves
  * it unset so the offline mock is what runs there.
  */
-const MODEL_NAME = process.env['E2E_CHAT_MODEL'] ?? 'E2E-MOCK-MODEL';
+const MODEL_NAME = process.env['E2E_CHAT_MODEL'] || 'E2E-MOCK-MODEL';
 
 /** `ChatBox` names the conversation after the FIRST question, truncated to 50 chars. */
 const MAX_NAME = 50;

@@ -274,15 +274,20 @@ PLAYWRIGHT_PROJECT="${PLAYWRIGHT_PROJECT:-chat-stream}"
 # seeded `vllm/<model>` row. Forwarded explicitly because the container run
 # below starts from an EMPTY environment — a variable exported on the host and
 # not listed here reaches the host path and silently not the container path.
-E2E_CHAT_MODEL="${E2E_CHAT_MODEL:-}"
-# shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
+# Forwarded ONLY when set: `-e E2E_CHAT_MODEL=""` would define it as the empty
+# string inside the container, and the specs' `??` / `=== undefined` reads
+# treat '' as "a real model is configured" — which silently dropped the echo
+# assertions on the mock lanes while CI stayed green.
+CHAT_MODEL_ENV=""
+[ -n "${E2E_CHAT_MODEL:-}" ] && CHAT_MODEL_ENV="-e E2E_CHAT_MODEL=${E2E_CHAT_MODEL}"
+# shellcheck disable=SC2086 -- REPEAT_ARGS and CHAT_MODEL_ENV are deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
     -v "$WEB_DIR":/work -w /work \
     -e CI="${CI:-}" \
     -e E2E_REUSE_STACK=1 \
     -e E2E_WORKER="$E2E_WORKER" \
-    -e E2E_CHAT_MODEL="$E2E_CHAT_MODEL" \
+    $CHAT_MODEL_ENV \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
@@ -290,6 +295,6 @@ else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
   E2E_WORKER="$E2E_WORKER" \
-  E2E_CHAT_MODEL="$E2E_CHAT_MODEL" \
+    env ${E2E_CHAT_MODEL:+E2E_CHAT_MODEL="$E2E_CHAT_MODEL"} \
     npx playwright test --project="$PLAYWRIGHT_PROJECT" --workers=1 $REPEAT_ARGS
 fi

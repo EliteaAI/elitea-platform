@@ -1894,14 +1894,16 @@ except Exception as error:
     # client gate below (the running image, not $STANDALONE_WORKER). A stack
     # that holds no embedding row at all still runs the script, which aborts
     # with its own message naming the seed step.
-    EMB_CRED_API_BASE="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-        psql -U elitea -d elitea -tAc \
+    # Through standalone_psql_read, whose `|| true` keeps a failing read from
+    # ending `check` under `set -e` with its error hidden; an empty answer
+    # takes the first arm below and RUNS the script.
+    EMB_CRED_API_BASE="$(standalone_psql_read \
         "SELECT c.data->>'api_base'
            FROM p_${LLM_PROJECT:-1}.configuration e
            JOIN p_${LLM_PROJECT:-1}.configuration c
              ON c.section = 'ai_credentials'
             AND c.elitea_title = e.data->'ai_credentials'->>'elitea_title'
-          WHERE e.section = 'embedding' AND e.elitea_title = 'standalone-embedding'" 2>/dev/null | tr -d '[:space:]')"
+          WHERE e.section = 'embedding' AND e.elitea_title = 'standalone-embedding'" | tr -d '[:space:]')"
     case "${EMB_CRED_API_BASE%/}" in
       ""|http://llm-mock:8090)
         if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
@@ -1943,8 +1945,23 @@ except Exception as error:
     # not $STANDALONE_WORKER, so a mislabelled invocation cannot dodge it.
     # SDK conformance still rides every python-worker leg.
     SDK_WORKER_IMAGE="$($ENGINE ps --filter "name=${PROJECT}" --format '{{.Names}} {{.Image}}' 2>/dev/null | sed -n 's/^[^ ]*elitea-worker[^ ]* //p' | head -1)"
+    # Same gate as the embedding path check above, on the CHAT credential:
+    # sdk-client-check.py asserts the nonce echo, llm-mock's request journal
+    # and a 1536-wide embedding — the mock's protocol. Against any other
+    # upstream (the `real-llm` profile) those assertions fail by construction
+    # while the SDK itself is fine, so the check is a named skip there.
+    SDK_CRED_API_BASE="$(standalone_psql_read \
+        "SELECT c.data->>'api_base'
+           FROM p_${LLM_PROJECT:-1}.configuration m
+           JOIN p_${LLM_PROJECT:-1}.configuration c
+             ON c.section = 'ai_credentials'
+            AND c.elitea_title = m.data->'ai_credentials'->>'elitea_title'
+          WHERE m.section = 'llm' AND m.type = 'llm_model' AND m.status_ok = true
+          ORDER BY m.id LIMIT 1" | tr -d '[:space:]')"
     if [ -n "$SDK_WORKER_IMAGE" ] && [[ "$SDK_WORKER_IMAGE" == *worker-rust* ]]; then
       skip "the elitea-sdk client check does not apply: the worker is the native runtime (${SDK_WORKER_IMAGE}), which carries no SDK"
+    elif [ -n "$SDK_CRED_API_BASE" ] && [ "${SDK_CRED_API_BASE%/}" != "http://llm-mock:8090" ]; then
+      skip "the elitea-sdk client check does not apply: its nonce, journal and wire-model assertions are written against llm-mock's protocol, and this stack's chat credential points at ${SDK_CRED_API_BASE}"
     else
     sdk_check_log="$(mktemp)"
     if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/sdk-client-check.sh" 2>&1 | tee "$sdk_check_log"; then

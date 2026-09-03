@@ -130,7 +130,7 @@ const START_RE = /\/elitea_core\/messages\/prompt_lib\/(\d+)\/[0-9a-f-]+/;
 const REGENERATE_RE = /\/elitea_core\/regenerate\/prompt_lib\/(\d+)\/([0-9a-f-]+)$/;
 
 /** The model `seed-llm` seeds; `E2E_CHAT_MODEL` names a real one an operator has instead. */
-const MODEL_NAME = process.env['E2E_CHAT_MODEL'] ?? 'E2E-MOCK-MODEL';
+const MODEL_NAME = process.env['E2E_CHAT_MODEL'] || 'E2E-MOCK-MODEL';
 
 /** `ChatBox` names the conversation after the question, truncated to 50 chars. */
 const MAX_NAME = 50;
@@ -212,7 +212,7 @@ test('regenerating rewrites the SAME answer row rather than appending a second o
   await expectStoredAssistantAnswer(page, projectId, conversationId, {
     timeout: 120_000,
     message: 'there is no answer to regenerate — the first turn never stored one',
-    ...(process.env['E2E_CHAT_MODEL'] === undefined ? { contains: token } : {}),
+    ...(process.env['E2E_CHAT_MODEL'] ? {} : { contains: token }),
   });
 
   await page.waitForURL(new RegExp(`/app/chat/${conversationId}(?:[/?#]|$)`), { timeout: 60_000 });

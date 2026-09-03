@@ -344,10 +344,16 @@ jobs:
           cache: npm
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
+        # `id` so every gate below can run when an EARLIER gate failed but
+        # the install did not: `!cancelled() && steps.install.outcome ==
+        # 'success'`. One pull request then reports every red gate at once,
+        # as the old one-job-per-gate layout did, instead of one per push.
+        id: install
         run: npm ci
 
       # ── Rule-layer self-test ────────────────────────────────────────────
       - name: Rule-layer self-test
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-gates-selftest.mjs
 
       # Issue #309. Fails when a workflow declares a trigger or a step guard
@@ -357,10 +363,12 @@ jobs:
       # It reads .github/workflows, so it covers every workflow in the
       # repository, not only this one.
       - name: Gate-dormancy check (workflow triggers + coverage exclusions)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-ci-dormancy.mjs
 
       # ── Gate-script decision-logic coverage ─────────────────────────────
       - name: Gate-script decision-logic coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         # Run a focused scripts coverage run, then read the JSON back and
         # re-check the numbers independently.
         #
@@ -424,6 +432,7 @@ jobs:
 
       # ── Complexity budgets ──────────────────────────────────────────────
       - name: Complexity budgets
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-budgets.mjs
 
       # ── Generated client matches the spec ───────────────────────────────
@@ -435,6 +444,7 @@ jobs:
       # were caught only when an unrelated regeneration broke the build. See
       # the script's own header for the full incident.
       - name: Generated client matches the spec
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-generated-client.mjs
 
       # ── Route-wiring map matches the routes ─────────────────────────────
@@ -444,6 +454,7 @@ jobs:
       # from the routes it claims to describe. The flag existed since the map
       # was introduced but was never wired into CI.
       - name: Route-wiring map matches the routes
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/build-route-wiring-map.mjs --check
 
       # ── Generated artifacts match their generators ──────────────────────
@@ -474,14 +485,15 @@ jobs:
       # now; their own unit tests are the drift guard in its place. A drift
       # check here would have nothing left to compare.
       - name: Generated artifacts — route export drift (parity/new-app-routes.json)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/export-routes.mjs --check
       - name: Generated artifacts — brand token drift (default.pack.json + palette.augment.d.ts)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         # Runs even when the step above failed, so one pull request reports
         # every stale artifact instead of one per push.
-        if: ${{ !cancelled() }}
         run: node scripts/gen-brand-tokens.mjs --check --baseline ../elitea-ui
       - name: Generated artifacts — hue preview drift (parity/brand-hue-preview.html)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/gen-hue-preview.mjs --check
 
       # ── Endpoint manifest ───────────────────────────────────────────────
@@ -489,6 +501,7 @@ jobs:
       # so the "pending" branch that let this gate pass with neither is gone.
       # A missing file is now a red step with the name of the file in it.
       - name: Endpoint manifest
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           set -euo pipefail
           for subject in scripts/check-endpoint-manifest.mjs src/shared/api/endpoints.manifest.json; do
@@ -503,6 +516,7 @@ jobs:
       # Issue #426. The script is in the tree. The "pending" branch made this
       # gate a green no-op on the day somebody renamed it.
       - name: MSW handler hygiene
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           set -euo pipefail
           test -f scripts/check-handlers.mjs || {
@@ -514,6 +528,7 @@ jobs:
       # ── i18n en.json sync ───────────────────────────────────────────────
       # Issue #426. Same shape as the gate above, same repair.
       - name: i18n en.json sync (issue #44)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           set -euo pipefail
           test -f scripts/i18n-backfill.mjs || {
@@ -525,6 +540,7 @@ jobs:
       # ── Fixture freshness ───────────────────────────────────────────────
       # Issue #426. Same shape as the two gates above, same repair.
       - name: Fixture freshness
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           set -euo pipefail
           test -f scripts/check-fixture-freshness.mjs || {
@@ -541,6 +557,7 @@ jobs:
       # verdict itself: `depcruise --output-type json` exits 0 even with
       # errors, measured on the bad depcruise fixture.
       - name: Layer + cycle gate
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-layer-cycle.mjs
 
       # ── Dead code gate ──────────────────────────────────────────────────
@@ -550,6 +567,7 @@ jobs:
       # numbers, and refuses to run knip over an empty subject set. knip still
       # owns the verdict.
       - name: Dead code gate
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-dead-code.mjs
 
       # ── Playwright image tag ────────────────────────────────────────────
@@ -557,6 +575,7 @@ jobs:
       # tags only). A drift introduced on a PR must not lie dormant until a
       # release, when it would surface as an unexplained wall of snapshot diffs.
       - name: Playwright image tag
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-playwright-image-tag.mjs
 
       # ── Wave-2 partition ────────────────────────────────────────────────
@@ -565,6 +584,7 @@ jobs:
       # read. Its subject, apps/elitea-web/parity/wave2-partition.json, sits
       # under apps/elitea-web/**, which this workflow's trigger already selects.
       - name: Wave-2 partition
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-partition.mjs
 
       # ── Visual coverage ─────────────────────────────────────────────────
@@ -588,14 +608,17 @@ jobs:
       # mutation spot-check whose every exit was `exit(0)` (#160): a check that
       # cannot influence anything.
       - name: Visual coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-visual-coverage.mjs
 
       # ── Theme gate ──────────────────────────────────────────────────────
       - name: Theme gate
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run theme-gate
 
       # ── Contract coverage ───────────────────────────────────────────────
       - name: Contract coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/check-contract-coverage.mjs
 
   build:

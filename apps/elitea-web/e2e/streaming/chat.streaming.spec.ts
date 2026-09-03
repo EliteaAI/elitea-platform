@@ -61,7 +61,7 @@ const EVENTS_RE = /\/executions\/(\d+)\/[^/]+\/events/;
  * there; locally it is what lets this journey be driven against the model the
  * operator actually has.
  */
-const MODEL_NAME = process.env['E2E_CHAT_MODEL'] ?? 'E2E-MOCK-MODEL';
+const MODEL_NAME = process.env['E2E_CHAT_MODEL'] || 'E2E-MOCK-MODEL';
 
 /** `ChatBox` names the conversation after the question, truncated to 50 chars. */
 const MAX_NAME = 50;
@@ -193,7 +193,7 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   // answer belongs to this run. A real model does not echo anything, so against
   // one the assertion has to fall back to "the turn produced text" — stated
   // here rather than silently weakened for everyone.
-  if (process.env['E2E_CHAT_MODEL'] === undefined) {
+  if (!process.env['E2E_CHAT_MODEL']) {
     await expect(answer, 'the streamed answer must echo THIS run’s prompt').toContainText(prompt, { timeout: 60_000 });
   } else {
     await expect

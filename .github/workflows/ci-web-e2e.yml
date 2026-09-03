@@ -76,6 +76,14 @@ on:
       # nothing under apps/elitea-web. Without this path the job that exists to
       # catch that drift would not start on the change that caused it.
       - "services/elitea-worker-rust/**"
+      # The real-model lane's own subjects: the gateway's SSE relay, the
+      # python worker's SDK path, and the shared build action every stack
+      # job here uses. The `model-path-changes` job names these; a prefix it
+      # names must also START this workflow, or the lane silently never runs
+      # for the change it exists to catch.
+      - "services/elitea-llm-gateway/**"
+      - "services/elitea-worker-python/**"
+      - ".github/actions/**"
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
@@ -93,6 +101,14 @@ on:
       # nothing under apps/elitea-web. Without this path the job that exists to
       # catch that drift would not start on the change that caused it.
       - "services/elitea-worker-rust/**"
+      # The real-model lane's own subjects: the gateway's SSE relay, the
+      # python worker's SDK path, and the shared build action every stack
+      # job here uses. The `model-path-changes` job names these; a prefix it
+      # names must also START this workflow, or the lane silently never runs
+      # for the change it exists to catch.
+      - "services/elitea-llm-gateway/**"
+      - "services/elitea-worker-python/**"
+      - ".github/actions/**"
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
