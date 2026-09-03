@@ -1280,12 +1280,34 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 					Timeout:        deepwikiConfig.Timeout,
 				}, v2deepwiki.BaseURLEnv))
 
+		// The application-toolkit reader, for the `wikis_query` rewrite: a
+		// query toolkit names a Wikis toolkit, and its OWN code toolkit is
+		// what gets expanded (internal/api/v2/deepwiki/wikis.go). A reader
+		// that will not build is not fatal — the facade then serves `Wikis`
+		// and `wiki_query` and refuses `wikis_query` with a message saying
+		// why, which is better than refusing to boot a DeepWiki deployment
+		// that uses neither.
+		deepwikiToolkits, toolkitsErr := dbrepos.NewCurrentToolkitsRepository(pool)
+		if toolkitsErr != nil {
+			logger.Warn("DeepWiki mounts without wikis_query expansion",
+				"error", toolkitsErr)
+			deepwikiToolkits = nil
+		}
+		// Assigned through a nil-INTERFACE, never a typed nil: the rewriter's
+		// only fallback is a nil-interface check, and a typed nil would pass
+		// it and then panic on the first wikis_query invoke.
+		var deepwikiToolkitReader v2deepwiki.ToolkitReader
+		if deepwikiToolkits != nil {
+			deepwikiToolkitReader = deepwikiToolkits
+		}
+
 		deepwikiRoute, err = v2deepwiki.NewRoute(
 			deepwikiConfig,
 			// The API group's credential set, in either authentication mode.
 			apiGroupAuth,
 			legacyrbac.NewPostgresResolver(pool),
 			deepwikiCredentials,
+			deepwikiToolkitReader,
 			v2deepwiki.NewAuthCallbackMinter(deepwikiTokens),
 			slog.Default(),
 		)

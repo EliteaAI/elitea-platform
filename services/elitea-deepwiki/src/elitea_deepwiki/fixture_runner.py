@@ -39,10 +39,39 @@ STEPS: dict[str, tuple[str, ...]] = {
     "ask": ("Searching the wiki index", "Composing the answer"),
     "deep_research": (
         "Planning the research",
+        # A STRUCTURED event, not prose — see RESEARCH_TODOS below.
+        "__RESEARCH_TODOS__",
         "Reading the relevant pages",
         "Writing the report",
     ),
 }
+
+#: The plan a fixture deep_research run publishes.
+#:
+#: The browser's research panel renders whatever the run's ``todo_update``
+#: events carry, and renders NOTHING when there are none — correct for ``ask``
+#: and indistinguishable from a panel wired up wrong. Until this list existed
+#: no journey could tell those apart (DWIKI-012b is that journey). The Go
+#: host's fixture (run/fixture.go, ResearchTodos) carries the SAME list: the
+#: E2E stack runs that one, the standalone stack runs this one, and the
+#: journey must pass on both. Shape is the browser-facing normalised one
+#: (id/title/description/status) — the pre-normalisation ``content`` key
+#: renders as "Untitled step".
+RESEARCH_TODOS: tuple[dict[str, Any], ...] = (
+    {"id": 1, "title": "Plan the research", "description": "", "status": "completed"},
+    {"id": 2, "title": "Read the relevant pages", "description": "", "status": "in_progress"},
+    {"id": 3, "title": "Write the report", "description": "", "status": "pending"},
+)
+
+
+def todo_update_event(todos: tuple[dict[str, Any], ...] = RESEARCH_TODOS) -> str:
+    """The ``{event, data}`` envelope the browser's chat reducer routes to the research panel."""
+    return json.dumps({"event": "todo_update", "data": {"items": list(todos)}})
+
+
+def steps_for(tool_name: str) -> tuple[str, ...]:
+    """STEPS with the structured placeholders resolved to their envelopes."""
+    return tuple(todo_update_event() if step == "__RESEARCH_TODOS__" else step for step in STEPS.get(tool_name, ()))
 
 BROKEN_MERMAID_PAGE = """# Request flow
 
@@ -155,10 +184,38 @@ def deep_research(*, question: str, research_type: str = "general", **_ignored: 
     }
 
 
+def resolve_wiki(*, question: str, wikis: list | None = None, **_ignored: Any) -> dict[str, Any]:
+    """The wiki resolver, without a model.
+
+    Word overlap between the question and each candidate's id and title —
+    which is what the model is asked for, and is decidable without one. The
+    Go host's own fixture table (``run/fixture.go::fixtureResolveWiki``)
+    scores identically, so a stack that runs either sidecar resolves the
+    same wiki for the same question.
+    """
+    lowered = (question or "").lower()
+    best, best_score = "", 0
+    for candidate in wikis or []:
+        if not isinstance(candidate, dict):
+            continue
+        wiki_id = str(candidate.get("wiki_id") or "")
+        text = f"{wiki_id} {candidate.get('wiki_title') or ''}".lower()
+        for separator in "-_/.":
+            text = text.replace(separator, " ")
+        score = sum(1 for word in text.split() if len(word) >= 3 and word in lowered)
+        if score > best_score:
+            best, best_score = wiki_id, score
+    if not best and len(wikis or []) == 1:
+        candidate = (wikis or [])[0]
+        best = str(candidate.get("wiki_id") or "") if isinstance(candidate, dict) else ""
+    return {"success": True, "wiki_id": best or "NONE"}
+
+
 FIXTURE_TOOLS = {
     "generate_wiki": generate_wiki,
     "ask": ask,
     "deep_research": deep_research,
+    "resolve_wiki": resolve_wiki,
 }
 
 
@@ -172,7 +229,7 @@ class FixtureToolRunner(LegacyToolRunner):
         self._step_seconds = float(getattr(settings, "fixture_step_seconds", 0.0) or 0.0)
 
     async def _paced(self, tool_name: str, context: Any) -> None:
-        for step in STEPS.get(tool_name, ()):
+        for step in steps_for(tool_name):
             # The checkpoint is what makes Stop work mid-run: a cancelled
             # invocation raises here instead of finishing and uploading.
             await context.checkpoint()

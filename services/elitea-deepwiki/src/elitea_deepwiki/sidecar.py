@@ -35,7 +35,12 @@ from .errors import InvocationCancelled, classify
 
 logger = logging.getLogger(__name__)
 
-ENGINE_TOOLS = ("generate_wiki", "ask", "deep_research")
+#: What the sidecar will run. ``resolve_wiki`` joined the three when the
+#: wiki_query family was ported (ADR-0022 parity): the family is served by
+#: the Go host over the artifact bucket, and only the step that needs a
+#: MODEL — which wiki a free-text question is about — crosses this socket.
+#: See :mod:`elitea_deepwiki.wiki_query`.
+ENGINE_TOOLS = ("generate_wiki", "ask", "deep_research", "resolve_wiki")
 
 
 class SidecarContext:

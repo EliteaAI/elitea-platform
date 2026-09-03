@@ -125,7 +125,7 @@ export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
  * project against the full standalone stack, which proves the same path
  * under production Form authentication.
  */
-const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat|admission)\.spec\.ts/;
+const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat|admission|wiki-query)\.spec\.ts/;
 
 /*
  * The admission journey (DWIKI-013) needs a stack that composes a PUBLIC
@@ -135,6 +135,16 @@ const PROVIDER_BACKED_JOURNEYS = /journeys\/deepwiki\/deepwiki\.(generation|chat
  * `deepwiki-stack` project only, against the standalone stack.
  */
 const ADMISSION_JOURNEY = /journeys\/deepwiki\/deepwiki\.admission\.spec\.ts/;
+
+/*
+ * The wiki_query journey (DWIKI-015) drives the provider through the FACADE
+ * over the API — invoke, poll, read the composed objects. It needs the facade,
+ * which only the standalone stack composes, and it DELETES a wiki it
+ * generates, so it runs in the `deepwiki-stack` project only. On the E2E stack
+ * every one of its invokes would answer 503 and the failure would read as a
+ * broken family rather than as a stack that has no facade.
+ */
+const WIKI_QUERY_JOURNEY = /journeys\/deepwiki\/deepwiki\.wiki-query\.spec\.ts/;
 
 /*
  * The real-engine journey (DWIKI-014) drives the copied analysis engine —
@@ -181,7 +191,7 @@ export default defineConfig({
     // ── chromium ──────────────────────────────────────────────────────────
     {
       name: 'chromium',
-      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY],
+      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY, WIKI_QUERY_JOURNEY],
       use: {
         ...devices['Desktop Chrome'],
         storageState: STORAGE_STATE.member,
@@ -194,7 +204,7 @@ export default defineConfig({
     // ── webkit (spec §6.2: "chromium + webkit") ───────────────────────────
     {
       name: 'webkit',
-      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY],
+      testIgnore: [ADMISSION_JOURNEY, REAL_ENGINE_JOURNEY, WIKI_QUERY_JOURNEY],
       use: {
         ...devices['Desktop Safari'],
         storageState: STORAGE_STATE.member,
