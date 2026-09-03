@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
@@ -84,16 +85,23 @@ type ToolkitSettingsDefinitionSource interface {
 	ToolkitSettingsDefinitions(toolkitType string) (map[string]any, map[string]any, bool, error)
 }
 
+// ToolkitTypeSchemaSource supplies actor-independent dynamic toolkit schemas.
+type ToolkitTypeSchemaSource interface {
+	ListToolkitTypeSchemas(context.Context) (map[string]map[string]any, error)
+}
+
 type Handler struct {
 	repo                Repository
 	pool                *pgxpool.Pool
 	argumentSchemas     ToolkitArgumentSchemaSource
 	settingsDefinitions ToolkitSettingsDefinitionSource
+	dynamicTypeSchemas  ToolkitTypeSchemaSource
 	guardrails          GuardrailPolicySource
 	// settingsValidator resolves a credential reference before it is persisted.
 	// Nil restores the pre-#613 behaviour: every save accepted unresolved. See
 	// settings_validation.go.
 	settingsValidator ToolkitSettingsValidator
+	secretSealer      ToolkitSecretSealer
 }
 
 // Option configures a Handler at construction, matching the pattern
@@ -112,6 +120,11 @@ func WithArgumentSchemas(source ToolkitArgumentSchemaSource) Option {
 // reference nothing — see ToolkitSettingsDefinitionSource.
 func WithSettingsDefinitions(source ToolkitSettingsDefinitionSource) Option {
 	return func(h *Handler) { h.settingsDefinitions = source }
+}
+
+// WithDynamicTypeSchemas adds enabled dynamic toolkit types to the UI catalogue.
+func WithDynamicTypeSchemas(source ToolkitTypeSchemaSource) Option {
+	return func(h *Handler) { h.dynamicTypeSchemas = source }
 }
 
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
@@ -432,7 +445,7 @@ func writeToolkitInternalError(w http.ResponseWriter, r *http.Request, operation
 // whole configuration-property kind off that block, so a type schema without it
 // renders no credential picker at all.
 func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
-	catalogue, err := h.toolkitTypeCatalogue()
+	catalogue, err := h.toolkitTypeCatalogue(r.Context())
 	if err != nil {
 		// A built-in snapshot that will not yield its schemas is a broken
 		// binary, not a client error, and serving the placeholder tool lists
@@ -451,7 +464,7 @@ func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
 // schemas. It rebuilds every node it replaces rather than editing
 // toolkitTypeSchemas in place: that map is package-level state shared by every
 // request.
-func (h *Handler) toolkitTypeCatalogue() (map[string]map[string]any, error) {
+func (h *Handler) toolkitTypeCatalogue(ctx context.Context) (map[string]map[string]any, error) {
 	catalogue := make(map[string]map[string]any, len(toolkitTypeSchemas))
 	for toolkitType, settingsSchema := range toolkitTypeSchemas {
 		typeSchema := settingsSchema
@@ -473,6 +486,18 @@ func (h *Handler) toolkitTypeCatalogue() (map[string]map[string]any, error) {
 		}
 
 		catalogue[toolkitType] = typeSchema
+	}
+	if h.dynamicTypeSchemas != nil {
+		dynamic, err := h.dynamicTypeSchemas.ListToolkitTypeSchemas(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("dynamic toolkit type schemas: %w", err)
+		}
+		for toolkitType, schema := range dynamic {
+			if _, collision := catalogue[toolkitType]; collision {
+				return nil, fmt.Errorf("dynamic toolkit type %q collides with a built-in type", toolkitType)
+			}
+			catalogue[toolkitType] = schema
+		}
 	}
 	return catalogue, nil
 }
@@ -900,8 +925,25 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		h.refuseUnresolvableToolkitSettings(w, r, "create_toolkit", projectID, createdType, settings) {
 		return
 	}
+	var secretMutations []configurationapp.HiddenSecretMutation
+	if settings, ok := body["settings"].(map[string]any); ok {
+		sealed, mutations, status, message := h.sealDynamicToolkitSettings(
+			r.Context(), createdType, settings)
+		if status != 0 {
+			writeJSON(w, status, map[string]any{"error": message})
+			return
+		}
+		body["settings"] = sealed
+		secretMutations = mutations
+	}
 	body["_author_id"] = userID
-	item, err := h.repo.CreateToolkit(r.Context(), projectID, body)
+	var item map[string]any
+	var err error
+	if len(secretMutations) > 0 {
+		item, err = h.createToolkitWithSecrets(r.Context(), projectID, body, secretMutations)
+	} else {
+		item, err = h.repo.CreateToolkit(r.Context(), projectID, body)
+	}
 	if err != nil {
 		writeToolkitInternalError(w, r, "create_toolkit", "failed to create the toolkit", err)
 		return
@@ -983,7 +1025,25 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	item, err := h.repo.UpdateToolkit(r.Context(), projectID, toolkitID, body)
+	var secretMutations []configurationapp.HiddenSecretMutation
+	if settings, ok := body["settings"].(map[string]any); ok {
+		sealed, mutations, status, message := h.sealDynamicToolkitSettings(
+			r.Context(), updatedType, settings)
+		if status != 0 {
+			writeJSON(w, status, map[string]any{"error": message})
+			return
+		}
+		body["settings"] = sealed
+		secretMutations = mutations
+	}
+	var item map[string]any
+	var err error
+	if len(secretMutations) > 0 {
+		item, err = h.updateToolkitWithSecrets(
+			r.Context(), projectID, toolkitID, body, secretMutations)
+	} else {
+		item, err = h.repo.UpdateToolkit(r.Context(), projectID, toolkitID, body)
+	}
 	if err != nil {
 		writeToolkitInternalError(w, r, "update_toolkit", "failed to update the toolkit", err)
 		return
@@ -1126,6 +1186,10 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 type pgRepo struct {
 	pool *pgxpool.Pool
+}
+
+type toolkitQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 // ListTypes reports the toolkit types that the tenant schema holds.
@@ -1428,9 +1492,13 @@ func createToolkitInsertSQL(schema string, includeOwnerID bool) string {
 		       created_at, author_id`, schema)
 }
 
-func (r *pgRepo) toolkitOwnerIDExists(ctx context.Context, schema string) (bool, error) {
+func (r *pgRepo) toolkitOwnerIDExists(
+	ctx context.Context,
+	queryer toolkitQueryer,
+	schema string,
+) (bool, error) {
 	var exists bool
-	err := r.pool.QueryRow(ctx, `
+	err := queryer.QueryRow(ctx, `
 SELECT EXISTS (
     SELECT 1
     FROM information_schema.columns
@@ -1445,6 +1513,24 @@ SELECT EXISTS (
 }
 
 func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
+	return r.createToolkit(ctx, r.pool, projectID, body)
+}
+
+func (r *pgRepo) CreateToolkitTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	projectID string,
+	body map[string]any,
+) (map[string]any, error) {
+	return r.createToolkit(ctx, tx, projectID, body)
+}
+
+func (r *pgRepo) createToolkit(
+	ctx context.Context,
+	queryer toolkitQueryer,
+	projectID string,
+	body map[string]any,
+) (map[string]any, error) {
 	s, err := tenantschema.Quote(projectID)
 	if err != nil {
 		return nil, err
@@ -1486,7 +1572,7 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 	if err != nil {
 		return nil, err
 	}
-	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, schemaName)
+	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, queryer, schemaName)
 	if err != nil {
 		return nil, err
 	}
@@ -1496,9 +1582,9 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 	var createdAt, authorID any
 	var row pgx.Row
 	if includeOwnerID {
-		row = r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), ownerID, authorIDStr)
+		row = queryer.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), ownerID, authorIDStr)
 	} else {
-		row = r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), authorIDStr)
+		row = queryer.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), authorIDStr)
 	}
 	err = row.Scan(
 		&id, &retType, &retName, &retDesc, &settingsRaw, &metaRaw,
@@ -1574,6 +1660,26 @@ func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (m
 }
 
 func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string, body map[string]any) (map[string]any, error) {
+	return r.updateToolkit(ctx, r.pool, projectID, toolkitID, body)
+}
+
+func (r *pgRepo) UpdateToolkitTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	projectID string,
+	toolkitID string,
+	body map[string]any,
+) (map[string]any, error) {
+	return r.updateToolkit(ctx, tx, projectID, toolkitID, body)
+}
+
+func (r *pgRepo) updateToolkit(
+	ctx context.Context,
+	queryer toolkitQueryer,
+	projectID string,
+	toolkitID string,
+	body map[string]any,
+) (map[string]any, error) {
 	s, err := tenantschema.Quote(projectID)
 	if err != nil {
 		return nil, err
@@ -1622,7 +1728,7 @@ func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string,
 	var id, typ, name, desc string
 	var settingsRaw, metaRaw []byte
 	var createdAt, authorID any
-	if err := r.pool.QueryRow(ctx, q, args...).Scan(
+	if err := queryer.QueryRow(ctx, q, args...).Scan(
 		&id, &typ, &name, &desc, &settingsRaw, &metaRaw,
 		&createdAt, &authorID); err != nil {
 		return nil, fmt.Errorf("update toolkit: %w", err)

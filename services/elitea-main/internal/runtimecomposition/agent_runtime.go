@@ -25,7 +25,7 @@ func newCurrentAgentVersionFreezer(
 		configurations.publicProjectID <= 0 {
 		return nil, errors.New("current agent configuration dependencies are required")
 	}
-	settings, names, err := newCurrentToolkitSettingsGraph(pool, configurations)
+	settings, names, prebuilt, err := newCurrentToolkitSettingsGraph(pool, configurations)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func newCurrentAgentVersionFreezer(
 		return nil, fmt.Errorf("construct current agent guardrail policy source: %w", err)
 	}
 	return agentexecutionapp.NewCurrentApplicationToolSnapshotService(
-		currentAgentToolkitSettingsResolver{inner: settings},
+		currentAgentToolkitSettingsResolver{inner: settings, prebuilt: prebuilt},
 		currentAgentToolkitNameAdapter{names: names},
 		configurations.models,
 		guardrailPolicies,
@@ -76,37 +76,37 @@ var _ agentexecutionapp.CurrentAgentToolkitNameResolver = currentAgentToolkitNam
 func newCurrentToolkitSettingsGraph(
 	pool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
-) (*configurationapp.CurrentToolkitSettingsResolver, CurrentToolkitNameDeriver, error) {
+) (*configurationapp.CurrentToolkitSettingsResolver, CurrentToolkitNameDeriver, *currentAgentPrebuiltMCP, error) {
 	builtInSchemas, err := LoadPinnedCurrentToolkitSchemaSnapshot()
 	if err != nil {
-		return nil, nil, fmt.Errorf("load current agent toolkit schema snapshot: %w", err)
+		return nil, nil, nil, fmt.Errorf("load current agent toolkit schema snapshot: %w", err)
 	}
 	prebuilt, err := newCurrentAgentPrebuiltMCP(mcpregistry.NewPrebuiltStore(pool))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	schemas, err := NewCurrentCompositeToolkitSchemaCatalog(builtInSchemas, prebuilt)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	names, err := NewCurrentBuiltInToolkitNameDeriver(builtInSchemas)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	toolkitRows, err := repos.NewCurrentToolkitsRepository(pool)
 	if err != nil {
-		return nil, nil, fmt.Errorf("construct current agent toolkit repository: %w", err)
+		return nil, nil, nil, fmt.Errorf("construct current agent toolkit repository: %w", err)
 	}
 	nestedToolkits, err := NewCurrentNestedToolkitReaderAdapter(toolkitRows, names)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	modelVisibility, err := NewCurrentModelVisibilityAdapter(
 		configurations.models,
 		configurations.publicProjectID,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	settings, err := configurationapp.NewCurrentToolkitSettingsResolver(
 		schemas,
@@ -116,9 +116,9 @@ func newCurrentToolkitSettingsGraph(
 		configurations.unsecreter,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return settings, names, nil
+	return settings, names, prebuilt, nil
 }
 
 // NewToolkitSettingsValidator composes the resolver the toolkit CREATE/UPDATE
@@ -143,6 +143,6 @@ func (runtime *CurrentConfigurationsRuntime) NewToolkitSettingsValidator(
 		runtime.models == nil || runtime.unsecreter == nil || runtime.publicProjectID <= 0 {
 		return nil, errors.New("current toolkit settings validator dependencies are required")
 	}
-	settings, _, err := newCurrentToolkitSettingsGraph(pool, runtime)
+	settings, _, _, err := newCurrentToolkitSettingsGraph(pool, runtime)
 	return settings, err
 }

@@ -51,6 +51,10 @@ func enabledPrebuiltMCPEntry() mcpregistry.PrebuiltServer {
 	}
 }
 
+func identityPrebuiltMaterializer(settings map[string]any) (map[string]any, error) {
+	return settings, nil
+}
+
 func TestCurrentAgentPrebuiltMCPExposesOnlyEnabledDynamicDefinitions(t *testing.T) {
 	store := &currentPrebuiltMCPStoreStub{entry: enabledPrebuiltMCPEntry()}
 	source, err := newCurrentAgentPrebuiltMCP(store)
@@ -141,6 +145,7 @@ func TestCurrentAgentPrebuiltMCPResolvesFixedHTTPAuthority(t *testing.T) {
 		context.Background(),
 		"mcp_config",
 		settings,
+		identityPrebuiltMaterializer,
 	)
 	if err != nil || !found {
 		t.Fatalf("found=%v error=%v", found, err)
@@ -165,6 +170,64 @@ func TestCurrentAgentPrebuiltMCPResolvesFixedHTTPAuthority(t *testing.T) {
 	}
 }
 
+func TestCurrentAgentPrebuiltMCPMaterializesDeclaredProjectParameters(t *testing.T) {
+	entry := enabledPrebuiltMCPEntry()
+	entry.ServerURL = "https://mcp.example.test/{org_name}/mcp"
+	entry.Headers = map[string]string{"Authorization": "Bearer {api_token}"}
+	entry.ConfigSchema = map[string]any{"properties": map[string]any{
+		"api_token": map[string]any{
+			"type": "string", "required": true, "secret": true,
+		},
+		"org_name": map[string]any{"type": "string", "required": true},
+	}}
+	resolver, err := newCurrentAgentPrebuiltMCP(&currentPrebuiltMCPStoreStub{entry: entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var admitted map[string]any
+	resolved, found, err := resolver.ResolveCurrentAgentPrebuiltMCP(
+		context.Background(),
+		"mcp_release_intelligence",
+		map[string]any{
+			"api_token":      "{{secret.PROJECT_TOKEN}}",
+			"org_name":       "engineering team",
+			"selected_tools": []any{"lookup_release"},
+			"url":            "https://caller.example.test/mcp",
+			"unknown":        "must-not-reach-the-vault",
+		},
+		func(settings map[string]any) (map[string]any, error) {
+			admitted = settings
+			materialized := make(map[string]any, len(settings))
+			for name, value := range settings {
+				materialized[name] = value
+			}
+			materialized["api_token"] = "project-token"
+			return materialized, nil
+		},
+	)
+	if err != nil || !found {
+		t.Fatalf("found=%v error=%v", found, err)
+	}
+	if _, ok := admitted["url"]; ok {
+		t.Fatalf("caller URL reached materialization: %#v", admitted)
+	}
+	if _, ok := admitted["unknown"]; ok {
+		t.Fatalf("unknown field reached materialization: %#v", admitted)
+	}
+	want := map[string]any{
+		"server_name":    "release_intelligence",
+		"url":            "https://mcp.example.test/engineering%20team/mcp",
+		"ssl_verify":     true,
+		"timeout":        45,
+		"headers":        map[string]any{"Authorization": "Bearer project-token"},
+		"selected_tools": []any{"lookup_release"},
+	}
+	if !reflect.DeepEqual(resolved, want) {
+		t.Fatalf("resolved=%#v want=%#v", resolved, want)
+	}
+}
+
 func TestCurrentAgentPrebuiltMCPRejectsUnknownOrDisabledResolution(t *testing.T) {
 	store := &currentPrebuiltMCPStoreStub{err: mcpregistry.ErrPrebuiltNotFound}
 	resolver, err := newCurrentAgentPrebuiltMCP(store)
@@ -172,7 +235,7 @@ func TestCurrentAgentPrebuiltMCPRejectsUnknownOrDisabledResolution(t *testing.T)
 		t.Fatal(err)
 	}
 	if _, found, err := resolver.ResolveCurrentAgentPrebuiltMCP(
-		context.Background(), "mcp_missing", map[string]any{},
+		context.Background(), "mcp_missing", map[string]any{}, identityPrebuiltMaterializer,
 	); err != nil || found {
 		t.Fatalf("missing found=%v error=%v", found, err)
 	}
@@ -180,12 +243,12 @@ func TestCurrentAgentPrebuiltMCPRejectsUnknownOrDisabledResolution(t *testing.T)
 	store.entry = enabledPrebuiltMCPEntry()
 	store.entry.Enabled = false
 	if _, found, err := resolver.ResolveCurrentAgentPrebuiltMCP(
-		context.Background(), "mcp_release_intelligence", map[string]any{},
+		context.Background(), "mcp_release_intelligence", map[string]any{}, identityPrebuiltMaterializer,
 	); err != nil || found {
 		t.Fatalf("disabled found=%v error=%v", found, err)
 	}
 	if _, found, err := resolver.ResolveCurrentAgentPrebuiltMCP(
-		context.Background(), "mcp_config", map[string]any{},
+		context.Background(), "mcp_config", map[string]any{}, identityPrebuiltMaterializer,
 	); err != nil || found {
 		t.Fatalf("missing selector found=%v error=%v", found, err)
 	}
@@ -203,7 +266,13 @@ func TestCurrentAgentPrebuiltMCPAdmissionKeepsOnlySelectorAndFilters(t *testing.
 		"client_secret":  "caller-secret",
 		"unknown":        "must-not-cross",
 	}}
-	resolver := currentAgentToolkitSettingsResolver{inner: inner}
+	prebuilt, err := newCurrentAgentPrebuiltMCP(&currentPrebuiltMCPStoreStub{
+		entry: enabledPrebuiltMCPEntry(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := currentAgentToolkitSettingsResolver{inner: inner, prebuilt: prebuilt}
 	request := configurationapp.CurrentToolkitSettingsRequest{
 		ToolkitType: "mcp_config",
 		Settings:    map[string]any{"server_name": "mcp_release_intelligence"},

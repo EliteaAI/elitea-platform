@@ -41,6 +41,7 @@ type CurrentAgentPrebuiltMCPResolver interface {
 		context.Context,
 		string,
 		map[string]any,
+		func(map[string]any) (map[string]any, error),
 	) (map[string]any, bool, error)
 }
 
@@ -235,11 +236,13 @@ func (m *CurrentConfigurationsMaterializer) materializeCurrentAgentTools(
 			if m.prebuilt == nil {
 				return errInvalidCurrentFrozenConfiguration
 			}
-			admitted := selectCurrentAgentPrebuiltMCPSettings(settings)
 			materialized, ok, err = m.prebuilt.ResolveCurrentAgentPrebuiltMCP(
 				ctx,
 				toolkitType,
-				admitted,
+				settings,
+				func(admitted map[string]any) (map[string]any, error) {
+					return walker.materializeOwnedMap(ctx, projectID, admitted, 0, true)
+				},
 			)
 			if err != nil {
 				return err
@@ -257,22 +260,6 @@ func (m *CurrentConfigurationsMaterializer) materializeCurrentAgentTools(
 		tools[index] = tool
 	}
 	return nil
-}
-
-func selectCurrentAgentPrebuiltMCPSettings(settings map[string]any) map[string]any {
-	selected := make(map[string]any, 5)
-	for _, name := range []string{
-		"server_name",
-		"selected_tools",
-		"excluded_tools",
-		"enable_caching",
-		"cache_ttl",
-	} {
-		if value, ok := settings[name]; ok {
-			selected[name] = value
-		}
-	}
-	return selected
 }
 
 func (m *CurrentConfigurationsMaterializer) materializeToolkit(

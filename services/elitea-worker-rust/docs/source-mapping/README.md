@@ -197,8 +197,8 @@ Maintained Rust runtime ownership registry:
   invocation-local channel, strips provider request payloads, stamps the owning
   pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
-  fallback, normalized-label and common-Runner proof. Parameterized prebuilt MCP,
-  remote effects, child variables, nested static Printer
+  fallback, normalized-label and common-Runner proof. Remote effects, child
+  variables, nested static Printer
   interrupts, incremental pipeline tool-progress chunks, approved-effect
   receipts, arbitrary static interrupts and production activation remain
   separate gates. Saved-pipeline child events and configured/sensitive HITL

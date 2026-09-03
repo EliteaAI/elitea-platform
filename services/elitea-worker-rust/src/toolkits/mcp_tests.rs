@@ -568,6 +568,23 @@ async fn invalid_or_unowned_mcp_authority_fails_before_connecting() {
                 "selected_tools": []
             }),
         ),
+        (
+            "mcp_release_intelligence",
+            json!({
+                "server_name": "release_intelligence",
+                "url": "https://mcp.example.invalid/{org_name}/mcp",
+                "selected_tools": []
+            }),
+        ),
+        (
+            "mcp_release_intelligence",
+            json!({
+                "server_name": "release_intelligence",
+                "url": "https://mcp.example.invalid/mcp",
+                "headers": {"Authorization": "Bearer {api_token}"},
+                "selected_tools": []
+            }),
+        ),
     ];
     for (tool_type, settings) in cases {
         let connector = FixtureConnector::new(Vec::new());

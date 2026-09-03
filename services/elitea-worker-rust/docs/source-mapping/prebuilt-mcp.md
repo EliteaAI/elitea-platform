@@ -8,11 +8,11 @@ This slice admits fixed HTTP definitions from Main's durable catalogue. It does 
 
 | Current behavior source | Product behavior | New owner |
 | --- | --- | --- |
-| SDK `runtime/toolkits/mcp_config.py::McpConfigToolkit` | Resolve `mcp_config` by `server_name` and filter discovered tools. | Main resolves authority. Rust filters and executes tools. |
-| SDK `runtime/toolkits/mcp_config.py::_load_http_tools` | Connect through HTTP with fixed headers and optional delegated tokens. | Rust `src/toolkits/mcp.rs` uses ADK RMCP. |
-| Indexer `methods/indexer_mcp_prebuilt_config.py` | Publish dynamic `mcp_*` toolkit types from configured servers. | Main reads enabled `elitea_mcp.prebuilt_servers` rows. |
+| SDK `runtime/toolkits/mcp_config.py::McpConfigToolkit` | Resolve `mcp_config` by `server_name`, build dynamic parameter schemas, and filter discovered tools. | Main serves enabled `mcp_*` schemas and resolves their fixed authority. Rust filters and executes tools. |
+| SDK `runtime/toolkits/mcp_config.py::_load_http_tools` and `runtime/utils/mcp_oauth.py::substitute_mcp_placeholders` | Replace declared URL and header placeholders before the HTTP connection. | Main `internal/mcpregistry` validates and materializes operator-owned templates after claim. |
+| Indexer `methods/indexer_mcp_prebuilt_config.py` | Publish configured server definitions and dynamic `mcp_*` toolkit types. | Main persists definitions in `elitea_mcp.prebuilt_servers` and serves the dynamic toolkit catalogue. |
 | Core `methods/mcp_prebuilt_config.py` | Match normalized server names and toolkit types. | Main `internal/mcpregistry` performs the lookup. |
-| Core and SDK configuration expansion | Keep secrets outside queued execution documents. | Main resolves the row after claim. |
+| Core and SDK configuration expansion | Keep project secret values outside queued execution documents. | Main seals dynamic secret fields on toolkit write and redeems only declared parameters after claim. |
 
 ## Runtime contract
 
@@ -20,9 +20,13 @@ Main admits only enabled catalogue entries. Missing and disabled entries fail be
 
 Main accepts `mcp_config` selectors and dynamic `mcp_*` types. Both forms resolve through exact normalized catalogue keys.
 
-Main keeps only the selector, tool filters, and cache controls before it signs the command.
+Main keeps only the selector, declared parameters, tool filters, and cache controls before it signs the command.
 
-The catalogue owns the URL, timeout, TLS policy, and fixed headers. Caller-supplied connection authority is discarded.
+The catalogue owns the URL and header templates, timeout, and TLS policy. Caller-supplied connection authority is discarded.
+
+Each `config_schema.properties` entry becomes a field in the dynamic toolkit schema. `secret: true` stays visible to the client and is also projected as JSON Schema `format: password` for Main's project-vault boundary. A toolkit write replaces plaintext with a hidden-secret reference in the same PostgreSQL transaction.
+
+At claim materialization, Main admits only fixed controls and fields declared by that catalogue entry. It redeems those admitted fields, applies defaults and required-field checks, percent-encodes URL path substitutions, rejects placeholders in the URL authority, and rejects queries, fragments, malformed placeholders, control characters, and unsupported types. The final worker document contains the materialized URL and headers, not the source template or parameter map.
 
 The project still owns `selected_tools`, `excluded_tools`, caching controls, and the attached toolkit name.
 
@@ -30,7 +34,7 @@ Rust receives only Main's claim-materialized input. It accepts prebuilt authorit
 
 Direct `mcp` retains its existing strict authority path.
 
-Rust bounds header counts and sizes. It marks every configured header value as sensitive.
+Rust bounds header counts and sizes. It marks every configured header value as sensitive. It rejects any remaining template delimiter before connection.
 
 Rust rejects headers that control HTTP framing or MCP protocol negotiation. A claim-fetched OAuth token replaces static `Authorization`.
 
@@ -38,18 +42,16 @@ Delegated authorization retains the original dynamic toolkit type. Exact endpoin
 
 ## Verification
 
-Main tests cover enabled schema admission, disabled entries, missing rows, dependency failures, and exact selector lookup.
+Main tests cover schema validation and projection, secret extraction, enabled schema admission, disabled entries, missing rows, dependency failures, exact selector lookup, declared-field admission, authority replacement, URL encoding, and final header materialization.
 
 Claim tests cover forged-marker removal, authoritative connection replacement, redacted failures, and direct-MCP separation.
 
-Rust tests cover static headers, header sensitivity, exclusions, reserved headers, token precedence, aliases, and authorization identity.
+Rust tests cover static headers, header sensitivity, exclusions, reserved headers, unresolved-template rejection, token precedence, aliases, and authorization identity.
 
 ## Remaining gates
-
-Parameterized catalogue schemas and `{field}` substitution remain gated. They need secret-aware dynamic schema storage.
 
 Stdio remains assigned to an external runner with explicit process, package, environment, and egress authority.
 
 Runtime post-discovery authorization failures need typed RMCP call errors before automatic reauthorization can be safe.
 
-MCP catalogue editing, sync, internal PAT stamping, and Elitea-as-MCP exposure remain separate platform capabilities.
+Static descriptor sync and hot reload, internal PAT stamping, and Elitea-as-MCP exposure remain separate platform capabilities. The admin catalogue API is available, but a dedicated operator UI remains a separate surface.

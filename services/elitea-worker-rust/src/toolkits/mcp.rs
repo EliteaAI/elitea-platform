@@ -703,7 +703,9 @@ fn parse_static_headers(
         }
         let raw_value = raw_value
             .as_str()
-            .filter(|value| value.len() <= MAX_HEADER_VALUE_BYTES)
+            .filter(|value| {
+                value.len() <= MAX_HEADER_VALUE_BYTES && !contains_template_delimiter(value)
+            })
             .ok_or_else(invalid_configuration)?;
         let mut value = reqwest_mcp::header::HeaderValue::from_str(raw_value)
             .map_err(|_| invalid_configuration())?;
@@ -732,7 +734,11 @@ fn parse_endpoint(settings: &Map<String, Value>) -> Result<String, McpMaterializ
     let endpoint = settings
         .get("url")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= MAX_ENDPOINT_BYTES)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_ENDPOINT_BYTES
+                && !contains_template_delimiter(value)
+        })
         .ok_or_else(invalid_configuration)?;
     let parsed = reqwest_mcp::Url::parse(endpoint).map_err(|_| invalid_configuration())?;
     if parsed.scheme() != "https"
@@ -746,6 +752,10 @@ fn parse_endpoint(settings: &Map<String, Value>) -> Result<String, McpMaterializ
         return Err(unsupported_authority());
     }
     Ok(parsed.to_string())
+}
+
+fn contains_template_delimiter(value: &str) -> bool {
+    value.contains('{') || value.contains('}')
 }
 
 fn parse_selected_tools(

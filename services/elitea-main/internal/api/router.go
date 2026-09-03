@@ -2069,6 +2069,12 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
 					v2toolkits.WithSettingsDefinitions(cfg.ToolkitSettingsDefinitions),
 				}
+				if cfg.Pool != nil {
+					toolkitOptions = append(toolkitOptions,
+						v2toolkits.WithDynamicTypeSchemas(prebuiltMCPStore),
+						v2toolkits.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
+					)
+				}
 				// Guarded rather than appended unconditionally: an Option that
 				// stored a nil interface would still leave h.settingsValidator
 				// nil, but a caller that later boxes a typed nil pointer here

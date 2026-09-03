@@ -28,6 +28,7 @@ type currentAgentPrebuiltMCPResolverStub struct {
 	err      error
 	toolType string
 	settings map[string]any
+	keep     []string
 	calls    int
 }
 
@@ -35,10 +36,19 @@ func (stub *currentAgentPrebuiltMCPResolverStub) ResolveCurrentAgentPrebuiltMCP(
 	_ context.Context,
 	toolType string,
 	settings map[string]any,
+	_ func(map[string]any) (map[string]any, error),
 ) (map[string]any, bool, error) {
 	stub.calls++
 	stub.toolType = toolType
 	stub.settings = settings
+	if stub.keep != nil {
+		stub.settings = make(map[string]any, len(stub.keep))
+		for _, name := range stub.keep {
+			if value, ok := settings[name]; ok {
+				stub.settings[name] = value
+			}
+		}
+	}
 	return stub.result, stub.found, stub.err
 }
 
@@ -264,6 +274,7 @@ func TestCurrentAgentMaterializerUsesOnlyResolvedPrebuiltMCPAuthority(t *testing
 	}}
 	resolver := &currentAgentPrebuiltMCPResolverStub{
 		found: true,
+		keep:  []string{"server_name", "selected_tools"},
 		result: map[string]any{
 			"server_name":    "release_intelligence",
 			"url":            "https://mcp.example.test/v1/mcp",

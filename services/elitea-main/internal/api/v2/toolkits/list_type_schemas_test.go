@@ -1,6 +1,7 @@
 package toolkits_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -272,6 +273,28 @@ func TestToolkitTypeCatalogueDoesNotLeakBetweenRequests(t *testing.T) {
 	argsSchemas := selectedToolsSchema(t, second, "artifact")["args_schemas"].(map[string]any)
 	if _, leaked := argsSchemas["only_tool"]; leaked {
 		t.Errorf("the previous request's schemas survived into this one: %v", keysOf(argsSchemas))
+	}
+}
+
+type dynamicTypeSchemaStub struct{}
+
+func (dynamicTypeSchemaStub) ListToolkitTypeSchemas(context.Context) (map[string]map[string]any, error) {
+	return map[string]map[string]any{
+		"mcp_ado": {
+			"type": "object",
+			"properties": map[string]any{
+				"api_token": map[string]any{"type": "string", "secret": true},
+			},
+		},
+	}, nil
+}
+
+func TestToolkitTypeCatalogueIncludesDynamicPrebuiltMCP(t *testing.T) {
+	body := getToolkitTypeCatalogue(t, toolkits.WithDynamicTypeSchemas(dynamicTypeSchemaStub{}))
+	typeSchema := body["mcp_ado"].(map[string]any)
+	properties := typeSchema["properties"].(map[string]any)
+	if secret, _ := properties["api_token"].(map[string]any)["secret"].(bool); !secret {
+		t.Fatal("dynamic MCP secret annotation was lost")
 	}
 }
 

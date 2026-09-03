@@ -354,7 +354,11 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// white-labeling is net-new, so the legacy catalogue has no string for
 	// it. A new file for 0082's reason — 0060 returns early on any configured
 	// deployment, and migrations are checksum-immutable.
-	require.EqualValues(t, 110, Head(shared))
+	//
+	// 111: shared/0111_mcp_prebuilt_parameter_schema.sql adds the bounded
+	// operator-owned config_schema used to publish parameterized prebuilt MCP
+	// toolkit forms. Existing rows receive an empty properties object.
+	require.EqualValues(t, 111, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
