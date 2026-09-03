@@ -27,7 +27,7 @@
  * the visual baseline (`e2e/visual/admin.visual.spec.ts`, the all-inherit
  * state) and every other journey see the deployment as they found it.
  */
-import { test as adminTest, expect, type Page } from '@playwright/test';
+import { test as adminTest, expect, request as apiRequest, type Page } from '@playwright/test';
 import JSZip from 'jszip';
 
 import { checkA11y } from '../../fixtures/axe';
@@ -263,6 +263,41 @@ async function uploadAsset(
 }
 
 /** The primary colour the theme resolved: one of the `--el-*` variables MUI declares on the root. */
+/**
+ * Every branding key set to "inherit" — the row set the E2E stack seeds and the
+ * visual baselines photograph. Derived from a read so it follows the schema
+ * (a new key is inherited too) rather than a hand-kept list.
+ */
+function inheritValues(values: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (Array.isArray(value)) out[key] = [];
+    else if (typeof value === 'number') out[key] = 0;
+    else if (value !== null && typeof value === 'object') out[key] = {};
+    else out[key] = '';
+  }
+  return out;
+}
+
+/**
+ * Restores the rows through a request context of its own, not the page's. A
+ * journey that hits its timeout loses its page mid-`finally`
+ * (`page.request` then fails with "Target page, context or browser has been
+ * closed"), the restore never lands, and every retry starts from the branded
+ * state the failure left — so the retry's "before" equals its "after" and it
+ * fails for a reason unrelated to the first failure. Measured on #797's
+ * webkit shard: three attempts, all "primary did not move".
+ */
+async function restoreValues(values: Record<string, unknown>): Promise<void> {
+  const api = await apiRequest.newContext({ baseURL: BASE_URL, storageState: STORAGE_STATE.admin });
+  try {
+    const response = await api.put(BRANDING_URL, { data: { values } });
+    expect(response.status(), `restoring the branding rows answered ${response.status()}`).toBe(200);
+  } finally {
+    await api.dispose();
+  }
+}
+
 async function readPrimary(page: Page): Promise<string> {
   return page.evaluate(() =>
     getComputedStyle(document.documentElement).getPropertyValue('--el-palette-primary-main').trim(),
@@ -272,6 +307,9 @@ async function readPrimary(page: Page): Promise<string> {
 adminTest(
   'J38e: a second pack reaches every surface at once — shell, admin console, sub-application, login, e-mail',
   async ({ page }, testInfo) => {
+    // Seven page loads, four uploads and a zip on webkit do not fit the 30 s
+    // default; a timeout here is what poisoned the retries (see restoreValues).
+    adminTest.setTimeout(150_000);
     const project = testInfo.project.name;
     // Distinct from J38's values, so a row either journey left behind cannot
     // satisfy the other.
@@ -282,7 +320,20 @@ adminTest(
     const fontFamily = `E2E ${project} Sans`;
 
     await withPlatformFlagLock(async () => {
-      const original = await readValues(page);
+      // RETRY SAFETY. The baseline this journey measures against is the
+      // all-inherit row set (bootstrap.js serves its inert body). A retry
+      // after an attempt whose restore did not land would read the branded
+      // rows as "original", so the baseline is taken from the served pack,
+      // not from whatever the rows hold: if a pack is being served, the rows
+      // are put back to inherit first. That is the stack's seeded state, so
+      // nothing is lost on it; a deployment with a pack of its own is not
+      // where this suite runs.
+      let original = await readValues(page);
+      const served = await page.request.get(`${API}/branding/bootstrap.js`);
+      if (!(await served.text()).includes('no deployment brand pack configured')) {
+        original = inheritValues(original);
+        await restoreValues(original);
+      }
       try {
         // The un-branded shell first: what the pack must move away from.
         await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
@@ -404,7 +455,7 @@ adminTest(
           expect(sentBody).toMatchObject({ sent: true, to: supportEmail });
         }
       } finally {
-        await writeValues(page, original);
+        await restoreValues(original);
       }
     });
 
