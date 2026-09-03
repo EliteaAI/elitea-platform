@@ -39,10 +39,39 @@ STEPS: dict[str, tuple[str, ...]] = {
     "ask": ("Searching the wiki index", "Composing the answer"),
     "deep_research": (
         "Planning the research",
+        # A STRUCTURED event, not prose — see RESEARCH_TODOS below.
+        "__RESEARCH_TODOS__",
         "Reading the relevant pages",
         "Writing the report",
     ),
 }
+
+#: The plan a fixture deep_research run publishes.
+#:
+#: The browser's research panel renders whatever the run's ``todo_update``
+#: events carry, and renders NOTHING when there are none — correct for ``ask``
+#: and indistinguishable from a panel wired up wrong. Until this list existed
+#: no journey could tell those apart (DWIKI-012b is that journey). The Go
+#: host's fixture (run/fixture.go, ResearchTodos) carries the SAME list: the
+#: E2E stack runs that one, the standalone stack runs this one, and the
+#: journey must pass on both. Shape is the browser-facing normalised one
+#: (id/title/description/status) — the pre-normalisation ``content`` key
+#: renders as "Untitled step".
+RESEARCH_TODOS: tuple[dict[str, Any], ...] = (
+    {"id": 1, "title": "Plan the research", "description": "", "status": "completed"},
+    {"id": 2, "title": "Read the relevant pages", "description": "", "status": "in_progress"},
+    {"id": 3, "title": "Write the report", "description": "", "status": "pending"},
+)
+
+
+def todo_update_event(todos: tuple[dict[str, Any], ...] = RESEARCH_TODOS) -> str:
+    """The ``{event, data}`` envelope the browser's chat reducer routes to the research panel."""
+    return json.dumps({"event": "todo_update", "data": {"items": list(todos)}})
+
+
+def steps_for(tool_name: str) -> tuple[str, ...]:
+    """STEPS with the structured placeholders resolved to their envelopes."""
+    return tuple(todo_update_event() if step == "__RESEARCH_TODOS__" else step for step in STEPS.get(tool_name, ()))
 
 BROKEN_MERMAID_PAGE = """# Request flow
 
@@ -172,7 +201,7 @@ class FixtureToolRunner(LegacyToolRunner):
         self._step_seconds = float(getattr(settings, "fixture_step_seconds", 0.0) or 0.0)
 
     async def _paced(self, tool_name: str, context: Any) -> None:
-        for step in STEPS.get(tool_name, ()):
+        for step in steps_for(tool_name):
             # The checkpoint is what makes Stop work mid-run: a cancelled
             # invocation raises here instead of finishing and uploading.
             await context.checkpoint()
