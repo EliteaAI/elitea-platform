@@ -164,8 +164,8 @@ export const getGetBrandingSettingsResponseMock = (
     file: faker.datatype.boolean(),
     database: faker.datatype.boolean(),
   },
-  effective: {
-    ...{
+  effective: faker.helpers.arrayElement([
+    {
       $schema: faker.string.alpha({ length: { min: 10, max: 20 } }),
       id: faker.string.alpha({ length: { min: 10, max: 20 } }),
       version: faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -242,7 +242,8 @@ export const getGetBrandingSettingsResponseMock = (
         ]),
       },
     },
-  },
+    null,
+  ]),
   etag: faker.helpers.arrayElement([
     faker.string.alpha({ length: { min: 10, max: 20 } }),
     undefined,
@@ -259,8 +260,8 @@ export const getSaveBrandingSettingsResponseMock = (
     file: faker.datatype.boolean(),
     database: faker.datatype.boolean(),
   },
-  effective: {
-    ...{
+  effective: faker.helpers.arrayElement([
+    {
       $schema: faker.string.alpha({ length: { min: 10, max: 20 } }),
       id: faker.string.alpha({ length: { min: 10, max: 20 } }),
       version: faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -337,7 +338,8 @@ export const getSaveBrandingSettingsResponseMock = (
         ]),
       },
     },
-  },
+    null,
+  ]),
   etag: faker.helpers.arrayElement([
     faker.string.alpha({ length: { min: 10, max: 20 } }),
     undefined,
