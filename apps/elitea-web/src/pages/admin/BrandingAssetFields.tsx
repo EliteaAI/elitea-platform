@@ -7,12 +7,11 @@
  * kind and refuses an SVG that could script or fetch, and its reason is shown
  * verbatim under the control that sent it.
  *
- * The e-mail logo is offered but DISABLED. The asset route accepts the kind,
- * but no key of the `branding` section holds the path yet — that key arrives
- * with the e-mail templates (ADR-0024 WP7) — and the server collects any
- * uploaded object nothing references on the next save. A control that
- * uploads a file the next save deletes would be worse than none; the disabled
- * control says why.
+ * The e-mail logo (`logo_email`, ADR-0024 WP7) is a raster only — mail
+ * clients render neither SVG nor WebP reliably, so the route accepts PNG and
+ * WebP and the control offers the same. Its inherited value is read off the
+ * served pack's raw document (`effectiveLogoEmail`), since the UI's pack
+ * schema carries no field for it.
  */
 import { useRef, type ReactNode } from 'react';
 
@@ -37,13 +36,14 @@ import type { BrandingUploadError, BrandingUploadTarget } from './useAdminBrandi
 
 const IMAGE_ACCEPT = '.svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp';
 const FAVICON_ACCEPT = '.svg,.png,.ico,image/svg+xml,image/png,image/x-icon';
+const EMAIL_LOGO_ACCEPT = '.png,.webp,image/png,image/webp';
 
 interface AssetSpec {
   readonly kind: BrandingAssetKind;
-  readonly fieldKey: BrandingAssetKey | undefined;
+  readonly fieldKey: BrandingAssetKey;
   readonly label: string;
   readonly accept: string;
-  readonly inherited: (pack: BrandPack) => string;
+  readonly inherited: (pack: BrandPack, logoEmail: string) => string;
 }
 
 function assetSpecs(): readonly AssetSpec[] {
@@ -78,10 +78,10 @@ function assetSpecs(): readonly AssetSpec[] {
     },
     {
       kind: 'logo-email',
-      fieldKey: undefined,
+      fieldKey: 'logo_email',
       label: t('pages.admin.branding.asset.logoEmail', 'E-mail logo'),
-      accept: '.png,.jpg,.jpeg,image/png,image/jpeg',
-      inherited: () => '',
+      accept: EMAIL_LOGO_ACCEPT,
+      inherited: (_pack, logoEmail) => logoEmail,
     },
   ];
 }
@@ -115,15 +115,9 @@ function AssetUploader({
   onClear,
 }: AssetUploaderProps): ReactNode {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const withheld = spec.fieldKey === undefined;
   const shown = value !== '' ? value : inherited;
   const src = previewSrc(shown);
-  const helper = withheld
-    ? t(
-        'pages.admin.branding.asset.logoEmail.withheld',
-        'No branding key stores the e-mail logo yet; it arrives with the e-mail templates. An upload made now would be collected on the next save.',
-      )
-    : (error ?? inheritHelperText(source, inherited));
+  const helper = error ?? inheritHelperText(source, inherited);
 
   return (
     <Box
@@ -189,7 +183,7 @@ function AssetUploader({
             size="small"
             variant="secondary"
             startIcon={<UploadFileOutlinedIcon />}
-            disabled={disabled || busy || withheld}
+            disabled={disabled || busy}
             onClick={() => inputRef.current?.click()}
             data-testid={`branding-upload-${spec.kind}`}
           >
@@ -209,6 +203,8 @@ function AssetUploader({
 }
 
 export interface BrandingAssetFieldsProps extends BrandingFieldGroupProps {
+  /** The served pack's `assets.logoEmail`, or empty — see `effectiveLogoEmail`. */
+  readonly inheritedLogoEmail: string;
   readonly uploadingKind: BrandingAssetKind | undefined;
   readonly uploadError: BrandingUploadError | undefined;
   readonly onUpload: (kind: BrandingAssetKind, file: File, target: BrandingUploadTarget) => void;
@@ -221,6 +217,7 @@ export function BrandingAssetFields({
   disabled,
   fieldError,
   onChange,
+  inheritedLogoEmail,
   uploadingKind,
   uploadError,
   onUpload,
@@ -232,29 +229,24 @@ export function BrandingAssetFields({
       </Typography>
       {assetSpecs().map((spec) => {
         const key = spec.fieldKey;
-        const value = key === undefined ? '' : values[key];
         const error =
           uploadError?.kind === spec.kind
             ? uploadError.message
-            : key !== undefined && fieldError?.key === key
+            : fieldError?.key === key
               ? fieldError.message
               : undefined;
         return (
           <AssetUploader
             key={spec.kind}
             spec={spec}
-            value={value}
-            inherited={spec.inherited(basePack)}
-            source={key === undefined ? 'default' : brandingFieldSource(values, key, layers)}
+            value={values[key]}
+            inherited={spec.inherited(basePack, inheritedLogoEmail)}
+            source={brandingFieldSource(values, key, layers)}
             busy={uploadingKind === spec.kind}
             error={error}
             disabled={disabled}
-            onFile={(file) => {
-              if (key !== undefined) onUpload(spec.kind, file, { field: key });
-            }}
-            onClear={() => {
-              if (key !== undefined) onChange(key, '');
-            }}
+            onFile={(file) => onUpload(spec.kind, file, { field: key })}
+            onClear={() => onChange(key, '')}
           />
         );
       })}

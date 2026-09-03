@@ -51,6 +51,7 @@ export type { SchemeName } from './toMuiPalette';
 /** The admin Branding page's live-preview path (§4.3 E, ADR-0024 WP4). */
 export type { ThemeScope } from './buildTheme';
 export {
+  PREVIEW_ROOT_CLASS,
   PREVIEW_SCHEME_ATTRIBUTE,
   PREVIEW_THEME_SCOPE,
   WCAG_AA_NORMAL_TEXT,

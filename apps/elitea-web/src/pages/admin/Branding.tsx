@@ -20,7 +20,10 @@
  *  - the PREVIEW: a sample surface in both schemes under a theme the real
  *    builder produced from the draft, with the derived swatches and a WCAG
  *    text-on-primary check (a warning only; nothing here blocks a save);
- *  - the LAYERS panel: which layers contribute and which decides each field.
+ *  - the LAYERS panel: which layers contribute and which decides each field;
+ *  - the PACKAGE controls (WP9): download the current brand as a zip, import
+ *    one with a dry run first, and restore a kept version. See
+ *    `useBrandingPackage.ts` for how they respect the unsaved draft.
  *
  * ## Authorisation
  *
@@ -44,15 +47,45 @@ import { BrandingFontFacesEditor } from './BrandingFontFacesEditor';
 import { BrandingIdentityFields } from './BrandingIdentityFields';
 import { BrandingLayersPanel } from './BrandingLayersPanel';
 import { BrandingNavGuard } from './BrandingNavGuard';
+import { BrandingPackageConfirmDialog } from './BrandingPackageConfirmDialog';
+import { BrandingPackageImportDialog } from './BrandingPackageImportDialog';
+import { BrandingPackageVersions } from './BrandingPackageVersions';
 import { BrandingPreview } from './BrandingPreview';
 import { BrandingResetDialog } from './BrandingResetDialog';
 import { BrandingStyleFields } from './BrandingStyleFields';
 import { useAdminBrandingPage, type AdminBrandingPageState } from './useAdminBrandingPage';
+import { useBrandingPackage, type BrandingPackageState } from './useBrandingPackage';
 
-function BrandingActions({ state }: { readonly state: AdminBrandingPageState }) {
+interface BrandingActionsProps {
+  readonly state: AdminBrandingPageState;
+  readonly pkg: BrandingPackageState;
+}
+
+function BrandingActions({ state, pkg }: BrandingActionsProps) {
   const busy = state.isSaving || state.uploadingKind !== undefined;
+  const packageBusy = pkg.isDownloading || pkg.restoringDigest !== undefined;
   return (
     <Box sx={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+      <Button
+        size="small"
+        variant="secondary"
+        disabled={busy || packageBusy}
+        onClick={pkg.onDownload}
+        data-testid="branding-package-download"
+      >
+        {pkg.isDownloading
+          ? t('pages.admin.branding.package.download.busy', 'Preparing…')
+          : t('pages.admin.branding.package.download', 'Download branding package')}
+      </Button>
+      <Button
+        size="small"
+        variant="secondary"
+        disabled={busy || packageBusy}
+        onClick={pkg.onRequestImport}
+        data-testid="branding-package-import"
+      >
+        {t('pages.admin.branding.package.import', 'Import branding package…')}
+      </Button>
       <Button
         size="small"
         variant="elitea"
@@ -108,6 +141,7 @@ function BrandingForm({ state }: { readonly state: AdminBrandingPageState }) {
       <BrandingStyleFields {...group} />
       <BrandingAssetFields
         {...group}
+        inheritedLogoEmail={state.effectiveLogoEmail}
         uploadingKind={state.uploadingKind}
         uploadError={state.uploadError}
         onUpload={state.onUploadAsset}
@@ -128,6 +162,11 @@ function BrandingForm({ state }: { readonly state: AdminBrandingPageState }) {
 
 export function AdminBranding() {
   const state = useAdminBrandingPage();
+  const pkg = useBrandingPackage({
+    isDirty: state.isDirty,
+    discardDraft: state.onDiscard,
+    notify: state.onNotify,
+  });
 
   return (
     <DrawerPage sx={{ padding: '1rem 1.5rem', gap: '0.75rem' }}>
@@ -136,7 +175,7 @@ export function AdminBranding() {
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           {t('pages.admin.branding.title', 'Branding')}
         </Typography>
-        {state.isLoaded ? <BrandingActions state={state} /> : null}
+        {state.isLoaded ? <BrandingActions state={state} pkg={pkg} /> : null}
       </Box>
       <Typography variant="bodySmall" color="text.secondary">
         {t(
@@ -167,6 +206,14 @@ export function AdminBranding() {
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', position: 'sticky', top: 0 }}>
             <BrandingPreview pack={state.previewPack} />
             <BrandingLayersPanel layers={state.layers} values={state.values} />
+            <BrandingPackageVersions
+              versions={pkg.versions}
+              isLoading={pkg.versionsLoading}
+              error={pkg.versionsError}
+              restoringDigest={pkg.restoringDigest}
+              disabled={state.isSaving || state.uploadingKind !== undefined}
+              onRestore={pkg.onRequestRestore}
+            />
           </Box>
         </Box>
       ) : null}
@@ -175,6 +222,13 @@ export function AdminBranding() {
         open={state.resetOpen}
         onCancel={state.onCancelReset}
         onConfirm={state.onConfirmReset}
+      />
+      <BrandingPackageImportDialog state={pkg} />
+      <BrandingPackageConfirmDialog
+        pending={pkg.pending}
+        isDirty={state.isDirty}
+        onCancel={pkg.onCancelPending}
+        onConfirm={pkg.onConfirmPending}
       />
 
       <Snackbar

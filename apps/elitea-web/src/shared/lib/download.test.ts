@@ -5,6 +5,7 @@
  * assembly, and the fetch→blob→download orchestrator's failure paths.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { HttpResponse, http } from 'msw';
 
 import { server } from '../../test/setup';
 import {
@@ -17,6 +18,7 @@ import type { CapturedExportRequest } from '../../test/msw/handlers/download';
 
 import {
   buildMarkdownExportUrl,
+  downloadFromApi,
   exportMarkdown,
   filenameFromContentDisposition,
   triggerBlobDownload,
@@ -74,6 +76,84 @@ describe('filenameFromContentDisposition — port of download.helpers.js:10-21',
 
   it('handles a malformed percent-escape without throwing', () => {
     expect(filenameFromContentDisposition("filename*=UTF-8''%", 'fallback.md')).toBe('%');
+  });
+
+  it('reads the branding package export header shape (ADR-0024 WP9)', () => {
+    expect(filenameFromContentDisposition('attachment; filename="acme-branding.zip"', 'branding.zip')).toBe('acme-branding.zip');
+    expect(filenameFromContentDisposition('inline', 'branding.zip')).toBe('branding.zip');
+  });
+});
+
+describe('downloadFromApi — GET → blob → download (ADR-0024 WP9)', () => {
+  const PACKAGE_PATH = '/admin/branding/package/administration';
+
+  it('downloads under the Content-Disposition filename and resolves it', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    server.use(
+      http.get(`*${PACKAGE_PATH}`, () =>
+        new HttpResponse(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="acme-branding.zip"' },
+        }),
+      ),
+    );
+
+    const result = await downloadFromApi({ baseUrl: '/api/v2/', path: PACKAGE_PATH, fallbackName: 'branding.zip' });
+
+    expect(result).toEqual({ ok: true, filename: 'acme-branding.zip' });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    // A trailing slash on the base is not doubled, and the request carries the session.
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v2${PACKAGE_PATH}`);
+    expect(init.credentials).toBe('same-origin');
+  });
+
+  it('falls back to the given name when the server sends no filename', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    server.use(http.get(`*${PACKAGE_PATH}`, () => new HttpResponse('zip', { status: 200, headers: { 'Content-Type': 'application/zip' } })));
+
+    const result = await downloadFromApi({ baseUrl: '/api/v2', path: PACKAGE_PATH, fallbackName: 'branding.zip' });
+    expect(result).toEqual({ ok: true, filename: 'branding.zip' });
+  });
+
+  it("resolves an http failure with the server's own reason and never downloads", async () => {
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    server.use(
+      http.get(`*${PACKAGE_PATH}`, () =>
+        HttpResponse.json({ error: 'branding packages are not available on this deployment' }, { status: 503 }),
+      ),
+    );
+
+    const result = await downloadFromApi({ baseUrl: '/api/v2', path: PACKAGE_PATH, fallbackName: 'branding.zip' });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'http', status: 503, reason: 'branding packages are not available on this deployment' },
+    });
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('resolves an http failure without a reason when the body is not the {error} shape', async () => {
+    server.use(http.get(`*${PACKAGE_PATH}`, () => new HttpResponse('nope', { status: 500, headers: { 'Content-Type': 'text/plain' } })));
+    const result = await downloadFromApi({ baseUrl: '/api/v2', path: PACKAGE_PATH, fallbackName: 'branding.zip' });
+    expect(result).toEqual({ ok: false, error: { kind: 'http', status: 500, reason: undefined } });
+  });
+
+  it('resolves a network failure and an aborted signal without throwing', async () => {
+    server.use(http.get(`*${PACKAGE_PATH}`, () => HttpResponse.error()));
+    const network = await downloadFromApi({ baseUrl: '/api/v2', path: PACKAGE_PATH, fallbackName: 'branding.zip' });
+    expect(network.ok).toBe(false);
+    if (network.ok) throw new Error('unreachable');
+    expect(network.error.kind).toBe('network');
+
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = await downloadFromApi({ baseUrl: '/api/v2', path: PACKAGE_PATH, fallbackName: 'branding.zip', signal: controller.signal });
+    expect(aborted).toEqual({ ok: false, error: { kind: 'aborted' } });
   });
 });
 

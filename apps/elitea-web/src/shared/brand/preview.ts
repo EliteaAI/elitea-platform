@@ -25,15 +25,21 @@ import type { SchemeName } from './toMuiPalette';
  * The scope a preview theme is built under. See `ThemeScope` in
  * `buildTheme.ts` for why it must differ from the app theme's on every field.
  *
- * `rootSelector` is a class no element carries: the default scheme's block is
- * emitted as `${rootSelector}, [data-elp-scheme="dark"]`, and the preview
- * surfaces select their scheme with the attribute alone, so neither block can
- * reach an element outside the preview.
+ * `rootSelector` is a class only the preview's container carries
+ * (`PREVIEW_ROOT_CLASS`). MUI emits the scheme-independent variables — the
+ * spacing unit and the `--elp-shape-*` radii — under that selector ALONE, so a
+ * preview whose ancestor lacks the class renders every radius and spacing as
+ * nothing (the WP9 fix in `BrandingPreview.tsx`). The default scheme's colour
+ * block is emitted as `${rootSelector}, [data-elp-scheme="dark"]`, and the
+ * preview surfaces select their scheme with the attribute, so neither block
+ * reaches an element outside the preview.
  */
+export const PREVIEW_ROOT_CLASS = `${CSS_VAR_PREFIX}p-preview-root`;
+
 export const PREVIEW_THEME_SCOPE: ThemeScope = {
   cssVarPrefix: `${CSS_VAR_PREFIX}p`,
   colorSchemeSelector: `[data-${CSS_VAR_PREFIX}p-scheme="%s"]`,
-  rootSelector: `.${CSS_VAR_PREFIX}p-preview-root`,
+  rootSelector: `.${PREVIEW_ROOT_CLASS}`,
 };
 
 /** The attribute a preview surface sets to pick its scheme. */
