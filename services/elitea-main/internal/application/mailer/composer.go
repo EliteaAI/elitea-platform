@@ -171,6 +171,34 @@ func (c *Composer) Render(ctx context.Context, kind string, view View) (html, te
 	return c.render(kind, view)
 }
 
+// PreviewKinds are the messages Preview can render.
+var PreviewKinds = []string{"invitation", "moderation", "test"}
+
+// Preview renders one message kind with placeholder data under the pack a
+// branding package carries, for its preview folder (ADR-0024 decision 9).
+// The brand view is derived from `pack` rather than the live resolver, so a
+// package previews the brand it contains.
+func (c *Composer) Preview(pack *v2branding.Pack, kind string) (html, text string, err error) {
+	view := c.viewFor(pack)
+	switch kind {
+	case "invitation":
+		view.Invitation = Invitation{Email: "ada@example.com", Name: "Ada", InvitedBy: "grace@example.com", ProjectName: "Example project"}
+		view.Subject = "You've been invited to " + view.ProductName
+		view.ActionLabel = "Sign in to " + view.ProductName
+	case "moderation":
+		view.Moderation = ModerationDecision{Email: "ada@example.com", Message: "Your application moderation request has been approved."}
+		view.Subject = view.ProductName + ": moderation decision"
+		view.ActionLabel = "Open " + view.ProductName
+	case "test":
+		view.Subject = view.ProductName + ": test e-mail"
+		view.ActionLabel = "Open " + view.ProductName
+	default:
+		return "", "", fmt.Errorf("mailer: unknown preview kind %q", kind)
+	}
+	view.ActionURL = c.absolute("/")
+	return c.render(kind, view)
+}
+
 // View is everything a template can reach.
 type View struct {
 	Subject      string
@@ -212,10 +240,20 @@ func (c *Composer) brandView(ctx context.Context) View {
 		return view
 	}
 	snapshot := c.brand.Current(ctx)
-	if snapshot.Pack == nil {
+	return c.viewFor(snapshot.Pack)
+}
+
+// viewFor derives the view from one pack; nil means the product default.
+func (c *Composer) viewFor(pack *v2branding.Pack) View {
+	view := View{
+		ProductName: "Elitea",
+		FontFamily:  `Helvetica Neue, Helvetica, Arial, sans-serif`,
+		Radius:      8,
+		Colors:      defaultColors,
+	}
+	if pack == nil {
 		return view
 	}
-	pack := snapshot.Pack
 	if name := strings.TrimSpace(pack.Product.Name); name != "" {
 		view.ProductName = name
 	}

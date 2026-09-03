@@ -85,6 +85,16 @@ func TestValidateBrandingValues(t *testing.T) {
 		{name: "support email no dot", values: map[string]any{platformconfig.KeyBrandingSupportEmail: "support@localhost"}, want: "plain e-mail"},
 		{name: "e-mail logo external", values: map[string]any{platformconfig.KeyBrandingLogoEmail: "https://cdn.example/l.png"}, want: "path on this origin"},
 		{name: "sender name too long", values: map[string]any{platformconfig.KeyBrandingSenderName: strings.Repeat("x", 81)}, want: "at most 80"},
+
+		{name: "scheme tokens valid", values: map[string]any{platformconfig.KeyBrandingSchemeTokens: map[string]any{
+			"light": map[string]any{"primary.main": "#1A73E8"}, "dark": map[string]any{}}}},
+		{name: "scheme tokens empty object inherits", values: map[string]any{platformconfig.KeyBrandingSchemeTokens: map[string]any{}}},
+		{name: "scheme tokens unknown scheme", values: map[string]any{platformconfig.KeyBrandingSchemeTokens: map[string]any{"sepia": map[string]any{}}}, want: "unknown scheme"},
+		{name: "scheme tokens css expression", values: map[string]any{platformconfig.KeyBrandingSchemeTokens: map[string]any{
+			"light": map[string]any{"primary.main": "var(--x)"}}}, want: "six-digit hex"},
+		{name: "scheme tokens empty colour", values: map[string]any{platformconfig.KeyBrandingSchemeTokens: map[string]any{
+			"light": map[string]any{"primary.main": ""}}}, want: "six-digit hex"},
+		{name: "scheme tokens not an object", values: map[string]any{platformconfig.KeyBrandingSchemeTokens: []any{}}, want: "object of schemes"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,6 +146,7 @@ func TestBrandingSection_DeclaresEveryOverlayKey(t *testing.T) {
 		platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt,
 		platformconfig.KeyBrandingFontFaces, platformconfig.KeyBrandingSenderName,
 		platformconfig.KeyBrandingSupportEmail, platformconfig.KeyBrandingLogoEmail,
+		platformconfig.KeyBrandingSchemeTokens,
 	} {
 		if !declared[key] {
 			t.Errorf("overlay key %q is read by platformconfig but not declared by the section", key)

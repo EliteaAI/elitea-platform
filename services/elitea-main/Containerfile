@@ -26,6 +26,13 @@ COPY apps/elitea-web/src/ ./src/
 # outDir dist/admin.
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN npm run build:admin
+# The offline brand previewer (ADR-0024 decision 9): one self-contained
+# HTML file the branding package ships as preview/app.html. Built here beside
+# the admin SPA and copied next to it below; elitea-main reads it from
+# <ADMIN_UI_STATIC_DIR>/../brand-preview/index.html and ships packages without it
+# when the entry is absent (an older web tree has no such script).
+RUN npm run build:brand-preview --if-present && \
+    { [ -f dist/brand-preview/index.html ] || mkdir -p dist/brand-preview; }
 
 # ── Stage 2: Go builder ───────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS builder
@@ -143,6 +150,7 @@ ENV ADMIN_UI_STATIC_DIR=/nonexistent
 FROM runtime AS e2e
 
 COPY --from=admin-builder /build/dist/admin /data/admin_ui/static/dist
+COPY --from=admin-builder /build/dist/brand-preview/ /data/admin_ui/static/brand-preview/
 
 # ── Stage 6: standalone final image (default target) ──────────────────────────
 # Last stage, so a `docker build` with no --target still produces the shipping

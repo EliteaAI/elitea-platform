@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://elitea.ai/schemas/brand-pack/1.json",
+  "title": "Elitea brand pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "id", "version", "product", "assets", "typography", "shape", "locale", "brand", "schemes"],
+  "properties": {
+    "$schema": { "const": "https://elitea.ai/schemas/brand-pack/1.json" },
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "string" },
+    "product": {
+      "type": "object",
+      "required": ["name", "shortName"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 80 },
+        "shortName": { "type": "string", "maxLength": 80 },
+        "tagline": { "type": "string", "maxLength": 200 },
+        "docsUrl": { "type": "string", "format": "uri" },
+        "supportUrl": { "type": "string", "format": "uri" },
+        "senderName": { "type": "string", "maxLength": 80 },
+        "supportEmail": { "type": "string", "format": "email" }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "required": ["logoFull", "logoMark", "favicon"],
+      "properties": {
+        "logoFull": { "type": "string", "description": "assets/logo-full.<svg|png|webp> in this package, or a path on the deployment" },
+        "logoMark": { "type": "string" },
+        "favicon": { "type": "string" },
+        "loginArt": { "type": "string" },
+        "logoEmail": { "type": "string", "description": "PNG or WebP; e-mail clients render no SVG" }
+      }
+    },
+    "typography": {
+      "type": "object",
+      "required": ["fontFamily", "fontFamilyMono"],
+      "properties": {
+        "fontFamily": { "type": "string", "maxLength": 200 },
+        "fontFamilyMono": { "type": "string", "maxLength": 200 },
+        "baseSize": { "type": "number", "minimum": 12, "maximum": 18 },
+        "scale": { "type": "number", "minimum": 1.05, "maximum": 1.5 },
+        "fontFaces": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["family", "url"],
+            "properties": {
+              "family": { "type": "string", "minLength": 1 },
+              "url": { "type": "string", "description": "assets/fonts/<file>.woff2 in this package" },
+              "weight": { "type": "string" },
+              "style": { "enum": ["normal", "italic"] }
+            }
+          }
+        }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "required": ["radiusSm", "radiusMd", "radiusLg", "radiusPill", "density"],
+      "properties": {
+        "radiusSm": { "type": "number", "minimum": 0, "maximum": 9999 },
+        "radiusMd": { "type": "number", "minimum": 0, "maximum": 9999 },
+        "radiusLg": { "type": "number", "minimum": 0, "maximum": 9999 },
+        "radiusPill": { "type": "number", "minimum": 0, "maximum": 9999 },
+        "density": { "enum": ["comfortable", "compact"] }
+      }
+    },
+    "locale": {
+      "type": "object",
+      "properties": { "default": { "type": "string" }, "dateLocale": { "type": "string" } }
+    },
+    "brand": {
+      "type": "object",
+      "required": ["hue"],
+      "properties": {
+        "hue": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "onBrand": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+      }
+    },
+    "schemes": {
+      "type": "object",
+      "required": ["light", "dark"],
+      "properties": {
+        "light": { "$ref": "#/$defs/tokens" },
+        "dark": { "$ref": "#/$defs/tokens" },
+        "hc": { "$ref": "#/$defs/tokens" }
+      }
+    }
+  },
+  "$defs": {
+    "tokens": {
+      "type": "object",
+      "description": "token id -> colour; empty derives every id from brand.hue",
+      "additionalProperties": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+    }
+  }
+}

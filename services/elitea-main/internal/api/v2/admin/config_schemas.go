@@ -1276,6 +1276,15 @@ func brandingSection() map[string]any {
 				"default": []any{},
 				"items":   map[string]any{"type": "object"},
 			},
+			{
+				"key":   "scheme_tokens",
+				"type":  "object",
+				"title": "Hand-tuned scheme tokens",
+				"description": "Token id → colour per scheme ({light, dark, hc}), as a branding package carries them. " +
+					"Stated tokens win over hue derivation for the ids they name; empty derives everything from the brand colour.",
+				"section": "branding",
+				"default": map[string]any{},
+			},
 		},
 	}
 }

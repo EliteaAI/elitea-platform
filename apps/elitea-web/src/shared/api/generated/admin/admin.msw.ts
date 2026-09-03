@@ -46,8 +46,10 @@ import type { RequestHandlerOptions } from "msw";
 
 import type {
   BrandingAsset,
+  BrandingPackageReport,
   BrandingSettings,
   GlobalUserInviteResult,
+  ListBrandingPackageVersions200,
   MessageResponse,
   ModeRoleAssignResult,
   ModeRoleListing,
@@ -431,6 +433,160 @@ export const getSendBrandingTestEmailResponseMock = (
 ): SendBrandingTestEmail200 => ({
   sent: faker.datatype.boolean(),
   to: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getExportBrandingPackageResponseMock = (): ArrayBuffer =>
+  new ArrayBuffer(faker.number.int({ min: 1, max: 64 }));
+
+export const getImportBrandingPackageResponseMock = (
+  overrideResponse: Partial<Extract<BrandingPackageReport, object>> = {},
+): BrandingPackageReport => ({
+  ok: faker.datatype.boolean(),
+  dry_run: faker.datatype.boolean(),
+  applied: faker.datatype.boolean(),
+  problems: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    entry: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    reason: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  warnings: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  diff: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    key: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    current: faker.helpers.arrayElement([{}, undefined]),
+    incoming: faker.helpers.arrayElement([{}, undefined]),
+  })),
+  manifest: faker.helpers.arrayElement([
+    {
+      format: faker.number.int(),
+      exported_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+      deployment: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      product: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      pack_digest: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      generator: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    },
+    undefined,
+  ]),
+  version: faker.helpers.arrayElement([
+    {
+      digest: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      path: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      size: faker.number.int(),
+      stored_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+      product: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      exported_at: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  error: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getListBrandingPackageVersionsResponseMock = (
+  overrideResponse: Partial<
+    Extract<ListBrandingPackageVersions200, object>
+  > = {},
+): ListBrandingPackageVersions200 => ({
+  versions: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    digest: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    path: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    size: faker.number.int(),
+    stored_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    product: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    exported_at: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getRestoreBrandingPackageVersionResponseMock = (
+  overrideResponse: Partial<Extract<BrandingPackageReport, object>> = {},
+): BrandingPackageReport => ({
+  ok: faker.datatype.boolean(),
+  dry_run: faker.datatype.boolean(),
+  applied: faker.datatype.boolean(),
+  problems: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    entry: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    reason: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  warnings: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  diff: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    key: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    current: faker.helpers.arrayElement([{}, undefined]),
+    incoming: faker.helpers.arrayElement([{}, undefined]),
+  })),
+  manifest: faker.helpers.arrayElement([
+    {
+      format: faker.number.int(),
+      exported_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+      deployment: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      product: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      pack_digest: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      generator: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    },
+    undefined,
+  ]),
+  version: faker.helpers.arrayElement([
+    {
+      digest: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      path: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      size: faker.number.int(),
+      stored_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+      product: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      exported_at: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  error: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 
@@ -942,6 +1098,117 @@ export const getSendBrandingTestEmailMockHandler = (
   );
 };
 
+export const getExportBrandingPackageMockHandler = (
+  overrideResponse?:
+    | ArrayBuffer
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ArrayBuffer> | ArrayBuffer),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/admin/branding/package/administration",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      const binaryBody =
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getExportBrandingPackageResponseMock();
+      return HttpResponse.arrayBuffer(
+        binaryBody instanceof ArrayBuffer ? binaryBody : new ArrayBuffer(0),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getImportBrandingPackageMockHandler = (
+  overrideResponse?:
+    | BrandingPackageReport
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<BrandingPackageReport> | BrandingPackageReport),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/admin/branding/package/administration",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getImportBrandingPackageResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListBrandingPackageVersionsMockHandler = (
+  overrideResponse?:
+    | ListBrandingPackageVersions200
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) =>
+        | Promise<ListBrandingPackageVersions200>
+        | ListBrandingPackageVersions200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/admin/branding/package/administration/versions",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListBrandingPackageVersionsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRestoreBrandingPackageVersionMockHandler = (
+  overrideResponse?:
+    | BrandingPackageReport
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<BrandingPackageReport> | BrandingPackageReport),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/admin/branding/package/administration/versions/:digest/restore",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRestoreBrandingPackageVersionResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetUserProjectPermissionsMockHandler = (
   overrideResponse?:
     | UserProjectRoleMap
@@ -1165,6 +1432,10 @@ export const getAdminMock = () => [
   getSaveBrandingSettingsMockHandler(),
   getUploadBrandingAssetMockHandler(),
   getSendBrandingTestEmailMockHandler(),
+  getExportBrandingPackageMockHandler(),
+  getImportBrandingPackageMockHandler(),
+  getListBrandingPackageVersionsMockHandler(),
+  getRestoreBrandingPackageVersionMockHandler(),
   getGetUserProjectPermissionsMockHandler(),
   getUpdateUserProjectPermissionsMockHandler(),
   getRoleListMockHandler(),

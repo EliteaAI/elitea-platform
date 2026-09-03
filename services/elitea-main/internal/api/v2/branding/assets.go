@@ -53,6 +53,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -73,6 +74,10 @@ const (
 	KindFavicon   = "favicon"
 	KindLoginArt  = "login-art"
 	KindFont      = "font"
+	// KindPackage stores an imported branding package (a zip) so a previous
+	// brand can be restored (ADR-0024 decision 9). Never served by the
+	// download route: ParseAssetPath knows it, Download refuses it.
+	KindPackage = "package"
 )
 
 // kindSpec is one kind's rules: which extensions it accepts and how large
@@ -88,6 +93,9 @@ const (
 	maxImageBytes   = 512 * 1024
 	maxFaviconBytes = 64 * 1024
 	maxFontBytes    = 300 * 1024
+	// MaxPackageBytes bounds a branding package: every asset at its cap plus
+	// the previews and the pack is well under it.
+	MaxPackageBytes = 4 * 1024 * 1024
 )
 
 var (
@@ -108,6 +116,9 @@ var (
 	fontExtensions = map[string]string{
 		"woff2": "font/woff2",
 	}
+	packageExtensions = map[string]string{
+		"zip": "application/zip",
+	}
 )
 
 // kinds is the closed set. An unknown kind is a 404 on both routes.
@@ -118,6 +129,15 @@ var kinds = map[string]kindSpec{
 	KindFavicon:   {extensions: faviconExtensions, maxBytes: maxFaviconBytes},
 	KindLogoEmail: {extensions: rasterExtensions, maxBytes: maxImageBytes},
 	KindFont:      {extensions: fontExtensions, maxBytes: maxFontBytes},
+	KindPackage:   {extensions: packageExtensions, maxBytes: MaxPackageBytes},
+}
+
+// AssetInfo describes one stored object for listings.
+type AssetInfo struct {
+	Path         string
+	Kind         string
+	Size         int64
+	LastModified time.Time
 }
 
 // KnownKind reports whether kind is one the routes serve.
@@ -218,24 +238,8 @@ func (s *AssetStore) Put(ctx context.Context, kind, filename string, data []byte
 	if !s.Available() {
 		return Asset{}, ErrAssetStorageUnavailable
 	}
-	spec, known := kinds[kind]
-	if !known {
-		return Asset{}, refuse(http.StatusNotFound, "unknown asset kind %q", kind)
-	}
-	extension := strings.ToLower(strings.TrimPrefix(extensionOf(filename), "."))
-	contentType, allowed := spec.extensions[extension]
-	if !allowed {
-		return Asset{}, refuse(http.StatusUnsupportedMediaType,
-			"%s accepts %s, not %q", kind, extensionList(spec), extensionOrNone(extension))
-	}
-	if int64(len(data)) > spec.maxBytes {
-		return Asset{}, refuse(http.StatusRequestEntityTooLarge,
-			"%s must be at most %d KiB, got %d KiB", kind, spec.maxBytes/1024, (int64(len(data))+1023)/1024)
-	}
-	if len(data) == 0 {
-		return Asset{}, refuse(http.StatusBadRequest, "the file is empty")
-	}
-	if err := checkContent(extension, data); err != nil {
+	extension, contentType, err := ValidateAsset(kind, filename, data)
+	if err != nil {
 		return Asset{}, err
 	}
 
@@ -259,6 +263,91 @@ func (s *AssetStore) Put(ctx context.Context, kind, filename string, data []byte
 		Size:        int64(len(data)),
 		Path:        AssetPath(kind, digest, extension),
 	}, nil
+}
+
+// ValidateAsset applies a kind's rules to a file without storing it: the
+// extension allowlist, the byte cap, and the content sniff. The package
+// importer runs it over every entry before it stores anything.
+func ValidateAsset(kind, filename string, data []byte) (extension, contentType string, err error) {
+	spec, known := kinds[kind]
+	if !known {
+		return "", "", refuse(http.StatusNotFound, "unknown asset kind %q", kind)
+	}
+	extension = strings.ToLower(strings.TrimPrefix(extensionOf(filename), "."))
+	contentType, allowed := spec.extensions[extension]
+	if !allowed {
+		return "", "", refuse(http.StatusUnsupportedMediaType,
+			"%s accepts %s, not %q", kind, extensionList(spec), extensionOrNone(extension))
+	}
+	if int64(len(data)) > spec.maxBytes {
+		return "", "", refuse(http.StatusRequestEntityTooLarge,
+			"%s must be at most %d KiB, got %d KiB", kind, spec.maxBytes/1024, (int64(len(data))+1023)/1024)
+	}
+	if len(data) == 0 {
+		return "", "", refuse(http.StatusBadRequest, "the file is empty")
+	}
+	if err := checkContent(extension, data); err != nil {
+		return "", "", err
+	}
+	return extension, contentType, nil
+}
+
+// Get reads one asset's bytes by its public path.
+func (s *AssetStore) Get(ctx context.Context, path string) ([]byte, string, error) {
+	if !s.Available() {
+		return nil, "", ErrAssetStorageUnavailable
+	}
+	kind, digest, extension, ok := ParseAssetPath(path)
+	if !ok {
+		return nil, "", storage.ErrNotFound
+	}
+	ref, err := assetRef(kind, digest, extension)
+	if err != nil {
+		return nil, "", err
+	}
+	body, _, err := s.store.Get(ctx, ref, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(body, kinds[kind].maxBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	return data, kinds[kind].extensions[extension], nil
+}
+
+// ListInfos returns every stored asset with its size and modification time.
+func (s *AssetStore) ListInfos(ctx context.Context) ([]AssetInfo, error) {
+	if !s.Available() {
+		return nil, ErrAssetStorageUnavailable
+	}
+	bucket, err := storage.NewPlatformBucketRef(AssetBucket)
+	if err != nil {
+		return nil, err
+	}
+	var infos []AssetInfo
+	token := ""
+	for {
+		page, err := s.store.List(ctx, storage.ListQuery{Bucket: bucket, ContinuationToken: token})
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range page.Objects {
+			kind, file, found := strings.Cut(object.Key, "/")
+			if !found {
+				continue
+			}
+			path := AssetPathPrefix + kind + "/" + file
+			if _, _, _, ok := ParseAssetPath(path); ok {
+				infos = append(infos, AssetInfo{Path: path, Kind: kind, Size: object.Size, LastModified: object.LastModified})
+			}
+		}
+		if !page.IsTruncated || page.NextContinuationToken == "" {
+			return infos, nil
+		}
+		token = page.NextContinuationToken
+	}
 }
 
 // Delete removes one asset by its public path. Unknown paths are ignored.
@@ -317,7 +406,9 @@ func (s *AssetStore) Download(w http.ResponseWriter, r *http.Request) {
 	kind := chi.URLParam(r, "kind")
 	file := chi.URLParam(r, "file")
 	kind, digest, extension, ok := ParseAssetPath(AssetPathPrefix + kind + "/" + file)
-	if !ok {
+	if !ok || kind == KindPackage {
+		// A stored package is an admin-only artefact (the restore route reads
+		// it); it is never a browser subresource.
 		http.NotFound(w, r)
 		return
 	}
@@ -411,6 +502,10 @@ func checkContent(extension string, data []byte) error {
 	case "woff2":
 		if !bytes.HasPrefix(data, []byte("wOF2")) {
 			return refuse(http.StatusUnsupportedMediaType, "the file is not a WOFF2 font")
+		}
+	case "zip":
+		if !bytes.HasPrefix(data, []byte("PK\x03\x04")) {
+			return refuse(http.StatusUnsupportedMediaType, "the file is not a zip archive")
 		}
 	case "svg":
 		return checkSVG(data)

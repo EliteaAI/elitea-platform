@@ -54,13 +54,17 @@ import type {
 
 import type {
   BrandingAsset,
+  BrandingPackageReport,
   BrandingSettings,
   BrandingSettingsSave,
   ErrorResponse,
   GetUserProjectPermissionsParams,
   GlobalUserInviteRequest,
   GlobalUserInviteResult,
+  ImportBrandingPackageBody,
+  ImportBrandingPackageParams,
   ListAdminPublishedAgentsParams,
+  ListBrandingPackageVersions200,
   MessageResponse,
   ModeRoleAssignRequest,
   ModeRoleAssignResult,
@@ -2876,6 +2880,900 @@ export function useSendBrandingTestEmail<
 } {
   const queryOptions = getSendBrandingTestEmailQueryOptions(
     sendBrandingTestEmailBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type exportBrandingPackageResponse200 = {
+  data: Blob;
+  status: 200;
+};
+
+export type exportBrandingPackageResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type exportBrandingPackageResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type exportBrandingPackageResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type exportBrandingPackageResponseSuccess =
+  exportBrandingPackageResponse200 & {
+    headers: Headers;
+  };
+export type exportBrandingPackageResponseError = (
+  | exportBrandingPackageResponse401
+  | exportBrandingPackageResponse403
+  | exportBrandingPackageResponse503
+) & {
+  headers: Headers;
+};
+
+export type exportBrandingPackageResponse =
+  exportBrandingPackageResponseSuccess | exportBrandingPackageResponseError;
+
+export const getExportBrandingPackageUrl = () => {
+  return `/admin/branding/package/administration`;
+};
+
+/**
+ * manifest.json, brand-pack.json (asset fields point at assets/…), the
+ * asset files, a JSON Schema, a README, and previews: the login page
+ * and the e-mails rendered under this brand, and preview/app.html, an
+ * offline previewer with the pack inlined. Byte-exact with what the
+ * platform serves; a fresh deployment exports the product default.
+ * @summary Download the current brand as a branding package (zip)
+ */
+export const exportBrandingPackage = async (
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<exportBrandingPackageResponse> => {
+  return eliteaFetch<exportBrandingPackageResponse>(
+    getExportBrandingPackageUrl(),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getExportBrandingPackageQueryKey = () => {
+  return [`/admin/branding/package/administration`] as const;
+};
+
+export const getExportBrandingPackageQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportBrandingPackage>>,
+  TError = N401Response | N403Response | void,
+>(options?: {
+  query?: Partial<
+    UseQueryOptions<
+      Awaited<ReturnType<typeof exportBrandingPackage>>,
+      TError,
+      TData
+    >
+  >;
+  request?: SecondParameter<typeof eliteaFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getExportBrandingPackageQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof exportBrandingPackage>>
+  > = ({ signal }) => exportBrandingPackage({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportBrandingPackage>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ExportBrandingPackageQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportBrandingPackage>>
+>;
+export type ExportBrandingPackageQueryError =
+  N401Response | N403Response | void;
+
+export function useExportBrandingPackage<
+  TData = Awaited<ReturnType<typeof exportBrandingPackage>>,
+  TError = N401Response | N403Response | void,
+>(
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportBrandingPackage>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportBrandingPackage>>,
+          TError,
+          Awaited<ReturnType<typeof exportBrandingPackage>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useExportBrandingPackage<
+  TData = Awaited<ReturnType<typeof exportBrandingPackage>>,
+  TError = N401Response | N403Response | void,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportBrandingPackage>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportBrandingPackage>>,
+          TError,
+          Awaited<ReturnType<typeof exportBrandingPackage>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useExportBrandingPackage<
+  TData = Awaited<ReturnType<typeof exportBrandingPackage>>,
+  TError = N401Response | N403Response | void,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportBrandingPackage>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Download the current brand as a branding package (zip)
+ */
+
+export function useExportBrandingPackage<
+  TData = Awaited<ReturnType<typeof exportBrandingPackage>>,
+  TError = N401Response | N403Response | void,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportBrandingPackage>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getExportBrandingPackageQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type importBrandingPackageResponse200 = {
+  data: BrandingPackageReport;
+  status: 200;
+};
+
+export type importBrandingPackageResponse400 = {
+  data: BrandingPackageReport;
+  status: 400;
+};
+
+export type importBrandingPackageResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type importBrandingPackageResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type importBrandingPackageResponse413 = {
+  data: void;
+  status: 413;
+};
+
+export type importBrandingPackageResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type importBrandingPackageResponseSuccess =
+  importBrandingPackageResponse200 & {
+    headers: Headers;
+  };
+export type importBrandingPackageResponseError = (
+  | importBrandingPackageResponse400
+  | importBrandingPackageResponse401
+  | importBrandingPackageResponse403
+  | importBrandingPackageResponse413
+  | importBrandingPackageResponse503
+) & {
+  headers: Headers;
+};
+
+export type importBrandingPackageResponse =
+  importBrandingPackageResponseSuccess | importBrandingPackageResponseError;
+
+export const getImportBrandingPackageUrl = (
+  params?: ImportBrandingPackageParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/admin/branding/package/administration?${stringifiedParams}`
+    : `/admin/branding/package/administration`;
+};
+
+/**
+ * A multipart form with one `file` part (the zip, at most 4 MiB). The
+ * package is read strictly — entry allowlist, zip-slip protection,
+ * per-kind asset caps and sniffers, the pack schema — and every problem
+ * is reported with the entry named. With `dry_run=true` the answer is
+ * the report and a field-by-field diff against the current brand and
+ * nothing changes. Without it the assets are stored, every branding key
+ * is set from the pack in one transaction, the resolver is invalidated,
+ * and the package is kept for rollback (the last five are kept).
+ * @summary Import a branding package, with a dry run
+ */
+export const importBrandingPackage = async (
+  importBrandingPackageBody: ImportBrandingPackageBody,
+  params?: ImportBrandingPackageParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<importBrandingPackageResponse> => {
+  const formData = new FormData();
+  formData.append(`file`, importBrandingPackageBody.file);
+
+  return eliteaFetch<importBrandingPackageResponse>(
+    getImportBrandingPackageUrl(params),
+    {
+      ...options,
+      method: "POST",
+      body: formData,
+    },
+  );
+};
+
+export const getImportBrandingPackageQueryKey = (
+  importBrandingPackageBody?: ImportBrandingPackageBody,
+  params?: ImportBrandingPackageParams,
+) => {
+  return [
+    "POST",
+    `/admin/branding/package/administration`,
+    ...(params ? [params] : []),
+    importBrandingPackageBody,
+  ] as const;
+};
+
+export const getImportBrandingPackageQueryOptions = <
+  TData = Awaited<ReturnType<typeof importBrandingPackage>>,
+  TError = BrandingPackageReport | N401Response | N403Response | void,
+>(
+  importBrandingPackageBody: ImportBrandingPackageBody,
+  params?: ImportBrandingPackageParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof importBrandingPackage>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getImportBrandingPackageQueryKey(importBrandingPackageBody, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof importBrandingPackage>>
+  > = ({ signal }) =>
+    importBrandingPackage(importBrandingPackageBody, params, {
+      signal,
+      ...requestOptions,
+    });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof importBrandingPackage>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ImportBrandingPackageQueryResult = NonNullable<
+  Awaited<ReturnType<typeof importBrandingPackage>>
+>;
+export type ImportBrandingPackageQueryError =
+  BrandingPackageReport | N401Response | N403Response | void;
+
+export function useImportBrandingPackage<
+  TData = Awaited<ReturnType<typeof importBrandingPackage>>,
+  TError = BrandingPackageReport | N401Response | N403Response | void,
+>(
+  importBrandingPackageBody: ImportBrandingPackageBody,
+  params: undefined | ImportBrandingPackageParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof importBrandingPackage>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof importBrandingPackage>>,
+          TError,
+          Awaited<ReturnType<typeof importBrandingPackage>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useImportBrandingPackage<
+  TData = Awaited<ReturnType<typeof importBrandingPackage>>,
+  TError = BrandingPackageReport | N401Response | N403Response | void,
+>(
+  importBrandingPackageBody: ImportBrandingPackageBody,
+  params?: ImportBrandingPackageParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof importBrandingPackage>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof importBrandingPackage>>,
+          TError,
+          Awaited<ReturnType<typeof importBrandingPackage>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useImportBrandingPackage<
+  TData = Awaited<ReturnType<typeof importBrandingPackage>>,
+  TError = BrandingPackageReport | N401Response | N403Response | void,
+>(
+  importBrandingPackageBody: ImportBrandingPackageBody,
+  params?: ImportBrandingPackageParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof importBrandingPackage>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Import a branding package, with a dry run
+ */
+
+export function useImportBrandingPackage<
+  TData = Awaited<ReturnType<typeof importBrandingPackage>>,
+  TError = BrandingPackageReport | N401Response | N403Response | void,
+>(
+  importBrandingPackageBody: ImportBrandingPackageBody,
+  params?: ImportBrandingPackageParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof importBrandingPackage>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getImportBrandingPackageQueryOptions(
+    importBrandingPackageBody,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listBrandingPackageVersionsResponse200 = {
+  data: ListBrandingPackageVersions200;
+  status: 200;
+};
+
+export type listBrandingPackageVersionsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type listBrandingPackageVersionsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listBrandingPackageVersionsResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type listBrandingPackageVersionsResponseSuccess =
+  listBrandingPackageVersionsResponse200 & {
+    headers: Headers;
+  };
+export type listBrandingPackageVersionsResponseError = (
+  | listBrandingPackageVersionsResponse401
+  | listBrandingPackageVersionsResponse403
+  | listBrandingPackageVersionsResponse503
+) & {
+  headers: Headers;
+};
+
+export type listBrandingPackageVersionsResponse =
+  | listBrandingPackageVersionsResponseSuccess
+  | listBrandingPackageVersionsResponseError;
+
+export const getListBrandingPackageVersionsUrl = () => {
+  return `/admin/branding/package/administration/versions`;
+};
+
+/**
+ * @summary List the kept branding packages, newest first
+ */
+export const listBrandingPackageVersions = async (
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listBrandingPackageVersionsResponse> => {
+  return eliteaFetch<listBrandingPackageVersionsResponse>(
+    getListBrandingPackageVersionsUrl(),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListBrandingPackageVersionsQueryKey = () => {
+  return [`/admin/branding/package/administration/versions`] as const;
+};
+
+export const getListBrandingPackageVersionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+  TError = N401Response | N403Response | void,
+>(options?: {
+  query?: Partial<
+    UseQueryOptions<
+      Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+      TError,
+      TData
+    >
+  >;
+  request?: SecondParameter<typeof eliteaFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListBrandingPackageVersionsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listBrandingPackageVersions>>
+  > = ({ signal }) =>
+    listBrandingPackageVersions({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListBrandingPackageVersionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listBrandingPackageVersions>>
+>;
+export type ListBrandingPackageVersionsQueryError =
+  N401Response | N403Response | void;
+
+export function useListBrandingPackageVersions<
+  TData = Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+  TError = N401Response | N403Response | void,
+>(
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+          TError,
+          Awaited<ReturnType<typeof listBrandingPackageVersions>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListBrandingPackageVersions<
+  TData = Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+  TError = N401Response | N403Response | void,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+          TError,
+          Awaited<ReturnType<typeof listBrandingPackageVersions>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListBrandingPackageVersions<
+  TData = Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+  TError = N401Response | N403Response | void,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List the kept branding packages, newest first
+ */
+
+export function useListBrandingPackageVersions<
+  TData = Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+  TError = N401Response | N403Response | void,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listBrandingPackageVersions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListBrandingPackageVersionsQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type restoreBrandingPackageVersionResponse200 = {
+  data: BrandingPackageReport;
+  status: 200;
+};
+
+export type restoreBrandingPackageVersionResponse400 = {
+  data: BrandingPackageReport;
+  status: 400;
+};
+
+export type restoreBrandingPackageVersionResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type restoreBrandingPackageVersionResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type restoreBrandingPackageVersionResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type restoreBrandingPackageVersionResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type restoreBrandingPackageVersionResponseSuccess =
+  restoreBrandingPackageVersionResponse200 & {
+    headers: Headers;
+  };
+export type restoreBrandingPackageVersionResponseError = (
+  | restoreBrandingPackageVersionResponse400
+  | restoreBrandingPackageVersionResponse401
+  | restoreBrandingPackageVersionResponse403
+  | restoreBrandingPackageVersionResponse404
+  | restoreBrandingPackageVersionResponse503
+) & {
+  headers: Headers;
+};
+
+export type restoreBrandingPackageVersionResponse =
+  | restoreBrandingPackageVersionResponseSuccess
+  | restoreBrandingPackageVersionResponseError;
+
+export const getRestoreBrandingPackageVersionUrl = (digest: string) => {
+  return `/admin/branding/package/administration/versions/${digest}/restore`;
+};
+
+/**
+ * The stored package is applied exactly as an import would be; it is not stored again.
+ * @summary Re-import a kept branding package
+ */
+export const restoreBrandingPackageVersion = async (
+  digest: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<restoreBrandingPackageVersionResponse> => {
+  return eliteaFetch<restoreBrandingPackageVersionResponse>(
+    getRestoreBrandingPackageVersionUrl(digest),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getRestoreBrandingPackageVersionQueryKey = (digest: string) => {
+  return [
+    "POST",
+    `/admin/branding/package/administration/versions/${digest}/restore`,
+  ] as const;
+};
+
+export const getRestoreBrandingPackageVersionQueryOptions = <
+  TData = Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+  TError =
+    BrandingPackageReport | N401Response | N403Response | N404Response | void,
+>(
+  digest: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getRestoreBrandingPackageVersionQueryKey(digest);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof restoreBrandingPackageVersion>>
+  > = ({ signal }) =>
+    restoreBrandingPackageVersion(digest, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: digest !== null && digest !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type RestoreBrandingPackageVersionQueryResult = NonNullable<
+  Awaited<ReturnType<typeof restoreBrandingPackageVersion>>
+>;
+export type RestoreBrandingPackageVersionQueryError =
+  BrandingPackageReport | N401Response | N403Response | N404Response | void;
+
+export function useRestoreBrandingPackageVersion<
+  TData = Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+  TError =
+    BrandingPackageReport | N401Response | N403Response | N404Response | void,
+>(
+  digest: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+          TError,
+          Awaited<ReturnType<typeof restoreBrandingPackageVersion>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useRestoreBrandingPackageVersion<
+  TData = Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+  TError =
+    BrandingPackageReport | N401Response | N403Response | N404Response | void,
+>(
+  digest: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+          TError,
+          Awaited<ReturnType<typeof restoreBrandingPackageVersion>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useRestoreBrandingPackageVersion<
+  TData = Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+  TError =
+    BrandingPackageReport | N401Response | N403Response | N404Response | void,
+>(
+  digest: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Re-import a kept branding package
+ */
+
+export function useRestoreBrandingPackageVersion<
+  TData = Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+  TError =
+    BrandingPackageReport | N401Response | N403Response | N404Response | void,
+>(
+  digest: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof restoreBrandingPackageVersion>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getRestoreBrandingPackageVersionQueryOptions(
+    digest,
     options,
   );
 

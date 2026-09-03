@@ -27,6 +27,7 @@ package browserauth
 // as before with the product name "Elitea".
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -187,4 +188,34 @@ func loginContentSecurityPolicy(brandStyleSource string) string {
 	}
 	return "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 		"img-src 'self'; font-src 'self'; style-src " + styleSources
+}
+
+// RenderLoginPreview renders the login page as it would look under pack, for
+// a branding package's preview folder (ADR-0024 decision 9). It is the same
+// template and the same allowlists as the live page, with a placeholder
+// transaction target and no error state; the form posts nowhere useful from
+// a file on disk, which is the point of a preview.
+func RenderLoginPreview(pack *v2branding.Pack) ([]byte, error) {
+	page, err := template.New("login.html").Parse(loginTemplateSource)
+	if err != nil {
+		return nil, err
+	}
+	brand := loginBrand{ProductName: DefaultProductName}
+	if pack != nil {
+		brand = loginBrandFromPack(pack)
+	}
+	var body bytes.Buffer
+	if err := page.Execute(&body, struct {
+		Target string
+		Error  bool
+		Style  template.CSS
+		Brand  loginBrand
+	}{
+		Target: "preview",
+		Style:  template.CSS(loginStyleSource), //nolint:gosec // compiled into this binary
+		Brand:  brand,
+	}); err != nil {
+		return nil, err
+	}
+	return body.Bytes(), nil
 }

@@ -5630,6 +5630,67 @@ components:
         path:
           type: string
           description: The public same-origin path, /api/v2/branding/assets/{kind}/{digest}.{ext}.
+    BrandingPackageProblem:
+      type: object
+      required: [entry, reason]
+      properties:
+        entry: { type: string }
+        reason: { type: string }
+    BrandingPackageChange:
+      type: object
+      required: [key]
+      properties:
+        key: { type: string }
+        current:
+          description: The current value of the key (any JSON).
+          x-elitea-passthrough: >-
+            NOTE(W2): brandpackage.Diff compares the current and incoming
+            section values by their JSON encoding
+            (internal/application/brandpackage/package.go:688); the value's
+            shape is the section key's (string, number, array, object).
+        incoming:
+          description: The value the package would set (any JSON).
+          x-elitea-passthrough: >-
+            NOTE(W2): as `current` — internal/application/brandpackage/package.go:688.
+    BrandingPackageManifest:
+      type: object
+      required: [format, exported_at, product, pack_digest, generator]
+      properties:
+        format: { type: integer }
+        exported_at: { type: string, format: date-time }
+        deployment: { type: string }
+        product: { type: string }
+        pack_digest: { type: string }
+        generator: { type: string }
+    BrandingPackageVersion:
+      type: object
+      required: [digest, path, size, stored_at]
+      properties:
+        digest: { type: string }
+        path: { type: string }
+        size: { type: integer, format: int64 }
+        stored_at: { type: string, format: date-time }
+        product: { type: string }
+        exported_at: { type: string }
+    BrandingPackageReport:
+      type: object
+      required: [ok, dry_run, applied, problems, warnings, diff]
+      properties:
+        ok: { type: boolean }
+        dry_run: { type: boolean }
+        applied: { type: boolean }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/BrandingPackageProblem' }
+        warnings:
+          type: array
+          items: { type: string }
+        diff:
+          type: array
+          items: { $ref: '#/components/schemas/BrandingPackageChange' }
+        manifest: { $ref: '#/components/schemas/BrandingPackageManifest' }
+        version: { $ref: '#/components/schemas/BrandingPackageVersion' }
+        error: { type: string }
     BrandingSettingsSave:
       type: object
       required: [values]
@@ -6697,6 +6758,133 @@ paths:
           description: The mail relay refused the message.
         '503':
           description: Outbound e-mail is not configured on this deployment.
+
+  /admin/branding/package/administration:
+    # ADR-0024 decision 9: the branding package — a zip an administrator
+    # downloads, restyles offline and uploads back. Gated on
+    # configuration.branding.
+    get:
+      operationId: exportBrandingPackage
+      summary: Download the current brand as a branding package (zip)
+      description: |
+        manifest.json, brand-pack.json (asset fields point at assets/…), the
+        asset files, a JSON Schema, a README, and previews: the login page
+        and the e-mails rendered under this brand, and preview/app.html, an
+        offline previewer with the pack inlined. Byte-exact with what the
+        platform serves; a fresh deployment exports the product default.
+      tags: [admin]
+      responses:
+        '200':
+          description: The package
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: Branding packages are not available on this deployment.
+    post:
+      operationId: importBrandingPackage
+      summary: Import a branding package, with a dry run
+      description: |
+        A multipart form with one `file` part (the zip, at most 4 MiB). The
+        package is read strictly — entry allowlist, zip-slip protection,
+        per-kind asset caps and sniffers, the pack schema — and every problem
+        is reported with the entry named. With `dry_run=true` the answer is
+        the report and a field-by-field diff against the current brand and
+        nothing changes. Without it the assets are stored, every branding key
+        is set from the pack in one transaction, the resolver is invalidated,
+        and the package is kept for rollback (the last five are kept).
+      tags: [admin]
+      parameters:
+        - name: dry_run
+          in: query
+          required: false
+          schema: { type: boolean }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: The report; `applied` says whether the brand changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingPackageReport'
+        '400':
+          description: The package was refused; `problems` names every entry and reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingPackageReport'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '413':
+          description: The upload exceeds 4 MiB.
+        '503':
+          description: Branding packages are not available on this deployment.
+
+  /admin/branding/package/administration/versions:
+    get:
+      operationId: listBrandingPackageVersions
+      summary: List the kept branding packages, newest first
+      tags: [admin]
+      responses:
+        '200':
+          description: The kept packages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BrandingPackageVersion'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: Branding packages are not available on this deployment.
+
+  /admin/branding/package/administration/versions/{digest}/restore:
+    post:
+      operationId: restoreBrandingPackageVersion
+      summary: Re-import a kept branding package
+      description: The stored package is applied exactly as an import would be; it is not stored again.
+      tags: [admin]
+      parameters:
+        - name: digest
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingPackageReport'
+        '400':
+          description: The stored package no longer passes the import rules.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingPackageReport'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '503':
+          description: Branding packages are not available on this deployment.
 
   /admin/user_project_permissions/administration:
     get:

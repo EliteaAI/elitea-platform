@@ -251,3 +251,20 @@ func TestResolver_FontFacesOverlay(t *testing.T) {
 		t.Fatalf("body does not carry the face: %s", snap.Body)
 	}
 }
+
+func TestResolver_SchemeTokensWinOverDerivation(t *testing.T) {
+	r := NewResolver(ResolverConfig{loadOverlay: overlayLoader(platformconfig.BrandingOverlay{
+		Hue:          "#FF6600",
+		SchemeTokens: map[string]map[string]string{"light": {"primary.main": "#123456"}},
+	}, nil)})
+	snap := r.Current(context.Background())
+	if snap.Pack == nil {
+		t.Fatal("no pack")
+	}
+	if snap.Pack.Schemes.Light["primary.main"] != "#123456" || len(snap.Pack.Schemes.Light) != 1 {
+		t.Fatalf("light tokens = %v", snap.Pack.Schemes.Light)
+	}
+	if len(snap.Pack.Schemes.Dark) != 0 {
+		t.Fatalf("dark should derive from the hue, got %d stated tokens", len(snap.Pack.Schemes.Dark))
+	}
+}
