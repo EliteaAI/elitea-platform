@@ -39,7 +39,13 @@ dependencies = [
   #
   # To move them: re-run `uv pip compile` over this file's dependencies plus
   # the engine extra, and take what it lands on.
-  "fastapi==0.141.1",
+  #
+  # #740 (a grouped Dependabot bump) moved this pin to 0.141.1 WITHOUT doing
+  # that, and the closure stopped resolving the same day: elitea-sdk 0.9.40
+  # pins `fastapi==0.115.9` exactly, so the two requirements cannot both hold.
+  # Nothing reported it, because nothing in CI resolves this extra — which is
+  # what scripts/ci/check-engine-closures.sh now does.
+  "fastapi==0.115.9",
   "pydantic>=2.10,<3",
   # The artifact READ path (elitea_inventory.artifacts) speaks `requests`, and
   # it is in the shell, not the engine: a query tool with no engine still has
@@ -79,6 +85,16 @@ dependencies = [
 #   langfuse
 #       optional in the legacy plugin too; the copied
 #       `engine/utils/langfuse_callback.py` degrades without it.
+#
+# CLOSURE-STAMP. The line below names the sha256 of this package's engine copy
+# manifest (src/*/engine/COPY_MANIFEST.json). It exists because the pins in
+# this extra ARE the resolution of THAT copy: moving one without the other
+# leaves a frozen engine running against versions nobody resolved it against,
+# and neither the copy's digest test nor a resolution check can see that on its
+# own. scripts/ci/check-engine-closures.sh refuses a tree where the two
+# disagree, and scripts/ci/refresh-engine-closure.py is what re-resolves the
+# closure as a SET and re-writes this line.
+# closure-stamp: COPY_MANIFEST.json sha256 5096daf12f7039a84b307c3bc7006c286bff53960adba0ed5bb1d6b35b4b86c3
 engine = [
   # Pinned to the SAME version services/elitea-worker-python pins, not to the
   # legacy plugin's floor (>=0.6.33). Two services on one platform resolving
@@ -106,7 +122,12 @@ engine = [
   # chromadb and mcp are the only two transitive packages that bound uvicorn in
   # the resolution; pinning chromadb alone was not enough, and the build was
   # still walking backwards through uvicorn releases.
-  "mcp==2.1.1",
+  #
+  # #741 moved this pin to 2.1.1, the second half of the same silent break:
+  # elitea-sdk 0.9.40 requires `mcp>=1.24,<2`, so a 2.x pin here is
+  # unsatisfiable with the SDK this extra also names. 1.29.1 is the version the
+  # resolution lands on with the SDK's bound applied.
+  "mcp==1.29.1",
   # langsmith, bounded for the reason services/elitea-worker-python states at
   # length and this build then reproduced verbatim:
   #

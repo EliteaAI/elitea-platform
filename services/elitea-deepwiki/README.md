@@ -107,6 +107,60 @@ providers, each with its own precedence chain over a dozen differently-prefixed
 keys. Only the GitHub path has a fixture; the other three are carried on trust,
 which is an argument for copying it rather than against.
 
+### The closure moves as a set, and Dependabot is silent on it
+
+The `engine` extra in `pyproject.toml` is not a list of dependencies. It is the
+**resolved closure of this particular copy** — ~92 exactly-pinned, mutually
+bounding distributions. Three rules follow, and all three are enforced:
+
+1. **The pins move together, never one at a time.** Eight Dependabot bumps
+   (#677–#679, #757–#761) each moved one pin inside this closure, and each made
+   `pip install '.[engine,storage-postgres]'` a `ResolutionImpossible`. The
+   `-engine` image could not be built at all for days. #740 and #741 did the
+   same to `services/elitea-inventory`, and that one was still broken on `main`
+   until it was found by the gate below.
+2. **The pins move together with the copy.** They are the resolution *of* the
+   engine under `src/elitea_deepwiki/engine/`, so re-copying the engine and
+   leaving the closure alone leaves a frozen engine running against versions
+   nobody resolved it against. `pyproject.toml` therefore carries a
+   `# closure-stamp: COPY_MANIFEST.json sha256 …` line, and the gate refuses a
+   tree where the copy moved and the stamp did not.
+3. **Dependabot is deliberately silent here.** `.github/dependabot.yml` gives
+   this package and `services/elitea-inventory` their own pip entry with
+   `ignore: "*"` and `open-pull-requests-limit: 0`. Security alerts still
+   appear in the repository's Dependabot tab; what is switched off is the
+   automatic one-pin-at-a-time pull request, because that is the thing that
+   broke the closure ten times.
+
+Validate the closure — resolution only, no install, no image build, seconds
+rather than the tens of minutes and >35 GB the `-engine` image needs:
+
+```bash
+bash scripts/ci/check-engine-closures.sh
+```
+
+It runs on every pull request and daily (the `engine-closures` job in
+`.github/workflows/dependency-scanning.yml`), and it resolves each package with
+the resolver its own `Containerfile` uses — pip here, uv for Inventory.
+
+Move the closure — the route a security fix takes, since rule 3 means no
+scanner will propose one:
+
+```bash
+python3 scripts/ci/refresh-engine-closure.py --check   # report drift, exit 3 if any
+python3 scripts/ci/refresh-engine-closure.py           # re-resolve and rewrite
+```
+
+It re-resolves the whole set at once to the newest versions still mutually
+compatible, and re-writes the stamp.
+`.github/workflows/engine-closure-refresh.yml` runs it weekly and opens a
+**draft** pull request when the answer moves. That pull request is a proposal:
+resolution proves nothing about whether the frozen copy's own imports survive
+(#677 moved `anthropic` across a major and resolved perfectly well). The
+acceptance gates are in its checklist and neither is a CI check — the
+`-engine` image building, and `deepwiki-real-engine.yml` green on the branch
+(`gh workflow run deepwiki-real-engine.yml --ref <branch>`).
+
 ### Two ADR violations that were live in the copy
 
 ADR-0022 decision 6 says the `X-SECRET` shared-string header is retired — "no
