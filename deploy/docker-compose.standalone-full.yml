@@ -800,6 +800,18 @@ services:
       #   volumes: [./brand-pack.json:/etc/elitea/brand-pack.json:ro]
       #   BRAND_PACK_PATH: /etc/elitea/brand-pack.json
       BRAND_PACK_PATH: "${BRAND_PACK_PATH:-}"
+      # Outbound e-mail (ADR-0024 WP7). Unset = no e-mail. Point SMTP_HOST at a
+      # relay (a local MailHog/Mailpit on 1025 with SMTP_TLS=none works) and
+      # set EMAIL_FROM and PUBLIC_BASE_URL to see branded invitations.
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SMTP_TLS: "${SMTP_TLS:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      EMAIL_REPLY_TO: "${EMAIL_REPLY_TO:-}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      ELITEA_EMAIL_SUPPRESS: "${ELITEA_EMAIL_SUPPRESS:-}"
       # ELITEA_VAULT_MASTER_KEY_FILE is deliberately NOT set, and the material is
       # still minted so a deployment that wants key wrapping can point at it.
       #

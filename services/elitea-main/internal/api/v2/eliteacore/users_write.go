@@ -47,6 +47,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -71,6 +74,10 @@ type inviteResult struct {
 	Status string `json:"status"`
 	Email  string `json:"email"`
 	ID     string `json:"id,omitempty"`
+	// InvitationDelivered says whether an invitation e-mail went out for this
+	// address (ADR-0024 WP7); false when no mailer is configured, when the
+	// relay refused, or when the row was an error.
+	InvitationDelivered bool `json:"invitation_delivered"`
 }
 
 // userWriteContext performs the three checks every write verb shares and
@@ -240,11 +247,13 @@ func (h *Handler) UsersCreate(w http.ResponseWriter, r *http.Request) {
 				Email:  email,
 			})
 		default:
+			delivered := h.deliverProjectInvitation(r, projectID, email)
 			results = append(results, inviteResult{
-				Msg:    fmt.Sprintf("user %s added to project %d", email, projectID),
-				Status: "ok",
-				Email:  email,
-				ID:     strconv.Itoa(userID),
+				Msg:                 fmt.Sprintf("user %s added to project %d", email, projectID),
+				Status:              "ok",
+				Email:               email,
+				ID:                  strconv.Itoa(userID),
+				InvitationDelivered: delivered,
 			})
 		}
 	}
@@ -254,6 +263,28 @@ func (h *Handler) UsersCreate(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, results)
+}
+
+// deliverProjectInvitation mails the invitation when a mailer is wired
+// (ADR-0024 WP7). The membership is already written; a relay failure is
+// logged and reported as not delivered, never as a failed invite.
+func (h *Handler) deliverProjectInvitation(r *http.Request, projectID int, email string) bool {
+	if h.mailer == nil || !h.mailer.Configured() {
+		return false
+	}
+	projectName := ""
+	_ = h.pool.QueryRow(r.Context(), `SELECT name FROM centry.project WHERE id = $1`, projectID).Scan(&projectName)
+	invitedBy := ""
+	if principal, ok := auth.UserFromContext(r.Context()); ok {
+		invitedBy = principal.Email
+	}
+	if err := h.mailer.SendInvitation(r.Context(), appmailer.Invitation{
+		Email: email, InvitedBy: invitedBy, ProjectName: projectName,
+	}); err != nil {
+		slog.Warn("project invitation e-mail not sent", "email", email, "project_id", projectID, "reason", err.Error())
+		return false
+	}
+	return true
 }
 
 // inviteOne runs one address in its own transaction so a rejected address

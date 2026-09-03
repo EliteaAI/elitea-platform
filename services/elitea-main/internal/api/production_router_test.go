@@ -1912,6 +1912,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/scim/v2/Users/{id}",
 		"POST /api/v2/admin/auth_users/{mode}",
 		"POST /api/v2/admin/branding/assets/{kind}",
+		"POST /api/v2/admin/branding/test_email/administration",
 		"POST /api/v2/admin/gateway/governance",
 		"POST /api/v2/admin/gateway/governance/validate-cel",
 		"POST /api/v2/admin/gateway/platform_models/",

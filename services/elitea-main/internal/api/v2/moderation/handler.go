@@ -5,8 +5,43 @@
 // requester nor the moderator may write the fields they are not writing.
 package moderation
 
-import "github.com/jackc/pgx/v5/pgxpool"
+import (
+	"context"
 
-type Handler struct{ pool *pgxpool.Pool }
+	"github.com/jackc/pgx/v5/pgxpool"
 
-func NewHandler(pool *pgxpool.Pool) *Handler { return &Handler{pool: pool} }
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
+)
+
+type Handler struct {
+	pool *pgxpool.Pool
+	// Outbound e-mail for decision notices (ADR-0024 WP7); nil means the
+	// in-app notification row is the only delivery, as before.
+	mailer DecisionMailer
+}
+
+// DecisionMailer is the seam to internal/application/mailer.
+type DecisionMailer interface {
+	Configured() bool
+	SendModerationDecision(ctx context.Context, decision appmailer.ModerationDecision) error
+}
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithMailer supplies the composer decision notices are mailed through.
+func WithMailer(m DecisionMailer) Option {
+	return func(h *Handler) {
+		if m != nil {
+			h.mailer = m
+		}
+	}
+}
+
+func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
+}

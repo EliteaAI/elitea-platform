@@ -2009,6 +2009,12 @@ components:
         id:
           type: string
           description: Numeric id of the invited user, present only when status is ok.
+        invitation_delivered:
+          type: boolean
+          description: >
+            True when an invitation e-mail went out for this address
+            (ADR-0024 WP7); false without SMTP, on a relay refusal, or on an
+            error row.
       description: >
         One element of the per-address array pylon's invite returns. The
         response carries one of these per requested address, and the whole
@@ -5700,6 +5706,8 @@ components:
             tagline: { type: string }
             docsUrl: { type: string }
             supportUrl: { type: string }
+            senderName: { type: string, description: "Display name outbound e-mail is sent as." }
+            supportEmail: { type: string, description: "Address the app's contact-support paths use." }
         assets:
           type: object
           required: [logoFull, logoMark, favicon]
@@ -5708,6 +5716,7 @@ components:
             logoMark: { type: string }
             favicon: { type: string }
             loginArt: { type: string }
+            logoEmail: { type: string, description: "Raster logo for e-mail, a same-origin asset path." }
         typography:
           type: object
           required: [fontFamily, fontFamilyMono, baseSize, scale]
@@ -5801,12 +5810,15 @@ components:
         invitation_delivered:
           type: boolean
           description: >
-            Always false. Sending an invitation is an external
-            identity-provider call with no equivalent in this service, and a
-            bare `{"ok": true}` would be rendered as "invitation sent".
+            True when an invitation e-mail was sent (ADR-0024 WP7: outbound
+            e-mail configured through SMTP_HOST and the relay accepted the
+            message). False on a deployment without SMTP, on a shadow
+            deployment, or when the relay refused — `invitation_delivery`
+            says which. A bare `{"ok": true}` would be rendered as
+            "invitation sent", so the field is always present.
         invitation_delivery:
           type: string
-          description: Why nothing was delivered, in full.
+          description: What happened to the e-mail, in full.
 
     UserProjectRoleMap:
       type: object
@@ -6517,10 +6529,12 @@ paths:
         project and no role, so the console can then place them. The address is
         resolved by email on first login.
 
-        NO INVITATION IS DELIVERED. The reference calls an external identity
-        service to create and mail an invitation token; that integration has no
-        equivalent here, so `invitation_delivered` is false and
-        `invitation_delivery` says why. Answering a bare `{"ok": true}` would
+        An invitation e-mail is sent when outbound e-mail is configured
+        (SMTP_HOST; ADR-0024 WP7), branded with the deployment's pack and
+        linking to the deployment's public URL — the account is resolved by
+        e-mail on first login, so the link carries no token.
+        `invitation_delivered` reports whether it went out and
+        `invitation_delivery` why not; answering a bare `{"ok": true}` would
         be rendered by a console as "invitation sent".
 
         Inviting an address that already has an account is not an error and is
@@ -6643,6 +6657,46 @@ paths:
           description: The extension or the content is not one the kind accepts.
         '503':
           description: No object store is configured on this deployment.
+
+  /admin/branding/test_email/administration:
+    post:
+      operationId: sendBrandingTestEmail
+      summary: Send one branded test e-mail
+      description: |
+        ADR-0024 WP7. Renders the test template against the resolved brand
+        pack and sends it to `to`, so an administrator can see the e-mail
+        brand without inviting anyone. 503 when no SMTP is configured or
+        sending is suppressed, 400 for an address that is not a plain
+        addr-spec, 502 when the relay refused (the reason is in `error`).
+        Gated on `configuration.branding`.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, format: email }
+      responses:
+        '200':
+          description: The message was accepted by the relay.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, to]
+                properties:
+                  sent: { type: boolean }
+                  to: { type: string }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '502':
+          description: The mail relay refused the message.
+        '503':
+          description: Outbound e-mail is not configured on this deployment.
 
   /admin/user_project_permissions/administration:
     get:

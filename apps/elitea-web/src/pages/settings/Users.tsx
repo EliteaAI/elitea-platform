@@ -309,10 +309,17 @@ export function Users({ projectId }: UsersProps) {
       setToastType('error');
       setToastMessage(errorMessage(error));
     },
-    onInviteSuccess: () => {
+    onInviteSuccess: (outcome) => {
       setInviteOpen(false);
       setToastType('success');
-      setToastMessage(t('shared.ui.settings.users.userInvited', 'The user has been invited'));
+      // "Invited" only when an invitation e-mail actually went out; a
+      // deployment without outbound e-mail has ADDED the user (they sign in
+      // on their own) and the toast must not claim otherwise (ADR-0024 WP7).
+      setToastMessage(
+        outcome.delivered
+          ? t('shared.ui.settings.users.userInvited', 'The user has been invited by e-mail')
+          : t('shared.ui.settings.users.userAdded', 'The user has been added. No invitation e-mail was sent.'),
+      );
       userListQuery.refetch?.();
     },
     onInviteError: (error: unknown) => {

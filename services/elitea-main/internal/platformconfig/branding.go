@@ -53,6 +53,8 @@ const (
 	KeyBrandingProductTagline   = "product_tagline"
 	KeyBrandingDocsURL          = "docs_url"
 	KeyBrandingSupportURL       = "support_url"
+	KeyBrandingSenderName       = "sender_name"
+	KeyBrandingSupportEmail     = "support_email"
 	KeyBrandingHue              = "brand_hue"
 	KeyBrandingOnBrand          = "brand_on_brand"
 	KeyBrandingFontFamily       = "font_family"
@@ -68,6 +70,7 @@ const (
 	KeyBrandingLogoMark         = "logo_mark"
 	KeyBrandingFavicon          = "favicon"
 	KeyBrandingLoginArt         = "login_art"
+	KeyBrandingLogoEmail        = "logo_email"
 	// KeyBrandingFontFaces holds an array of {family, url, weight?, style?}
 	// objects — the self-hosted faces uploaded through the asset route.
 	KeyBrandingFontFaces = "font_faces"
@@ -89,6 +92,8 @@ type BrandingOverlay struct {
 	ProductTagline   string
 	DocsURL          string
 	SupportURL       string
+	SenderName       string
+	SupportEmail     string
 	Hue              string
 	OnBrand          string
 	FontFamily       string
@@ -104,6 +109,7 @@ type BrandingOverlay struct {
 	LogoMark         string
 	Favicon          string
 	LoginArt         string
+	LogoEmail        string
 	FontFaces        []FontFaceOverlay
 }
 
@@ -140,6 +146,8 @@ func brandingFrom(values Values) BrandingOverlay {
 		ProductTagline:   values.trimmed(KeyBrandingProductTagline),
 		DocsURL:          values.trimmed(KeyBrandingDocsURL),
 		SupportURL:       values.trimmed(KeyBrandingSupportURL),
+		SenderName:       values.trimmed(KeyBrandingSenderName),
+		SupportEmail:     values.trimmed(KeyBrandingSupportEmail),
 		Hue:              values.trimmed(KeyBrandingHue),
 		OnBrand:          values.trimmed(KeyBrandingOnBrand),
 		FontFamily:       values.trimmed(KeyBrandingFontFamily),
@@ -155,6 +163,7 @@ func brandingFrom(values Values) BrandingOverlay {
 		LogoMark:         values.trimmed(KeyBrandingLogoMark),
 		Favicon:          values.trimmed(KeyBrandingFavicon),
 		LoginArt:         values.trimmed(KeyBrandingLoginArt),
+		LogoEmail:        values.trimmed(KeyBrandingLogoEmail),
 		FontFaces:        fontFacesFrom(values[KeyBrandingFontFaces]),
 	}
 }

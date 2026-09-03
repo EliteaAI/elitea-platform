@@ -62,6 +62,12 @@ type Product struct {
 	Tagline    *string `json:"tagline,omitempty"`
 	DocsURL    *string `json:"docsUrl,omitempty"`
 	SupportURL *string `json:"supportUrl,omitempty"`
+	// SenderName is the display name outbound e-mail is sent as; the
+	// product name when absent (ADR-0024 WP7).
+	SenderName *string `json:"senderName,omitempty"`
+	// SupportEmail is the address the app's "contact support" paths use
+	// (ADR-0024 WP8) and the reply-to hint in e-mail footers.
+	SupportEmail *string `json:"supportEmail,omitempty"`
 }
 
 // Assets mirrors BrandPack.assets. Values are data: URIs or same-origin paths.
@@ -70,6 +76,9 @@ type Assets struct {
 	LogoMark string  `json:"logoMark"`
 	Favicon  string  `json:"favicon"`
 	LoginArt *string `json:"loginArt,omitempty"`
+	// LogoEmail is a RASTER logo for e-mail (mail clients render neither SVG
+	// nor a relative path); absolutised against PUBLIC_BASE_URL at send time.
+	LogoEmail *string `json:"logoEmail,omitempty"`
 }
 
 // Typography mirrors BrandPack.typography.
@@ -327,10 +336,13 @@ func ParsePack(data []byte) (*Pack, error) {
 		{pkeys, "tagline", "product.tagline", &p.Product.Tagline},
 		{pkeys, "docsUrl", "product.docsUrl", &p.Product.DocsURL},
 		{pkeys, "supportUrl", "product.supportUrl", &p.Product.SupportURL},
+		{pkeys, "senderName", "product.senderName", &p.Product.SenderName},
+		{pkeys, "supportEmail", "product.supportEmail", &p.Product.SupportEmail},
 		{akeys, "logoFull", "assets.logoFull", &p.Assets.LogoFull},
 		{akeys, "logoMark", "assets.logoMark", &p.Assets.LogoMark},
 		{akeys, "favicon", "assets.favicon", &p.Assets.Favicon},
 		{akeys, "loginArt", "assets.loginArt", &p.Assets.LoginArt},
+		{akeys, "logoEmail", "assets.logoEmail", &p.Assets.LogoEmail},
 		{tkeys, "fontFamily", "typography.fontFamily", &p.Typography.FontFamily},
 		{tkeys, "fontFamilyMono", "typography.fontFamilyMono", &p.Typography.FontFamilyMono},
 		{tkeys, "baseSize", "typography.baseSize", &p.Typography.BaseSize},

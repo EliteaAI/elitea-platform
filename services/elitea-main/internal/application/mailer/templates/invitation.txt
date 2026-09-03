@@ -1,0 +1,8 @@
+You've been invited to {{.ProductName}}
+
+{{if .Invitation.InvitedBy}}{{.Invitation.InvitedBy}} has invited you{{else}}You have been invited{{end}}{{if .Invitation.ProjectName}} to the project "{{.Invitation.ProjectName}}"{{end}}.
+Sign in with {{.Invitation.Email}} to get started:
+
+{{.ActionURL}}
+{{if .SupportEmail}}
+Need help? {{.SupportEmail}}{{end}}

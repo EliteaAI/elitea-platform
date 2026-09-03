@@ -1,0 +1,5 @@
+Test e-mail — {{.ProductName}}
+
+This message confirms that {{.ProductName}} can send branded e-mail from this deployment.
+
+{{.ActionURL}}

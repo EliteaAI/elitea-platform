@@ -39,6 +39,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"sort"
@@ -48,6 +49,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
+	appmailer "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/mailer"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
@@ -167,6 +169,7 @@ func referencedAssetPaths(stored map[string]any) map[string]bool {
 	for _, key := range []string{
 		platformconfig.KeyBrandingLogoFull, platformconfig.KeyBrandingLogoMark,
 		platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt,
+		platformconfig.KeyBrandingLogoEmail,
 	} {
 		if text, ok := stored[key].(string); ok && text != "" {
 			referenced[strings.TrimSpace(text)] = true
@@ -182,6 +185,58 @@ func referencedAssetPaths(stored map[string]any) map[string]bool {
 		}
 	}
 	return referenced
+}
+
+// Mailer is the seam to outbound e-mail (internal/application/mailer).
+type Mailer interface {
+	Configured() bool
+	SendInvitation(ctx context.Context, invitation appmailer.Invitation) error
+	SendTest(ctx context.Context, to string) error
+}
+
+// WithMailer supplies the composer the invite and test routes send through.
+func WithMailer(m Mailer) Option {
+	return func(h *Handler) {
+		if m == nil {
+			return
+		}
+		h.mailer = m
+	}
+}
+
+// brandingTestEmailBody is the test route's request.
+type brandingTestEmailBody struct {
+	To string `json:"to"`
+}
+
+// BrandingTestEmail serves `POST /admin/branding/test_email/administration`:
+// one branded test message to the address in the body, so an administrator
+// can see the e-mail brand without inviting anyone. 503 when no SMTP is
+// configured (or on a shadow deployment), 400 for a bad address, 502 when
+// the relay refused — the reason is in the body, since the operator is the
+// one who can act on it.
+func (h *Handler) BrandingTestEmail(w http.ResponseWriter, r *http.Request) {
+	if h.mailer == nil || !h.mailer.Configured() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "outbound e-mail is not configured on this deployment (SMTP_HOST is unset or sending is suppressed)",
+		})
+		return
+	}
+	var body brandingTestEmailBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	to := strings.TrimSpace(body.To)
+	if reason := validateEmailAddress("to", to); reason != "" || to == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "\"to\" must be a plain e-mail address"})
+		return
+	}
+	if err := h.mailer.SendTest(r.Context(), to); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "the mail relay refused the message: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "to": to})
 }
 
 // brandingResponse is the wire shape of both routes.
@@ -331,8 +386,13 @@ func validateBrandingValues(values map[string]any) string {
 		case platformconfig.KeyBrandingDocsURL, platformconfig.KeyBrandingSupportURL:
 			reason = validateAbsoluteHTTPURL(key, values[key])
 		case platformconfig.KeyBrandingLogoFull, platformconfig.KeyBrandingLogoMark,
-			platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt:
+			platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt,
+			platformconfig.KeyBrandingLogoEmail:
 			reason = validateSameOriginPath(key, values[key])
+		case platformconfig.KeyBrandingSupportEmail:
+			reason = validateEmailAddress(key, values[key])
+		case platformconfig.KeyBrandingSenderName:
+			reason = validateRuneBound(key, values[key], maxBrandingNameRunes)
 		case platformconfig.KeyBrandingProductName, platformconfig.KeyBrandingProductShortName:
 			reason = validateRuneBound(key, values[key], maxBrandingNameRunes)
 		case platformconfig.KeyBrandingProductTagline:
@@ -370,6 +430,20 @@ func validateHexColour(key string, value any) string {
 	}
 	if !hexColourPattern.MatchString(text) {
 		return fmt.Sprintf("%q must be a six-digit hex colour such as #1A73E8", key)
+	}
+	return ""
+}
+
+// validateEmailAddress admits one plain addr-spec (no display name), the
+// same rule the invite handlers apply.
+func validateEmailAddress(key string, value any) string {
+	text, ok := stringValue(value)
+	if !ok || text == "" {
+		return ""
+	}
+	parsed, err := mail.ParseAddress(text)
+	if err != nil || parsed.Address != text || !strings.Contains(text[strings.LastIndex(text, "@")+1:], ".") {
+		return fmt.Sprintf("%q must be a plain e-mail address such as support@example.com", key)
 	}
 	return ""
 }

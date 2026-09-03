@@ -271,6 +271,8 @@ export * from "./secretUpdateRequest.zod";
 export * from "./secretsModeErrorBody.zod";
 export * from "./secretsModeErrorResponse.zod";
 export * from "./selectedTools.zod";
+export * from "./sendBrandingTestEmail200.zod";
+export * from "./sendBrandingTestEmailBody.zod";
 export * from "./setAgentAttachmentStorageBody.zod";
 export * from "./setDefaultVersionRequest.zod";
 export * from "./setProjectQuotaParams.zod";

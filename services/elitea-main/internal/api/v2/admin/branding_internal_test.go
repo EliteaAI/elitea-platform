@@ -79,6 +79,12 @@ func TestValidateBrandingValues(t *testing.T) {
 			map[string]any{"family": "Inter", "url": fontAssetPath, "src": "x"},
 		}}, want: "unknown key"},
 		{name: "font faces not an array", values: map[string]any{platformconfig.KeyBrandingFontFaces: "Inter"}, want: "array"},
+
+		{name: "support email valid", values: map[string]any{platformconfig.KeyBrandingSupportEmail: "support@acme.example"}},
+		{name: "support email with display name", values: map[string]any{platformconfig.KeyBrandingSupportEmail: "Support <support@acme.example>"}, want: "plain e-mail"},
+		{name: "support email no dot", values: map[string]any{platformconfig.KeyBrandingSupportEmail: "support@localhost"}, want: "plain e-mail"},
+		{name: "e-mail logo external", values: map[string]any{platformconfig.KeyBrandingLogoEmail: "https://cdn.example/l.png"}, want: "path on this origin"},
+		{name: "sender name too long", values: map[string]any{platformconfig.KeyBrandingSenderName: strings.Repeat("x", 81)}, want: "at most 80"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +134,8 @@ func TestBrandingSection_DeclaresEveryOverlayKey(t *testing.T) {
 		platformconfig.KeyBrandingRadiusPill, platformconfig.KeyBrandingDensity,
 		platformconfig.KeyBrandingLogoFull, platformconfig.KeyBrandingLogoMark,
 		platformconfig.KeyBrandingFavicon, platformconfig.KeyBrandingLoginArt,
-		platformconfig.KeyBrandingFontFaces,
+		platformconfig.KeyBrandingFontFaces, platformconfig.KeyBrandingSenderName,
+		platformconfig.KeyBrandingSupportEmail, platformconfig.KeyBrandingLogoEmail,
 	} {
 		if !declared[key] {
 			t.Errorf("overlay key %q is read by platformconfig but not declared by the section", key)
