@@ -209,6 +209,51 @@ same set, to the same versions, in about twenty seconds.
 The lock is generated inside the build rather than committed, so it cannot go
 stale against `pyproject.toml`.
 
+### The closure moves as a set, and Dependabot is silent on it
+
+Same rule as `services/elitea-deepwiki`, same reason, and this package is where
+it was proved twice over:
+
+* **The pins move together, never one at a time.** #740 moved `fastapi` to
+  0.141.1 in the same commit that moved `elitea-sdk` to 0.9.40, which pins
+  `fastapi==0.115.9` exactly; #741 moved `mcp` to 2.1.1, and that SDK requires
+  `mcp>=1.24,<2`. Either alone is a `ResolutionImpossible`. The `engine` extra
+  did not resolve on `main` from 2026-09-02 until the gate below found it —
+  nothing in CI resolved it, and no CI job builds this image.
+* **The pins move together with the copy.** `pyproject.toml` carries a
+  `# closure-stamp: COPY_MANIFEST.json sha256 …` line naming the engine copy
+  the closure was resolved against; the gate refuses a tree where the copy
+  moved and the stamp did not.
+* **Dependabot is deliberately silent here.** `.github/dependabot.yml` gives
+  this package its own pip entry with `ignore: "*"` and
+  `open-pull-requests-limit: 0`. Alerts still appear in the Dependabot tab;
+  the automatic one-pin-at-a-time pull request does not.
+
+Validate — resolution only, no install and no image build:
+
+```bash
+bash scripts/ci/check-engine-closures.sh
+```
+
+It runs on every pull request and daily (the `engine-closures` job in
+`.github/workflows/dependency-scanning.yml`), and it resolves this package with
+**uv** at the same pinned version the `Containerfile` installs, for the reason
+this section already gives.
+
+Move the closure:
+
+```bash
+python3 scripts/ci/refresh-engine-closure.py services/elitea-inventory --check
+```
+
+For this package the tool **reports** the drift and does not rewrite. Its
+`engine` extra deliberately mixes exact pins with ranges, and `chromadb`, `mcp`
+and `langsmith` each carry paragraphs of measured reasoning beside them in
+`pyproject.toml`; a mechanical rewrite would delete the reason along with the
+version number it explains. So
+the edit here is a person's, made with the reported drift in hand, and the
+acceptance gate is the `[engine]` image build.
+
 The pins that survive in `pyproject.toml` — exact `fastapi`, `uvicorn`,
 `chromadb`, `mcp`, and `langsmith<0.12` — each record a real constraint with
 the measurement beside it, and they are what a resolver of either kind lands

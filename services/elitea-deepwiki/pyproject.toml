@@ -48,6 +48,16 @@ storage-legacy = [
 # image out of the default bake group for exactly this reason. Keeping the
 # closure behind an extra means the SPI shell, the storage backends and every
 # test above can be built and run without it.
+#
+# CLOSURE-STAMP. The line below names the sha256 of this package's engine copy
+# manifest (src/*/engine/COPY_MANIFEST.json). It exists because the pins in
+# this extra ARE the resolution of THAT copy: moving one without the other
+# leaves a frozen engine running against versions nobody resolved it against,
+# and neither the copy's digest test nor a resolution check can see that on its
+# own. scripts/ci/check-engine-closures.sh refuses a tree where the two
+# disagree, and scripts/ci/refresh-engine-closure.py is what re-resolves the
+# closure as a SET and re-writes this line.
+# closure-stamp: COPY_MANIFEST.json sha256 2b37ed44f6b9adc318b9522f00f6fa8565f678a39fb19f7d646f83713dbc7418
 engine = [
   "langchain-core==1.2.16",
   "langchain==1.2.10",
