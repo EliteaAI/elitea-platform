@@ -58,9 +58,9 @@ import { createRequire } from 'node:module';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { request } from 'node:https';
 
 import { nextRotationState } from './lib/mutation-rotation.mjs';
+import { createOrUpdateGitHubIssue } from './lib/github-issue.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -385,83 +385,6 @@ function writeStepSummary(lines) {
 }
 
 // ---------------------------------------------------------------------------
-// GitHub Issue creation (incident tier only)
-// ---------------------------------------------------------------------------
-/**
- * Create (or skip if duplicate) a GitHub issue via the REST API.
- * Requires GITHUB_TOKEN env var and GITHUB_REPOSITORY ("owner/repo").
- * De-duplicates by searching for an open issue with the same title — if one
- * exists it adds a comment instead of opening a duplicate.
- */
-async function createOrUpdateGitHubIssue(title, body) {
-  const token = process.env.GITHUB_TOKEN;
-  const repoFull = process.env.GITHUB_REPOSITORY;
-  if (!token || !repoFull) {
-    console.log('[mutate-spotcheck] GITHUB_TOKEN / GITHUB_REPOSITORY not set — skipping issue creation');
-    return;
-  }
-  const [owner, repo] = repoFull.split('/');
-
-  function ghRequest(method, path, payload) {
-    return new Promise((resolve, reject) => {
-      const data = payload ? JSON.stringify(payload) : null;
-      const req = request(
-        {
-          hostname: 'api.github.com',
-          path,
-          method,
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'elitea-mutation-spotcheck/1.0',
-            ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}),
-          },
-        },
-        (res) => {
-          let raw = '';
-          res.on('data', (c) => { raw += c; });
-          res.on('end', () => {
-            try { resolve({ status: res.statusCode, body: JSON.parse(raw) }); }
-            catch { resolve({ status: res.statusCode, body: raw }); }
-          });
-        },
-      );
-      req.on('error', reject);
-      if (data) req.write(data);
-      req.end();
-    });
-  }
-
-  // Search for existing open issue with the same title
-  const q = encodeURIComponent(`repo:${owner}/${repo} is:issue is:open in:title "${title}"`);
-  const search = await ghRequest('GET', `/search/issues?q=${q}&per_page=1`, null);
-  if (search.status === 200 && search.body.total_count > 0) {
-    const existing = search.body.items[0];
-    // Add a comment to the existing issue instead of opening a duplicate
-    const comment = await ghRequest('POST', `/repos/${owner}/${repo}/issues/${existing.number}/comments`, { body });
-    if (comment.status === 201) {
-      console.log(`[mutate-spotcheck] Added comment to existing issue #${existing.number}: ${existing.html_url}`);
-    } else {
-      console.log(`[mutate-spotcheck] Failed to comment on issue #${existing.number}: HTTP ${comment.status}`);
-    }
-    return;
-  }
-
-  // No existing issue — create one
-  const created = await ghRequest('POST', `/repos/${owner}/${repo}/issues`, {
-    title,
-    body,
-    labels: ['mutation-spotcheck', 'test-quality'],
-  });
-  if (created.status === 201) {
-    console.log(`[mutate-spotcheck] Created issue #${created.body.number}: ${created.body.html_url}`);
-  } else {
-    console.log(`[mutate-spotcheck] Failed to create issue: HTTP ${created.status}`, created.body);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
@@ -612,7 +535,11 @@ async function main() {
       `Tests for the sampled area should be strengthened so the next run brings the score above 70%.`,
       `The cursor has already advanced — the next scheduled run will sample a different slice.`,
     ].join('\n');
-    await createOrUpdateGitHubIssue(issueTitle, issueBody);
+    await createOrUpdateGitHubIssue(issueTitle, issueBody, {
+      labels: ['mutation-spotcheck', 'test-quality'],
+      logPrefix: '[mutate-spotcheck]',
+      userAgent: 'elitea-mutation-spotcheck/1.0',
+    });
   }
 
   // Always exit 0 (spec §6.7)
