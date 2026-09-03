@@ -258,4 +258,56 @@ describe('the drawer', () => {
     expect(screen.queryByText('an old question')).toBeNull();
     await waitFor(() => expect(window.localStorage.getItem('el.deepwiki.chat.7.42')).toBe('[]'));
   });
+
+  it('sends the pages the reader attached, with the open version pinned', async () => {
+    // THE WIRING, which is the whole reason this test is here rather than in
+    // the picker's own file. The picker holds a selection, the drawer folds it
+    // into the target, and the API module renders it into `parameters` — three
+    // correct halves and no proof any of them are joined. #597 is that defect.
+    const user = userEvent.setup();
+    let sent: Record<string, unknown> | undefined;
+    server.use(
+      http.post(`${BASE}/deepwiki/tools/:projectId/:toolkit/:tool/invoke`, async ({ request }) => {
+        const body = (await request.json()) as { parameters: Record<string, unknown> };
+        sent = body.parameters;
+        return HttpResponse.json({ invocation_id: 'inv-1' });
+      }),
+      http.get(`${BASE}/deepwiki/invocations/:projectId/:toolkit/:tool/:invocation`, () =>
+        HttpResponse.json({ status: 'InProgress' }),
+      ),
+    );
+
+    render(
+      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
+        <WikiChatDrawer
+          open
+          onClose={vi.fn()}
+          target={{ ...TARGET, wikiVersionId: 'fixture-1' }}
+          contextPages={['wiki_pages/overview/getting-started.md', 'wiki_pages/components/storage.md']}
+          newId={newId}
+        />
+      </ThemeProvider>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Attach wiki pages' }));
+    await user.click(screen.getByText('components / storage'));
+    await user.keyboard('{Escape}');
+
+    await user.type(screen.getByLabelText('Question'), 'Where do notes live?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(sent).toMatchObject({
+        context_paths: ['wiki_pages/components/storage.md'],
+        context_wiki_version_id: 'fixture-1',
+      });
+    });
+  });
+
+  it('offers no attachment control for a wiki with no pages', () => {
+    // Not a disabled button: a picker with nothing in it reads as a broken
+    // feature, and every wiki has pages once one has been generated.
+    open();
+    expect(screen.queryByRole('button', { name: 'Attach wiki pages' })).toBeNull();
+  });
 });

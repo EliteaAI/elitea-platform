@@ -30,6 +30,19 @@ export interface WikiChatTarget {
   readonly settings: Readonly<Record<string, unknown>>;
   readonly repoIdentifierOverride?: string | undefined;
   readonly analysisKeyOverride?: string | undefined;
+  /**
+   * The wiki version the reader has OPEN. It pins an attachment: the provider
+   * resolves `context_paths` against this version's manifest and refuses a
+   * page that is not published there, so a question asked against the version
+   * on screen cannot be answered from a newer one that landed mid-read.
+   */
+  readonly wikiVersionId?: string | undefined;
+  /**
+   * Wiki page IDS attached to the next question. Never page text: the bodies
+   * are resolved server-side from this project's own artifacts, which is what
+   * keeps the browser from being able to choose what the server reads.
+   */
+  readonly contextPaths?: readonly string[] | undefined;
 }
 
 /**
@@ -66,6 +79,15 @@ export function buildInvokeRequest(target: WikiChatTarget, input: ChatInvokeInpu
       // widen the envelope for nothing.
       ...(target.repoIdentifierOverride ? { repo_identifier_override: target.repoIdentifierOverride } : {}),
       ...(target.analysisKeyOverride ? { analysis_key_override: target.analysisKeyOverride } : {}),
+      // Both keys or neither. The provider refuses `context_paths` without a
+      // version pin, so sending the selection alone would turn every attached
+      // question into an error the reader cannot act on.
+      ...(target.contextPaths && target.contextPaths.length > 0 && target.wikiVersionId
+        ? {
+            context_paths: [...target.contextPaths],
+            context_wiki_version_id: target.wikiVersionId,
+          }
+        : {}),
       ...(input.capability === 'research'
         ? { research_type: 'general', enable_subagents: true }
         : {}),
