@@ -8,7 +8,7 @@
  * All entities created here use the `autotest_` prefix (per qa/ convention)
  * so failed runs' leftovers are identifiable and sweepable.
  */
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { expect, request as playwrightRequest } from '@playwright/test';
 
 import { BASE_URL, STORAGE_STATE } from '../../playwright.config';
@@ -1356,10 +1356,10 @@ export async function readStoredHitlInterrupt(
  * control is ABSENT before the fill, which is a claim about the app this
  * helper's retry loop would swallow.
  */
-export async function fillComposer(page: Page, prompt: string) {
-  const input = page.getByTestId('chat-message-input');
+export async function fillComposer(scope: Page | Locator, prompt: string) {
+  const input = scope.getByTestId('chat-message-input');
   await expect(input).toBeEditable({ timeout: 20_000 });
-  const sendButton = page.getByTestId('chat-send-button');
+  const sendButton = scope.getByTestId('chat-send-button');
   await expect(async () => {
     await input.fill(prompt);
     await expect(sendButton).toBeEnabled({ timeout: 2_000 });
