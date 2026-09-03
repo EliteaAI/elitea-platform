@@ -7,4 +7,3 @@
 634 services/elitea-main/internal/api/production_router.go  # #712 (P2.P9 cutover) deleted the vendored DeepWiki SPA that #634 introduced; its router mount went with it on purpose
 682 apps/elitea-web/package.json  # #765 reverted the @babel/plugin-transform-runtime 8.0.1 bump on purpose: it requires Babel 8 and npm ci stopped resolving
 682 apps/elitea-web/package-lock.json  # same revert (#765): the lock entries the bump added go with it
-667 libs/proto/pyproject.toml  # #778 reverts the protobuf 7.36.0 pin on purpose: the Python worker requires protobuf <7 and pip could not resolve the two together
