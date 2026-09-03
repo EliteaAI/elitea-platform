@@ -251,6 +251,32 @@ export async function settle(page: Page): Promise<void> {
  * `scripts/compare-visual-baselines.mjs` and the `full` regeneration mode in
  * `ci-web-e2e.yml` exist for that: a full rewrite, compared by PIXELS rather
  * than by bytes, so accumulated drift is visible in one reviewable list.
+ *
+ * ── AND `threshold` HIDES A CHANGE THE BUDGET NEVER SEES ───────────────────
+ *
+ * The note above is about `maxDiffPixels` — too FEW pixels differing. The
+ * other half is `threshold`, which decides whether a pixel differs AT ALL, and
+ * it can zero out a change of any size. pixelmatch scores a pair of colours on
+ * a YIQ metric and calls them equal below `35215 * threshold ** 2`; at 0.05
+ * that ceiling is 88.0.
+ *
+ * The worked example is the DeepWiki wiki list. `.Mui-selected` on a
+ * `ListItemButton` is `alpha(primary.main, action.selectedOpacity)` — 16% cyan
+ * in dark, 8% magenta in light. Highlighting the open wiki moved both shots by
+ * ~80,000 pixels. Dark scored 396 per pixel and failed loudly. Light went from
+ * #FFFFFF to #FAEEFC and scored 81.9 — six percent under the ceiling — so ZERO
+ * pixels counted, `deepwiki-browser-light` passed, and
+ * `--update-snapshots=changed` left the pre-change baseline in place. The
+ * screen it documents no longer exists, and no budget would have caught it:
+ * the count was already 0. A full refresh (`full_visual_refresh`) is the only
+ * mode that rewrites it, and even then `compare-visual-baselines.mjs` reports
+ * it as "unchanged (re-encoded only)", because that script scores the same way.
+ * The tint was confirmed to render by reading `getComputedStyle` in a real
+ * Chromium, not inferred from the snapshot.
+ *
+ * So: a light-scheme state that is drawn only as a low-alpha wash is outside
+ * what this suite can assert. Pin it in a unit or Storybook test instead of
+ * assuming a green visual run covers it.
  */
 export const SNAPSHOT_TOLERANCE = { maxDiffPixels: 3, threshold: 0.05 } as const;
 
