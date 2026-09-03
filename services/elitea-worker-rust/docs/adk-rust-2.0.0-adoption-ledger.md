@@ -1,9 +1,10 @@
-# ADK-Rust 2.0.0 adoption ledger
+# ADK-Rust adoption ledger
 
-This ledger records what the Rust worker adopts from the exact published
-ADK-Rust `2.0.0` sources, what Elitea wraps, and what remains deferred. It keeps
-framework evaluation separate from capability claims: a promising crate or
-passing upstream test does not register a production worker capability.
+This ledger records what the Rust worker adopts from reviewed published
+ADK-Rust sources, what Elitea wraps, and what remains deferred. The filename is
+retained so existing documentation links remain stable. It keeps framework
+evaluation separate from capability claims: a promising crate or passing
+upstream test does not register a production worker capability.
 
 ## Decision rules
 
@@ -17,9 +18,20 @@ passing upstream test does not register a production worker capability.
 - Enable optional Cargo features one reviewed slice at a time. Do not enable the
   `minimal`, `standard`, `enterprise`, `full` or `action-full` presets.
 
+## Dependency baseline
+
+ADK `2.2.0` is the current target release. The worker's direct `adk-rust`,
+`adk-runner` and `adk-anthropic` dependencies are still pinned to `2.1.0`;
+compatible transitive ADK crates already resolve to `2.2.0` where their
+published constraints permit it. Moving the direct pins to `2.2.0` is tracked
+as a bounded model-facade compatibility upgrade, not as an MCP prerequisite.
+It must be reviewed against provider request/response types, streaming,
+thinking, tool calls, Runner sessions and graph execution, then pass the full
+offline and PostgreSQL-backed corpus before adoption.
+
 ## Capability decisions
 
-| Area | ADK-Rust 2.0.0 evidence | Decision | Elitea owner / next proof |
+| Area | ADK-Rust evidence | Decision | Elitea owner / next proof |
 | --- | --- | --- | --- |
 | Agent and runner | `LlmAgent`, `GraphAgent`, `Runner`, `RunConfig`, `Event`, `AgentTool` | Adopt behind the sealed one-shot invocation state | Main claim/authorize fence, supervised lifetime, progress/terminal output and Redis retirement remain Elitea-owned. Application `agent_type=agent` and ad-hoc build one direct `LlmAgent`; configured native toolsets and variable-free saved direct children join that loop through an ADK-compatible application tool. Stored `agent_type=pipeline` builds a graph agent through the same exclusive Runner/SessionService entrypoint and adds a Checkpointer rather than wrapping direct agents in fake graphs. One strict capability-disabled native assembler now selects the exact branch from the frozen request before authority consumption and erases only the completion type, preserving the same lifecycle/projector/settlement owner. Runtime/admin policy projects `require_tool_confirmation` on every owning root or nested `LlmAgent`; pipeline HITL remains graph-owned. Capability-disabled continuation restores exact persisted calls without provider replanning; graph continuation covers configured HITL, sensitive direct tools, Printer and direct MCP authorization through the same Checkpointer. Materializer-known root and pipeline-LLM MCP challenges also resume the original provider call through native confirmation; authorization remains distinct from sensitive approval. The nested application adapter retains native child-agent execution but replaces stock `AgentTool`'s buffered child stream with bounded typed event forwarding. Native branch scoping separates descendant model history while the same root Runner persists the full recursive transcript and nested confirmations. Recursive direct rejoin through the admitted three agent tiers is proven, and a pipeline Agent node now checkpoints and replays the complete sensitive descendant set; production bootstrap/capability registration, approved-effect ownership, independent partial authorization decisions, remaining active graph nodes and context editing, a dedicated summary model and pipeline-graph context management remain closed |
 | Event stream | `EventStream`, `Event`, `Content`, `Part` | Adopt as internal semantic input, not as the browser/output contract | The projector maps bounded root-model text/thinking/tool events, exact direct confirmation pauses, configured root or child-pipeline graph HITL, sensitive direct Toolkit/MCP-node interrupts and compiler-owned Printer checkpoints to current `NodeEventV1` shapes and drains through EOS. Direct saved-child agents forward typed descendant ADK events through a bounded channel before their wrapper result; recursive projectors extend the exact ordered `{name,call_id,sibling_ordinal}` hierarchy while retaining call ID as identity. Sensitive inputs are retained privately for identity but masked publicly; graph direct-tool cards bind the checkpoint/pending node/definition/visit-specific call and canonical argument digest. A nested dynamic graph interrupt privately binds the outer checkpoint plus namespaced child thread/checkpoint, but projects the same single public card without leaking those identities. Direct-child confirmations project as real hierarchical cards and persist as root-session events; a complete parallel decision set replays each exact child call, projects native confirmation-tagged results and continues the root model once. A pipeline Agent wrapper preserves the same ancestry and exposes only descendant confirmation cards; its internal graph event binds their exact ID set to the pending node/checkpoint. Parallel cards retain distinct invocation identities, completed siblings drain, and the internal pause result is removed before persistence. Printer exposes only the bounded checkpoint output as an ordinary nonterminal `agent_response`/`full_message`, not a HITL card. Elitea's capability-disabled lifecycle retains the command-bound cursor, encrypted spool, live/restored session, one pending frame and attempt budget while ACKing each batch before polling ADK again. A decision pause is durably ACKed before `PAUSED_HITL`; Printer instead settles the command normally and awaits a later ordinary continuation. Materializer-known root and pipeline-LLM delegated-authorization cards now use this durable event owner; independent partial authorization decisions, nested static Printer projection, skills, arbitrary static-breakpoint projection and production resume remain gates |
@@ -41,6 +53,29 @@ passing upstream test does not register a production worker capability.
 | Semantic memory | Optional memory service and database/Redis/SQLite backends | Defer and wrap | Define tenant/project/agent namespace, consent, retention, deletion, embedding/provider and poisoning policy before enabling global agent or graph memory |
 | Realtime/voice | Optional realtime runner and transport/provider features | Defer and wrap | Map current voice/ASR/TTS session behavior, cancellation, quotas and `NodeEventV1`/media boundaries first; do not enable the enterprise preset |
 | Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. The production connector reloads the ACL password and TLS files, opens and pings both restricted connections, and installs them through the serialized generation owner; retryable loss replaces only that generation without replaying an ambiguous command. The executable process owns SIGINT/SIGTERM and one global drain deadline around the stop-aware delivery runtime plus native processor. A real Redis 7 reconnect/reclaim system test remains. A later memory/session Redis backend must use separate keys and failure semantics |
+
+MCP ownership boundary: Main owns persisted MCP definitions, project policy,
+credential and token authority, OAuth/DCR/callback orchestration, public
+authorization contracts and audits. The Rust worker owns admitted MCP
+transport sessions, discovery, selected-tool materialization, invocation,
+durable confirmation/replay and runtime event projection. UI is the final
+configuration, decision and progress layer. Current SDK, Indexer and Core
+implementations remain source evidence for observable business behavior; they
+must not become extra authorities or Rust runtime dependencies. ADK MCP
+primitives should replace worker-local transport/discovery mechanics when they
+preserve these boundaries, resource limits and exact replay semantics.
+
+Provider tool-name isolation: the SDK's toolkit-qualified binding behavior is
+now implemented once at the Rust model boundary. `src/toolkits/tool_binding.rs`
+freezes admitted toolsets, preserves unique provider names, creates bounded
+deterministic toolkit-qualified aliases for collisions, and delegates calls to
+the exact original tool. Root and nested direct agents and pipeline LLM nodes
+share the plan. Sensitive and delegated-authorization catalogs bind the alias
+back to the original toolkit identity and provider call ID. Direct Toolkit/MCP
+graph nodes remain exact scoped calls. Generated alias tests and complete
+direct/pipeline LLM component stories cover two same-named MCP tools in one
+model response. Any older broad row above that lists name isolation as a gate
+is superseded by this checkpoint.
 
 Delegated-authorization status: broad “MCP OAuth remains gated” wording in the
 Graph, Event and Sensitive/HITL rows now means Main activation, platform

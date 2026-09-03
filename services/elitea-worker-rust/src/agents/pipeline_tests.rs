@@ -274,6 +274,54 @@ fn llm_mcp_pipeline_request(
     request
 }
 
+fn colliding_llm_mcp_pipeline_request() -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert(
+        "instructions".to_owned(),
+        json!(
+            "state:\n  answer: str\n  messages: list\nentry_point: answer\nnodes:\n  - id: answer\n    type: llm\n    output: [answer, messages]\n    tool_names:\n      release intelligence: [lookup_release]\n      audit intelligence: [lookup_release]\n    transition: END\n"
+        ),
+    );
+    version.insert(
+        "tools".to_owned(),
+        json!([
+            {
+                "id": 92,
+                "type": "mcp",
+                "toolkit_name": "release intelligence",
+                "settings": {
+                    "url": "https://release-mcp.example.invalid/v1/mcp",
+                    "timeout": 30,
+                    "selected_tools": ["lookup_release"],
+                    "enable_caching": true,
+                    "cache_ttl": 300,
+                    "ssl_verify": true
+                }
+            },
+            {
+                "id": 93,
+                "type": "mcp",
+                "toolkit_name": "audit intelligence",
+                "settings": {
+                    "url": "https://audit-mcp.example.invalid/v1/mcp",
+                    "timeout": 30,
+                    "selected_tools": ["lookup_release"],
+                    "enable_caching": true,
+                    "cache_ttl": 300,
+                    "ssl_verify": true
+                }
+            }
+        ]),
+    );
+    request
+}
+
 fn ask_user_llm_pipeline_request() -> super::request::AgentExecutionRequest {
     let mut request = pipeline_request();
     request.payload.internal_tools = vec![ASK_USER_TOOL_NAME.to_owned()];
@@ -1041,6 +1089,16 @@ fn pipeline_mixed_saved_agent_call_response() -> Response<Body> {
 fn pipeline_mcp_tool_call_response() -> Response<Body> {
     let raw = concat!(
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp\",\"type\":\"function\",\"function\":{\"name\":\"lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn pipeline_colliding_mcp_tool_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_release\",\"type\":\"function\",\"function\":{\"name\":\"release_intelligence__lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}},{\"index\":1,\"id\":\"call_audit\",\"type\":\"function\",\"function\":{\"name\":\"audit_intelligence__lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
         "data: [DONE]\n\n",
@@ -2397,10 +2455,169 @@ async fn toolkit_node_materializes_read_only_action_but_rejects_remote_effect() 
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_llm_node_binds_same_named_tools_to_exact_toolkit_implementations() {
+    let context_calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let token = runtime_response(&json!({
+        "schema_version": "elitea.runtime.elitea-client-token.v1",
+        "project_id": 17,
+        "token": "ephemeral-pipeline-token"
+    }));
+    let ((platform, model_facade, _, _), captured) = pipeline_runtime_from_responses_with_capture(
+        VecDeque::from([token]),
+        vec![
+            TestModelGatewayOutcome::Response(pipeline_colliding_mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(pipeline_text_response(
+                "both exact sources completed",
+            )),
+        ],
+        Arc::clone(&context_calls),
+        paths,
+    );
+    let connections = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(Mutex::new(Vec::new()));
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let assembler =
+        PipelineNativeAgentAssembler::with_state(sessions, Arc::new(MemoryCheckpointer::new()))
+            .with_runtime_clients(platform, model_facade)
+            .with_mcp_connector(Arc::new(CollidingPipelineMcpConnector {
+                connections: Arc::clone(&connections),
+                tool_calls: Arc::clone(&tool_calls),
+            }));
+    let request = colliding_llm_mcp_pipeline_request();
+    authorized(&request)
+        .admit_pipeline_with_policy(&runtime_tool_policy(&json!({})))
+        .unwrap_or_else(|error| panic!("collision request admission failed: {error}"));
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("colliding-tool pipeline assembly");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "both exact sources completed")
+    );
+    assert_eq!(context_calls.load(Ordering::Acquire), 1);
+    assert_eq!(connections.load(Ordering::Acquire), 2);
+    let mut invoked = tool_calls
+        .lock()
+        .expect("pipeline tool fixture lock")
+        .clone();
+    invoked.sort();
+    assert_eq!(invoked, ["audit intelligence", "release intelligence"]);
+
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 2);
+    let first: Value = serde_json::from_slice(&captured[0].body).expect("first model request");
+    let visible_names = first["tools"]
+        .as_array()
+        .expect("provider tools")
+        .iter()
+        .map(|tool| {
+            tool["function"]["name"]
+                .as_str()
+                .expect("provider tool name")
+                .to_owned()
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        visible_names,
+        HashSet::from([
+            "audit_intelligence__lookup_release".to_owned(),
+            "release_intelligence__lookup_release".to_owned(),
+        ])
+    );
+    let second: Value = serde_json::from_slice(&captured[1].body).expect("second model request");
+    let tool_messages = second["messages"]
+        .as_array()
+        .expect("continuation messages")
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .collect::<Vec<_>>();
+    assert_eq!(tool_messages.len(), 2);
+    assert!(tool_messages.iter().any(|message| {
+        message["tool_call_id"] == "call_release"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("release intelligence"))
+    }));
+    assert!(tool_messages.iter().any(|message| {
+        message["tool_call_id"] == "call_audit"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("audit intelligence"))
+    }));
+}
+
 struct PipelineMcpConnector {
     connections: Arc<AtomicUsize>,
     tool_calls: Arc<AtomicUsize>,
     read_only: bool,
+}
+
+struct CollidingPipelineMcpConnector {
+    connections: Arc<AtomicUsize>,
+    tool_calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl McpConnector for CollidingPipelineMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.connections.fetch_add(1, Ordering::AcqRel);
+        let source = match config.endpoint() {
+            "https://release-mcp.example.invalid/v1/mcp" => "release intelligence",
+            "https://audit-mcp.example.invalid/v1/mcp" => "audit intelligence",
+            _ => unreachable!("collision fixture received an unexpected MCP endpoint"),
+        };
+        Ok(Arc::new(BasicToolset::new(
+            "colliding_pipeline_fixture",
+            vec![Arc::new(SourcedPipelineMcpTool {
+                source,
+                calls: Arc::clone(&self.tool_calls),
+            })],
+        )))
+    }
+}
+
+struct SourcedPipelineMcpTool {
+    source: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Tool for SourcedPipelineMcpTool {
+    fn name(&self) -> &'static str {
+        "lookup_release"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read release evidence from one exact pipeline toolkit."
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        self.calls
+            .lock()
+            .expect("pipeline tool fixture lock")
+            .push(self.source.to_owned());
+        Ok(json!({"release": arguments["release"], "source": self.source}))
+    }
 }
 
 struct DelegatedAuthorizationPipelineMcpConnector {

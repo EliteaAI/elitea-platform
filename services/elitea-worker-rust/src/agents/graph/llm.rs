@@ -854,25 +854,38 @@ pub(crate) trait PipelineLlmAgentFactory: Send + Sync {
         input: &LlmExecutionInput,
         output_schema: Option<Value>,
         replay: Option<&PipelineLlmReplayEnvelope>,
-    ) -> Result<Arc<dyn Agent>, LlmExecutionError>;
-
-    fn sensitive_policy(&self, _tool_name: &str) -> Option<SensitiveToolPolicy> {
-        None
-    }
-
-    fn delegated_authorization(
-        &self,
-        _tool_name: &str,
-    ) -> Option<DelegatedAuthorizationRequirement> {
-        None
-    }
-
-    fn ask_user_enabled(&self, _tool_name: &str) -> bool {
-        false
-    }
+    ) -> Result<PipelineLlmAgentBinding, LlmExecutionError>;
 
     fn event_sender(&self) -> Option<PipelineNodeEventSender> {
         None
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum PipelineToolGuard {
+    Sensitive(SensitiveToolPolicy),
+    DelegatedAuthorization(DelegatedAuthorizationRequirement),
+    AskUser,
+}
+
+/// One node-local agent plus guards keyed by its provider-visible tool names.
+pub(crate) struct PipelineLlmAgentBinding {
+    agent: Arc<dyn Agent>,
+    guards: BTreeMap<String, PipelineToolGuard>,
+}
+
+impl PipelineLlmAgentBinding {
+    #[must_use]
+    pub(crate) fn new(agent: Arc<dyn Agent>, guards: BTreeMap<String, PipelineToolGuard>) -> Self {
+        Self { agent, guards }
+    }
+
+    fn agent(&self) -> Arc<dyn Agent> {
+        Arc::clone(&self.agent)
+    }
+
+    fn guard(&self, tool_name: &str) -> Option<PipelineToolGuard> {
+        self.guards.get(tool_name).cloned()
     }
 }
 
@@ -1025,22 +1038,15 @@ impl LlmNode {
             .filter(|value| valid_replay_identity(value))
             .ok_or(LlmExecutionError::InvalidInputMapping)?
             .to_owned();
-        if let Some(requirement) = self
-            .factory
-            .delegated_authorization(&confirmation.request.tool_name)
-        {
-            return self.authorization_interrupt(&call_id, confirmation, &requirement);
-        }
-        if self
-            .factory
-            .ask_user_enabled(&confirmation.request.tool_name)
-        {
-            return self.clarifying_question_interrupt(&call_id, confirmation);
-        }
-        let policy = self
-            .factory
-            .sensitive_policy(&confirmation.request.tool_name)
-            .ok_or(LlmExecutionError::Unavailable)?;
+        let policy = match confirmation.guard.clone() {
+            PipelineToolGuard::DelegatedAuthorization(requirement) => {
+                return self.authorization_interrupt(&call_id, confirmation, &requirement);
+            }
+            PipelineToolGuard::AskUser => {
+                return self.clarifying_question_interrupt(&call_id, confirmation);
+            }
+            PipelineToolGuard::Sensitive(policy) => policy,
+        };
         if policy.policy_message().is_empty()
             || policy.policy_message().len() > MAX_CONFIRMATION_MESSAGE_BYTES
             || policy.policy_message().chars().any(|character| {
@@ -1170,6 +1176,7 @@ enum PipelineLlmRunOutcome {
 struct PipelineLlmConfirmation {
     request: adk_rust::ToolConfirmationRequest,
     replay: PipelineLlmReplayEnvelope,
+    guard: PipelineToolGuard,
 }
 
 pub(super) async fn run_model_agent_text(
@@ -1219,7 +1226,8 @@ async fn run_model_agent(
     if let Some(replay) = replay {
         input.history = replay.replay_history();
     }
-    let agent = factory.build(definition, &input, output_schema, replay)?;
+    let binding = factory.build(definition, &input, output_schema, replay)?;
+    let agent = binding.agent();
     let invocation = Arc::new(PipelineLlmInvocationContext::new(
         &context.config.thread_id,
         input,
@@ -1253,8 +1261,15 @@ async fn run_model_agent(
                 pending_content,
                 replay,
             )?;
+            let guard = binding
+                .guard(&request.tool_name)
+                .ok_or(LlmExecutionError::Unavailable)?;
             return Ok(PipelineLlmRunOutcome::Confirmation(Box::new(
-                PipelineLlmConfirmation { request, replay },
+                PipelineLlmConfirmation {
+                    request,
+                    replay,
+                    guard,
+                },
             )));
         }
         if !event.llm_response.partial
@@ -2013,7 +2028,6 @@ fn validate_tool_selections(
     raw: BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<LlmToolkitSelection>, LlmConfigurationError> {
     let mut selections = Vec::with_capacity(raw.len());
-    let mut global_names = BTreeSet::new();
     for (alias, tools) in raw {
         if !valid_output_key(&alias) || tools.len() > MAX_TOOLS_PER_TOOLKIT {
             return Err(LlmConfigurationError::ResourceExhausted);
@@ -2026,12 +2040,9 @@ fn validate_tool_selections(
         }
         let mut local_names = BTreeSet::new();
         for tool in &tools {
-            if !valid_output_key(tool)
-                || !local_names.insert(tool.as_str())
-                || !global_names.insert(tool.clone())
-            {
+            if !valid_output_key(tool) || !local_names.insert(tool.as_str()) {
                 return Err(LlmConfigurationError::Invalid(
-                    "LLM tool names must be valid and unique across selected toolkits",
+                    "LLM tool names must be valid and unique within each selected toolkit",
                 ));
             }
         }

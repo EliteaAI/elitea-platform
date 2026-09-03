@@ -13,6 +13,8 @@ use adk_rust::{AdkError, ErrorCategory, ErrorComponent, ErrorDetails};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::tool_binding::ToolBindingPlan;
+
 const MAX_AUTH_CHALLENGE_BYTES: usize = 16 * 1_024;
 const MAX_TOOLKIT_IDENTITY_BYTES: usize = 1_024;
 
@@ -26,7 +28,14 @@ pub(crate) const DELEGATED_AUTHORIZATION_METADATA_KEY: &str = "elitea.delegated-
 /// never contains tokens, tool arguments or provider response bodies.
 #[derive(Clone, Default)]
 pub(crate) struct DelegatedAuthorizationCatalog {
-    requirements: BTreeMap<String, DelegatedAuthorizationRequirement>,
+    scoped_requirements: BTreeMap<DelegatedToolIdentity, DelegatedAuthorizationRequirement>,
+    provider_requirements: BTreeMap<String, DelegatedAuthorizationRequirement>,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct DelegatedToolIdentity {
+    toolkit_name: String,
+    tool_name: String,
 }
 
 impl DelegatedAuthorizationCatalog {
@@ -38,11 +47,16 @@ impl DelegatedAuthorizationCatalog {
         if !valid_identity(tool_name) {
             return Err(());
         }
-        match self.requirements.get(tool_name) {
+        let identity = DelegatedToolIdentity {
+            toolkit_name: requirement.toolkit_name().to_owned(),
+            tool_name: tool_name.to_owned(),
+        };
+        match self.scoped_requirements.get(&identity) {
             Some(existing) if existing == &requirement => Ok(()),
             Some(_) => Err(()),
             None => {
-                self.requirements.insert(tool_name.to_owned(), requirement);
+                self.scoped_requirements.insert(identity, requirement);
+                self.rebuild_unqualified_provider_requirements();
                 Ok(())
             }
         }
@@ -52,22 +66,70 @@ impl DelegatedAuthorizationCatalog {
         &self,
         tool_name: &str,
     ) -> Option<&DelegatedAuthorizationRequirement> {
-        self.requirements.get(tool_name)
+        self.provider_requirements.get(tool_name)
+    }
+
+    pub(crate) fn requirement_for_scoped(
+        &self,
+        toolkit_name: &str,
+        tool_name: &str,
+    ) -> Option<&DelegatedAuthorizationRequirement> {
+        self.scoped_requirements.get(&DelegatedToolIdentity {
+            toolkit_name: toolkit_name.to_owned(),
+            tool_name: tool_name.to_owned(),
+        })
     }
 
     pub(crate) fn tool_names(&self) -> impl Iterator<Item = &str> {
-        self.requirements.keys().map(String::as_str)
+        self.provider_requirements.keys().map(String::as_str)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.requirements.is_empty()
+        self.scoped_requirements.is_empty()
     }
 
     pub(crate) fn merge(&mut self, other: Self) -> Result<(), ()> {
-        for (tool_name, requirement) in other.requirements {
-            self.insert(&tool_name, requirement)?;
+        for (identity, requirement) in other.scoped_requirements {
+            match self.scoped_requirements.get(&identity) {
+                Some(existing) if existing == &requirement => {}
+                Some(_) => return Err(()),
+                None => {
+                    self.scoped_requirements.insert(identity, requirement);
+                }
+            }
         }
+        self.rebuild_unqualified_provider_requirements();
         Ok(())
+    }
+
+    pub(crate) fn bind_provider_names(mut self, binding: &ToolBindingPlan) -> Result<Self, ()> {
+        let mut provider_requirements = BTreeMap::new();
+        for (identity, requirement) in &self.scoped_requirements {
+            let provider_name = binding
+                .provider_name(&identity.toolkit_name, &identity.tool_name)
+                .ok_or(())?;
+            if provider_requirements
+                .insert(provider_name.to_owned(), requirement.clone())
+                .is_some()
+            {
+                return Err(());
+            }
+        }
+        self.provider_requirements = provider_requirements;
+        Ok(self)
+    }
+
+    fn rebuild_unqualified_provider_requirements(&mut self) {
+        let mut counts = BTreeMap::<&str, usize>::new();
+        for identity in self.scoped_requirements.keys() {
+            *counts.entry(identity.tool_name.as_str()).or_default() += 1;
+        }
+        self.provider_requirements = self
+            .scoped_requirements
+            .iter()
+            .filter(|(identity, _)| counts.get(identity.tool_name.as_str()) == Some(&1))
+            .map(|(identity, requirement)| (identity.tool_name.clone(), requirement.clone()))
+            .collect();
     }
 }
 
@@ -272,4 +334,68 @@ pub(crate) fn delegated_authorization_error_fixture(toolkit_type: &str) -> AdkEr
         )
         .expect("authorization fixture"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use adk_rust::tool::{BasicToolset, FunctionTool};
+    use adk_rust::{Tool, Toolset};
+    use serde_json::json;
+
+    use super::{DelegatedAuthorizationCatalog, DelegatedAuthorizationRequirement};
+    use crate::toolkits::bind_toolsets;
+
+    #[tokio::test]
+    async fn provider_aliases_retain_exact_delegated_authorization_identity() {
+        let mut catalog = DelegatedAuthorizationCatalog::default();
+        let mut toolsets = Vec::new();
+        for (toolkit_name, endpoint) in [
+            (
+                "release intelligence",
+                "https://release.example.invalid/mcp",
+            ),
+            ("audit intelligence", "https://audit.example.invalid/mcp"),
+        ] {
+            let requirement = DelegatedAuthorizationRequirement::new(
+                toolkit_name.to_owned(),
+                "mcp".to_owned(),
+                endpoint.to_owned(),
+                None,
+                None,
+            )
+            .expect("delegated authorization fixture");
+            catalog
+                .insert("lookup", requirement)
+                .expect("scoped authorization requirement");
+            let tool: Arc<dyn Tool> = Arc::new(FunctionTool::new(
+                "lookup",
+                "Read one exact source",
+                |_context, _arguments| async { Ok(json!({})) },
+            ));
+            toolsets
+                .push(Arc::new(BasicToolset::new(toolkit_name, vec![tool])) as Arc<dyn Toolset>);
+        }
+        let binding = bind_toolsets(toolsets, &BTreeSet::new(), "authorization_alias_test")
+            .await
+            .expect("provider binding");
+        let catalog = catalog
+            .bind_provider_names(&binding)
+            .expect("bound authorization catalog");
+        assert_eq!(
+            catalog
+                .requirement_for("release_intelligence__lookup")
+                .map(DelegatedAuthorizationRequirement::toolkit_name),
+            Some("release intelligence")
+        );
+        assert_eq!(
+            catalog
+                .requirement_for("audit_intelligence__lookup")
+                .map(DelegatedAuthorizationRequirement::toolkit_name),
+            Some("audit intelligence")
+        );
+        assert!(catalog.requirement_for("lookup").is_none());
+    }
 }

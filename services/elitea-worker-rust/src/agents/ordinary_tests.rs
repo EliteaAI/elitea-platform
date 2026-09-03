@@ -327,6 +327,16 @@ fn mcp_tool_call_response() -> Response<Body> {
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
 
+fn colliding_mcp_tool_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_release\",\"type\":\"function\",\"function\":{\"name\":\"release_intelligence__lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}},{\"index\":1,\"id\":\"call_audit\",\"type\":\"function\",\"function\":{\"name\":\"audit_intelligence__lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
 fn ask_user_tool_call_response() -> Response<Body> {
     let arguments = serde_json::json!({
         "questions": [{
@@ -507,9 +517,122 @@ fn attach_remote_mcp_tool(request: &mut super::request::AgentExecutionRequest) {
     };
 }
 
+fn attach_colliding_remote_mcp_tools(request: &mut super::request::AgentExecutionRequest) {
+    let tools = serde_json::json!([
+        {
+            "id": 92,
+            "type": "mcp",
+            "toolkit_name": "release intelligence",
+            "settings": {
+                "url": "https://release-mcp.example.invalid/v1/mcp",
+                "timeout": 30,
+                "selected_tools": ["lookup_release"],
+                "enable_caching": true,
+                "cache_ttl": 300,
+                "ssl_verify": true
+            }
+        },
+        {
+            "id": 93,
+            "type": "mcp",
+            "toolkit_name": "audit intelligence",
+            "settings": {
+                "url": "https://audit-mcp.example.invalid/v1/mcp",
+                "timeout": 30,
+                "selected_tools": ["lookup_release"],
+                "enable_caching": true,
+                "cache_ttl": 300,
+                "ssl_verify": true
+            }
+        }
+    ]);
+    match request.kind {
+        AgentExecutionKind::Application => {
+            request
+                .payload
+                .application
+                .get_mut("version_details")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("application version")
+                .insert("tools".to_owned(), tools);
+        }
+        AgentExecutionKind::Adhoc => {
+            request.payload.tools = tools.as_array().expect("MCP tool array").clone();
+        }
+    }
+}
+
 struct AgentMcpConnector {
     calls: AtomicUsize,
     tool_calls: Arc<AtomicUsize>,
+}
+
+struct CollidingMcpConnector {
+    connections: AtomicUsize,
+    tool_calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl McpConnector for CollidingMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.connections.fetch_add(1, Ordering::AcqRel);
+        let source = if config.endpoint().contains("release-mcp") {
+            "release intelligence"
+        } else if config.endpoint().contains("audit-mcp") {
+            "audit intelligence"
+        } else {
+            panic!("unexpected MCP fixture endpoint")
+        };
+        Ok(Arc::new(BasicToolset::new(
+            "discovered_fixture",
+            vec![Arc::new(SourcedMcpTool {
+                source,
+                calls: Arc::clone(&self.tool_calls),
+            })],
+        )))
+    }
+}
+
+struct SourcedMcpTool {
+    source: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Tool for SourcedMcpTool {
+    fn name(&self) -> &'static str {
+        "lookup_release"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read release evidence from one exact MCP toolkit."
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: serde_json::Value,
+    ) -> adk_rust::Result<serde_json::Value> {
+        self.calls
+            .lock()
+            .expect("tool call fixture lock")
+            .push(self.source.to_owned());
+        Ok(serde_json::json!({
+            "release": arguments["release"],
+            "source": self.source
+        }))
+    }
 }
 
 struct AgentDelegatedAuthorizationMcpConnector {
@@ -1157,6 +1280,99 @@ async fn application_and_adhoc_execute_adk_mcp_tools_in_the_direct_llm_loop() {
             second["messages"][3]["content"],
             r#"{"release":"1.2","risk":"low"}"#
         );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn application_and_adhoc_bind_same_named_tools_to_exact_toolkit_implementations() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let mut request = ordinary_request(kind);
+        attach_colliding_remote_mcp_tools(&mut request);
+        let (runtime_context, context_calls) = runtime_context_client();
+        let (model_gateway, captured) = test_model_gateway_client(
+            vec![
+                TestModelGatewayOutcome::Response(colliding_mcp_tool_call_response()),
+                TestModelGatewayOutcome::Response(model_response()),
+            ],
+            test_model_gateway_config(),
+        )
+        .expect("model gateway fixture client");
+        let tool_calls = Arc::new(Mutex::new(Vec::new()));
+        let connector = Arc::new(CollidingMcpConnector {
+            connections: AtomicUsize::new(0),
+            tool_calls: Arc::clone(&tool_calls),
+        });
+        let assembler = OrdinaryNativeAgentAssembler::new(
+            platform_client(runtime_context),
+            Arc::new(ModelFacade::from_gateway(model_gateway)),
+            empty_tool_policy(),
+        )
+        .with_mcp_connector(connector.clone());
+        let assembly = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        );
+        let invocation = assembler
+            .assemble(assembly)
+            .await
+            .expect("colliding-tool agent assembly");
+        let (mut native, _projector, completion) = invocation.start().expect("native start");
+        while native
+            .next_event()
+            .await
+            .expect("colliding-tool event")
+            .is_some()
+        {}
+        let _ = completion.select().await.expect("selected completion");
+
+        assert_eq!(context_calls.load(Ordering::Acquire), 1);
+        assert_eq!(connector.connections.load(Ordering::Acquire), 2);
+        let mut invoked = tool_calls.lock().expect("tool call fixture lock").clone();
+        invoked.sort();
+        assert_eq!(invoked, ["audit intelligence", "release intelligence"]);
+
+        let captured = captured.lock().expect("captured model requests");
+        assert_eq!(captured.len(), 2);
+        let first: serde_json::Value =
+            serde_json::from_slice(&captured[0].body).expect("first model request");
+        let visible_names = first["tools"]
+            .as_array()
+            .expect("provider tools")
+            .iter()
+            .map(|tool| {
+                tool["function"]["name"]
+                    .as_str()
+                    .expect("provider tool name")
+                    .to_owned()
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            visible_names,
+            HashSet::from([
+                "audit_intelligence__lookup_release".to_owned(),
+                "release_intelligence__lookup_release".to_owned(),
+            ])
+        );
+        let second: serde_json::Value =
+            serde_json::from_slice(&captured[1].body).expect("second model request");
+        let tool_results = second["messages"]
+            .as_array()
+            .expect("continuation messages")
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .map(|message| {
+                (
+                    message["tool_call_id"]
+                        .as_str()
+                        .expect("tool call ID")
+                        .to_owned(),
+                    message["content"].as_str().expect("tool result").to_owned(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(tool_results["call_release"].contains("release intelligence"));
+        assert!(tool_results["call_audit"].contains("audit intelligence"));
     }
 }
 

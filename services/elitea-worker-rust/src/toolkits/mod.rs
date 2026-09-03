@@ -13,6 +13,7 @@ mod materialize;
 mod mcp;
 mod policy;
 mod snapshot;
+mod tool_binding;
 
 #[cfg(test)]
 pub(crate) use delegated_auth::delegated_authorization_error_fixture;
@@ -39,6 +40,10 @@ pub(crate) use policy::{
 pub(crate) use snapshot::{
     AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, FrozenToolSnapshotError,
     FrozenToolSnapshotErrorCode,
+};
+pub(crate) use tool_binding::{
+    FrozenToolset, ToolBindingError, ToolBindingPlan, bind_frozen_toolsets, bind_toolsets,
+    freeze_toolsets,
 };
 
 #[cfg(test)]

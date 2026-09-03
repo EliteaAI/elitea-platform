@@ -67,6 +67,38 @@ conversation state or block the direct-agent runtime checkpoint.
 | Python worker `handlers/agent_events.py::CurrentAgentNodeEventCallback` | Ordered current-compatible events, pause projection, terminal browser artifact | `src/agents/events.rs::{AgentEventProjector,ProjectedAgentEventBatch,CompletedAgentBrowserOutput}`, `src/agents/graph/agent.rs`, `src/execution/native_agent_lifecycle.rs` | ADK `Event` is semantic input only; Elitea owns browser compatibility, identity and durability | `src/agents/events_tests.rs`: cumulative/delta text, thinking, tool call/result, direct sensitive pause/redaction, configured graph HITL, graph Toolkit/MCP confirmation and delegated-auth cards, terminal selection, identity substitution and fail-closed corpus; ordinary/pipeline tests prove original-call LLM authorization pause/resume/completion; output-delivery tests prove batch ACK backpressure, paused settlement and terminal retirement | Implemented capability-disabled for root text/tool events, direct sensitive confirmation, configured dynamic pipeline HITL, sensitive read-only Toolkit/MCP-node confirmation and delegated authorization from direct nodes, root `LlmAgent` calls and pipeline LLM nodes. LLM authorization cards expose no raw arguments; durable private state retains them for exact replay. Every projected batch is durably ACKed before ADK is polled again. Invocation/author/branch/event/part/codec bounds are enforced. A denied call closes with the structured same-call result; a direct graph node also preserves the separate SDK-formatted user explanation. Same-family parallel and nested authorization cards retain their exact hierarchy and admit only a bounded complete decision set. Tool progress, artifacts, provider errors, transfers/routes/escalation outside supported HITL, independent partial authorization decisions, mixed-guardrail aggregation, citations, compaction and unsupported non-root branches still fail closed. Skill metadata sanitization remains gated; raw LangChain/ADK custom JSON is never sent directly |
 | `libs/proto/elitea/runtime/v1/node_event.proto`, Python `protocol/node_event.py`, and Main `runtimegrpc/nodeevent/codec.go` | Exact 13-field browser event, arbitrary JSON fragments, defaults, bounds and Go escaping | `src/protocol/node_event.rs`, closed rules in `src/protocol/wire.rs` | None | `tests/node_event_contract.rs`, existing two-case/36-type corpus, Python exact vectors and malformed/mutation cases | Implemented generic codec; unknown protobuf tags and noncanonical replay bytes intentionally fail earlier in Rust. Rust retains compact raw fragment number/escape spellings like authoritative Go `json.Compact`; Python currently normalizes those spellings while preserving semantics |
 
+### Qualified model-tool binding
+
+Current SDK `runtime/tools/tool_binding.py::{select_tools_for_binding,
+build_tool_binding_plan}`, its `runtime/tools/llm.py` consumers and
+`tests/runtime/test_tool_binding.py` define the observable compatibility rule:
+persisted selection is toolkit-scoped, while a model provider receives one
+flat namespace. Rust maps that rule to
+`src/toolkits/tool_binding.rs`, root/nested assembly in
+`src/agents/{ordinary,application_tools}.rs`, pipeline LLM assembly in
+`src/agents/{pipeline,graph/llm}.rs`, and exact guard joins in
+`src/agents/sensitive_tools.rs` and `src/toolkits/delegated_auth.rs`.
+
+The Rust plan enumerates and freezes admitted toolsets once. A unique runtime
+name remains unchanged. Every real collision receives a deterministic,
+provider-safe `<toolkit>__<operation>` alias; a stable hash is added only for a
+secondary/reserved collision or the 128-byte provider bound. The aliased ADK
+tool delegates its declaration and execution to the exact original object.
+Policy, sensitivity and delegated authorization therefore continue to use the
+original `(toolkit, operation)` identity, while provider calls and confirmations
+use the alias plus original call ID. Runtime-owned tools such as `ask_user` and
+nested Application adapters reserve their exact names. Direct graph
+Toolkit/MCP nodes never enter a flat model namespace and remain exact scoped
+calls.
+
+Property-style generated collision matrices cover ordering, character and
+length bounds, reserved names and uniqueness. Full direct Application/ad-hoc
+and pipeline-LLM component stories expose two MCP toolkits with the same
+operation, call both aliases in one model response, and assert that each exact
+underlying implementation and provider call ID reaches its own result. This
+closes name isolation for admitted model-owned calls without claiming broader
+MCP OAuth/DCR, catalog sync or production activation.
+
 ### MCP capability split
 
 The current application has several independent MCP surfaces; the presence of

@@ -35,7 +35,7 @@ use super::events::{
     APPLICATION_BRANCH_ROOT, ApplicationToolGuardCatalogs, ApplicationToolPresentationCatalog,
     DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY,
 };
-use super::internal_tools::{ASK_USER_TOOL_NAME, InternalToolCatalog};
+use super::internal_tools::{ASK_USER_TOOL_NAME, ASK_USER_TOOLSET_NAME, InternalToolCatalog};
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
 use super::session::{
@@ -45,7 +45,8 @@ use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::toolkits::{
     AdmittedToolSnapshot, DelegatedAuthorizationCatalog, FrozenToolKind, FrozenToolSnapshot,
     FrozenToolSnapshotErrorCode, McpConnector, McpMaterializationErrorCode, ToolAdmissionPolicy,
-    ToolsetMaterializationErrorCode, materialize_configured_toolsets_with_tokens_and_authorization,
+    ToolBindingError, ToolsetMaterializationErrorCode, bind_toolsets,
+    materialize_configured_toolsets_with_tokens_and_authorization,
     materialize_mcp_toolsets_with_tokens_and_authorization,
 };
 use crate::transport::model_facade::{
@@ -1112,47 +1113,25 @@ impl ApplicationAssemblyState<'_> {
             && sensitive_tools.is_empty()
             && delegated_authorization.is_empty()
             && internal_tools.is_empty();
-        let mut child_tools = ApplicationToolPresentationCatalog::default();
-        if !nested_references.is_empty() {
-            let mut nested_tools: Vec<Arc<dyn Tool>> = Vec::with_capacity(nested_references.len());
-            for nested in nested_references {
-                let identity = nested.identity;
-                let alias = nested.name.clone();
-                let agent_type = nested.agent_type.clone();
-                let application = self.build(nested, tier + 1).await?;
-                let tool = Arc::new(ApplicationAgentTool::new(
-                    application.clone(),
-                    identity,
-                    self.event_sender.clone(),
-                    self.resume.clone(),
-                ));
-                child_tools
-                    .insert_runtime(
-                        tool.name().to_owned(),
-                        alias,
-                        agent_type,
-                        application.model_name.clone(),
-                        application.child_tools.clone(),
-                        ApplicationToolGuardCatalogs::new(
-                            application.sensitive_tools.clone(),
-                            application.delegated_authorization.clone(),
-                            application.internal_tools,
-                        ),
-                    )
-                    .map_err(|_| invalid_configuration())?;
-                nested_tools.push(tool);
-            }
-            toolsets.push(Arc::new(BasicToolset::new(
-                format!(
-                    "elitea_nested_{}_{}",
-                    reference.identity.0, reference.identity.1
-                ),
-                nested_tools,
-            )));
+        let mut reserved_toolsets = BTreeSet::from([ASK_USER_TOOLSET_NAME.to_owned()]);
+        let (nested_toolset, child_tools) = self
+            .build_nested_toolset(nested_references, reference.identity, tier)
+            .await?;
+        if let Some(nested_toolset) = nested_toolset {
+            reserved_toolsets.insert(nested_toolset.name().to_owned());
+            toolsets.push(nested_toolset);
         }
         if has_non_application_tools && child_tools.has_guarded_descendant() {
             return Err(unsupported_capability());
         }
+        let binding = bind_toolsets(toolsets, &reserved_toolsets, "elitea_nested_tool_binding")
+            .await
+            .map_err(tool_binding_error)?;
+        let sensitive_tools = sensitive_tools.bind_provider_names(&binding)?;
+        let delegated_authorization = delegated_authorization
+            .bind_provider_names(&binding)
+            .map_err(|()| invalid_configuration())?;
+        let toolsets = binding.into_toolsets();
         let description = application_description(&reference, &capabilities);
         let model_name = profile.model_name().to_owned();
         let sensitive_tool_names = sensitive_tools
@@ -1180,6 +1159,54 @@ impl ApplicationAssemblyState<'_> {
             delegated_authorization,
             internal_tools,
         }))
+    }
+
+    async fn build_nested_toolset(
+        &mut self,
+        references: Vec<ApplicationReference>,
+        parent_identity: ApplicationIdentity,
+        tier: usize,
+    ) -> Result<
+        (Option<Arc<dyn Toolset>>, ApplicationToolPresentationCatalog),
+        NativeAgentAssemblyError,
+    > {
+        if references.is_empty() {
+            return Ok((None, ApplicationToolPresentationCatalog::default()));
+        }
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::with_capacity(references.len());
+        let mut presentations = ApplicationToolPresentationCatalog::default();
+        for reference in references {
+            let identity = reference.identity;
+            let alias = reference.name.clone();
+            let agent_type = reference.agent_type.clone();
+            let application = self.build(reference, tier + 1).await?;
+            let tool = Arc::new(ApplicationAgentTool::new(
+                application.clone(),
+                identity,
+                self.event_sender.clone(),
+                self.resume.clone(),
+            ));
+            presentations
+                .insert_runtime(
+                    tool.name().to_owned(),
+                    alias,
+                    agent_type,
+                    application.model_name.clone(),
+                    application.child_tools.clone(),
+                    ApplicationToolGuardCatalogs::new(
+                        application.sensitive_tools.clone(),
+                        application.delegated_authorization.clone(),
+                        application.internal_tools,
+                    ),
+                )
+                .map_err(|_| invalid_configuration())?;
+            tools.push(tool);
+        }
+        let name = format!("elitea_nested_{}_{}", parent_identity.0, parent_identity.1);
+        Ok((
+            Some(Arc::new(BasicToolset::new(name, tools))),
+            presentations,
+        ))
     }
 
     async fn materialize_non_application_toolsets(
@@ -2610,6 +2637,22 @@ fn mcp_toolset_error(error: &crate::toolkits::McpMaterializationError) -> Native
         }
     };
     NativeAgentAssemblyError::new(code, "the nested application MCP toolsets are unavailable")
+}
+
+fn tool_binding_error(error: ToolBindingError) -> NativeAgentAssemblyError {
+    let code = match error {
+        ToolBindingError::InvalidConfiguration => {
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        }
+        ToolBindingError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+        ToolBindingError::DependencyUnavailable => {
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        }
+    };
+    NativeAgentAssemblyError::new(
+        code,
+        "the nested model-callable toolkit namespace is invalid",
+    )
 }
 
 fn invalid_configuration() -> NativeAgentAssemblyError {
