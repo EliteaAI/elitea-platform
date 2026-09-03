@@ -445,6 +445,15 @@
       "rules": { "i18next/no-literal-string": "off" }
     },
     {
+      // ADR-0024 WP3: the admin entry's PRE-BUNDLE static files (copied
+      // verbatim by Vite's publicDir). `scheme-init.js` must read the raw
+      // `el-mode` key MUI's ThemeProvider itself persists, before any module
+      // — including shared/lib/storage.ts — exists, so the §5.4 fences do not
+      // apply to it. The main index.html carries the same body inline.
+      "files": ["src/entries/admin/public/**"],
+      "rules": { "no-restricted-globals": "off", "elitea/no-raw-webstorage": "off" }
+    },
+    {
       // Node-side tooling (gate scripts, lint plugin, e2e, config files):
       // app-layer fences are meaningless there. The §3.5 budgets for src/
       // stay enforced by scripts/check-budgets.mjs.

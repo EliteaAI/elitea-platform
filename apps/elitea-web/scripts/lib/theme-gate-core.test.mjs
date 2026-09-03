@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   checkExternalOrigins,
+  checkFontFamilyLiterals,
   checkForkedAssets,
   checkModeBranches,
   checkMuiSelectors,
@@ -10,6 +11,52 @@ import {
 } from './theme-gate-core.mjs';
 
 const file = (path, text) => ({ path, text });
+
+describe('check 9 — fontFamily literals (ADR-0024 WP3)', () => {
+  it('flags a string literal fontFamily in ts/tsx outside shared/brand', () => {
+    const hits = checkFontFamilyLiterals([
+      file('src/widgets/x/A.tsx', "  fontFamily: 'Montserrat, sans-serif',"),
+      file('src/features/y/b.ts', '  fontFamily: "Georgia",'),
+      file('src/features/y/c.tsx', '  fontFamily: `Roboto Mono, monospace`,'),
+      file('src/features/y/d.test.tsx', "  fontFamily: 'Georgia',"),
+    ]);
+    expect(hits).toHaveLength(4);
+    expect(hits[0]).toMatchObject({ path: 'src/widgets/x/A.tsx', line: 1 });
+  });
+
+  it('passes generic families and keywords, theme-derived values, css files and shared/brand', () => {
+    expect(
+      checkFontFamilyLiterals([
+        file('src/widgets/x/A.tsx', "  fontFamily: 'inherit',"),
+        file('src/widgets/x/A2.tsx', "  sx={{ fontFamily: 'monospace' }}"),
+        file('src/widgets/x/A3.tsx', '  fontFamily: "sans-serif",'),
+        file('src/widgets/x/B.tsx', '  fontFamily: theme.typography.fontFamily,'),
+        file('src/widgets/x/C.tsx', '  fontFamily: theme.vars.font.mono,'),
+        file('src/widgets/x/d.css', "  font-family: 'Montserrat';"),
+        file('src/shared/brand/typography.ts', "  fontFamily: 'Montserrat, sans-serif',"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('passes the Branding editor, where a family is the operator’s data', () => {
+    expect(
+      checkFontFamilyLiterals([
+        file('src/pages/admin/brandingValues.test.ts', "  fontFamily: 'Inter, sans-serif',"),
+        file('src/pages/admin/BrandingStyleFields.tsx', "  const draft = { fontFamily: 'Inter, sans-serif' };"),
+      ]),
+    ).toEqual([]);
+    // The exemption is the editor's path prefix, not the whole admin area.
+    expect(checkFontFamilyLiterals([file('src/pages/admin/Users.tsx', "  fontFamily: 'Georgia',")])).toHaveLength(1);
+  });
+
+  it('does not flag a doc comment that mentions the pattern', () => {
+    expect(
+      checkFontFamilyLiterals([
+        file('src/widgets/x/A.tsx', "/** used to carry fontFamily: 'Montserrat' */\nconst a = 1;"),
+      ]),
+    ).toEqual([]);
+  });
+});
 
 describe('§4.6 check 2 — mode branches', () => {
   it('flags palette.mode === and isDarkMode ? in ts/tsx', () => {

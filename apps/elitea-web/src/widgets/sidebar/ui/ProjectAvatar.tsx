@@ -47,7 +47,6 @@ export function ProjectAvatar({ projectName, size = '2rem' }: ProjectAvatarProps
           // themed surface, so it needs a fixed light colour in both
           // schemes rather than a scheme-aware text token.
           color: theme.vars.palette.common.white,
-          fontFamily: 'Montserrat, sans-serif',
           fontSize: `calc(${size} * 0.375)`,
           fontWeight: 500,
           lineHeight: 1,

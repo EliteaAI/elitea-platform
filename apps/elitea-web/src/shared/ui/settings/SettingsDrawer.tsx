@@ -113,7 +113,6 @@ const iconWrapperSx =
 const menuItemTextSx =
   (isActive: boolean): SxProps<Theme> =>
   (theme) => ({
-    fontFamily: 'Montserrat, sans-serif',
     fontWeight: 500,
     // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
     fontSize: '0.75rem',
@@ -269,7 +268,6 @@ const sectionGroupSx: SxProps<Theme> = {
 const sectionHeaderSx: SxProps<Theme> = (theme) => ({
   display: 'block',
   color: theme.vars.palette.text.metrics,
-  fontFamily: 'Montserrat, sans-serif',
   fontWeight: 500,
   // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
   fontSize: '0.75rem',

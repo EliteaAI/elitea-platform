@@ -30,7 +30,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
-import { LogoMarkIcon } from '@/shared/ui/icons/logo-mark-icon';
+import { BrandLogoMark } from '@/shared/ui/brand-logo';
 
 export interface ChatEmptyGreetingProps {
   /** The signed-in user's display name, as `ChatBox` received it. */
@@ -58,7 +58,7 @@ export function ChatEmptyGreeting({ userName }: ChatEmptyGreetingProps): ReactNo
         pb: 3,
       }}
     >
-      <LogoMarkIcon style={{ width: '3.5rem', height: '3.5rem' }} />
+      <BrandLogoMark style={{ width: '3.5rem', height: '3.5rem' }} />
       {name !== undefined && (
         <Typography
           component="p"

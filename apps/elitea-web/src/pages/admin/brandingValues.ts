@@ -163,8 +163,10 @@ export function basePackFrom(effective: unknown): BrandPack {
 
 /**
  * The self-hosted faces the served pack carries. They ride in
- * `typography.fontFaces`, which the UI's zod schema strips as an unknown
- * nested key, so they are read off the raw document rather than the pack.
+ * `typography.fontFaces`; the zod schema declares them (ADR-0024 WP3), but
+ * they are still read off the RAW document rather than the parsed pack, so a
+ * served pack that fails the parse for another reason does not also lose
+ * the faces the server stated when the page falls back to the default.
  */
 export function effectiveFontFaces(effective: unknown): readonly BrandingFontFace[] {
   if (typeof effective !== 'object' || effective === null) return [];

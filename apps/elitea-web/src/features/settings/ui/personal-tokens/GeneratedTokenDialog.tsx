@@ -194,7 +194,6 @@ const getStyles = (): {
     alignItems: 'center',
   },
   title: (theme) => ({
-    fontFamily: 'Montserrat',
     fontSize: theme.typography.headingSmall.fontSize,
     fontWeight: 600,
     lineHeight: '1.5rem',

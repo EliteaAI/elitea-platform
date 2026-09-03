@@ -107,15 +107,11 @@ describe('BrandThemeProvider', () => {
     );
   });
 
-  it('renders InitColorSchemeScript (T1\'s documented snippet) without crashing — VERIFIED NO-OP for this app, see BrandThemeProvider.tsx header', () => {
-    // Empirically verified (not guessed): @mui/system's InitColorSchemeScript
-    // only emits a <script> while useSyncExternalStore reports "server or
-    // matching-hydration render". This app's main.tsx calls
-    // createRoot(...).render(...) — never hydrateRoot — and spec N6
-    // permanently forbids SSR/hydration, so the component returns null on
-    // every render, here included. This test pins that verified fact so a
-    // future MUI upgrade that changes the behaviour is caught, not silently
-    // assumed away.
+  it('emits no runtime anti-flash script — the static script in index.html is the single source (ADR-0024 WP3)', () => {
+    // MUI's InitColorSchemeScript used to be rendered here and was VERIFIED
+    // to emit nothing under createRoot (see the provider's header). It is
+    // gone; the first-paint script is static. Pinning "no runtime script
+    // mentions el-mode" keeps a second, competing writer from creeping back.
     render(
       <BrandThemeProvider>
         <button type="button">probe</button>
@@ -124,5 +120,50 @@ describe('BrandThemeProvider', () => {
 
     const scripts = [...document.querySelectorAll('script')];
     expect(scripts.some((script) => (script.textContent ?? '').includes('el-mode'))).toBe(false);
+  });
+
+  it('injects <style data-el-fonts> from typography.fontFaces and removes it for a pack with none', () => {
+    const withFaces = BrandPack.parse({
+      ...DEFAULT_BRAND_PACK,
+      typography: {
+        ...DEFAULT_BRAND_PACK.typography,
+        fontFaces: [{ family: 'Montserrat', url: '/api/v2/branding/assets/font/abc.woff2', weight: '400' }],
+      },
+    });
+
+    const { rerender } = render(
+      <BrandThemeProvider pack={withFaces}>
+        <button type="button">probe</button>
+      </BrandThemeProvider>,
+    );
+    const style = document.head.querySelector('style[data-el-fonts]');
+    expect(style).not.toBeNull();
+    expect(style?.textContent).toContain('@font-face');
+    expect(style?.textContent).toContain('url("/api/v2/branding/assets/font/abc.woff2") format("woff2")');
+    expect(style?.textContent).toContain('font-display:swap');
+
+    rerender(
+      <BrandThemeProvider pack={DEFAULT_BRAND_PACK}>
+        <button type="button">probe</button>
+      </BrandThemeProvider>,
+    );
+    expect(document.head.querySelector('style[data-el-fonts]')).toBeNull();
+  });
+
+  it('leaves <link rel="icon"> alone for the default pack (no served pack)', () => {
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.href = './brand/favicon.svg';
+    document.head.append(link);
+    try {
+      render(
+        <BrandThemeProvider>
+          <button type="button">probe</button>
+        </BrandThemeProvider>,
+      );
+      expect(document.head.querySelector('link[rel="icon"]')?.getAttribute('href')).toBe('./brand/favicon.svg');
+    } finally {
+      link.remove();
+    }
   });
 });

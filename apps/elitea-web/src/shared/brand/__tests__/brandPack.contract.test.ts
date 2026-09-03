@@ -128,6 +128,44 @@ describe('§4.6 check 7 — brand-pack round trip', () => {
     expect(nestedUnknown.product).not.toHaveProperty('nickname');
   });
 
+  it('(a′) accepts typography.fontFaces (ADR-0024 WP3) with exactly the mirrored shape, and stays strict', () => {
+    const withFaces = BrandPack.parse({
+      ...DEFAULT_BRAND_PACK,
+      typography: {
+        ...DEFAULT_BRAND_PACK.typography,
+        fontFaces: [
+          { family: 'Montserrat', url: '/api/v2/branding/assets/font/abc.woff2', weight: '400', style: 'normal' },
+          { family: 'Montserrat', url: '/api/v2/branding/assets/font/def.woff2' },
+        ],
+      },
+    });
+    expect(withFaces.typography.fontFaces).toHaveLength(2);
+    expect(withFaces.typography.fontFaces?.[1]).toEqual({
+      family: 'Montserrat',
+      url: '/api/v2/branding/assets/font/def.woff2',
+    });
+
+    // The default pack declares none; an absent array is absent, not [].
+    expect(DEFAULT_BRAND_PACK.typography.fontFaces).toBeUndefined();
+
+    // Field-level contract the Go mirror shares: family/url non-empty, style
+    // is a closed enum.
+    for (const bad of [
+      { family: '', url: '/a.woff2' },
+      { family: 'M', url: '' },
+      { family: 'M', url: '/a.woff2', style: 'oblique' },
+    ]) {
+      const result = BrandPack.safeParse({
+        ...DEFAULT_BRAND_PACK,
+        typography: { ...DEFAULT_BRAND_PACK.typography, fontFaces: [bad] },
+      });
+      expect(result.success, JSON.stringify(bad)).toBe(false);
+    }
+
+    // Top-level strictness is unchanged by the addition.
+    expect(BrandPack.safeParse({ ...withFaces, fontFaces: [] }).success).toBe(false);
+  });
+
   it('(b) emits every --el-palette-* variable the source tree references', () => {
     const references = scanThemeVarReferences(SRC_ROOT);
     expect(references.length).toBeGreaterThan(0);
