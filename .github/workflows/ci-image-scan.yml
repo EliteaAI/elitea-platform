@@ -482,7 +482,9 @@ jobs:
           # entry. It is a hit rate, never a source of truth — the scan still
           # builds and reads the image it is given.
           cache-from: type=gha,scope=${{ matrix.image.name }}-linux-amd64
-          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-linux-amd64
+          # mode=max on main, mode=min on a pull request — the same write policy as
+          # .github/actions/build-stack-images, for the same 10 GB reason.
+          cache-to: type=gha,mode=${{ github.ref == 'refs/heads/main' && 'max' || 'min' }},scope=${{ matrix.image.name }}-linux-amd64
 
       # exit-code 0 on purpose: this step collects the report, and the step
       # below is the gate. Splitting them lets the gate print every finding.

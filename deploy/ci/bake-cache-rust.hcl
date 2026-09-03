@@ -4,5 +4,4 @@
 // the Rust image's scope instead of the python worker's.
 target "elitea-worker" {
   cache-from = ["type=gha,scope=elitea-worker-rust-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-worker-rust-linux-amd64"]
 }

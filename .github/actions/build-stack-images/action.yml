@@ -54,13 +54,42 @@ runs:
     - uses: docker/setup-buildx-action@v4
       id: buildx
 
+    # ── What a run may write, and why (the 10 GB cap) ─────────────────────
+    #
+    # The repository's Actions cache holds 10 GB, evicted least-recently-used.
+    # Measured 2026-09-03: 10.7 GB in 213 entries, 5.9 GB on main and the rest
+    # duplicated under four open pull-request branches — a cache entry is
+    # scoped to the branch that wrote it, and a pull request can READ main's
+    # entries but its own writes are copies main never uses. One pull request
+    # held a 1.15 GB cargo target directory of its own.
+    #
+    # So: every run READS everything (main's layers, main's mounts). Main
+    # WRITES everything — every layer (mode=max) and the cargo/Go/pip mounts.
+    # A pull request writes only what its second push can profit from and
+    # nothing that duplicates main: the final image layers (mode=min), never
+    # the mounts. A pull request that changes the Rust worker therefore
+    # compiles it cold on its first push and again on its second; that is the
+    # trade for keeping the cache under the cap, and main pays it once.
+    - name: Decide what this run may write
+      id: policy
+      shell: bash
+      env:
+        REF: ${{ github.ref }}
+      run: |
+        if [ "$REF" = "refs/heads/main" ]; then
+          echo "write-mounts=true" >> "$GITHUB_OUTPUT"; echo "layer-mode=max" >> "$GITHUB_OUTPUT"
+        else
+          echo "write-mounts=false" >> "$GITHUB_OUTPUT"; echo "layer-mode=min" >> "$GITHUB_OUTPUT"
+        fi
+
     # The BuildKit cache MOUNTS (not layers): cargo registry + git + target,
     # Go module + build cache, pip. Keyed on the lockfiles so a dependency bump
     # writes a new entry, with a prefix fallback so a miss still restores the
     # closest older entry and the build is incremental rather than cold.
+    # Restore-only here; the save step below runs on main alone.
     - name: Restore BuildKit cache mounts
       id: mounts
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: .buildkit-mounts
         key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
@@ -68,14 +97,14 @@ runs:
           buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-
 
     # Injects the restored directories into the builder's cache mounts before
-    # the build, and extracts them back after it (a post step) so the cache
-    # step above can save them. Mount ids default to their target path, which
-    # is how every Containerfile in this repository declares them.
+    # the build and, only when this run will save them, extracts them back
+    # after it (a post step). Mount ids default to their target path, which is
+    # how every Containerfile in this repository declares them.
     - name: Inject cache mounts into the builder
       uses: reproducible-containers/buildkit-cache-dance@v3
       with:
         builder: ${{ steps.buildx.outputs.name }}
-        skip-extraction: ${{ steps.mounts.outputs.cache-hit }}
+        skip-extraction: ${{ steps.policy.outputs.write-mounts != 'true' || steps.mounts.outputs.cache-hit == 'true' }}
         cache-map: |
           {
             ".buildkit-mounts/cargo-registry": "/usr/local/cargo/registry",
@@ -85,6 +114,40 @@ runs:
             ".buildkit-mounts/go-build": "/root/.cache/go-build",
             ".buildkit-mounts/pip": "/root/.cache/pip"
           }
+
+    # The write side of the layer cache, derived from the read side so the two
+    # cannot name different scopes: every `cache-from` line in the HCL becomes
+    # a `cache-to` line with this run's mode.
+    - name: Derive the cache-to overlay for this run
+      id: overlay
+      shell: bash
+      working-directory: ${{ github.workspace }}/deploy
+      env:
+        CACHE_HCL: ${{ inputs.cache-hcl }}
+        MODE: ${{ steps.policy.outputs.layer-mode }}
+      run: |
+        set -euo pipefail
+        out="ci/.bake-cache-to.generated.hcl"
+        : > "$out"
+        n_from=0
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          n_from=$(( n_from + $(grep -c 'cache-from = \["type=gha,scope=' "$f") ))
+          # One `target "<name>" { cache-to = [...] }` block per cache-from line,
+          # named after the target block the line sits in.
+          awk -v mode="$MODE" '
+            /^target "/ { name = $2 }
+            /cache-from = \["type=gha,scope=/ {
+              sub(/.*scope=/, ""); sub(/".*/, "")
+              printf "target %s {\n  cache-to = [\"type=gha,mode=%s,scope=%s\"]\n}\n", name, mode, $0
+            }' "$f" >> "$out"
+        done <<< "$CACHE_HCL"
+        n_to=$(grep -c 'cache-to = ' "$out" || true)
+        # Sanity: one cache-to per cache-from, or the derivation silently
+        # produced a read-only bake and this step proved nothing.
+        [ "$n_to" -eq "$n_from" ] && [ "$n_to" -gt 0 ] || { echo "::error::derived $n_to cache-to lines from $n_from cache-from lines"; exit 1; }
+        echo "layer cache: mode=$MODE, $n_to scope(s)"
+        echo "file=$out" >> "$GITHUB_OUTPUT"
 
     # bake reads the compose files as its definition, merges the HCL's
     # per-target cache scopes onto the same-named services, and `load: true`
@@ -101,11 +164,21 @@ runs:
         files: |
           ${{ inputs.compose-files }}
           ${{ inputs.cache-hcl }}
+          ${{ steps.overlay.outputs.file }}
         targets: ${{ inputs.targets }}
         load: true
         provenance: false
         set: |
           *.platform=linux/amd64
+
+    # Main alone persists the mounts, and only when this key did not exist
+    # yet — a hit means the entry is already there.
+    - name: Save BuildKit cache mounts (main only)
+      if: steps.policy.outputs.write-mounts == 'true' && steps.mounts.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .buildkit-mounts
+        key: buildkit-mounts-${{ runner.os }}-${{ inputs.mount-cache-suffix }}-${{ hashFiles('services/elitea-worker-rust/Cargo.lock', 'services/elitea-main/go.sum', 'services/elitea-llm-gateway/go.sum', 'services/elitea-subapp-host/go.sum', 'services/elitea-worker-python/pyproject.toml', 'services/elitea-deepwiki/pyproject.toml') }}
 
     # The guard. Reads the image tags compose would build from the SAME files
     # and requires each to exist locally. A tag that is missing here would

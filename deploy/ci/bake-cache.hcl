@@ -6,57 +6,53 @@
 //
 // ONE scope per IMAGE, shared with publish.yml's amd64 build
 // (`<image>-<platform suffix>`) and ci-image-scan.yml, so a push to main warms
-// the cache every later job hits, and a pull request's build warms the
-// release's. Three compose services share the elitea-main image and therefore
-// its scope; BuildKit deduplicates their identical steps within one bake.
+// the cache every later job hits. Three compose services share the elitea-main
+// image and therefore its scope; BuildKit deduplicates their identical steps
+// within one bake.
+//
+// READ side only. The WRITE side (cache-to) is derived from these lines by
+// .github/actions/build-stack-images at run time, because what a run may
+// write depends on where it runs: main exports every layer (mode=max), a pull
+// request exports only the final image layers (mode=min). The repository's
+// Actions cache is capped at 10 GB and a pull request's builder-stage layers
+// are, for an unchanged service, byte-identical copies of main's.
 //
 // The worker service's scope depends on WHICH worker the stack runs:
 // bake-cache-rust.hcl overrides it for the native runtime.
 
 target "elitea-main" {
   cache-from = ["type=gha,scope=elitea-main-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-main-linux-amd64"]
 }
 target "elitea-migrate" {
   cache-from = ["type=gha,scope=elitea-main-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-main-linux-amd64"]
 }
 target "elitea-agentstate-migrate" {
   cache-from = ["type=gha,scope=elitea-main-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-main-linux-amd64"]
 }
 target "elitea-llm-gateway" {
   cache-from = ["type=gha,scope=elitea-llm-gateway-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-llm-gateway-linux-amd64"]
 }
 // The DeepWiki provider service runs the Go sub-application host image.
 target "elitea-deepwiki" {
   cache-from = ["type=gha,scope=elitea-subapp-host-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-subapp-host-linux-amd64"]
 }
 target "elitea-deepwiki-engine" {
   cache-from = ["type=gha,scope=elitea-deepwiki-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-deepwiki-linux-amd64"]
 }
 target "elitea-web" {
   cache-from = ["type=gha,scope=elitea-web-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-web-linux-amd64"]
 }
 target "elitea-worker" {
   cache-from = ["type=gha,scope=elitea-worker-python-linux-amd64"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-worker-python-linux-amd64"]
 }
 target "llm-mock" {
   cache-from = ["type=gha,scope=elitea-mock-llm"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-mock-llm"]
 }
 target "mcp-mock" {
   cache-from = ["type=gha,scope=elitea-mock-mcp"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-mock-mcp"]
 }
 target "mcp-mock-trust" {
   cache-from = ["type=gha,scope=elitea-mock-mcp"]
-  cache-to   = ["type=gha,mode=max,scope=elitea-mock-mcp"]
 }
 
 // deploy/docker-compose.e2e-standalone.yml
