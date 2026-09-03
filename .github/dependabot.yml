@@ -12,28 +12,36 @@
 # source. A vulnerable version of a third-party crate or module is not a
 # finding it can make.
 #
-# HOW THE ECOSYSTEMS ARE SPLIT. One entry per manifest, because dependabot
-# resolves each directory independently and a single entry cannot cover
-# sibling modules. The Go modules are listed individually rather than with a
-# wildcard so that a new module is a deliberate addition here — a wildcard
-# would quietly cover a module nobody decided to scan, and quietly stop
-# covering one that moved.
+# HOW THE ECOSYSTEMS ARE SPLIT. ONE ENTRY PER ECOSYSTEM, listing every
+# manifest directory under `directories`, with ONE group over every package.
+# That is what makes dependabot open ONE pull request per ecosystem per week —
+# five at most — instead of one per directory: a group is scoped to its entry,
+# and an entry per directory (the previous shape) meant 20 grouped pull
+# requests that each fired the full CI matrix. The directories are listed
+# rather than globbed so that a new module is a deliberate addition here, and
+# scripts/ci/check-dependabot-coverage.sh refuses a manifest this file does
+# not name.
 #
-# GROUPING IS DELIBERATE. Ungrouped, this configuration opens a pull request
-# per package per week across 10 Go modules, 4 Python projects, 3 npm projects
-# and a Cargo workspace. That volume is how a scanner gets switched off. Each
-# entry groups ALL updates (major, minor, patch) for its ecosystem+directory
-# into a single pull request — one PR per entry per week, not one per package
-# and not a second PR for majors. A major bump landing alongside minor/patch
-# ones still needs the same review either way, so splitting it out only
-# doubled the PR (and CI-matrix) count without buying a safer default.
+# GROUPING IS DELIBERATE. Each group takes ALL update levels (major, minor,
+# patch) into the same pull request. A major bump landing alongside minor and
+# patch ones needs the same review either way, so splitting it out only
+# doubled the PR count without buying a safer default. What the groups do NOT
+# take are the packages under `ignore`, each with the reason it is pinned by
+# something dependabot cannot see (a toolchain floor, a frozen runtime
+# profile, a peer constraint in another manifest). The 2026-09-02 burst — ten
+# grouped bumps merged with their CI cancelled, main red for an evening — is
+# the measurement behind every one of those entries.
 #
-# open-pull-requests-limit caps how many PRs from one entry can be open at
-# once, so a week nobody triaged doesn't stack on top of the next.
+# NOT SCANNED: services/elitea-worker-python. Its pins are a FROZEN runtime
+# capability profile (elitea-sdk.lock.json: 80 verified distributions for the
+# indexing profile, 6 for the agent profile), checked at image build and at
+# worker start. A bump there is incompatible by construction; the profile is
+# regenerated deliberately, not by a scanner. The coverage gate carries the
+# matching exemption.
 #
-# SCHEDULE IS STAGGERED across weekdays (not all entries on the same day) so
-# the ~20 entries don't all open at once and fire the full CI matrix — Go,
-# Web, image scan, contract tests, etc. — for every directory simultaneously.
+# SCHEDULE. Every ecosystem on Saturday 03:00 Europe/Warsaw: one burst of at
+# most five pull requests, outside working hours and outside the free plan's
+# 20-job concurrency window that a weekday push competes for.
 #
 # WHAT DEPENDABOT CANNOT DO HERE, stated so the next reader does not assume
 # coverage that is absent:
@@ -51,200 +59,100 @@
 #     finding, and they move with the Containerfile's FROM line.
 version: 2
 updates:
-  # ---------------------------------------------------------------- GitHub
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 2
     groups:
       actions:
         patterns: ["*"]
 
-  # ------------------------------------------------------------------- Go
-  # The two services that ship, first. elitea-llm-gateway is deliberately
-  # outside go.work on its own Go release, so its bumps do not touch
-  # go.work.sum and are the cleanest of the Go entries.
   - package-ecosystem: gomod
-    directory: /services/elitea-llm-gateway
+    directories:
+      - /services/elitea-llm-gateway
+      - /services/elitea-main
+      - /services/elitea-scheduler
+      - /services/elitea-subapp-host
+      - /libs/go/authlib
+      - /libs/go/eventslib
+      - /libs/go/observability
+      - /libs/go/rpclib
+      - /gen/go
+      - /libs/proto/gen/go
+      - /tools/uictl
     schedule:
       interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 2
     groups:
       go-all:
         patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /services/elitea-main
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /services/elitea-scheduler
-    schedule:
-      interval: weekly
-      day: tuesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /services/elitea-subapp-host
-    schedule:
-      interval: weekly
-      day: tuesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /libs/go/authlib
-    schedule:
-      interval: weekly
-      day: tuesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /libs/go/eventslib
-    schedule:
-      interval: weekly
-      day: tuesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /libs/go/observability
-    schedule:
-      interval: weekly
-      day: wednesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /libs/go/rpclib
-    schedule:
-      interval: weekly
-      day: wednesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /gen/go
-    schedule:
-      interval: weekly
-      day: wednesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /libs/proto/gen/go
-    schedule:
-      interval: weekly
-      day: wednesday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
-  - package-ecosystem: gomod
-    directory: /tools/uictl
-    schedule:
-      interval: weekly
-      day: thursday
-    open-pull-requests-limit: 3
-    groups:
-      go-all:
-        patterns: ["*"]
+    ignore:
+      # bifrost core 1.8 requires Go 1.27; the gateway ships on golang:1.26-alpine
+      # with GOTOOLCHAIN=local and is tested on the 1.26 series
+      # (scripts/ci/check-gateway-toolchain.sh). Moving the toolchain is a
+      # deliberate change of image, runner and gate, not a dependency bump (#653).
+      - dependency-name: github.com/maximhq/bifrost/core
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
-  # ----------------------------------------------------------------- Rust
   - package-ecosystem: cargo
     directory: /services/elitea-worker-rust
     schedule:
       interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 2
     groups:
       cargo-all:
         patterns: ["*"]
+    ignore:
+      # sqlx 0.x minors change the query/executor associated types the SQL
+      # client and the checkpointer are written against (0.9 broke both, #661).
+      - dependency-name: sqlx
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
-  # --------------------------------------------------------------- Python
-  # elitea-worker-python is where issue #554 lives: 30 of its image-scan
-  # findings are in OUR site-packages and are fixable, and they are currently
-  # invisible because .github/image-scan-exempt.txt shields the image for the
-  # 50 findings that are not. This entry is what surfaces them at the source.
   - package-ecosystem: pip
-    directory: /services/elitea-worker-python
+    directories:
+      - /services/elitea-deepwiki
+      - /services/elitea-inventory
+      - /services/pylon-indexer
+      - /libs/proto
     schedule:
       interval: weekly
-      day: thursday
-    open-pull-requests-limit: 3
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 2
     groups:
       pip-all:
         patterns: ["*"]
-  - package-ecosystem: pip
-    directory: /services/elitea-deepwiki
-    schedule:
-      interval: weekly
-      day: thursday
-    open-pull-requests-limit: 3
-    groups:
-      pip-all:
-        patterns: ["*"]
-  - package-ecosystem: pip
-    directory: /services/elitea-inventory
-    schedule:
-      interval: weekly
-      day: thursday
-    open-pull-requests-limit: 3
-    groups:
-      pip-all:
-        patterns: ["*"]
-  - package-ecosystem: pip
-    directory: /services/pylon-indexer
-    schedule:
-      interval: weekly
-      day: friday
-    open-pull-requests-limit: 3
-    groups:
-      pip-all:
-        patterns: ["*"]
-  - package-ecosystem: pip
-    directory: /libs/proto
-    schedule:
-      interval: weekly
-      day: friday
-    open-pull-requests-limit: 3
-    groups:
-      pip-all:
-        patterns: ["*"]
+    ignore:
+      # libs/proto is installed next to the python worker, which requires
+      # protobuf < 7; a major here cannot resolve with it (#667).
+      - dependency-name: protobuf
+        update-types: ["version-update:semver-major"]
 
-  # ------------------------------------------------------------------ npm
   - package-ecosystem: npm
-    directory: /apps/elitea-web
+    directories:
+      - /apps/elitea-web
+      - /tools/parity-extract
     schedule:
       interval: weekly
-      day: friday
-    open-pull-requests-limit: 3
+      day: saturday
+      time: "03:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 2
     groups:
       npm-all:
         patterns: ["*"]
-  - package-ecosystem: npm
-    directory: /tools/parity-extract
-    schedule:
-      interval: weekly
-      day: friday
-    open-pull-requests-limit: 3
-    groups:
-      npm-all:
-        patterns: ["*"]
-
+    ignore:
+      # Babel 8 plugins need @babel/core 8, and the web app is on core 7 (#682).
+      - dependency-name: "@babel/*"
+        update-types: ["version-update:semver-major"]
