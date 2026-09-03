@@ -27,10 +27,24 @@
  * page by its content: both come from the object store, and neither can be
  * produced by a screen that is merely mounted.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { expect, test } from '@playwright/test';
 
 import { STORAGE_STATE } from '../../../playwright.config';
 import { openDeepWiki, SEEDED as FIXTURE } from './helpers';
+
+/**
+ * The catalogue card's name, read from the bundle the app ships (ADR-0024
+ * WP8 moved it there from a literal). Read at test time so a renamed key or
+ * a changed value fails HERE, not in a stale copy of the string.
+ */
+const EN_BUNDLE = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../src/shared/i18n/en.json'), 'utf8'),
+) as Record<string, string>;
+const WIKIS_CATALOG_NAME = EN_BUNDLE['apps.catalog.wikis.name'];
 
 /** The read-only toolkit and its wiki, as scripts/e2e-stack.sh seeds them. */
 const SEEDED = { projectName: FIXTURE.projectName, ...FIXTURE.readOnly } as const;
@@ -124,5 +138,25 @@ test.describe('DeepWiki', () => {
     await openDeepWiki(page, '/app/deepwiki/999999');
     await expect(page.getByTestId('deepwiki-toolkit-error')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId('wiki-page-content')).toHaveCount(0);
+  });
+
+  test('DWIKI-015: the App Catalog names the feature from the i18n bundle, never the engine behind it', async ({
+    page,
+  }) => {
+    // ADR-0024 decision 8: a sub-application is a native screen, and the
+    // only vendor-shaped things left were its TEXT. The catalogue card is the
+    // one place a user reads the feature's name and description together.
+    expect(WIKIS_CATALOG_NAME, 'apps.catalog.wikis.name is in en.json').toBeTruthy();
+    await openDeepWiki(page, '/app/apps/catalog');
+
+    // The card, by the bundle's name. `.first()` because the card renders
+    // the name once as its title and once as the type label.
+    await expect(page.getByText(WIKIS_CATALOG_NAME, { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('link', { name: /Documentation/ }).first()).toBeVisible();
+
+    // And the engine's product name nowhere on the page — not in a card, not
+    // in a tooltip source, not in the navigation. This is the assertion the
+    // pre-WP8 description ("DeepWiki turns a code repository…") fails.
+    await expect(page.getByText(/DeepWiki/)).toHaveCount(0);
   });
 });

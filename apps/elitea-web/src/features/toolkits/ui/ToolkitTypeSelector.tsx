@@ -7,6 +7,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { ToolInitialValues } from '@/entities/toolkit';
 import type { ToolkitTypeSchemaMap } from '@/entities/toolkit';
+import { docsLink } from '@/shared/brand';
 import { t } from '@/shared/i18n';
 import { CategoryFilter } from '@/shared/ui/CategoryFilter';
 import { CategorySection } from '@/shared/ui/CategorySection';
@@ -169,8 +170,11 @@ function resolveSearchPlaceholder(isApplication: boolean, isMCP: boolean): strin
   return !isMCP ? t('toolkits.toolkitTypeSelector.searchToolkit', 'Search toolkits') : t('toolkits.toolkitTypeSelector.searchMcp', 'Search MCPs');
 }
 
-/** Baseline: `ToolkitTypeSelector.jsx:178`'s literal doc URL, unchanged. */
-const MCP_CREATION_DOCS_URL = 'https://docs.elitea.ai/integrations/mcp/create-and-use-server-stdio';
+/**
+ * Baseline: `ToolkitTypeSelector.jsx:178`'s doc URL. The page path is the
+ * baseline's; the origin is the brand pack's (`docsLink`, ADR-0024 WP8).
+ */
+const MCP_CREATION_DOCS_PATH = 'integrations/mcp/create-and-use-server-stdio';
 
 const mcpEmptyStateContainerSx: SxProps<Theme> = { display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '12.5rem', textAlign: 'center' };
 const mcpEmptyStateLinkSx: SxProps<Theme> = { textDecoration: 'underline', '&:hover': { cursor: 'pointer', textDecoration: 'underline' } };
@@ -189,6 +193,7 @@ const mcpEmptyStateLinkSx: SxProps<Theme> = { textDecoration: 'underline', '&:ho
  * branch of the plain "no items" case instead.
  */
 function McpNoLocalServersMessage(): ReactNode {
+  const docsUrl = useMemo(() => docsLink(MCP_CREATION_DOCS_PATH), []);
   return (
     <Box sx={mcpEmptyStateContainerSx}>
       <Typography
@@ -197,7 +202,7 @@ function McpNoLocalServersMessage(): ReactNode {
       >
         {t('toolkits.toolkitTypeSelector.mcpEmptyStatePrefix', 'Still no local MCP available. Follow creation guides in our ')}
         <Link
-          href={MCP_CREATION_DOCS_URL}
+          href={docsUrl}
           target="_blank"
           rel="noopener noreferrer"
           sx={mcpEmptyStateLinkSx}

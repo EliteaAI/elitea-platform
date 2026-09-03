@@ -30,6 +30,9 @@ export { DEFAULT_BRAND_PACK, BRAND_ANCHOR_TOKEN } from './tokens';
 /** Channel C (spec §4.3) — the served per-deployment pack; see `channelC.ts`. */
 export { BRAND_PACK_GLOBAL, parseBrandPack, resolveBrandPack } from './channelC';
 
+/** Brand-derived outbound links (ADR-0024 WP8) — every docs URL and support address comes from here. */
+export { docsBaseUrl, docsLink, supportEmail, supportUrl } from './brandLinks';
+
 /** @public Wave-1 surface — W3/channel B+C validate incoming packs with this. */
 export { BrandPack } from './schema';
 export type { BrandInput, SchemeRecord } from './schema';

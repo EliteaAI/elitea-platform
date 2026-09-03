@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { useListApplications } from '@/shared/api/generated/applications/applications';
 import type { Application, ApplicationList } from '@/shared/api/generated/model';
 
-import { APPLICATION_CATALOG } from '../lib/constants';
+import { applicationCatalog } from '../lib/constants';
 import { buildCatalogApplication, filterApplicationSchemas } from '../model/catalog';
 import type { CatalogApplication } from '../model/types';
 
@@ -137,7 +137,7 @@ export function useApplicationCatalog() {
   const configuredTypes = useMemo(() => deriveConfiguredTypes(applicationList), [applicationList]);
 
   const applications: readonly CatalogApplication[] = useMemo(
-    () => APPLICATION_CATALOG.map((entry) => buildCatalogApplication(entry, applicationSchemas, configuredTypes)),
+    () => applicationCatalog().map((entry) => buildCatalogApplication(entry, applicationSchemas, configuredTypes)),
     [applicationSchemas, configuredTypes],
   );
 

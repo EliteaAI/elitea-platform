@@ -1,15 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-
-import { useColorScheme } from '@mui/material/styles';
+import { useEffect } from 'react';
 
 import { useGetApplication } from '@/shared/api/generated/applications/applications';
 import type { ApplicationDetail } from '@/shared/api/generated/model';
 
 import { useSelectedProjectId } from './useSelectedProjectId';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 /**
  * Converts the route's `:appId` string param into the numeric id
@@ -33,45 +27,17 @@ function toApplicationId(appId: string | undefined): number | undefined {
 }
 
 /**
- * `versionDetails.meta.custom_ui_route` / `.provider` — the baseline's
- * `appData?.meta?.custom_ui_route` / `appData?.provider`
- * (`useAppDetail.hooks.js:35-47`).
- *
- * **Real backend-capability gap, not a porting shortcut:** neither
- * `custom_ui_route` nor a proxy for the baseline's `/ui_host/{provider}/...`
- * route appears ANYWHERE in `services/elitea-main`'s Go source
- * (`grep -rn "custom_ui_route\|ui_host" --include="*.go" services/` — zero
- * hits both ways, checked directly against the backend this app talks to).
- * Both belong to the legacy pylon PLUGIN runtime (e.g.
- * `legacy/plugins/deepwiki_plugin`'s own `static/ui/`) — exactly the
- * "no plugin loading" architecture this platform's Go rewrite deliberately
- * drops (root `CLAUDE.md`'s AGENTS.md guardrails). `versionDetails.meta` IS
- * read defensively below (never assumed absent) so that if a future Go
- * handler ever populates it, this port picks it up with no code change —
- * but on the CURRENT backend `hasCustomUI` is always `false` in practice,
- * and every real hit falls through to the non-custom-UI branch
- * (`pages/apps/AppDetail.tsx`'s `EditToolkit` composition gap — see that
- * file's own doc comment).
+ * ADR-0024 WP8: the baseline's `iframeUrl` / `iframeKey` / `hasCustomUI`
+ * (`useAppDetail.hooks.js:35-47`, the `/ui_host/{provider}/{route}/…`
+ * custom-UI frame) are gone. No Go handler serves `/ui_host`, the meta keys
+ * behind it belong to the retired pylon plugin runtime, and passing context
+ * in a frame URL is what ADR-0013 forbids — see `pages/apps/AppDetail.tsx`.
  */
-function readMetaString(detail: ApplicationDetail | undefined, key: string): string | null {
-  // Generated model field names are snake_case (mirrors the Go JSON tags
-  // directly, `applicationDetail.zod.ts`'s `version_details`) — NOT
-  // `entities/application`'s camelCased `ApplicationDetail.versionDetails`,
-  // which this hook does not use.
-  const meta: unknown = detail?.version_details?.meta;
-  if (!isRecord(meta)) return null;
-  const value = meta[key];
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
 export interface AppDetailState {
   readonly appName: string;
   readonly isFetching: boolean;
   readonly isError: boolean;
   readonly error: unknown;
-  readonly iframeUrl: string | null;
-  readonly iframeKey: number;
-  readonly hasCustomUI: boolean;
 }
 
 export interface UseAppDetailOptions {
@@ -112,8 +78,6 @@ export function useAppDetail(appId: string | undefined, options: UseAppDetailOpt
   const { onError } = options;
   const projectId = useSelectedProjectId();
   const applicationId = toApplicationId(appId);
-  const { colorScheme } = useColorScheme();
-  const resolvedMode = colorScheme ?? 'light';
 
   const query = useGetApplication(projectId ?? '', applicationId ?? 0, {
     query: { enabled: projectId !== undefined && applicationId !== undefined },
@@ -130,35 +94,10 @@ export function useAppDetail(appId: string | undefined, options: UseAppDetailOpt
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `onError` intentionally excluded, matching `useValidateApplicationVersion.ts`'s identical effect and the baseline's own `useAppDetail.hooks.js:28-32` (fires on isError/error change, not on every render/identity change of the callback).
   }, [query.isError, query.error]);
 
-  const customUIRoute = useMemo(() => readMetaString(detail, 'custom_ui_route'), [detail]);
-  const provider = useMemo(() => readMetaString(detail, 'provider'), [detail]);
-
-  const [iframeKey, setIframeKey] = useState(0);
-  // `useAppDetail.hooks.js:38-43` — "Reload iframe when theme changes":
-  // fires on mount too (once `customUIRoute` first resolves truthy), not
-  // only on a genuine later change, since that is what a bare
-  // `useEffect(fn, [mode, customUIRoute])` does in the baseline as well.
-  useEffect(() => {
-    if (customUIRoute !== null) {
-      setIframeKey((key) => key + 1);
-    }
-  }, [resolvedMode, customUIRoute]);
-
-  const iframeUrl = useMemo(() => {
-    if (customUIRoute === null || provider === null || projectId === undefined || appId === undefined) {
-      return null;
-    }
-    const params = new URLSearchParams({ theme: resolvedMode, toolkit_id: appId });
-    return `/ui_host/${provider}/${customUIRoute}/${projectId}/?${params.toString()}`;
-  }, [customUIRoute, provider, projectId, appId, resolvedMode]);
-
   return {
     appName: detail?.name ?? 'Application',
     isFetching: query.isFetching,
     isError: query.isError,
     error: query.error,
-    iframeUrl,
-    iframeKey,
-    hasCustomUI: iframeUrl !== null,
   };
 }
