@@ -104,6 +104,10 @@ jobs:
           df -h / | tail -1
 
       - uses: docker/setup-buildx-action@v4
+        with:
+          # The builder image from the org's own mirror (mirror-buildkit.yml), by
+          # digest: no anonymous Docker Hub pull per job.
+          driver-opts: image=ghcr.io/elitea-ng/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
       - name: Pre-pull the pinned Playwright container
         # Bounded and NON-FATAL, for the reasons ci-web-e2e.yml's copies of this

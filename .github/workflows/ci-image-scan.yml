@@ -445,6 +445,10 @@ jobs:
           submodules: recursive
 
       - uses: docker/setup-buildx-action@v4
+        with:
+          # The builder image from the org's own mirror (mirror-buildkit.yml), by
+          # digest: no anonymous Docker Hub pull per job.
+          driver-opts: image=ghcr.io/elitea-ng/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
       # One platform. The scan reads Go module metadata and OS package
       # databases, and neither depends on the architecture.
