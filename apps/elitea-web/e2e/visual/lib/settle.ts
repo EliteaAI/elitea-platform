@@ -14,6 +14,8 @@
  */
 import { expect, type Locator, type Page } from '@playwright/test';
 
+import { BASE_URL } from '../../../playwright.config';
+
 /**
  * Regions whose content is legitimately different on every run — timestamps,
  * relative dates, generated ids. Masked rather than asserted so the suite fails
@@ -251,3 +253,51 @@ export async function settle(page: Page): Promise<void> {
  * than by bytes, so accumulated drift is visible in one reviewable list.
  */
 export const SNAPSHOT_TOLERANCE = { maxDiffPixels: 3, threshold: 0.05 } as const;
+
+/** A project a shot must be taken in. See `VisualRoute.project` in `routes.visual.spec.ts`. */
+export interface VisualProject {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * Select `project` THROUGH THE SWITCHER, the way a user does.
+ *
+ * The first version wrote `el.project.id` with `addInitScript` before the first
+ * navigation. It works in a journey and it did NOT work here: the run came back
+ * with the switcher still on Default Project and the landmark missing, so the
+ * seeded wiki's project was never selected and the shot would have photographed
+ * a project with no wiki. Whatever the interaction with the restored
+ * `storageState` is, writing another test's storage internals is a mechanism
+ * this suite has no way to notice breaking.
+ *
+ * Clicking is slower and it is the product's own path: the switcher is the only
+ * supported way to change project, J7 covers it end to end, and the selection
+ * persists to both storage areas by the app's own code rather than by ours.
+ *
+ * Returns the name the shell should then settle on, so the caller cannot wait
+ * for one project while having selected another. `undefined` selects nothing
+ * and returns the seeded default's name.
+ *
+ * Shared for the same reason `settle()` is: `routes.visual.spec.ts` and
+ * `brand.visual.spec.ts` (ADR-0024 WP6) both photograph the seeded wiki.
+ */
+export async function selectProject(page: Page, project: VisualProject | undefined): Promise<string> {
+  if (!project) return 'Default Project';
+
+  await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
+  await shellSettled(page);
+
+  const trigger = page.getByRole('button', { name: /Project:/ });
+  await expect(trigger).toBeVisible({ timeout: 20_000 });
+  await trigger.click();
+
+  const listbox = page.getByRole('listbox');
+  await expect(listbox).toBeVisible({ timeout: 10_000 });
+  await listbox.getByRole('option', { name: project.name }).click();
+
+  await expect(trigger).toHaveAccessibleName(new RegExp(`Project:\\s*${project.name}`), {
+    timeout: 20_000,
+  });
+  return project.name;
+}
