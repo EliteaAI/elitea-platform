@@ -106,7 +106,7 @@ jobs:
         # EXTRAS restate deploy/kind/kind-stack.sh's defaults and must move
         # with them. The same scopes the E2E stacks, the image scan and the
         # release share; the write mode is LAYER_MODE above.
-        uses: docker/bake-action@v6
+        uses: docker/bake-action@v7
         with:
           source: .
           builder: ${{ steps.buildx.outputs.name }}
