@@ -18,6 +18,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
@@ -57,6 +58,61 @@ function respondWith(status: number, body: Record<string, unknown>): void {
     http.delete('*/elitea_core/register_descriptor/*', ({ request }) => {
       recorded.push({ method: request.method, url: request.url });
       return HttpResponse.json({ error: 'unexpected' }, { status: 501 });
+    }),
+  );
+}
+
+/**
+ * One inactive row with a digest — the shape an operator can act on.
+ *
+ * `published_manifest_digest` is not decoration in this fixture: the Activate
+ * control is only offered for a row that has one, because the request asserts
+ * it. A fixture without it would render no button and every assertion below
+ * would fail for the wrong reason.
+ */
+const INACTIVE_ROW = {
+  project_id: 41,
+  provider_name: 'wikis',
+  service_location_url: 'https://elitea-deepwiki:8080',
+  healthy: true,
+  status: 'inactive',
+  reason: 'recorded, not in force',
+  published_manifest_digest: 'a'.repeat(64),
+};
+
+interface RecordedWrite {
+  readonly url: string;
+  readonly body: Record<string, unknown>;
+}
+
+/**
+ * Serves the listing and captures what the activate route was actually sent.
+ * `activateStatus` lets one test drive the 422 path — the outcome the dialog is
+ * built around.
+ */
+function serveActivatable(
+  writes: RecordedWrite[],
+  options: { readonly rows?: readonly Record<string, unknown>[]; readonly activateStatus?: number } = {},
+): void {
+  const rows = options.rows ?? [INACTIVE_ROW];
+  server.use(
+    http.get(DESCRIPTORS_PATH, () =>
+      HttpResponse.json({ rows, total: rows.length, admission_posture: 'record' }, { status: 200 }),
+    ),
+    http.post('*/elitea_core/register_descriptor/*/activate', async ({ request }) => {
+      writes.push({ url: request.url, body: (await request.json()) as Record<string, unknown> });
+      const status = options.activateStatus ?? 200;
+      if (status !== 200) {
+        return HttpResponse.json(
+          { error: 'the manifest changed since it was reviewed' },
+          { status },
+        );
+      }
+      return HttpResponse.json({ status: 'active' }, { status: 200 });
+    }),
+    http.post('*/elitea_core/register_descriptor/*/deactivate', ({ request }) => {
+      writes.push({ url: request.url, body: {} });
+      return HttpResponse.json({ status: 'inactive' }, { status: 200 });
     }),
   );
 }
@@ -319,7 +375,10 @@ describe('AdminServiceDescriptors', () => {
     // The listing lands under the namespace this module declares. A key built
     // somewhere else is a cache nothing else can reach or invalidate — the
     // read/write namespace split that made saved data look absent in #132.
-    expect(queryClient.getQueryData(['admin', 'service-descriptors', 'list'])).toEqual([]);
+    expect(queryClient.getQueryData(['admin', 'service-descriptors', 'list'])).toEqual({
+      rows: [],
+      posture: undefined,
+    });
   });
 
   it('does not read `rows` off the transport envelope', async () => {
@@ -342,5 +401,140 @@ describe('AdminServiceDescriptors', () => {
 
     expect(await screen.findByText('envelope-probe')).toBeVisible();
     expect(screen.queryByText('No service descriptors are registered.')).toBeNull();
+  });
+});
+
+describe('AdminServiceDescriptors activation (migration 0109)', () => {
+  beforeEach(() => {
+    recorded = [];
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+  });
+
+  afterEach(() => {
+    resetGeneratedClient();
+  });
+
+  it('sends the ROW\'s digest as expected_digest, with the operator\'s reason', async () => {
+    // THE ASSERTION THE COMPARE-AND-SWAP DEPENDS ON. The request must assert
+    // the digest the operator was looking at. A digest re-read at click time
+    // would agree with whatever the provider had just published — which is the
+    // case the server's 422 exists to catch, and would make it unreachable.
+    const writes: RecordedWrite[] = [];
+    serveActivatable(writes);
+
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    await user.click(await screen.findByRole('button', { name: 'Activate' }));
+    await user.type(await screen.findByLabelText(/Reason/), 'reviewed the wikis toolkit');
+    await user.click(screen.getByRole('button', { name: 'Activate', hidden: false }));
+
+    await waitFor(() => {
+      expect(writes).toHaveLength(1);
+    });
+    expect(writes[0]?.url).toContain('/register_descriptor/41/activate');
+    expect(writes[0]?.url).toContain('provider_name=wikis');
+    expect(writes[0]?.body.expected_digest).toBe('a'.repeat(64));
+    expect(writes[0]?.body.reason).toBe('reviewed the wikis toolkit');
+  });
+
+  it('will not submit an activation with no reason', async () => {
+    // The server refuses a reasonless activation with 400. The dialog refuses
+    // it before the request, so the operator sees the rule rather than a
+    // failure — and a request that never leaves is the proof.
+    const writes: RecordedWrite[] = [];
+    serveActivatable(writes);
+
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    await user.click(await screen.findByRole('button', { name: 'Activate' }));
+    const confirm = await screen.findByRole('button', { name: 'Activate', hidden: false });
+    expect(confirm).toBeDisabled();
+    // Whitespace is not a reason.
+    await user.type(await screen.findByLabelText(/Reason/), '   ');
+    expect(confirm).toBeDisabled();
+    expect(writes).toHaveLength(0);
+  });
+
+  it('keeps the dialog open and shows the SERVER\'s message when activation is refused', async () => {
+    // The 422 is the interesting outcome: the provider republished between the
+    // review and the click. Closing the dialog would replace that message with
+    // a row that silently did not change.
+    const writes: RecordedWrite[] = [];
+    serveActivatable(writes, { activateStatus: 422 });
+
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    await user.click(await screen.findByRole('button', { name: 'Activate' }));
+    await user.type(await screen.findByLabelText(/Reason/), 'reviewed');
+    await user.click(screen.getByRole('button', { name: 'Activate', hidden: false }));
+
+    const failure = await screen.findByTestId('admin-service-descriptors-write-error');
+    expect(failure).toHaveTextContent('the manifest changed since it was reviewed');
+    // Still open, still holding what was typed.
+    expect(await screen.findByLabelText(/Reason/)).toHaveValue('reviewed');
+  });
+
+  it('offers Deactivate on an active row and Activate on nothing else', async () => {
+    // `revoked` is terminal and `unregistered` has no revision. A control on
+    // either would be a button whose only outcome is a refusal.
+    serveActivatable([], {
+      rows: [
+        { ...INACTIVE_ROW, provider_name: 'live', status: 'active' },
+        { ...INACTIVE_ROW, provider_name: 'retired', status: 'revoked' },
+        { ...INACTIVE_ROW, provider_name: 'origin-only', status: 'unregistered' },
+      ],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+
+    expect(await screen.findByRole('button', { name: 'Deactivate' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Activate' })).toBeNull();
+  });
+
+  it('offers no Activate for a row with no manifest digest', async () => {
+    // Nothing to assert, so nothing to activate. Rendering the control would
+    // send an empty expected_digest and collect a 400.
+    serveActivatable([], {
+      rows: [{ ...INACTIVE_ROW, published_manifest_digest: null }],
+    });
+
+    renderAdminRoute(<AdminServiceDescriptors />);
+    await screen.findByText('wikis');
+    expect(screen.queryByRole('button', { name: 'Activate' })).toBeNull();
+  });
+
+  it('states the posture, because `inactive` means two different things without it', async () => {
+    serveActivatable([]);
+    renderAdminRoute(<AdminServiceDescriptors />);
+    expect(await screen.findByTestId('admin-admission-posture')).toHaveTextContent(
+      'Admission recorded only',
+    );
+  });
+
+  it('says the deployment is enforcing when it is', async () => {
+    server.use(
+      http.get(DESCRIPTORS_PATH, () =>
+        HttpResponse.json({ rows: [INACTIVE_ROW], admission_posture: 'enforce' }, { status: 200 }),
+      ),
+    );
+    renderAdminRoute(<AdminServiceDescriptors />);
+    expect(await screen.findByTestId('admin-admission-posture')).toHaveTextContent(
+      'Admission in force',
+    );
+  });
+
+  it('says NOTHING about the posture when the server sent none', async () => {
+    // A guessed `record` would be a reassuring word on a deployment that might
+    // be enforcing — the "absence reads as correctness" shape, pointed at the
+    // operator.
+    server.use(
+      http.get(DESCRIPTORS_PATH, () => HttpResponse.json({ rows: [INACTIVE_ROW] }, { status: 200 })),
+    );
+    renderAdminRoute(<AdminServiceDescriptors />);
+    await screen.findByText('wikis');
+    expect(screen.queryByTestId('admin-admission-posture')).toBeNull();
   });
 });

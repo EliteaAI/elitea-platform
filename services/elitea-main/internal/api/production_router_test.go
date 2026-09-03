@@ -1979,6 +1979,12 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/publish_validate/prompt_lib/{projectID}/{versionID}",
 		"POST /api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{conversationID}",
 		"POST /api/v2/elitea_core/register_descriptor/{projectID}",
+		// ADR-0023 S3, migration 0109. Two routes, not one, and gated on
+		// `provider_hub.descriptor.activate` rather than `.register`: a facade
+		// registrar files a registration at boot, while activation is the switch
+		// that lets agents call the provider.
+		"POST /api/v2/elitea_core/register_descriptor/{projectID}/activate",
+		"POST /api/v2/elitea_core/register_descriptor/{projectID}/deactivate",
 		"POST /api/v2/elitea_core/select_conversation/prompt_lib/{projectID}/{conversationID}",
 		"POST /api/v2/elitea_core/shared_chat_links/prompt_lib/{projectID}/{conversationID}",
 		"POST /api/v2/elitea_core/shared_chat_view_unlock/prompt_lib/{token}/unlock",

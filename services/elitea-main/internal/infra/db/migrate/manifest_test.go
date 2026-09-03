@@ -322,7 +322,31 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// than factored out: each migration names the permissions it grants
 	// inline, and a shared procedure would put them somewhere a reader of that
 	// migration cannot see.
-	require.EqualValues(t, 108, Head(shared))
+	// 109: shared/0109_provider_policy_overlay.sql, which lifts the refusal 0107
+	// wrote into the schema. 0107's CHECK — `status <> 'active' OR
+	// overlay_revision IS NOT NULL` — made activation impossible because nothing
+	// could issue an overlay, and `overlay_revision` was a free TEXT column with
+	// nothing behind it: any string satisfied the CHECK, so a constraint reading
+	// as "activation requires a reviewed policy" really said "requires a
+	// non-empty string". This file adds provider_policy_overlay (insert-only,
+	// keyed on 'lpo_' || left(sha256(canonical body), 32), bound to the
+	// published manifest it was reviewed against) and the FOREIGN KEY that makes
+	// the reference true.
+	//
+	// It records `created_by` and `approved_by` and deliberately does NOT
+	// enforce that they differ. The specification's creator-≠-approver rule is
+	// right for a reviewed deployment and would make activation impossible on
+	// every single-operator one — the standalone stack, an evaluation install, a
+	// laptop — turning "cannot activate, no overlay issuer" into "cannot
+	// activate, no second operator". The columns are recorded so that
+	// enforcement is later a policy decision rather than a migration over live
+	// rows. The file's header carries the full argument.
+	//
+	// It also grants `provider_hub.descriptor.activate` to the
+	// administration-mode super_admin and admin — a NEW string, not a reuse of
+	// `.register`, because every facade registrar files a registration at boot
+	// while activation is the switch that lets agents call the provider.
+	require.EqualValues(t, 109, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

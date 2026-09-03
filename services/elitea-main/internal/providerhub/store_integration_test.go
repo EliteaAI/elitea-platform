@@ -243,3 +243,47 @@ func TestRecordHealthOverwritesTheProjectionAndNeedsARegistration(t *testing.T) 
 		t.Fatalf("rows=%d healthy=%v detail=%q", rows, healthy, detail)
 	}
 }
+
+// The registrar re-files its own revision every tick and the upsert bumps
+// admitted_at, so "latest by time" is the registrar's row minutes after an
+// operator activated a different one. The active revision must win: the
+// listing, the gate and the deactivate target all read this function.
+// MEASURED by DWIKI-013c: the page showed Inactive with an Activate control
+// beside a revision that was in force.
+func TestAnActiveRevisionOutranksALaterReFiledInactiveOne(t *testing.T) {
+	// overlayPool, not admissionPool: activation needs 0109, and a skip on
+	// its absence made this test pass under mutation on its first run —
+	// the absence-reads-as-correctness trap, one more time.
+	pool := overlayPool(t)
+	ctx := context.Background()
+	registrars := providerhub.Registration{
+		ProjectID: 7, ProviderID: "wikis", Origin: "https://elitea-deepwiki:8080",
+		Manifest: []byte(`{"name": "wikis", "provided_toolkits": [], "from": "registrar"}`), Actor: "facade:deepwiki"}
+	if _, err := providerhub.Register(ctx, pool, registrars); err != nil {
+		t.Fatal(err)
+	}
+	// An operator readmits a reviewed manifest (a different digest, so a
+	// different revision) and activates it.
+	readmitted, err := providerhub.Register(ctx, pool, providerhub.Registration{
+		ProjectID: 7, ProviderID: "wikis", Origin: "https://elitea-deepwiki:8080",
+		Manifest: []byte(`{"name": "wikis", "provided_toolkits": [], "from": "operator"}`), Actor: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := providerhub.Activate(ctx, pool, providerhub.ActivateRequest{
+		ProjectID: 7, ProviderID: "wikis", ExpectedDigest: readmitted.ManifestDigest,
+		Body: []byte(`{"egress_profile":"provider-only"}`), Reason: "reviewed", Actor: "admin"}); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// The registrar's next tick re-files ITS revision, which bumps admitted_at.
+	if _, err := providerhub.Register(ctx, pool, registrars); err != nil {
+		t.Fatal(err)
+	}
+	latest, found, err := providerhub.LatestAdmission(ctx, pool, 7, "wikis")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if latest.Status != "active" || latest.RevisionID != readmitted.RevisionID {
+		t.Fatalf("the re-filed inactive revision outranked the active one: %+v", latest)
+	}
+}

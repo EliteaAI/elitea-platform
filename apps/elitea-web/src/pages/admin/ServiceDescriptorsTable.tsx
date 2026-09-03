@@ -20,18 +20,33 @@
  * It is about sixty lines and it is exercised: `ServiceDescriptors.test.tsx`
  * serves rows and asserts they render, with the notice absent.
  *
- * ## The delete action is absent, deliberately
+ * ## The delete action is still absent; ACTIVATION is not
  *
  * The reference puts a delete icon on every row, behind a `window.confirm`,
- * calling `DELETE /elitea_core/register_descriptor/{project_id}`. That endpoint
- * refuses on this platform, so the button would be a control that cannot work.
- * The rule this unit follows is "implement the write for real, or render it
- * unavailable — never a no-op control", and there is no row-level place to put a
- * reason, so the action is not rendered at all.
+ * calling `DELETE /elitea_core/register_descriptor/{project_id}`. That verb
+ * REVOKES on this platform — terminal, with a recorded revoker — and no page
+ * control issues it. The rule this unit follows is "implement the write for
+ * real, or render it unavailable — never a no-op control".
+ *
+ * The actions column added by migration 0109 follows the same rule in the other
+ * direction: Activate and Deactivate are real writes against real routes, and
+ * each appears only on the rows where the server would accept it. An inactive
+ * row gets Activate; an active row gets Deactivate; a revoked or unregistered
+ * row gets neither, because there is nothing the operator can do to it here and
+ * a disabled button would imply there was.
+ *
+ * ACTIVATE CARRIES THE ROW'S OWN DIGEST. The dialog sends
+ * `published_manifest_digest` as `expected_digest`, so the request asserts what
+ * the operator was looking at when they decided. A digest re-read at click time
+ * would assert nothing — it would agree with whatever the provider had just
+ * published, which is the case the compare-and-swap exists to catch. A row with
+ * no digest therefore offers no Activate: there is nothing to assert.
  */
 import { memo, useMemo } from 'react';
 
+import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
+import Stack from '@mui/material/Stack';
 import type { GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import { DataGrid } from '@mui/x-data-grid';
 
@@ -41,6 +56,12 @@ import type { AdminServiceDescriptor } from './api/adminServiceDescriptorsApi';
 
 export interface AdminServiceDescriptorsTableProps {
   readonly descriptors: readonly AdminServiceDescriptor[];
+  /**
+   * Asked to activate one row. Optional: without both handlers the actions
+   * column is not rendered at all, rather than rendered inert.
+   */
+  readonly onActivate?: (descriptor: AdminServiceDescriptor) => void;
+  readonly onDeactivate?: (descriptor: AdminServiceDescriptor) => void;
 }
 
 interface DescriptorGridRow extends AdminServiceDescriptor {
@@ -144,6 +165,8 @@ function statusChip(value: unknown): { color: 'success' | 'warning' | 'error' | 
 
 export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptorsTable({
   descriptors,
+  onActivate,
+  onDeactivate,
 }: AdminServiceDescriptorsTableProps) {
   const rows = useMemo<DescriptorGridRow[]>(
     () => descriptors.map((descriptor) => ({ ...descriptor, id: rowKey(descriptor) })),
@@ -203,8 +226,47 @@ export const AdminServiceDescriptorsTable = memo(function AdminServiceDescriptor
           return <Chip size="small" variant="outlined" color={health.color} label={health.label()} />;
         },
       },
+      ...(onActivate && onDeactivate
+        ? [
+            {
+              field: 'actions',
+              headerName: t('pages.admin.serviceDescriptors.column.actions', 'Actions'),
+              width: 180,
+              sortable: false,
+              filterable: false,
+              renderCell: (params: GridRenderCellParams<DescriptorGridRow>) => {
+                const row = params.row;
+                if (row.status === 'active') {
+                  return (
+                    <Stack direction="row" sx={{ alignItems: 'center', height: '100%' }}>
+                      <Button
+                        size="small"
+                        color="warning"
+                        onClick={() => onDeactivate(row)}
+                      >
+                        {t('pages.admin.serviceDescriptors.action.deactivate', 'Deactivate')}
+                      </Button>
+                    </Stack>
+                  );
+                }
+                // Only `inactive` can be activated, and only with a digest to
+                // assert. `revoked` is terminal and `unregistered` has no
+                // revision — offering a control on either would be a button
+                // whose only outcome is a refusal.
+                if (row.status !== 'inactive' || !row.published_manifest_digest) return null;
+                return (
+                  <Stack direction="row" sx={{ alignItems: 'center', height: '100%' }}>
+                    <Button size="small" onClick={() => onActivate(row)}>
+                      {t('pages.admin.serviceDescriptors.action.activate', 'Activate')}
+                    </Button>
+                  </Stack>
+                );
+              },
+            } satisfies GridColDef<DescriptorGridRow>,
+          ]
+        : []),
     ],
-    [],
+    [onActivate, onDeactivate],
   );
 
   return (
