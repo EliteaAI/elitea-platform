@@ -57,6 +57,7 @@ import type { ComponentType } from 'react';
 
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
+import PaletteOutlinedIcon from '@mui/icons-material/PaletteOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 // The reference imports `@mui/icons-material/PeopleOutline`, which MUI 9 no
@@ -198,6 +199,18 @@ function navGroups(): readonly AdminNavGroup[] {
           label: t('pages.admin.nav.configuration', 'Configuration'),
           icon: SettingsOutlinedIcon,
           anyPermission: ['configuration', 'runtime.plugins'],
+        },
+        {
+          id: 'branding',
+          path: '/branding',
+          label: t('pages.admin.nav.branding', 'Branding'),
+          icon: PaletteOutlinedIcon,
+          // `configuration.branding` is what every branding route is gated on
+          // server-side (`internal/api/router.go`), granted to the two
+          // administration-mode admin roles by migration 0109 (ADR-0024
+          // decision 5); `configuration` is the prefix `ExpandPermissions`
+          // expands into it, as for `governance` below.
+          anyPermission: ['configuration', 'configuration.branding'],
         },
         {
           id: 'features',

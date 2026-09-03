@@ -716,6 +716,16 @@
       "notes": "The LLM governance definition list (#218): the propagation Alert, the search bar and the DataGrid. The stack seeds ONE row — the #322 platform soft-alert config — and this page shows it with its actions withheld, because the budget-alerts surface owns it and this page's editor has no field for its keys. That withheld state is part of what the baseline pins.",
       "surface": "admin",
       "baseline": null
+    },
+    {
+      "file": null,
+      "route": "/admin/app/branding",
+      "targetComponent": "src/pages/admin/Branding.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "The brand-pack editor (ADR-0024 WP4): the grouped form with every field at inherit, the two-scheme preview built from the product default, the derived swatch strips and the Layers panel. The E2E stack mounts no file pack and the branding journey restores the database layer after itself, so the reference is the all-inherit state on purpose.",
+      "surface": "admin",
+      "baseline": null
     }
   ],
   "gaps": [],

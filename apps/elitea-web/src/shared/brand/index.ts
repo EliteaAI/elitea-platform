@@ -37,3 +37,15 @@ export type { BrandInput, SchemeRecord } from './schema';
 /** @public Wave-1 surface — the admin brand editor's live-preview path (§4.3 E). */
 export { toMuiPalette, resolveScheme, hueDeltaFor, catalogueFor } from './toMuiPalette';
 export type { SchemeName } from './toMuiPalette';
+
+/** The admin Branding page's live-preview path (§4.3 E, ADR-0024 WP4). */
+export type { ThemeScope } from './buildTheme';
+export {
+  PREVIEW_SCHEME_ATTRIBUTE,
+  PREVIEW_THEME_SCOPE,
+  WCAG_AA_NORMAL_TEXT,
+  contrastRatio,
+  primaryContrastOf,
+  swatchesOf,
+} from './preview';
+export type { PrimaryContrast, Swatch } from './preview';

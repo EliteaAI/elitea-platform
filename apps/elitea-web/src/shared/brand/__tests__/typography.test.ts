@@ -68,6 +68,20 @@ describe('default-pack parity with MainTheme.js', () => {
     expect(built['bodyMedium']).not.toHaveProperty('color');
   });
 
+  it('names that token under the prefix of the theme it is built into', () => {
+    // A theme built under another scope (the Branding preview) must not
+    // name the APP theme's variable, or its headings take the outer scheme's
+    // colour: white, from the dark console, on the preview's light surface.
+    const scoped = toTypography(DEFAULT_BRAND_PACK.typography, 'elp') as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const name of ['headingLarge', 'headingMedium', 'headingSmall']) {
+      expect(scoped[name]?.['color']).toBe('var(--elp-palette-text-secondary)');
+    }
+    expect(JSON.stringify(scoped)).not.toContain('--el-');
+  });
+
   it('carries the pack’s families, base size and the baseline feature settings', () => {
     expect(built['fontFamily']).toBe(DEFAULT_BRAND_PACK.typography.fontFamily);
     expect(built['fontFamilyMono']).toBe(DEFAULT_BRAND_PACK.typography.fontFamilyMono);

@@ -36,6 +36,25 @@ export const BREAKPOINT_VALUES = {
 } as const;
 
 /**
+ * Where a theme's CSS variables are declared and under which prefix.
+ *
+ * The app theme takes the defaults (`--el-*` on `:root` / `[data-el-scheme]`).
+ * A SECOND theme rendered beside it — the admin Branding page's live preview —
+ * must not share those: MUI's nested `ThemeProvider` skips stylesheet
+ * generation when the prefix matches the outer theme's (the preview would then
+ * render the OUTER brand), and a nested theme that reuses the outer
+ * `colorSchemeSelector` re-declares every `--el-*` variable on the document's
+ * own `[data-el-scheme]` element, repainting the whole console with the draft.
+ * A distinct prefix and selector keep a preview's variables on the preview's
+ * own elements. `shared/brand/preview.ts` holds the one scope in use.
+ */
+export interface ThemeScope {
+  readonly cssVarPrefix: string;
+  readonly colorSchemeSelector: string;
+  readonly rootSelector: string;
+}
+
+/**
  * Tier 2 — the one `createTheme` call (spec §4.2), on MUI 9.2.0 (decision
  * D1). Every API below was verified against context7 `/mui/material-ui/v9.2.0`
  * and, where the docs were thinner than the guarantee needed, against the
@@ -60,18 +79,30 @@ export const BREAKPOINT_VALUES = {
  *  - `breakpoints` is set (see above);
  *  - `defaultColorScheme` is set.
  */
-export function buildEliteaTheme(pack: BrandPack) {
+export function buildEliteaTheme(pack: BrandPack, scope?: ThemeScope) {
   return createTheme({
-    cssVariables: {
-      cssVarPrefix: CSS_VAR_PREFIX,
-      colorSchemeSelector: COLOR_SCHEME_SELECTOR,
-    },
+    cssVariables:
+      scope === undefined
+        ? {
+            cssVarPrefix: CSS_VAR_PREFIX,
+            colorSchemeSelector: COLOR_SCHEME_SELECTOR,
+          }
+        : {
+            cssVarPrefix: scope.cssVarPrefix,
+            colorSchemeSelector: scope.colorSchemeSelector,
+            rootSelector: scope.rootSelector,
+          },
     defaultColorScheme: DEFAULT_COLOR_SCHEME,
     colorSchemes: {
       light: { palette: toMuiPalette(pack.schemes.light, pack.brand, 'light') },
       dark: { palette: toMuiPalette(pack.schemes.dark, pack.brand, 'dark') },
     },
-    typography: toTypography(pack.typography),
+    // The variants name `text.secondary` by its CSS variable, so they must
+    // carry THIS theme's prefix (see `paletteVar` in `typography.ts`).
+    typography: toTypography(
+      pack.typography,
+      scope === undefined ? CSS_VAR_PREFIX : scope.cssVarPrefix,
+    ),
     shape: {
       borderRadius: pack.shape.radiusMd,
       radiusSm: pack.shape.radiusSm,
