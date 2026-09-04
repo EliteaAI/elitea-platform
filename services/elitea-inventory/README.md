@@ -249,15 +249,33 @@ change what the frozen engine RUNS AGAINST would put two changes behind one
 measurement, and #677 is what that costs. `langsmith` moved 0.10.15 -> 0.11.2
 inside its own documented `<0.12` bound and is left ranged.
 
-**Two defects the probe found. Both pre-existing, both out of scope here.**
+**Two defects the probe found, both pre-existing. The first is now FIXED.**
 
-* `engine/inventory/ingestion.py:3060` does `from langchain.text_splitter
-  import RecursiveCharacterTextSplitter`. That module does not exist in
-  `langchain` 1.x, which is what this closure has resolved since before I8, so
-  the whole `try:` block raises `ImportError`, `has_chunker` becomes `False`,
-  and the streaming path chunks nothing. The chunkers themselves are fine — the
-  third import beside them is not. `langchain_text_splitters` is the current
-  home of that class.
+* ~~`engine/inventory/ingestion.py:3060`~~ **fixed** — it does `from
+  langchain.text_splitter import RecursiveCharacterTextSplitter`. That module
+  does not exist in `langchain` 1.x, which is what this closure has resolved
+  since before I8, so the whole `try:` block raised `ImportError`,
+  `has_chunker` became `False`, and the streaming path chunked nothing: every
+  document, at any size, reached the batch as one raw chunk while the run
+  reported success. The chunkers themselves were fine — the third import beside
+  them was not.
+
+  The engine files are byte-frozen and this package's copy tool substitutes
+  only the tool layer, so the import cannot be rewritten in place. Fixed the
+  way the Pylon logger import was, with a shim
+  (`elitea_inventory.langchain_shim`), with one difference: `pylon_shim`
+  fabricates a module, this one ALIASES `langchain_text_splitters` — where
+  LangChain moved the very code the old name exported — so the binding is a
+  rename rather than a stub. It never displaces a real
+  `langchain.text_splitter`, and when neither name is installed it binds
+  nothing, leaving the engine's own `ImportError` fallback to be honest about
+  it rather than fabricating a splitter that chunks nothing.
+
+  Measured by `tests/unit/test_streaming_chunking.py`, which drives the
+  streaming loop and asserts the CHUNKS handed to the batch processor, because
+  nothing in `IngestionResult` distinguishes chunked from not: a
+  15,028-character prose document arrived as 1 chunk before, and as many
+  after.
 * `sources.build_toolkit` passes `{id, name, type, settings}` to
   `instantiate_toolkit`, but the SDK's `github` `get_toolkit` reads
   `tool['toolkit_name']`, and both toolkits read credentials from a
