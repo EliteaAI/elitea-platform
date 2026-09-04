@@ -8,7 +8,7 @@
  * All entities created here use the `autotest_` prefix (per qa/ convention)
  * so failed runs' leftovers are identifiable and sweepable.
  */
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { expect, request as playwrightRequest } from '@playwright/test';
 
 import { BASE_URL, STORAGE_STATE } from '../../playwright.config';
@@ -1330,4 +1330,39 @@ export async function readStoredHitlInterrupt(
     )
     .toBe(true);
   return interrupt ?? {};
+}
+
+/**
+ * Put `prompt` in the chat composer and hand back its Send control, ready to
+ * click.
+ *
+ * WHY THE FILL IS RETRIED RATHER THAN DONE ONCE. `chat-send-button` is
+ * rendered only while the composer holds text, and a chat pane that is still
+ * resolving its conversation re-renders after the composer first becomes
+ * editable. A fill that lands inside that window is discarded, and a spec that
+ * clicks straight afterwards waits out its whole budget for a control that
+ * will never appear — `locator.click: Test ended` under `waiting for
+ * getByTestId('chat-send-button')`, which is what run 33812152063 recorded for
+ * `chat.pipeline.spec.ts`. Waiting for the button instead of retrying the fill
+ * does not help: the text is already gone, so no amount of waiting brings the
+ * control back.
+ *
+ * Callers must arm any `waitForResponse` AFTER this resolves. Armed before it,
+ * the budget covers the composer settling as well as the request, so a slow
+ * stack reports "the start was never admitted" about a turn that was never
+ * sent — which is how the cause above stayed hidden through run 33810201650.
+ *
+ * `chat.streaming.spec.ts` deliberately does NOT use this: it asserts the Send
+ * control is ABSENT before the fill, which is a claim about the app this
+ * helper's retry loop would swallow.
+ */
+export async function fillComposer(scope: Page | Locator, prompt: string) {
+  const input = scope.getByTestId('chat-message-input');
+  await expect(input).toBeEditable({ timeout: 20_000 });
+  const sendButton = scope.getByTestId('chat-send-button');
+  await expect(async () => {
+    await input.fill(prompt);
+    await expect(sendButton).toBeEnabled({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  return sendButton;
 }
