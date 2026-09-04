@@ -74,7 +74,8 @@ as a draft pull request carrying that checklist, and never merges it.
 
 Only fully-pinned closures are rewritten. `services/elitea-inventory`'s `engine`
 extra is deliberately a mix of exact pins and ranges, each with paragraphs of
-measured reasoning attached (`chromadb`, `mcp`, `langsmith`), and mechanically
+measured reasoning attached (`langsmith`'s h11 bound, and the I8 ledger beside
+each exact pin recording what it unlocked), and mechanically
 overwriting it would delete the reasons along with the versions. For that shape
 this tool REPORTS the drift and refuses to rewrite, which is a smaller lie than
 a rewrite that silently discards why a bound is there.
@@ -158,9 +159,10 @@ PACKAGES = [
         ["engine"],
         rewritable=False,
         rewritable_note=(
-            "its `engine` extra mixes exact pins with ranges, and three of them "
-            "(chromadb, mcp, langsmith) carry paragraphs of measured reasoning "
-            "that a mechanical rewrite would delete along with the version. "
+            "its `engine` extra mixes exact pins with ranges, and both kinds "
+            "carry paragraphs of measured reasoning that a mechanical rewrite "
+            "would delete along with the version: langsmith's h11 bound, and "
+            "the I8 ledger saying what each exact pin unlocked. "
             "Drift is reported; the edit is a person's."
         ),
     ),

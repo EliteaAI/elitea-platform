@@ -47,7 +47,7 @@
 #              torch. MEASURED: ~10 s warm, ~3 s to REJECT the #760 bump.
 #   inventory  uv. services/elitea-inventory/Containerfile states, measured
 #              over six image builds, that pip cannot resolve this closure in
-#              any reasonable time (the SDK's `tools` extra is ~1,280 packages)
+#              any reasonable time (the blanket SDK extras were 356 packages)
 #              and hands the job to `uv pip compile`. So does this gate, at the
 #              same pinned uv version the Containerfile installs.
 #

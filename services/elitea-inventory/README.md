@@ -66,13 +66,19 @@ stream. That exercises the whole Containerfile — the uv lock, the wheel build,
 the `--no-deps` install, the socket directory's ownership, the non-root user and
 the entrypoint.
 
-The ENGINE image has **not** been built to completion here. Its wheel step
-resolves, downloads and builds the full ~1,330-package closure and then fails
-writing the layer: `no space left on device`, with ~18 GB free. A wheelhouse
-containing torch, its NVIDIA CUDA wheels and opencv does not fit. Nothing about
-that is specific to this port — it is the `tools`-extra weight recorded as I8
-below, and it is the strongest argument for doing that work: the closure is not
-merely wasteful, it is currently un-buildable on a developer machine.
+The ENGINE image is built and verified too, since I8: **1.35 GB**, built in a
+few minutes. Run inside it, `health_over_socket.py` with
+`ELITEA_INVENTORY_RUNNER=legacy` — the real engine, not the fixture — serves
+`/engine/health`, refuses a foreign tool with 400, and answers `get_stats` in
+band on the stream. A probe run in the same image imports every SDK symbol this
+package names, instantiates both source toolkits, and runs both chunkers;
+`chromadb`, `torch`, `unstructured`, `transformers`, `sentence-transformers`,
+`timm` and `cv2` all report absent.
+
+Before I8 this image could not be built at all: the wheel step resolved,
+downloaded and built the whole closure and then failed writing the layer — `no
+space left on device`, with ~18 GB free, because a wheelhouse containing torch,
+its NVIDIA CUDA wheels and opencv does not fit.
 
 `ELITEA_INVENTORY_RUNNER` defaults to `unavailable`, which refuses every tool
 with a readable reason. `legacy` selects the engine and needs the `engine`
@@ -99,10 +105,10 @@ none.
 **Embeddings through the platform gateway.** The legacy plugin embedded entities
 with a local `all-MiniLM-L6-v2`, which needed runtime egress to a model host and
 meant the one thing on this platform that embedded outside the gateway was
-unmetered. (It does NOT make the image small: torch still arrives transitively
-through the SDK's `tools` extra — see I8 below. What changed is that this
-service no longer has a reason of its own to carry it, and nothing downloads a
-model at runtime.) v1 uses the toolkit's `embedding_model`
+unmetered. (Removing it did not, on its own, make the image small — torch kept
+arriving transitively until I8 took the SDK's blanket extras away. What it
+changed is that this service no longer has a reason of its own to carry torch,
+and nothing downloads a model at runtime.) v1 uses the toolkit's `embedding_model`
 against `llm_settings.api_base`, and keeps the legacy code's *reasoning* about
 drift by **recording** the model in the graph instead of pinning it in code: a
 retrieval over a graph built in a different embedding space is refused by name,
@@ -148,7 +154,7 @@ grow the substitution list one entry per file — which is how a "verbatim" copy
 quietly stops being one — `pylon_shim.py` registers a stub `pylon.core.tools`
 providing exactly a stdlib logger and an inert decorator, and nothing else.
 
-## Not yet done (stages I4–I8)
+## Not yet done (stages I4–I7)
 
 * **I4 — the facade.** `services/elitea-main` must expand the source toolkit and
   forward it per invoke. Until it does, every ingest call is refused by the host
@@ -166,45 +172,114 @@ providing exactly a stdlib logger and an inert decorator, and nothing else.
   real repository through the socket, so the first one will find things — that
   is what DeepWiki's equivalent run found (a missing `git` binary, a
   root-owned socket directory, an empty manifest reported as success).
-* **I8 — the engine image's weight.** `elitea-sdk[runtime,tools]` resolves to a
-  ~1,330-package closure. MEASURED from the lock, it includes `torch` 2.14.0
-  (with its NVIDIA CUDA wheels), `torchvision`, `timm`, `transformers` and
-  `sentence-transformers` — pulled in by `unstructured` ->
-  `unstructured-inference` — plus `python-pptx`, `textract` and `chromadb`, none
-  of which a service that reads git repositories uses. The legacy plugin
-  required the same extra, so this is parity rather than a regression, and
-  removing the local embedding model removed this port's OWN reason to carry
-  torch; it did not make the image small.
+* **I8 — the engine image's weight. DONE.** See "The engine closure, after I8"
+  below.
 
-  Narrowing it is tractable, and partly measured already. `elitea_sdk.tools`
-  imports every toolkit module and **tolerates the ones that fail** (it prints
-  `Failed imports: github, ado_repos, …` and carries on), so a build needs only
-  the dependencies of the toolkits it actually instantiates. Probed against
-  `elitea-sdk[runtime]` alone:
+## The engine closure, after I8
 
-  | step | result |
-  |---|---|
-  | `[runtime]` only | `instantiate_toolkit` imports; `github` refuses — "does not support direct instantiation or is not available" |
-  | `+ PyGithub` | still refuses: `elitea_sdk.tools.github` needs `tree_sitter` |
-  | `+ tree-sitter`, `tree-sitter-language-pack` | still refuses: it wants the older `tree_sitter_languages` |
+The `engine` extra no longer names `elitea-sdk[runtime,tools]`. It names a bare
+`elitea-sdk==0.9.40` plus an exact set, measured — the same shape
+`services/elitea-worker-python`'s `indexing-current` uses when it
+"intentionally replaces" the SDK's ranges. `pyproject.toml` carries the reason
+for each member; this is the summary.
 
-  The remaining work is to finish that list for `github` and `ado_repos` and
-  express it as an exact extra, the way `services/elitea-worker-python`'s
-  `indexing-current` "intentionally replaces" the SDK's ranges. It was not done
-  here because it is a change to what the image can instantiate, and that
-  deserves its own measured commit rather than being smuggled into the port.
+**The premise this section used to carry was wrong, and the correction is the
+point.** It blamed the `tools` extra for torch and chromadb. Measured at the
+gate's own target (Python 3.12, `x86_64-manylinux_2_28`):
 
-## A note on the dependency resolution
+| requirement | packages | carries |
+|---|---|---|
+| `elitea-sdk` (no extras) | 40 | nothing heavy |
+| `elitea-sdk[runtime]` | 255 | chromadb, torch + its NVIDIA CUDA wheels, unstructured, timm, transformers, sentence-transformers, opencv-python |
+| `elitea-sdk[runtime,tools]` + the old extra | 356 | all of the above |
+| the extra as it stands now | **126** | none of the above |
 
-The engine image's builder stage resolves with **uv** and builds wheels with
-pip (`--no-deps -r`), because pip cannot resolve this closure. MEASURED over
-six image builds: the SDK's `tools` extra brings ~1,280 packages, and inside
+`chromadb` is named by the SDK's **runtime** extra directly, and again by
+`langchain-chroma`, which that extra also names. `torch` arrives under runtime
+through `unstructured -> unstructured-inference/effdet/timm` and through
+`sentence-transformers`. **Dropping only `tools` would have removed neither.**
+230 distributions leave the resolution; none is new.
+
+(The "~1,330-package closure" this file used to claim was a line count of an
+annotated `uv pip compile` output — 1,333 lines, 356 packages.)
+
+**What it closes.** Four open Dependabot alerts, all attributed to this
+package's `pyproject.toml`, all `chromadb` 1.5.9, none with a patched version
+published: `GHSA-36p7-vc44-83pf` and `GHSA-f4j7-r4q5-qw2c` (CRITICAL),
+`GHSA-2wm9-hf6c-p5cr` and `GHSA-xph7-9rjv-w5fr` (high). Nothing here ever used
+chromadb, and there was no version to move to, so removing it was the only
+route open.
+
+**How the set was found.** From a BARE `elitea-sdk`, one dependency at a time,
+against a probe that does not stop at imports: it imports every SDK symbol this
+package names, then INSTANTIATES both `DEFAULT_SOURCE_TYPES` toolkits through
+`elitea_sdk.tools.instantiate_toolkit`, then RUNS both chunkers over a real
+`.py` and a real `.md`. That distinction is load-bearing, because
+`elitea_sdk.tools` imports every toolkit module and **swallows the failures** —
+it logs `Failed imports: github, ado_repos, …` and carries on. A green import
+proves nothing.
+
+| added | what it unlocked |
+|---|---|
+| `langchain-core`, `langgraph` | `elitea_sdk.tools` imports at all |
+| `PyGithub` | the `github` module the SDK's github toolkit imports |
+| `langchain-text-splitters`, `tree-sitter` | nothing on their own |
+| `tree-sitter-languages` — the OLD one; `tree-sitter-language-pack` does not satisfy it | `parse_code_files_for_db` RUNS: 2 chunks, `greet` and `main` |
+| `setuptools` | `distutils`, which left the stdlib in 3.12 and the SDK still imports |
+| `numpy` | `chunk_single_document` RUNS, on the `.py` and on the `.md` |
+| `langchain-community`, then the loader chain: `python-dateutil`, `gensim`, `openpyxl`, `mammoth`, `markdownify`, `python-docx`, `pandas`, `xlrd`, `reportlab`, `svglib`, `pymupdf`, `python-pptx` | `document_loaders.constants` imports every loader at module scope, and both `elitea_sdk.tools.github` and `runtime.clients.client` import it |
+| `psycopg[binary]` | `elitea_sdk.tools.github`, `langraph_agent`, `get_tools`. With bare `psycopg` the github toolkit is one of the SWALLOWED failures and the only visible symptom is `instantiate_toolkit` saying github "is not available"; the real message, inside `FAILED_IMPORTS`, is "no pq wrapper available" |
+| `azure-devops` | `elitea_sdk.tools.ado.repos` |
+| `langchain-openai`, `langchain-anthropic`, `langchain` | `EliteAClient` |
+
+**The evidence, not the claim.** With the resolved 126-package set installed the
+way the image installs it (`uv pip compile`, then `pip install --no-deps -r`):
+all eight SDK imports resolve; `github` instantiates into 38 tools and an
+`EliteAGitHubAPIWrapper`; `ado_repos` gets as far as `TF400813`, a credential
+refusal **from Azure**, which means every import, model and HTTP client on its
+path ran; both chunkers produce chunks. All 304 tests pass against it, and the
+`-engine` image builds and serves `/engine/health`.
+
+**What did NOT change.** Six transitive versions are pinned where the blanket
+extra left them — `anthropic`, `azure-core`, `beautifulsoup4`,
+`charset-normalizer`, `langgraph-checkpoint`, `lxml` — because removing 230
+packages removed whatever held each of them down, and a re-resolution floated
+them all upward at once. I8 changes what the image CARRIES; letting it also
+change what the frozen engine RUNS AGAINST would put two changes behind one
+measurement, and #677 is what that costs. `langsmith` moved 0.10.15 -> 0.11.2
+inside its own documented `<0.12` bound and is left ranged.
+
+**Two defects the probe found. Both pre-existing, both out of scope here.**
+
+* `engine/inventory/ingestion.py:3060` does `from langchain.text_splitter
+  import RecursiveCharacterTextSplitter`. That module does not exist in
+  `langchain` 1.x, which is what this closure has resolved since before I8, so
+  the whole `try:` block raises `ImportError`, `has_chunker` becomes `False`,
+  and the streaming path chunks nothing. The chunkers themselves are fine — the
+  third import beside them is not. `langchain_text_splitters` is the current
+  home of that class.
+* `sources.build_toolkit` passes `{id, name, type, settings}` to
+  `instantiate_toolkit`, but the SDK's `github` `get_toolkit` reads
+  `tool['toolkit_name']`, and both toolkits read credentials from a
+  `<type>_configuration` block inside `settings`. As written it raises
+  `KeyError` before it ever reaches a dependency. I7's real-engine run is where
+  this surfaces.
+
+### A note on the dependency resolution
+
+The engine image's builder stage resolves with **uv** and builds wheels with pip
+(`--no-deps -r`). MEASURED over six image builds, BEFORE I8: pip could not
+resolve this closure at all. The blanket extras brought 356 packages, and inside
 that set chromadb, mcp, langsmith, `uvicorn[standard]`, unstructured-client and
-their h11/httpcore/websockets constraints form a search space pip explores one
+their h11/httpcore/websockets constraints formed a search space pip explored one
 metadata download at a time. Every build was killed while pip was still walking
-backwards through some package's release history; pinning the offenders one at
-a time removed one dimension per build and revealed the next. uv resolves the
-same set, to the same versions, in about twenty seconds.
+backwards through some package's release history; pinning the offenders one at a
+time removed one dimension per build and revealed the next.
+
+At 126 packages pip CAN resolve it — `pip install -e '.[engine,test]'` completes
+on a developer machine, which is how the 304-test suite was run against it. The
+uv/pip split stays anyway: `--no-deps -r` means a missing wheel is an error in
+the runtime stage rather than a silent fall back to a version nobody resolved.
 
 The lock is generated inside the build rather than committed, so it cannot go
 stale against `pyproject.toml`.
@@ -247,17 +322,18 @@ python3 scripts/ci/refresh-engine-closure.py services/elitea-inventory --check
 ```
 
 For this package the tool **reports** the drift and does not rewrite. Its
-`engine` extra deliberately mixes exact pins with ranges, and `chromadb`, `mcp`
-and `langsmith` each carry paragraphs of measured reasoning beside them in
-`pyproject.toml`; a mechanical rewrite would delete the reason along with the
-version number it explains. So
-the edit here is a person's, made with the reported drift in hand, and the
-acceptance gate is the `[engine]` image build.
+`engine` extra deliberately mixes exact pins with ranges, and both kinds carry
+paragraphs of measured reasoning beside them in `pyproject.toml` — `langsmith`'s
+h11 bound, and the I8 ledger recording what each exact pin unlocked; a
+mechanical rewrite would delete the reason along with the version number it
+explains. So the edit here is a person's, made with the reported drift in hand,
+and the acceptance gate is the `[engine]` image build.
 
-The pins that survive in `pyproject.toml` — exact `fastapi`, `uvicorn`,
-`chromadb`, `mcp`, and `langsmith<0.12` — each record a real constraint with
-the measurement beside it, and they are what a resolver of either kind lands
-on. The `langsmith` bound is copied unchanged from
+The pins in `pyproject.toml` — exact `fastapi` and `uvicorn`, the measured I8
+set, the six versions held where the blanket extra left them, and
+`langsmith<0.12` — each record a real constraint with the measurement beside it,
+and they are what a resolver of either kind lands on. The `langsmith` bound is
+copied unchanged from
 `services/elitea-worker-python`: it is one platform-wide fact (0.12 moves to
 httpx2/httpcore2 and needs h11>=0.16, which cannot coexist with httpcore 1.0.7)
 and two services disagreeing about it would be worse than either answer.

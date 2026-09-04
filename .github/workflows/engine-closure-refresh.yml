@@ -34,10 +34,11 @@ name: Engine closure refresh
 # ── WHAT IS LEFT MANUAL, ON PURPOSE ─────────────────────────────────────────
 #
 # services/elitea-inventory's `engine` extra is NOT rewritten. It mixes exact
-# pins with ranges, and three of them (chromadb, mcp, langsmith) carry
-# paragraphs of measured reasoning that a mechanical rewrite would delete along
-# with the version. Its drift is REPORTED in the pull request body and in the
-# job summary; the edit is a person's.
+# pins with ranges, and both kinds carry paragraphs of measured reasoning that a
+# mechanical rewrite would delete along with the version — langsmith's h11
+# bound, and the I8 ledger recording what each exact pin unlocked. Its drift is
+# REPORTED in the pull request body and in the job summary; the edit is a
+# person's.
 #
 # ── NO PUSH ARM ─────────────────────────────────────────────────────────────
 #
