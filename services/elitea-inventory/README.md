@@ -32,9 +32,11 @@ engine.
 
 ```bash
 uv venv --python 3.12 .venv
-# `[engine]` too: tests/engine imports the copied engine, whose closure is
-# elitea-sdk[tools] and everything it drags in (torch included — see
-# pyproject.toml). `[test]` alone runs only the sidecar and runner suites:
+# `[engine]` too: tests/engine imports the copied engine. Since I8 that closure
+# is 126 exact pins rather than elitea-sdk's blanket extras, so it no longer
+# drags torch in and plain pip resolves it (25s, measured) — which is what made
+# a CI job affordable. `[test]` alone runs only the sidecar and runner suites;
+# three engine files and one unit file need langchain_core:
 #   PYTHONPATH=src .venv/bin/python -m pytest tests --ignore tests/engine
 uv pip install --python .venv/bin/python -e '.[engine,test]'
 PYTHONPATH=src .venv/bin/python -m pytest
@@ -42,6 +44,15 @@ PYTHONPATH=src .venv/bin/python -m pytest
 # the sidecar on a socket, and a health probe over it
 PYTHONPATH=src .venv/bin/python e2e/health_over_socket.py
 ```
+
+`.github/workflows/ci-inventory.yml` runs exactly that suite on every pull
+request touching this package, with the same two extras. Before it existed
+these 305 tests — including the digest check that makes "the engine is a
+byte-for-byte copy" mean something — ran on developer machines only, which is
+why two defects in `sources.py` and the engine's chunker block stayed latent
+until stage I8 went looking. The job also refuses a vacuous run: it counts the
+collected tests and fails below a floor, so a suite that stops running fails
+loudly instead of passing silently.
 
 ```bash
 # the shell image: 221 MB, builds in a couple of minutes
