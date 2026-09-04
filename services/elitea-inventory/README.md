@@ -260,7 +260,7 @@ change what the frozen engine RUNS AGAINST would put two changes behind one
 measurement, and #677 is what that costs. `langsmith` moved 0.10.15 -> 0.11.2
 inside its own documented `<0.12` bound and is left ranged.
 
-**Two defects the probe found, both pre-existing. The first is now FIXED.**
+**Two defects the probe found, both pre-existing. BOTH are now FIXED.**
 
 * ~~`engine/inventory/ingestion.py:3060`~~ **fixed** — it does `from
   langchain.text_splitter import RecursiveCharacterTextSplitter`. That module
@@ -287,12 +287,29 @@ inside its own documented `<0.12` bound and is left ranged.
   nothing in `IngestionResult` distinguishes chunked from not: a
   15,028-character prose document arrived as 1 chunk before, and as many
   after.
-* `sources.build_toolkit` passes `{id, name, type, settings}` to
-  `instantiate_toolkit`, but the SDK's `github` `get_toolkit` reads
-  `tool['toolkit_name']`, and both toolkits read credentials from a
-  `<type>_configuration` block inside `settings`. As written it raises
-  `KeyError` before it ever reaches a dependency. I7's real-engine run is where
-  this surfaces.
+* ~~`sources.build_toolkit`~~ **fixed** — it passed `{id, name, type,
+  settings}` to `instantiate_toolkit`, but the SDK subscripts keys that dict
+  did not carry. MEASURED against the pinned SDK, on the old shape:
+
+  | source type | raised |
+  |---|---|
+  | `github` | `KeyError: 'active_branch'` |
+  | `ado_repos` | `KeyError: 'toolkit_name'` |
+
+  The SDK reads the name from `toolkit_name` (not `name`) and uses it as the
+  pgvector collection name; `github`'s factory additionally requires
+  `active_branch` and `base_branch` in `settings` with no defaults of its own,
+  while `ado_repos` defaults both to `main`. `build_toolkit` now sends
+  `toolkit_name`, sets `active_branch` from the requested branch — that is the
+  branch the pipeline reads files from — and defaults `base_branch` only when
+  the stored settings do not name one, since the repository's base branch is a
+  different thing. Credentials are still never fabricated: an absent
+  `<type>_configuration` is refused by name, where the SDK would have raised
+  `KeyError` from inside the toolkit.
+
+  After the fix, against the real SDK: `github` returns its API wrapper, and
+  `ado_repos` reaches Azure DevOps and is refused there (`TF400813`) — a
+  refusal from Azure is the whole dependency and credential path proved.
 
 ### A note on the dependency resolution
 
